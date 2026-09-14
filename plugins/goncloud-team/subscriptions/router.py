@@ -261,7 +261,7 @@ class SubscriptionRouter:
                 detail=str(cached.get("detail") or ""),
             )
 
-        health = self.adapters[route.adapter].probe(route)
+        health = replace(self.adapters[route.adapter].probe(route), detail="")
         self.store.save_health(
             route.adapter,
             ready=health.ready,

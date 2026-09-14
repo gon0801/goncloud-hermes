@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -138,6 +139,85 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_quarantined_probe_detail_is_redacted_from_durable_status(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        go.health = AdapterHealth(
+            ready=False,
+            account_class="opencode_go",
+            failure=FailureKind.AUTH,
+            detail="token sk-sensitive owner@example.test",
+        )
+        go.result = failed(FailureKind.AUTH, "opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(go.requests, [])
+        health = router.store.health("opencode_go")
+        status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
+        self.assertNotIn("sk-sensitive", repr(health))
+        self.assertNotIn("owner@example.test", repr(health))
+        self.assertNotIn("sk-sensitive", repr(status))
+        self.assertNotIn("owner@example.test", repr(status))
+
+    def test_absent_health_probes_once_and_persists_result(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        go.health = AdapterHealth(ready=True, account_class="opencode_go")
+
+        availability = router._availability(routes_for_main()[0])
+
+        self.assertTrue(availability.ready)
+        self.assertEqual(len(go.probes), 1)
+        self.assertEqual(
+            router.store.health("opencode_go")["account_class"], "opencode_go"
+        )
+
+    def test_expired_health_probes_once_and_updates_persisted_result(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        router.store.save_health(
+            "opencode_go",
+            ready=False,
+            account_class="opencode_go",
+            failure="quota",
+        )
+        with router.store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_health SET updated_at = ? WHERE adapter = ?",
+                (
+                    (datetime.now(timezone.utc) - timedelta(seconds=301)).isoformat(),
+                    "opencode_go",
+                ),
+            )
+            conn.commit()
+        go.health = AdapterHealth(ready=True, account_class="opencode_go")
+
+        availability = router._availability(routes_for_main()[0])
+
+        self.assertTrue(availability.ready)
+        self.assertEqual(len(go.probes), 1)
+        self.assertTrue(router.store.health("opencode_go")["ready"])
+
+    def test_fresh_ready_health_skips_probe_and_invokes(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        router.store.save_health("opencode_go", ready=True, account_class="opencode_go")
+        go.health = AdapterHealth(
+            ready=False,
+            account_class="opencode_go",
+            failure=FailureKind.AUTH,
+        )
+        go.result = completed("go", "opencode_go")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "opencode_go")
+        self.assertEqual(go.probes, [])
+        self.assertEqual(len(go.requests), 1)
+
     def test_quarantined_route_is_recorded_without_invocation(self):
         router = self.router()
         go = self.fake_adapters["opencode_go"]

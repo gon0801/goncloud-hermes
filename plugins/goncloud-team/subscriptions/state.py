@@ -80,6 +80,13 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     return parsed
 
 
+def _health_detail(*, ready: bool, failure: Optional[str]) -> str:
+    """Return the bounded readiness reason safe for durable status."""
+    if ready:
+        return "ready"
+    return f"unavailable ({failure or 'unknown'})"
+
+
 class SubscriptionStateStore:
     """Thread-safe private store; attempt identity is durable and unique."""
 
@@ -212,6 +219,7 @@ class SubscriptionStateStore:
         failure: Optional[str] = None,
         detail: str = "",
     ) -> None:
+        safe_detail = _health_detail(ready=ready, failure=failure)
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
@@ -221,7 +229,7 @@ class SubscriptionStateStore:
                 "account_class=excluded.account_class, failure=excluded.failure, "
                 "detail=excluded.detail, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-                (adapter, 1 if ready else 0, account_class, failure, detail),
+                (adapter, 1 if ready else 0, account_class, failure, safe_detail),
             )
             conn.commit()
 
@@ -237,7 +245,7 @@ class SubscriptionStateStore:
             "ready": bool(row["ready"]),
             "account_class": row["account_class"],
             "failure": row["failure"],
-            "detail": row["detail"],
+            "detail": _health_detail(ready=bool(row["ready"]), failure=row["failure"]),
             "cooldown_until": row["cooldown_until"],
             "updated_at": row["updated_at"],
         }
