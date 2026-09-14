@@ -158,6 +158,128 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_live_quarantine_published_during_probe_prevents_invocation(self):
+        router = self.router()
+        entered, release = threading.Event(), threading.Event()
+        other = SubscriptionStateStore(self.db_path)
+        self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+
+        def probe(route):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return AdapterHealth(True, "subscription")
+
+        self.fake_adapters["opencode_go"].probe = probe
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                router.run, request(self.workspace), routes_for_main()[:2]
+            )
+            try:
+                self.assertTrue(entered.wait(10))
+                other.save_live_health(
+                    "opencode_go",
+                    ready=False,
+                    account_class="subscription",
+                    failure="task_failure",
+                )
+            finally:
+                release.set()
+            result = future.result(timeout=15)
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
+
+    def test_live_quarantine_at_authorization_boundary_records_skipped(self):
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+
+        def publish():
+            router.store.save_live_health(
+                "opencode_go",
+                ready=False,
+                account_class="subscription",
+                failure="task_failure",
+            )
+
+        result = router.run(
+            replace(request(self.workspace), pre_invoke=publish), routes_for_main()[:2]
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
+        self.assertEqual(
+            router.store.stage_attempts("wf-6", "st-6")[0].get("disposition"), "skipped"
+        )
+
+    def test_dispatch_holds_publication_lock_until_vendor_returns(self):
+        from subscriptions.state import SubscriptionBusy
+
+        router = self.router()
+        entered, release = threading.Event(), threading.Event()
+
+        def invoke(assignment, route):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return completed(adapter="opencode_go")
+
+        self.fake_adapters["opencode_go"].result = invoke
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                router.run, request(self.workspace), routes_for_main()[:1]
+            )
+            try:
+                self.assertTrue(entered.wait(10))
+                with self.assertRaises(SubscriptionBusy):
+                    SubscriptionStateStore(self.db_path).save_live_health(
+                        "opencode_go",
+                        ready=False,
+                        account_class="subscription",
+                        failure="auth",
+                    )
+            finally:
+                release.set()
+            self.assertTrue(future.result(timeout=15).success)
+        router.store.save_live_health(
+            "opencode_go", ready=False, account_class="subscription", failure="auth"
+        )
+        self.assertTrue(router.store.health("opencode_go")["quarantined"])
+
+    def test_crash_after_skipped_task_failure_resumes_next_slot_once(self):
+        router = self.router()
+        router.store.save_live_health(
+            "opencode_go",
+            ready=False,
+            account_class="subscription",
+            failure="task_failure",
+        )
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        assignment = replace(
+            request(self.workspace), result_transform=lambda value: value
+        )
+        availability = router._availability
+
+        def crash(route):
+            if route.adapter == "opencode_zen":
+                raise KeyboardInterrupt
+            return availability(route)
+
+        with patch.object(router, "_availability", side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                router.run(assignment, routes_for_main()[:2])
+        resumed = self.router()
+        result = resumed.run(assignment, routes_for_main()[:2])
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(len(self.fake_adapters["opencode_zen"].requests), 1)
+        self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
+        attempts = resumed.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual([row["slot"] for row in attempts], [0, 1])
+        self.assertEqual(
+            [row.get("disposition") for row in attempts], ["skipped", "executed"]
+        )
+
     def test_expiry_during_guard_fences_old_owner_after_second_router_claims(self):
         old_router, new_router = self.router(), self.router()
         clock = [datetime.now(timezone.utc)]

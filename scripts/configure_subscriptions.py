@@ -783,9 +783,16 @@ def run_live_probe_all(
     private_env: Path | None = None,
 ) -> dict:
     """One minimal real inference per adapter; presence alone never passes."""
-    from subscriptions.adapters import build_adapter_registry
     from subscriptions.router import default_db_path
     from subscriptions.state import SubscriptionStateStore
+
+    state = SubscriptionStateStore(default_db_path())
+    with state.live_probe_lock():
+        return _run_live_probe_all(json_out, only, private_env=private_env, state=state)
+
+
+def _run_live_probe_all(json_out, only, *, private_env, state):
+    from subscriptions.adapters import build_adapter_registry
 
     routes = _probe_routes()
     order = ADAPTER_ORDER
@@ -796,7 +803,6 @@ def run_live_probe_all(
             raise SystemExit("unknown adapters for --only")
         order = tuple(name for name in order if name in selected)
     stored = read_private_env(private_env or default_private_env_path())
-    state = SubscriptionStateStore(default_db_path())
     adapters = build_adapter_registry(
         zai_auth_token=stored.get("GLM_API_KEY"),
         zai_base_url=stored.get("GLM_BASE_URL"),

@@ -44,6 +44,7 @@ _ATTEMPT_KEYS = (
     "mode",
     "success",
     "failure",
+    "disposition",
 )
 
 

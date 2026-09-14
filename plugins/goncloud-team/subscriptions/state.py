@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from .private_files import open_private_file
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscription_attempts (
@@ -32,6 +36,7 @@ CREATE TABLE IF NOT EXISTS subscription_attempts (
     status TEXT NOT NULL DEFAULT 'completed',
     owner TEXT NOT NULL DEFAULT '',
     terminal INTEGER NOT NULL DEFAULT 0,
+    disposition TEXT NOT NULL DEFAULT 'executed',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(workflow_id, stage_id, slot, attempt)
 );
@@ -73,6 +78,7 @@ _ATTEMPT_COLUMNS = (
     "detail",
     "status",
     "terminal",
+    "disposition",
     "created_at",
 )
 
@@ -100,11 +106,46 @@ def _health_detail(*, ready: bool, failure: Optional[str]) -> str:
     return f"unavailable ({failure or 'unknown'})"
 
 
+class SubscriptionBusy(RuntimeError):
+    """Another local process owns the bounded subscription operation."""
+
+
+@contextlib.contextmanager
+def _process_lock(path: Path):
+    descriptor = open_private_file(path, exclusive=False)
+    with os.fdopen(descriptor, "r+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            def lock():
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def unlock():
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def lock():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def unlock():
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+        try:
+            lock()
+        except OSError:
+            raise SubscriptionBusy("subscription operation already running") from None
+        try:
+            yield
+        finally:
+            unlock()
+
+
 class SubscriptionStateStore:
     """Thread-safe private store; attempt identity is durable and unique."""
 
     def __init__(self, db_path: Path | str) -> None:
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with self._connect() as conn:
@@ -125,6 +166,10 @@ class SubscriptionStateStore:
                 conn.execute(
                     "ALTER TABLE subscription_attempts ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0"
                 )
+            if "disposition" not in columns:
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN disposition TEXT NOT NULL DEFAULT 'executed'"
+                )
             health_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(subscription_health)")
@@ -134,6 +179,17 @@ class SubscriptionStateStore:
                     "ALTER TABLE subscription_health ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0"
                 )
             conn.commit()
+
+    def live_probe_lock(self):
+        return _process_lock(
+            self.db_path.with_name(self.db_path.name + ".live-probe.lock")
+        )
+
+    def dispatch_lock(self, adapter: str):
+        tag = hashlib.sha256(adapter.encode("utf-8")).hexdigest()
+        return _process_lock(
+            self.db_path.with_name(self.db_path.name + ".dispatch-" + tag + ".lock")
+        )
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -263,6 +319,7 @@ class SubscriptionStateStore:
         detail: str,
         status: str = "completed",
         owner: str = "",
+        disposition: str = "executed",
     ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -272,8 +329,8 @@ class SubscriptionStateStore:
                 "INSERT INTO subscription_attempts "
                 "(workflow_id, stage_id, slot, attempt, adapter, model, "
                 "billing_mode, mode, success, failure, session_id, "
-                "start_revision, end_revision, changed_files, detail, status, owner) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "start_revision, end_revision, changed_files, detail, status, owner, disposition) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     workflow_id,
                     stage_id,
@@ -292,6 +349,7 @@ class SubscriptionStateStore:
                     detail,
                     status,
                     owner,
+                    disposition,
                 ),
             )
             conn.commit()
@@ -310,6 +368,7 @@ class SubscriptionStateStore:
         end_revision: str,
         changed_files: list[str],
         detail: str,
+        disposition: str = "executed",
     ) -> bool:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -317,7 +376,7 @@ class SubscriptionStateStore:
                 return False
             updated = conn.execute(
                 "UPDATE subscription_attempts SET success = ?, failure = ?, session_id = ?, "
-                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed' "
+                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed', disposition = ? "
                 "WHERE workflow_id = ? AND stage_id = ? AND slot = ? AND attempt = ? "
                 "AND owner = ? AND status = 'running'",
                 (
@@ -327,6 +386,7 @@ class SubscriptionStateStore:
                     end_revision,
                     json.dumps(sorted(changed_files), ensure_ascii=False),
                     detail,
+                    disposition,
                     workflow_id,
                     stage_id,
                     slot,
@@ -461,7 +521,7 @@ class SubscriptionStateStore:
         self, adapter: str, *, ready: bool, account_class: str, failure: Optional[str]
     ) -> None:
         """Publish normalized inference proof; ordinary probes cannot lift quarantine."""
-        with self._lock, self._connect() as conn:
+        with self.dispatch_lock(adapter), self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
                 "(adapter, ready, account_class, failure, detail, quarantined) "

@@ -1336,6 +1336,134 @@ class LiveEvidenceTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
+    def test_live_probe_commands_exclude_other_processes_and_release_after_crash(self):
+        import sqlite3
+        import time
+
+        root = Path(self.tmp.name)
+        counter = root / "counts.db"
+        with closing(sqlite3.connect(counter)) as conn, conn:
+            conn.execute("CREATE TABLE counts(active INTEGER, maximum INTEGER)")
+            conn.execute("INSERT INTO counts VALUES(0, 0)")
+        code = r"""
+import importlib.util,sys,os,time,sqlite3
+from pathlib import Path
+from contextlib import closing
+from unittest.mock import patch
+root,fixture,mode=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+spec=importlib.util.spec_from_file_location('configure_subscriptions',root/'scripts/configure_subscriptions.py')
+module=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=module
+spec.loader.exec_module(module)
+from subscriptions.types import AdapterHealth,InvocationResult
+class Adapter:
+    timeout_seconds=300
+    probe_timeout_seconds=30
+    def probe(self,route): return AdapterHealth(True,'subscription')
+    def invoke(self,request,route):
+        with closing(sqlite3.connect(fixture/'counts.db')) as conn,conn:
+            conn.execute('UPDATE counts SET active=active+1,maximum=MAX(maximum,active+1)')
+        (fixture/'entered').touch()
+        if mode=='crash': os._exit(7)
+        deadline=time.monotonic()+15
+        while not (fixture/'release').exists():
+            if time.monotonic()>deadline: raise RuntimeError('fixture release missing')
+            time.sleep(.01)
+        with closing(sqlite3.connect(fixture/'counts.db')) as conn,conn:
+            conn.execute('UPDATE counts SET active=active-1')
+        return InvocationResult(True,'GONCLOUD_PROBE_OK','codex','fixture','subscription')
+with patch.object(module,'read_private_env',return_value={}),patch('subscriptions.adapters.build_adapter_registry',return_value={'codex':Adapter()}):
+    sys.argv=['probe','--live-probe-all','--only','codex']
+    sys.exit(module.main())
+"""
+        command = [sys.executable, "-c", code, str(ROOT), str(root)]
+        env = {**os.environ, "PYTHONUTF8": "1"}
+        first = subprocess.Popen(
+            command + ["normal"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        second = None
+        try:
+            deadline = time.monotonic() + 10
+            while not (root / "entered").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((root / "entered").exists())
+            second = subprocess.Popen(
+                command + ["normal"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            deadline = time.monotonic() + 10
+            while second.poll() is None and time.monotonic() < deadline:
+                with closing(sqlite3.connect(counter)) as conn:
+                    maximum = conn.execute("SELECT maximum FROM counts").fetchone()[0]
+                if maximum > 1:
+                    break
+                time.sleep(0.01)
+            (root / "release").touch()
+            first.communicate(timeout=15)
+            second.communicate(timeout=15)
+            with closing(sqlite3.connect(counter)) as conn:
+                maximum = conn.execute("SELECT maximum FROM counts").fetchone()[0]
+            self.assertEqual(maximum, 1)
+            self.assertEqual(first.returncode, 0)
+            self.assertEqual(second.returncode, 1)
+        finally:
+            (root / "release").touch()
+            for process in (first, second):
+                if process is not None:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.communicate(timeout=10)
+        crashed = subprocess.run(
+            command + ["crash"], capture_output=True, env=env, timeout=10
+        )
+        self.assertEqual(crashed.returncode, 7)
+        recovered = subprocess.run(
+            command + ["normal"], capture_output=True, env=env, timeout=15
+        )
+        self.assertEqual(recovered.returncode, 0)
+
+    def test_live_probe_lock_also_excludes_threads_until_publication(self):
+        from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
+        from tests.test_subscription_router import ScriptedAdapter, completed
+
+        entered, release = threading.Event(), threading.Event()
+        adapter = ScriptedAdapter("codex")
+        adapter.timeout_seconds, adapter.probe_timeout_seconds = 300, 30
+        adapter.result = completed("GONCLOUD_PROBE_OK", "codex")
+        original = SubscriptionStateStore.save_live_health
+
+        def publish(store, *args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return original(store, *args, **kwargs)
+
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry",
+                return_value={"codex": adapter},
+            ),
+            patch.object(SubscriptionStateStore, "save_live_health", new=publish),
+            redirect_stdout(io.StringIO()),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            first = pool.submit(module.run_live_probe_all, only="codex")
+            try:
+                self.assertTrue(entered.wait(10))
+                with self.assertRaises(SubscriptionBusy):
+                    module.run_live_probe_all(only="codex")
+                self.assertEqual(len(adapter.requests), 1)
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=15)["passed"], 1)
+
     def test_live_failure_survives_ttl_and_only_exact_proof_restores_route(self):
         from subscriptions.router import SubscriptionRouter
         from subscriptions.state import SubscriptionStateStore

@@ -12,7 +12,7 @@ from uuid import uuid4
 from .adapters import build_adapter_registry
 from .catalog import compile_profile_routes, load_routing_source
 from .process import run_cli
-from .state import SubscriptionStateStore
+from .state import SubscriptionBusy, SubscriptionStateStore
 from .types import (
     AdapterHealth,
     FailureKind,
@@ -198,8 +198,13 @@ class SubscriptionRouter:
                     if (
                         latest["success"]
                         or latest["terminal"]
-                        or failure not in _ADVANCING_FAILURES
-                        or (failure is FailureKind.TRANSPORT and mutated)
+                        or (
+                            latest["disposition"] != "skipped"
+                            and (
+                                failure not in _ADVANCING_FAILURES
+                                or (failure is FailureKind.TRANSPORT and mutated)
+                            )
+                        )
                         or latest["slot"]
                         == max((route.slot for route in routes), default=-1)
                     ):
@@ -261,6 +266,7 @@ class SubscriptionRouter:
                     changed_files=list(self.git.changed_files(request.workspace)),
                     detail=skipped.text,
                     owner=owner,
+                    disposition="skipped",
                 )
                 attempted_any = True
                 last_failure = skipped
@@ -317,6 +323,7 @@ class SubscriptionRouter:
                     end_revision=request.current_revision,
                     changed_files=list(request.changed_files),
                     detail=denied.text,
+                    disposition="denied",
                 )
                 # Authorization says nothing about vendor health or quota.
                 return denied if recorded else self._stage_busy()
@@ -326,7 +333,28 @@ class SubscriptionRouter:
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
                 return self._stage_busy()
-            result = self._invoke_route(request, route)
+            disposition = "executed"
+            try:
+                # Publication and dispatch share an OS lock. A quarantine
+                # committed during the probe/authorization wins before invoke;
+                # publication cannot race the final check and vendor start.
+                with self.store.dispatch_lock(route.adapter):
+                    health = self.store.health(route.adapter)
+                    if health and health["quarantined"]:
+                        disposition = "skipped"
+                        failure = FailureKind(health["failure"] or "task_failure")
+                        result = InvocationResult(
+                            success=False,
+                            text=f"{route.adapter} invocation failed ({failure.value})",
+                            adapter=route.adapter,
+                            model=route.model,
+                            billing_mode=route.billing_mode,
+                            failure=failure,
+                        )
+                    else:
+                        result = self._invoke_route(request, route)
+            except SubscriptionBusy:
+                return self._stage_busy()
             revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
             )
@@ -344,9 +372,13 @@ class SubscriptionRouter:
                 end_revision=revision,
                 changed_files=list(changed),
                 detail=result.text[:2000],
+                disposition=disposition,
             )
             if not recorded:
                 return self._stage_busy()
+            if disposition == "skipped":
+                last_failure = result
+                continue
             self._record_health(route.adapter, result)
             if result.success:
                 return result
@@ -503,7 +535,14 @@ class SubscriptionRouter:
             failure=health.failure.value if health.failure else None,
             detail=health.detail,
         )
-        return health
+        # Ordinary probe publication preserves a concurrent live quarantine.
+        stored = self.store.health(route.adapter)
+        return AdapterHealth(
+            ready=stored["ready"],
+            account_class=stored["account_class"],
+            failure=FailureKind(stored["failure"]) if stored["failure"] else None,
+            detail=stored["detail"],
+        )
 
     def _record_health(self, adapter: str, result: InvocationResult) -> None:
         if result.success:
