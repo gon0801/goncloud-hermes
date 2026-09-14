@@ -70,10 +70,10 @@ class ClaudeAdapter(SubscriptionAdapter):
             )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
-        haystack = (evidence.stdout or "").lower()
+        haystack = (evidence.stream or "").lower()
         if evidence.returncode == 0 and (
             ("claude.ai" in haystack or '"max"' in haystack)
-            or self._oauth_subscription(evidence.stdout)
+            or self._oauth_subscription(evidence.stream)
         ):
             return AdapterHealth(
                 ready=True,
@@ -122,7 +122,7 @@ class ClaudeAdapter(SubscriptionAdapter):
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
 
-        parsed = parse_claude_stream(evidence.stdout)
+        parsed = parse_claude_stream(evidence.stream)
         if evidence.returncode == 0 and parsed["subtype"] in _SUCCESS_SUBTYPES:
             return InvocationResult(
                 success=True,
@@ -133,6 +133,6 @@ class ClaudeAdapter(SubscriptionAdapter):
                 session_id=parsed["session_id"] or "",
             )
         failure = classify_failure(
-            evidence.returncode, evidence.stdout, evidence.stderr
+            evidence.returncode, evidence.stream, evidence.stderr
         )
         return self._failed_result(route, failure)

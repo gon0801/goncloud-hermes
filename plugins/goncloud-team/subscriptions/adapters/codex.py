@@ -106,7 +106,7 @@ class CodexAdapter(SubscriptionAdapter):
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
         # The npm shim prints this status on stderr while stdout stays empty.
-        haystack = f"{evidence.stdout or ''}\n{evidence.stderr or ''}".lower()
+        haystack = f"{evidence.stream or ''}\n{evidence.stderr or ''}".lower()
         if evidence.returncode == 0 and "chatgpt" in haystack:
             return AdapterHealth(
                 ready=True,
@@ -147,7 +147,7 @@ class CodexAdapter(SubscriptionAdapter):
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
 
-        parsed = parse_codex_jsonl(evidence.stdout)
+        parsed = parse_codex_jsonl(evidence.stream)
         if (
             evidence.returncode == 0
             and parsed["terminal_valid"]
@@ -164,6 +164,6 @@ class CodexAdapter(SubscriptionAdapter):
         failure = (
             FailureKind.TASK_FAILURE
             if evidence.returncode == 0
-            else classify_failure(evidence.returncode, evidence.stdout, evidence.stderr)
+            else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(route, failure)

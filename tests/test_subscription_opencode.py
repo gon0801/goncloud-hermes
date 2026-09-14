@@ -14,6 +14,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
+from subscriptions.process import (  # noqa: E402
+    _MAX_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
+    run_cli,
+)
 from subscriptions.adapters.opencode import (  # noqa: E402
     OpenCodeAdapter,
     parse_opencode_jsonl,
@@ -295,6 +299,54 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(runner.command[:3], ["opencode", "auth", "list"])
+
+
+class LongStreamTests(unittest.TestCase):
+    """A real stage outruns the evidence cap; that is not a task failure."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.workspace = Path(self.tmp.name).resolve()
+
+    def long_success_stream(self) -> str:
+        filler = [
+            '{"type":"tool_use","part":{"type":"tool","tool":"read",'
+            f'"callID":"call_{index:05d}","output":"{"x" * 400}"}}}}'
+            for index in range(120)
+        ]
+        lines = [
+            '{"type":"session","sessionID":"sess_long"}',
+            *filler,
+            '{"type":"part","part":{"type":"text","text":"finished the change"}}',
+            '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+        ]
+        stream = "\n".join(lines)
+        assert len(stream) > MAX_OUTPUT_CHARS, len(stream)
+        return stream
+
+    def test_a_stream_longer_than_the_evidence_cap_still_completes(self):
+        runner = FakeCliRunner(stdout=self.long_success_stream())
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            request(self.workspace),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+
+        self.assertTrue(result.success, result.failure)
+        self.assertEqual(result.text, "finished the change")
+        self.assertEqual(result.session_id, "sess_long")
+
+    def test_evidence_stays_capped_even_though_parsing_sees_it_all(self):
+        stream = self.long_success_stream()
+
+        evidence = run_cli(
+            ["opencode"], "", self.workspace, 30, runner=FakeCliRunner(stdout=stream)
+        )
+
+        self.assertLessEqual(len(evidence.stdout), MAX_OUTPUT_CHARS + 64)
+        self.assertIn("truncated", evidence.stdout)
+        self.assertEqual(evidence.stream, stream)
 
 
 if __name__ == "__main__":

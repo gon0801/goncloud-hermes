@@ -102,7 +102,7 @@ class GrokAdapter(SubscriptionAdapter):
             )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
-        haystack = (evidence.stdout or "").lower()
+        haystack = (evidence.stream or "").lower()
         if evidence.returncode != 0 or "logged in" not in haystack:
             return AdapterHealth(
                 ready=False,
@@ -147,7 +147,7 @@ class GrokAdapter(SubscriptionAdapter):
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
 
-        parsed = parse_grok_ndjson(evidence.stdout)
+        parsed = parse_grok_ndjson(evidence.stream)
         if (
             evidence.returncode == 0
             and parsed["terminal_valid"]
@@ -164,6 +164,6 @@ class GrokAdapter(SubscriptionAdapter):
         failure = (
             FailureKind.TASK_FAILURE
             if evidence.returncode == 0
-            else classify_failure(evidence.returncode, evidence.stdout, evidence.stderr)
+            else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(route, failure)

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
@@ -224,16 +224,27 @@ class SubscriptionProcessError(RuntimeError):
 
 @dataclass(frozen=True)
 class ProcessEvidence:
-    """Redacted, bounded output of one vendor process."""
+    """Redacted, bounded output of one vendor process.
+
+    ``stdout``/``stderr`` are what may become evidence, so they stay capped.
+    ``stream`` is the same redacted stdout without that cap and exists only so
+    adapters parse the whole vendor stream: the cap cuts mid-line and its
+    marker is not JSON, which turned a completed stage into a task failure.
+    It is kept out of ``repr`` and equality so it never leaks into evidence.
+    """
 
     returncode: int
     stdout: str
     stderr: str
     duration_seconds: float
+    stream: str = field(default="", repr=False, compare=False)
 
 
 def _redact_and_cap(text: str, secrets: Sequence[str]) -> str:
-    redacted = redact_text(text, secrets)
+    return _cap(redact_text(text, secrets))
+
+
+def _cap(redacted: str) -> str:
     if len(redacted) > _MAX_OUTPUT_CHARS:
         keep = _MAX_OUTPUT_CHARS // 2
         dropped = len(redacted) - 2 * keep
@@ -536,9 +547,11 @@ def run_cli(
     finally:
         if prompt_path is not None:
             prompt_path.unlink(missing_ok=True)
+    redacted_stdout = redact_text(stdout, secrets)
     return ProcessEvidence(
         returncode=returncode,
-        stdout=_redact_and_cap(stdout, secrets),
+        stdout=_cap(redacted_stdout),
         stderr=_redact_and_cap(stderr, secrets),
         duration_seconds=time.monotonic() - started,
+        stream=redacted_stdout,
     )

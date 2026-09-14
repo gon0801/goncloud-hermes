@@ -105,11 +105,11 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 ready=False,
                 account_class=route.adapter,
                 failure=classify_failure(
-                    evidence.returncode, evidence.stdout, evidence.stderr
+                    evidence.returncode, evidence.stream, evidence.stderr
                 ),
                 detail="opencode auth list failed",
             )
-        installed = evidence.stdout.lower()
+        installed = evidence.stream.lower()
         if expected in installed:
             return AdapterHealth(ready=True, account_class=route.adapter)
         return AdapterHealth(
@@ -143,11 +143,11 @@ class OpenCodeAdapter(SubscriptionAdapter):
 
         if evidence.returncode != 0:
             failure = classify_failure(
-                evidence.returncode, evidence.stdout, evidence.stderr
+                evidence.returncode, evidence.stream, evidence.stderr
             )
             return self._failed_result(route, failure)
 
-        parsed = parse_opencode_jsonl(evidence.stdout)
+        parsed = parse_opencode_jsonl(evidence.stream)
         if evidence.returncode == 0:
             if parsed["terminal_valid"] and parsed["text"].strip():
                 return InvocationResult(
@@ -161,5 +161,5 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return self._failed_result(route, FailureKind.TASK_FAILURE)
         return self._failed_result(
             route,
-            classify_failure(evidence.returncode, evidence.stdout, evidence.stderr),
+            classify_failure(evidence.returncode, evidence.stream, evidence.stderr),
         )

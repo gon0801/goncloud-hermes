@@ -154,7 +154,7 @@ class KimiAdapter(SubscriptionAdapter):
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
 
-        parsed = parse_kimi_jsonl(evidence.stdout)
+        parsed = parse_kimi_jsonl(evidence.stream)
         if evidence.returncode == 0:
             if parsed["terminal_valid"] and parsed["text"].strip():
                 return InvocationResult(
@@ -167,6 +167,6 @@ class KimiAdapter(SubscriptionAdapter):
                 )
             return self._failed_result(route, FailureKind.TASK_FAILURE)
         failure = classify_failure(
-            evidence.returncode, evidence.stdout, evidence.stderr
+            evidence.returncode, evidence.stream, evidence.stderr
         )
         return self._failed_result(route, failure)

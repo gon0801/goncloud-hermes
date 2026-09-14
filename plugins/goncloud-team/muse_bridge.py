@@ -147,11 +147,11 @@ def delegate_to_muse(
 
     if completed.returncode != 0:
         failure = classify_failure(
-            completed.returncode, completed.stdout, completed.stderr
+            completed.returncode, completed.stream, completed.stderr
         )
         raise MuseBridgeError(f"Muse delegation failed ({failure.value})", failure)
 
-    result = parse_muse_jsonl(completed.stdout)
+    result = parse_muse_jsonl(completed.stream)
     if model is not None and result["model"] != model:
         raise MuseBridgeError(
             "Muse did not prove the requested model", FailureKind.MODEL_UNAVAILABLE
