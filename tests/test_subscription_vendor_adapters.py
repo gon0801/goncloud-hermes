@@ -268,6 +268,44 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
         self.assertNotIn("raw-secret", repr(result))
 
+    def test_kimi_scalar_content_block_invalidates_stream_without_leaking_raw_data(
+        self,
+    ):
+        output = "\n".join(
+            [
+                '{"type":"assistant","message":{"content":["raw-block-secret"]}}',
+                '{"type":"result","subtype":"success","result":"answer"}',
+            ]
+        )
+        parsed = parse_kimi_jsonl(output)
+        result = KimiAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertFalse(parsed["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("raw-block-secret", repr(result))
+
+    def test_kimi_scalar_terminal_subtype_invalidates_without_leaking_raw_data(
+        self,
+    ):
+        output = "\n".join(
+            [
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"raw-subtype-secret"}]}}',
+                '{"type":"result","subtype":[],"result":"answer"}',
+            ]
+        )
+        parsed = parse_kimi_jsonl(output)
+        result = KimiAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertFalse(parsed["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("raw-subtype-secret", repr(result))
+
     def test_kimi_error_result_cannot_approve_partial_text(self):
         result = KimiAdapter(
             runner=FakeCliRunner(

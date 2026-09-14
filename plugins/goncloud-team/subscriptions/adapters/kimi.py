@@ -36,10 +36,19 @@ def parse_kimi_jsonl(output: str) -> dict:
         if not isinstance(event, dict):
             malformed = True
             continue
-        event_type = str(event.get("type") or "").lower()
+        raw_event_type = event.get("type")
+        if not isinstance(raw_event_type, str):
+            malformed = True
+            continue
+        event_type = raw_event_type.lower()
         if "error" in event_type or event.get("error"):
             saw_error = True
-        session_id = event.get("session_id") or session_id
+        raw_session_id = event.get("session_id")
+        if raw_session_id is not None:
+            if not isinstance(raw_session_id, str):
+                malformed = True
+            else:
+                session_id = raw_session_id
         if event_type == "assistant":
             message = event.get("message")
             if not isinstance(message, dict):
@@ -50,11 +59,27 @@ def parse_kimi_jsonl(output: str) -> dict:
                 malformed = True
                 continue
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    texts.append(str(block.get("text") or ""))
+                if not isinstance(block, dict):
+                    malformed = True
+                    continue
+                block_type = block.get("type")
+                if not isinstance(block_type, str):
+                    malformed = True
+                    continue
+                if block_type == "text":
+                    block_text = block.get("text")
+                    if not isinstance(block_text, str):
+                        malformed = True
+                        continue
+                    texts.append(block_text)
         if event_type == "result":
-            result_text = event.get("result")
-            subtype = event.get("subtype")
+            raw_subtype = event.get("subtype")
+            raw_result = event.get("result")
+            if not isinstance(raw_subtype, str) or not isinstance(raw_result, str):
+                malformed = True
+                continue
+            result_text = raw_result
+            subtype = raw_subtype
     text = result_text if result_text is not None else "".join(texts)
     return {
         "text": str(text or ""),
