@@ -182,6 +182,8 @@ class MigrationTests(unittest.TestCase):
         first = target.read_text(encoding="utf-8")
 
         self.assertIn("DEEPSEEK_API_KEY=", first)
+        if os.name == "posix":
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
         self.assertFalse(target.with_suffix(".env.tmp").exists())
         # Rewriting replaces content instead of appending duplicates.
         module.write_private_env(
@@ -361,8 +363,8 @@ from pathlib import Path
 from tests.test_subscription_configuration import module, passing_probe
 root = Path(sys.argv[1])
 write = module._atomic_write
-def crash_after_write(path, data):
-    write(path, data)
+def crash_after_write(path, data, **kwargs):
+    write(path, data, **kwargs)
     if path == root / "deepseek.cmd":
         os._exit(73)
 module._atomic_write = crash_after_write
@@ -448,6 +450,385 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                 launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
             )
         self.assertFalse(target.parent.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows DACL contract")
+    def test_private_temp_and_replaced_store_have_protected_owner_only_dacl(self):
+        import win32security
+
+        subprocess.run(
+            ["icacls", str(self.root), "/grant", "*S-1-1-0:(OI)(CI)RX"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        target = private_env(self.root)
+        target.write_bytes(b"old fixture")
+
+        def assert_private(path):
+            descriptor = win32security.GetFileSecurity(
+                str(path),
+                win32security.OWNER_SECURITY_INFORMATION
+                | win32security.DACL_SECURITY_INFORMATION,
+            )
+            owner = descriptor.GetSecurityDescriptorOwner()
+            acl = descriptor.GetSecurityDescriptorDacl()
+            self.assertTrue(
+                descriptor.GetSecurityDescriptorControl()[0]
+                & win32security.SE_DACL_PROTECTED,
+                "DACL must block inherited grants",
+            )
+            self.assertEqual(acl.GetAceCount(), 1, "only the owner may access the file")
+            self.assertEqual(acl.GetAce(0)[0][0], win32security.ACCESS_ALLOWED_ACE_TYPE)
+            self.assertEqual(acl.GetAce(0)[1] & 0x1F01FF, 0x1F01FF)
+            self.assertTrue(
+                acl.GetAce(0)[2] == owner, "ACE must bind to the file owner"
+            )
+
+        opened = []
+        actual_fdopen = os.fdopen
+
+        def fdopen(descriptor, *args, **kwargs):
+            handle = actual_fdopen(descriptor, *args, **kwargs)
+            try:
+                temporary = next(self.root.glob(".subscription-*"))
+                self.assertEqual(temporary.stat().st_size, 0)
+                assert_private(temporary)
+                opened.append(temporary)
+            except BaseException:
+                handle.close()
+                raise
+            return handle
+
+        with patch.object(module.os, "fdopen", side_effect=fdopen):
+            module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+        self.assertEqual(len(opened), 1)
+        assert_private(target)
+
+    def test_symlink_store_is_rejected_before_any_credential_write(self):
+        target = self.root / "canonical.env"
+        target.write_bytes(b"OTHER_KEY=preserved\n")
+        alias = private_env(self.root)
+        try:
+            alias.symlink_to(target)
+        except OSError as error:
+            if os.name == "nt" and error.winerror == 1314:
+                self.skipTest("Windows has not granted symlink creation privilege")
+            raise
+        launcher = seeded_deepseek_launcher(self.root)
+        before = launcher.read_bytes()
+        with self.assertRaises(MigrationError):
+            migrate_one(
+                launcher, alias, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+            )
+        self.assertTrue(alias.is_symlink())
+        self.assertEqual(target.read_bytes(), b"OTHER_KEY=preserved\n")
+        self.assertEqual(launcher.read_bytes(), before)
+        self.assertEqual(list(self.root.glob("subscription-backup-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction contract")
+    def test_junction_parent_cannot_move_store_or_backups_into_git(self):
+        repo = self.root / "checkout"
+        subprocess.run(
+            ["git", "init", str(repo)], check=True, capture_output=True, timeout=10
+        )
+        junction = repo / "alias"
+        outside = self.root / "outside"
+        outside.mkdir()
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.addCleanup(lambda: os.rmdir(junction) if junction.exists() else None)
+        launcher = seeded_deepseek_launcher(self.root)
+        with self.assertRaises(MigrationError):
+            migrate_one(
+                launcher,
+                junction / "store.env",
+                passing_probe(),
+                secret_name="DEEPSEEK_API_KEY",
+            )
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(list(repo.glob("subscription-backup-*")), [])
+
+    def test_keyboard_interrupt_immediately_after_each_publication_restores_launchers(
+        self,
+    ):
+        for stop_at in ("subscription-router.env", "deepseek.cmd", "glm-code.ps1"):
+            for interrupt in (KeyboardInterrupt, SystemExit):
+                with self.subTest(target=stop_at, interrupt=interrupt.__name__):
+                    glm, deepseek = seeded_launchers(self.root)
+                    target = private_env(self.root)
+                    target.unlink(missing_ok=True)
+                    originals = {p: p.read_bytes() for p in (glm, deepseek)}
+                    replace = os.replace
+                    interrupted = False
+
+                    def after_replace(source, destination):
+                        nonlocal interrupted
+                        replace(source, destination)
+                        if Path(destination).name == stop_at and not interrupted:
+                            interrupted = True
+                            raise interrupt()
+
+                    with patch.object(module.os, "replace", side_effect=after_replace):
+                        with self.assertRaises(interrupt):
+                            migrate_launcher_secrets(
+                                glm, deepseek, target, passing_probe()
+                            )
+                    self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+                    self.assertFalse(
+                        target.exists(),
+                        "store may be removed only after every launcher is restored",
+                    )
+
+    def test_store_edit_during_preparation_is_preserved_before_first_write(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER_KEY=old\n")
+        changed = b"OTHER_KEY=concurrent edit\n"
+        parse = module.parse_assignments
+
+        def edit_during_prepare(text):
+            values = parse(text)
+            target.write_bytes(changed)
+            return values
+
+        with patch.object(module, "parse_assignments", side_effect=edit_during_prepare):
+            with self.assertRaises(MigrationError):
+                migrate_one(
+                    launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+        self.assertEqual(target.read_bytes(), changed)
+        self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
+
+    def test_edit_after_candidate_flush_is_preserved_before_replace(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER_KEY=old\n")
+        changed = b"OTHER_KEY=edited after candidate flush\n"
+        actual_write = module.write_private_env
+        actual_fsync = os.fsync
+
+        def write_with_late_edit(path, values, **kwargs):
+            def after_flush(descriptor):
+                actual_fsync(descriptor)
+                target.write_bytes(changed)
+
+            with patch.object(module.os, "fsync", side_effect=after_flush):
+                actual_write(path, values, **kwargs)
+
+        with patch.object(
+            module, "write_private_env", side_effect=write_with_late_edit
+        ):
+            with self.assertRaises(MigrationError):
+                migrate_one(
+                    launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+        self.assertEqual(target.read_bytes(), changed)
+        self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
+
+    def test_recovery_interruption_preserves_store_until_every_launcher_is_certified(
+        self,
+    ):
+        glm, deepseek = seeded_launchers(self.root)
+        target = private_env(self.root)
+        originals = {p: p.read_bytes() for p in (glm, deepseek)}
+        actual_replace = os.replace
+        interrupted = set()
+
+        def interrupt_publication_and_recovery(source, destination):
+            actual_replace(source, destination)
+            destination = Path(destination)
+            if destination == glm and "publish" not in interrupted:
+                interrupted.add("publish")
+                raise KeyboardInterrupt()
+            if (
+                destination == deepseek
+                and "publish" in interrupted
+                and "recover" not in interrupted
+            ):
+                interrupted.add("recover")
+                raise KeyboardInterrupt()
+
+        with patch.object(
+            module.os, "replace", side_effect=interrupt_publication_and_recovery
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                migrate_launcher_secrets(glm, deepseek, target, passing_probe())
+        self.assertTrue(
+            target.exists(), "uncertain recovery must retain the proven store"
+        )
+        self.assertTrue(target.with_name(target.name + ".migration.json").exists())
+        self.assertEqual(deepseek.read_bytes(), originals[deepseek])
+        self.assertNotIn(GLM_SECRET.encode(), glm.read_bytes())
+        observed = []
+
+        def reject_fresh_proof(name, value):
+            observed.append({p: p.read_bytes() for p in originals})
+            return None
+
+        with self.assertRaises(MigrationError):
+            migrate_launcher_secrets(glm, deepseek, target, reject_fresh_proof)
+        self.assertEqual(observed, [originals])
+        self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_name(target.name + ".migration.json").exists())
+
+    def test_process_death_immediately_after_replace_recovers_before_new_proof(self):
+        code = """
+import os, sys
+from pathlib import Path
+from tests.test_subscription_configuration import module, passing_probe
+root, victim = Path(sys.argv[1]), sys.argv[2]
+replace = os.replace
+def die_after_replace(source, destination):
+    replace(source, destination)
+    if Path(destination).name == victim:
+        os._exit(73)
+module.os.replace = die_after_replace
+module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", root / "subscription-router.env", passing_probe())
+"""
+        for victim in ("subscription-router.env", "deepseek.cmd", "glm-code.ps1"):
+            with self.subTest(victim=victim):
+                glm, deepseek = seeded_launchers(self.root)
+                target = private_env(self.root)
+                old_store = b"OTHER_KEY=preexisting store\n"
+                target.write_bytes(old_store)
+                originals = {p: p.read_bytes() for p in (glm, deepseek)}
+                result = subprocess.run(
+                    [sys.executable, "-", str(self.root), victim],
+                    input=code,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode, 73, result.stderr)
+                self.assertTrue(target.exists())
+                observed = []
+
+                def reject_fresh_proof(name, value):
+                    observed.append({p: p.read_bytes() for p in originals})
+                    return None
+
+                with self.assertRaises(MigrationError):
+                    migrate_launcher_secrets(glm, deepseek, target, reject_fresh_proof)
+                self.assertEqual(observed, [originals])
+                self.assertEqual({p: p.read_bytes() for p in originals}, originals)
+                self.assertEqual(target.read_bytes(), old_store)
+                self.assertFalse(
+                    target.with_name(target.name + ".migration.json").exists()
+                )
+
+    def test_unknown_launcher_during_rollback_keeps_store_and_journal(self):
+        glm, deepseek = seeded_launchers(self.root)
+        target = private_env(self.root)
+        actual_replace = os.replace
+        user_edit = b"user changed launcher\n"
+
+        def fail_second_publication(source, destination):
+            if Path(destination) == glm:
+                deepseek.write_bytes(user_edit)
+                raise OSError("fixture")
+            actual_replace(source, destination)
+
+        with patch.object(module.os, "replace", side_effect=fail_second_publication):
+            with self.assertRaises(MigrationError):
+                migrate_launcher_secrets(glm, deepseek, target, passing_probe())
+        self.assertEqual(deepseek.read_bytes(), user_edit)
+        self.assertTrue(target.exists())
+        self.assertTrue(target.with_name(target.name + ".migration.json").exists())
+
+    def test_equivalent_path_spelling_uses_the_same_migration_lock(self):
+        glm, deepseek = seeded_launchers(self.root)
+        (self.root / "path-part").mkdir()
+        alias = self.root / "path-part" / ".." / "subscription-router.env"
+        entered, release = threading.Event(), threading.Event()
+
+        def probe(name, value):
+            entered.set()
+            self.assertTrue(release.wait(10))
+            return passing_probe()(name, value)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                migrate_one, deepseek, alias, probe, secret_name="DEEPSEEK_API_KEY"
+            )
+            try:
+                self.assertTrue(entered.wait(5))
+                with self.assertRaisesRegex(
+                    MigrationError, "migration already running"
+                ):
+                    migrate_one(
+                        glm,
+                        private_env(self.root),
+                        passing_probe(),
+                        secret_name="GLM_API_KEY",
+                    )
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+        self.assertEqual(result.private_env, private_env(self.root).resolve())
+
+    def test_hard_link_alias_cannot_create_an_independent_store_lock(self):
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER_KEY=preserved\n")
+        alias = self.root / "hard-link.env"
+        os.link(target, alias)
+        launcher = seeded_deepseek_launcher(self.root)
+        with self.assertRaises(MigrationError):
+            migrate_one(
+                launcher, alias, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+            )
+        self.assertEqual(target.read_bytes(), b"OTHER_KEY=preserved\n")
+        self.assertEqual(alias.read_bytes(), b"OTHER_KEY=preserved\n")
+
+    def test_equal_candidate_written_externally_before_publish_is_not_rolled_back(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER_KEY=old\n")
+        concurrent = f"DEEPSEEK_API_KEY={DEEPSEEK_SECRET}\nOTHER_KEY=old\n".encode()
+        parse = module.parse_assignments
+
+        def external_edit(text):
+            target.write_bytes(concurrent)
+            return parse(text)
+
+        with patch.object(module, "parse_assignments", side_effect=external_edit):
+            with self.assertRaises(MigrationError):
+                migrate_one(
+                    launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+        self.assertEqual(target.read_bytes(), concurrent)
+        self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
+
+    def test_equal_candidate_replaced_externally_during_cleanup_is_preserved(self):
+        glm, deepseek = seeded_launchers(self.root)
+        target = private_env(self.root)
+        originals = {p: p.read_bytes() for p in (glm, deepseek)}
+        actual_replace = os.replace
+        externally_written = []
+
+        def fail_and_replace_store(source, destination):
+            if Path(destination) == glm:
+                external = self.root / "external-edit.env"
+                current = target.read_bytes()
+                external.write_bytes(current)
+                actual_replace(external, target)
+                externally_written.append(current)
+                raise OSError("fixture")
+            actual_replace(source, destination)
+
+        with patch.object(module.os, "replace", side_effect=fail_and_replace_store):
+            with self.assertRaises(MigrationError):
+                migrate_launcher_secrets(glm, deepseek, target, passing_probe())
+        self.assertTrue(
+            target.exists(), "rollback must retain externally published store"
+        )
+        self.assertEqual(target.read_bytes(), externally_written[0])
+        self.assertEqual({p: p.read_bytes() for p in originals}, originals)
 
 
 class LiveEvidenceTests(unittest.TestCase):
