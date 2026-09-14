@@ -18,3 +18,4 @@ local/
 subscription-router.env
 subscription-router.env.*
 secrets.backup*
+.worktrees/
