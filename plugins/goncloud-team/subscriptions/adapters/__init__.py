@@ -101,6 +101,7 @@ class SubscriptionAdapter:
     billing_mode = "subscription"
     timeout_seconds = 300
     probe_timeout_seconds = 30
+    probe_is_generative = False
 
     def __init__(self, runner=None) -> None:
         self.runner = runner if runner is not None else subprocess.run
@@ -124,9 +125,7 @@ class SubscriptionAdapter:
         self, route: RouteSpec, failure: FailureKind, detail: str = ""
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
-        # Launch/timeout details carry no secrets; vendor output stays out.
-        if detail and failure is not FailureKind.TIMEOUT:
-            text = f"{text}: {detail}"
+        # Diagnostics are not a public evidence channel, even after redaction.
         return InvocationResult(
             success=False,
             text=text,

@@ -158,6 +158,41 @@ class MuseAdapterTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.AUTH)
 
+    def test_muse_selects_the_exact_route_model_as_one_argument(self):
+        runner = self._muse_runner()
+        model = "muse-spark-1.3-contributor-free"
+        result = MuseAdapter(runner=runner).invoke(
+            request(self.workspace), route_for("muse", model)
+        )
+        self.assertTrue(result.success)
+        self.assertIn("--model", runner.command)
+        self.assertEqual(runner.command[runner.command.index("--model") + 1], model)
+
+    def test_muse_missing_or_different_observed_model_cannot_report_success(self):
+        for output in (
+            MUSE_JSONL.replace("muse-spark-1.3-contributor-free", "different-model"),
+            MUSE_JSONL.splitlines()[-1],
+            MUSE_JSONL.replace("muse-spark-1.3-contributor-free", "different-model")
+            + "\n"
+            + MUSE_JSONL,
+        ):
+            with self.subTest(output_kind=len(output)):
+                result = MuseAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+                    request(self.workspace),
+                    route_for("muse", "muse-spark-1.3-contributor-free"),
+                )
+                self.assertFalse(result.success)
+                self.assertEqual(result.failure, FailureKind.MODEL_UNAVAILABLE)
+
+    def test_muse_terminal_without_nonempty_text_is_task_failure(self):
+        output = MUSE_JSONL.replace("muse done", "  ")
+        result = MuseAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace),
+            route_for("muse", "muse-spark-1.3-contributor-free"),
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+
 
 class ClaudeAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -271,6 +306,31 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(result.text, "codex says hi")
         self.assertEqual(result.session_id, "thr_9")
         self.assertEqual(result.billing_mode, "subscription")
+
+    def test_codex_requires_nonempty_text_and_uncontradicted_success_terminal(self):
+        for output in (
+            CODEX_JSONL.rsplit("\n", 1)[0],
+            '{"type":"turn.completed"}',
+            CODEX_JSONL.replace("codex says hi", "   "),
+            CODEX_JSONL.replace("turn.completed", "turn.failed"),
+            CODEX_JSONL + '\n{"type":"error","message":"failed"}',
+            CODEX_JSONL + '\n{"type":"turn.failed"}',
+            CODEX_JSONL.replace("turn.completed", "not-turn.completed"),
+            CODEX_JSONL + "\nnot-json",
+            CODEX_JSONL + '\n{"type":[]}',
+            CODEX_JSONL
+            + '\n{"type":"item.completed","item":{"type":["agent_message"],"text":"x"}}',
+            CODEX_JSONL + '\n{"type":"thread.started","thread_id":{"private":"value"}}',
+        ):
+            with self.subTest(case=output[-50:]):
+                try:
+                    result = CodexAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+                        request(self.workspace), route_for("codex", "gpt-6-astra")
+                    )
+                except Exception:
+                    self.fail("malformed Codex frame escaped the adapter")
+                self.assertFalse(result.success)
+                self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
 
     def test_codex_probe_requires_chatgpt_login(self):
         chatgpt = FakeCliRunner(stdout="Logged in using ChatGPT\n")

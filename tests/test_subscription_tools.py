@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sqlite3
 import sys
 import tempfile
@@ -239,7 +241,17 @@ class SubscriptionRunTests(unittest.TestCase):
     def change_authorization(self, started, change):
         with connect_closing(self.db_path) as conn:
             stage_id = started["stages"]["scout"]
-            if change == "blocked":
+            if change == "director-assignee":
+                conn.execute(
+                    "UPDATE tasks SET assignee='implementer' WHERE id=?",
+                    (started["workflow_id"],),
+                ).close()
+            elif change.startswith("director-"):
+                conn.execute(
+                    "UPDATE tasks SET status=? WHERE id=?",
+                    (change.removeprefix("director-"), started["workflow_id"]),
+                ).close()
+            elif change == "blocked":
                 block_task(conn, stage_id, reason="Owner revoked authorization.")
             elif change == "assignee":
                 conn.execute(
@@ -268,7 +280,15 @@ class SubscriptionRunTests(unittest.TestCase):
 
     def test_changes_during_compilation_revoke_before_router_run(self):
         compile_routes = self.workflow_module.compile_profile_routes
-        for change in ("blocked", "assignee", "repository", "revision", "sources"):
+        for change in (
+            "blocked",
+            "assignee",
+            "repository",
+            "revision",
+            "sources",
+            "director-blocked",
+            "director-assignee",
+        ):
             with self.subTest(change=change):
                 started, assignment = self.changed_assignment_case("compile", change)
                 self.router.run_count = 0
@@ -286,7 +306,15 @@ class SubscriptionRunTests(unittest.TestCase):
                 self.assertEqual(self.router.run_count, 0)
 
     def test_changes_during_probe_leave_terminal_denial_and_release_lease(self):
-        for change in ("blocked", "assignee", "repository", "revision", "sources"):
+        for change in (
+            "blocked",
+            "assignee",
+            "repository",
+            "revision",
+            "sources",
+            "director-blocked",
+            "director-assignee",
+        ):
             with self.subTest(change=change):
                 started, assignment = self.changed_assignment_case("probe", change)
                 invoked = []
@@ -436,6 +464,20 @@ class SubscriptionRunTests(unittest.TestCase):
             block_task(conn, assignment["task_id"], reason="owner paused")
         self.assert_rejected_before_routing(self.service(), assignment, "status")
 
+    def test_revoked_director_is_rejected_by_initial_snapshot_before_any_effect(self):
+        for change in (
+            "director-blocked",
+            "director-done",
+            "director-archived",
+            "director-assignee",
+        ):
+            with self.subTest(change=change):
+                started, assignment = self.changed_assignment_case("initial", change)
+                self.change_authorization(started, change)
+                self.assert_rejected_before_routing(
+                    self.service(), assignment, "director"
+                )
+
     def test_contract_repository_mismatch_is_rejected_before_routing(self):
         started = self.start()
         with connect_closing(self.db_path) as conn:
@@ -472,6 +514,84 @@ class SubscriptionRunTests(unittest.TestCase):
                     **self.assignment(started, max_steps=value)
                 )
                 self.assertEqual(self.router.requests[-1][0].max_steps, value)
+
+    def test_public_subscription_run_redacts_before_return_sqlite_and_status_without_transform(
+        self,
+    ):
+        from subscriptions.process import run_cli
+
+        sensitive = (
+            "opaque-inherited-fixture",
+            "sk-synthetic-pattern",
+            "fixture@example.test",
+            "private synthetic assignment",
+        )
+
+        def invoke(assignment, route):
+            def runner(command, **kwargs):
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=" ".join(sensitive), stderr=""
+                )
+
+            evidence = run_cli(
+                ["synthetic-vendor"], "", assignment.workspace, 5, runner=runner
+            )
+            return InvocationResult(
+                True,
+                evidence.stdout,
+                route.adapter,
+                route.model,
+                route.billing_mode,
+                session_id=sensitive[0],
+            )
+
+        started = self.start()
+        router = SubscriptionRouter(
+            adapters={
+                "opencode_go": types.SimpleNamespace(
+                    probe=lambda route: AdapterHealth(True, "subscription"),
+                    invoke=invoke,
+                )
+            },
+            db_path=self.root / "redaction-router.db",
+            routing_source=self.router.routing_source,
+        )
+        with (
+            patch.object(
+                self.workflow_module, "_build_subscription_router", return_value=router
+            ),
+            patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[0]}),
+        ):
+            result = self.service().subscription_run(
+                **self.assignment(started, instruction=sensitive[-1])
+            )
+        status = router.status(
+            "scout",
+            workflow_id=started["workflow_id"],
+            stage_id=started["stages"]["scout"],
+        )
+        with closing(sqlite3.connect(router.store.db_path)) as conn:
+            persisted = conn.execute(
+                "SELECT detail, session_id FROM subscription_attempts"
+            ).fetchall()
+        self.assertTrue(result["success"])
+        self.assertTrue(
+            all(value not in repr((result, persisted, status)) for value in sensitive),
+            "public evidence exposed synthetic sensitive content",
+        )
+
+    def test_public_subscription_run_sanitizes_a_result_created_before_environment_scope(
+        self,
+    ):
+        sensitive = "opaque-delayed-fixture"
+        self.router.result = replace(self.result, text=sensitive, session_id=sensitive)
+        started = self.start()
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive}):
+            result = self.service().subscription_run(**self.assignment(started))
+        self.assertTrue(
+            sensitive not in repr(result),
+            "public scripted result exposed a synthetic secret",
+        )
 
     def test_completed_stage_is_not_executed_again(self):
         started = self.start()

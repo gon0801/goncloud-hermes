@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 import sqlite3
 import sys
 import tempfile
@@ -146,6 +147,23 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_adapter_exception_without_transform_is_fixed_durable_failure(self):
+        router = self.router()
+
+        def explode(request, route):
+            raise RuntimeError("untrusted vendor diagnostics")
+
+        self.fake_adapters["opencode_go"].result = explode
+        try:
+            result = router.run(request(self.workspace), routes_for_main())
+        except Exception:
+            self.fail("adapter diagnostics escaped the public router")
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(attempts[0]["status"], "completed")
+        self.assertNotIn("untrusted vendor diagnostics", repr((result, attempts)))
+
     def test_live_quarantine_published_during_probe_prevents_invocation(self):
         router = self.router()
         entered, release = threading.Event(), threading.Event()
@@ -670,6 +688,65 @@ class FailoverTests(RouterTestCase):
         self.assertTrue(result.success)
         self.assertEqual(router.calls, ["opencode_go", "claude"])
 
+    def test_ordinary_cooldown_is_recorded_with_quota_and_exact_duplicate_positions(
+        self,
+    ):
+        router = self.router()
+        router.store.set_cooldown("opencode_go", hours=1)
+        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+        first, second = routes_for_main()[:2]
+        routes = [
+            first,
+            replace(first, slot=1, label=first.label + " dup"),
+            replace(second, slot=2),
+        ]
+        result = router.run(request(self.workspace), routes)
+        self.assertTrue(result.success)
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual([row["slot"] for row in attempts], [0, 1, 2])
+        self.assertEqual(
+            [row["disposition"] for row in attempts], ["skipped", "skipped", "executed"]
+        )
+        self.assertEqual([row["failure"] for row in attempts[:2]], ["quota", "quota"])
+        self.assertEqual(
+            [row["model"] for row in attempts[:2]], [first.model, first.model]
+        )
+        self.assertEqual(self.fake_adapters["opencode_go"].probes, [])
+        self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
+
+    def test_crash_after_cooldown_skip_resumes_next_slot_with_or_without_transform(
+        self,
+    ):
+        for transformed in (False, True):
+            with self.subTest(transformed=transformed):
+                self.db_path = self.workspace / f"cooldown-{transformed}.db"
+                router = self.router()
+                router.store.set_cooldown("opencode_go", hours=1)
+                self.fake_adapters["opencode_zen"].result = completed(
+                    "zen", "opencode_zen"
+                )
+                assignment = replace(
+                    request(self.workspace),
+                    result_transform=(lambda result: result) if transformed else None,
+                )
+                availability = router._availability
+
+                def crash(route):
+                    if route.slot == 1:
+                        raise KeyboardInterrupt
+                    return availability(route)
+
+                with patch.object(router, "_availability", side_effect=crash):
+                    with self.assertRaises(KeyboardInterrupt):
+                        router.run(assignment, routes_for_main()[:2])
+                resumed = self.router()
+                self.assertTrue(resumed.run(assignment, routes_for_main()[:2]).success)
+                attempts = resumed.store.stage_attempts("wf-6", "st-6")
+                self.assertEqual([row["slot"] for row in attempts], [0, 1])
+                self.assertEqual(
+                    [row["disposition"] for row in attempts], ["skipped", "executed"]
+                )
+
     def test_run_is_idempotent_after_success(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = completed("first ok", "opencode_go")
@@ -947,6 +1024,106 @@ class StatusTests(RouterTestCase):
 
 
 class StateStoreTests(RouterTestCase):
+    def test_store_redacts_each_evidence_write_boundary(self):
+        sensitive = (
+            "opaque-state-fixture",
+            "sk-synthetic-pattern",
+            "fixture@example.test",
+        )
+        text = " ".join(sensitive)
+        store = SubscriptionStateStore(self.db_path)
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[0]}):
+            self.assertTrue(store.claim_stage("wf", "stage", "owner", 60))
+            store.record_attempt(
+                workflow_id="wf",
+                stage_id="stage",
+                slot=0,
+                attempt=0,
+                adapter="muse",
+                model="model",
+                billing_mode="subscription",
+                mode="start",
+                success=False,
+                failure=None,
+                session_id=text,
+                start_revision="r0",
+                end_revision="r0",
+                changed_files=[text],
+                detail=text,
+                status="running",
+                owner="owner",
+            )
+            for operation in ("record", "finish", "normalize"):
+                if operation == "finish":
+                    self.assertTrue(
+                        store.finish_attempt(
+                            workflow_id="wf",
+                            stage_id="stage",
+                            slot=0,
+                            attempt=0,
+                            owner="owner",
+                            success=True,
+                            failure=None,
+                            session_id=text,
+                            end_revision="r0",
+                            changed_files=[text],
+                            detail=text,
+                        )
+                    )
+                elif operation == "normalize":
+                    attempt_id = store.stage_attempts("wf", "stage")[0]["id"]
+                    self.assertTrue(
+                        store.normalize_completed_attempt(
+                            workflow_id="wf",
+                            stage_id="stage",
+                            attempt_id=attempt_id,
+                            owner="owner",
+                            success=True,
+                            failure=None,
+                            session_id=text,
+                            detail=text,
+                        )
+                    )
+                with self.subTest(operation=operation), store._connect() as conn:
+                    raw = [
+                        tuple(row)
+                        for row in conn.execute(
+                            "SELECT detail, session_id, changed_files FROM subscription_attempts"
+                        )
+                    ]
+                    self.assertTrue(
+                        all(value not in repr(raw) for value in sensitive),
+                        "SQLite write retained synthetic sensitive content",
+                    )
+
+    def test_legacy_cached_success_is_redacted_and_repaired_without_a_transform(self):
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = completed("safe", "opencode_go")
+        assignment = request(self.workspace)
+        router.run(assignment, routes_for_main())
+        sensitive = "opaque-legacy-fixture"
+        with router.store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_attempts SET detail=?, session_id=?",
+                (sensitive, sensitive),
+            )
+            conn.commit()
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive}):
+            result = router.run(assignment, routes_for_main())
+            status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
+        with router.store._connect() as conn:
+            raw = [
+                tuple(row)
+                for row in conn.execute(
+                    "SELECT detail, session_id FROM subscription_attempts"
+                )
+            ]
+        self.assertTrue(
+            sensitive not in repr((result, status, raw)),
+            "legacy success exposed synthetic content",
+        )
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+
     def test_concurrent_open_migrates_existing_attempts_without_losing_success(self):
         conn = sqlite3.connect(self.db_path)
         try:

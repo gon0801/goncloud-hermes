@@ -21,30 +21,63 @@ def parse_grok_ndjson(output: str) -> dict:
     texts: list[str] = []
     session_id = None
     ended = False
+    invalid = False
     for line in output.splitlines():
+        if not line.strip():
+            continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            invalid = True
             continue
         if not isinstance(event, dict):
+            invalid = True
+            continue
+        if any(
+            key in event and not isinstance(event[key], str)
+            for key in ("type", "sessionId", "stopReason")
+        ):
+            invalid = True
             continue
         session_id = event.get("sessionId") or session_id
+        if event.get("type") in {"error", "turn.failed"} or event.get("error"):
+            invalid = True
         if event.get("type") == "text" and "data" in event:
-            texts.append(str(event.get("data") or ""))
+            text = event.get("data")
+            if not isinstance(text, str) or ended:
+                invalid = True
+            else:
+                texts.append(text)
         if event.get("type") == "end":
+            invalid = invalid or ended or event.get("stopReason") != "end_turn"
             ended = True
         update = event.get("sessionUpdate")
         if not isinstance(update, dict):
             continue
+        if any(
+            key in update and not isinstance(update[key], str)
+            for key in ("update", "sessionId")
+        ):
+            invalid = True
+            continue
         session_id = update.get("sessionId") or session_id
         kind = update.get("update")
+        if kind == "error" or update.get("error"):
+            invalid = True
         content = update.get("content")
         if kind in {"agent_message", "agent_message_chunk"}:
             if isinstance(content, dict):
-                texts.append(str(content.get("text") or ""))
+                content = content.get("text")
+            if not isinstance(content, str) or ended:
+                invalid = True
             elif isinstance(content, str):
                 texts.append(content)
-    return {"text": "".join(texts), "session_id": session_id, "ended": ended}
+    return {
+        "text": "".join(texts),
+        "session_id": session_id,
+        "ended": ended,
+        "terminal_valid": ended and not invalid,
+    }
 
 
 class GrokAdapter(SubscriptionAdapter):
@@ -117,7 +150,11 @@ class GrokAdapter(SubscriptionAdapter):
             return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
 
         parsed = parse_grok_ndjson(evidence.stdout)
-        if evidence.returncode == 0 and (parsed["text"] or parsed["ended"]):
+        if (
+            evidence.returncode == 0
+            and parsed["terminal_valid"]
+            and parsed["text"].strip()
+        ):
             return InvocationResult(
                 success=True,
                 text=parsed["text"],
@@ -126,7 +163,9 @@ class GrokAdapter(SubscriptionAdapter):
                 billing_mode=route.billing_mode,
                 session_id=parsed["session_id"] or "",
             )
-        failure = classify_failure(
-            evidence.returncode, evidence.stdout, evidence.stderr
+        failure = (
+            FailureKind.TASK_FAILURE
+            if evidence.returncode == 0
+            else classify_failure(evidence.returncode, evidence.stdout, evidence.stderr)
         )
         return self._failed_result(route, failure)

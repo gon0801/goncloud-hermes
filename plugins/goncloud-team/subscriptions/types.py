@@ -7,6 +7,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Literal
 
+from .redaction import redact_text
+
 
 class FailureKind(StrEnum):
     AUTH = "auth"
@@ -69,6 +71,10 @@ class InvocationResult:
     session_id: str = ""
     failure: FailureKind | None = None
 
+    def __post_init__(self) -> None:
+        for field_name in ("text", "session_id", "adapter", "model"):
+            object.__setattr__(self, field_name, redact_text(getattr(self, field_name)))
+
 
 @dataclass(frozen=True)
 class AdapterHealth:
@@ -78,3 +84,7 @@ class AdapterHealth:
     account_class: str
     failure: FailureKind | None = None
     detail: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "account_class", redact_text(self.account_class))
+        object.__setattr__(self, "detail", redact_text(self.detail))

@@ -9,9 +9,24 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+try:
+    from .subscriptions.process import SubscriptionProcessError, run_cli
+    from .subscriptions.adapters import classify_failure
+    from .subscriptions.types import FailureKind
+    from .subscriptions.redaction import redact_data
+except ImportError:
+    from subscriptions.process import SubscriptionProcessError, run_cli
+    from subscriptions.adapters import classify_failure
+    from subscriptions.types import FailureKind
+    from subscriptions.redaction import redact_data
+
 
 class MuseBridgeError(RuntimeError):
     """Muse could not accept or complete a delegated task."""
+
+    def __init__(self, message: str, failure=FailureKind.TASK_FAILURE):
+        super().__init__(message)
+        self.failure = failure
 
 
 def windows_path_to_wsl(path: Path) -> str:
@@ -24,7 +39,7 @@ def windows_path_to_wsl(path: Path) -> str:
 
 
 def build_muse_command(
-    workspace: Path, prompt_file: Path, max_steps: int = 80
+    workspace: Path, prompt_file: Path, max_steps: int = 80, model: str | None = None
 ) -> list[str]:
     if not 1 <= max_steps <= 500:
         raise MuseBridgeError("max_steps must be between 1 and 500")
@@ -44,6 +59,7 @@ def build_muse_command(
         "--approval-mode",
         "never",
         "--user-input-auto-resolve",
+        *(["--model", model] if model is not None else []),
         "--max-model-steps",
         str(max_steps),
     ]
@@ -58,11 +74,19 @@ def parse_muse_jsonl(output: str) -> dict:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
         stream = event.get("stream") or {}
-        if stream.get("kind") == "session":
+        if isinstance(stream, dict) and stream.get("kind") == "session":
             session_id = stream.get("id") or session_id
         payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
         if event.get("payload_type") == "run.model.configured":
+            if model and payload.get("model_id") != model:
+                raise MuseBridgeError(
+                    "Muse observed model changed", FailureKind.MODEL_UNAVAILABLE
+                )
             model = payload.get("model_id") or model
         if event.get("payload_type") == "run.terminal.completed":
             terminal_payload = payload
@@ -83,6 +107,7 @@ def delegate_to_muse(
     max_steps: int = 80,
     timeout: int = 900,
     runner: Callable[..., Any] = subprocess.run,
+    model: str | None = None,
 ) -> dict:
     """Delegate one task to Muse without interpolating user input into a shell."""
     if not prompt.strip():
@@ -100,32 +125,40 @@ def delegate_to_muse(
             prompt_handle.write(prompt)
             prompt_path = Path(prompt_handle.name)
 
-        command = build_muse_command(workspace, prompt_path, max_steps=max_steps)
+        command = build_muse_command(
+            workspace, prompt_path, max_steps=max_steps, model=model
+        )
         try:
-            completed = runner(
+            completed = run_cli(
                 command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                check=False,
-                shell=False,
+                "",
+                workspace,
+                timeout=min(timeout, 300),
+                runner=runner,
             )
-        except subprocess.TimeoutExpired as exc:
+        except SubscriptionProcessError as exc:
+            failure = (
+                FailureKind.TIMEOUT
+                if "timed out" in str(exc)
+                else FailureKind.TASK_FAILURE
+            )
             raise MuseBridgeError(
-                f"Muse delegation timed out after {timeout} seconds"
+                f"Muse delegation failed ({failure.value})", failure
             ) from exc
     finally:
         if prompt_path is not None:
             prompt_path.unlink(missing_ok=True)
 
     if completed.returncode != 0:
-        detail = (
-            completed.stderr or completed.stdout or "unknown Muse CLI error"
-        ).strip()
-        raise MuseBridgeError(f"Muse delegation failed: {detail[-1000:]}")
+        failure = classify_failure(
+            completed.returncode, completed.stdout, completed.stderr
+        )
+        raise MuseBridgeError(f"Muse delegation failed ({failure.value})", failure)
 
     result = parse_muse_jsonl(completed.stdout)
+    if model is not None and result["model"] != model:
+        raise MuseBridgeError(
+            "Muse did not prove the requested model", FailureKind.MODEL_UNAVAILABLE
+        )
     result["actor_role"] = actor_role
-    return result
+    return redact_data(result, (prompt,))

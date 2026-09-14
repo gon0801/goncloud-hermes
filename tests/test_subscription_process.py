@@ -25,6 +25,8 @@ from subscriptions.process import (  # noqa: E402
     run_cli,
 )
 from subscriptions.adapters import SubscriptionAdapter  # noqa: E402
+from subscriptions.adapters.muse import MuseAdapter  # noqa: E402
+from subscriptions.types import FailureKind, InvocationRequest, RouteSpec  # noqa: E402
 
 
 class FakeRunner:
@@ -110,6 +112,63 @@ class SafeProcessTests(unittest.TestCase):
 
         self.assertFalse(runner.prompt_path.exists())
         self.assertNotIn("task", " ".join(runner.command))
+
+    def test_inherited_credentials_and_token_email_patterns_are_redacted(self):
+        sensitive = (
+            "opaque-inherited-fixture",
+            "sk-synthetic-pattern",
+            "fixture@example.test",
+        )
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[0]}):
+            evidence = run_cli(
+                ["vendor"],
+                "",
+                self.workspace,
+                5,
+                runner=FakeRunner(
+                    stdout=" ".join(sensitive), stderr=" ".join(sensitive)
+                ),
+            )
+        self.assertTrue(
+            all(value not in repr(evidence) for value in sensitive),
+            "process evidence exposed a synthetic secret",
+        )
+
+    def test_os_launch_failure_has_only_normalized_diagnostics(self):
+        def denied(command, **kwargs):
+            raise PermissionError("private synthetic launch diagnostic")
+
+        failure = None
+        try:
+            run_cli(["vendor"], "", self.workspace, 5, runner=denied)
+        except Exception as error:
+            failure = error
+        self.assertTrue(
+            isinstance(failure, SubscriptionProcessError),
+            "raw operating-system launch exception escaped the process boundary",
+        )
+        self.assertEqual(str(failure), "vendor process unavailable")
+        self.assertTrue(failure.__suppress_context__)
+
+    def test_secret_redaction_control_flags_do_not_corrupt_model_identifiers(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GONCLOUD_SECRET_REDACTION_ENABLED": "1",
+                "SERVICE_PASSWORD": "opaque-fixture",
+            },
+            clear=True,
+        ):
+            evidence = run_cli(
+                ["vendor"],
+                "",
+                self.workspace,
+                5,
+                runner=FakeRunner(stdout="muse-spark-1.3-contributor opaque-fixture"),
+            )
+        self.assertEqual(
+            evidence.stdout.rstrip(), "muse-spark-1.3-contributor [redacted]"
+        )
 
     def test_temp_prompt_carries_content_and_is_deleted_on_success(self):
         captured = {}
@@ -215,6 +274,118 @@ class SafeProcessTests(unittest.TestCase):
             self.assert_tree_stopped(pid_files)
         finally:
             _cleanup_tree_pids(pid_files, marker)
+
+    def test_muse_timeout_uses_containment_and_preserves_failure_kind(self):
+        command, pid_files, marker = _tree_command(self.workspace, parent_wait=True)
+        request = InvocationRequest(
+            "wf", "stage", "scout", "inspect", self.workspace, "r0", "r0"
+        )
+        route = RouteSpec(
+            2, "muse", "muse", "muse-spark-1.3-contributor", "subscription"
+        )
+        adapter = MuseAdapter()
+        adapter.timeout_seconds = 1
+        try:
+            with patch("muse_bridge.build_muse_command", return_value=command):
+                started = time.monotonic()
+                result = adapter.invoke(request, route)
+            self.assertLess(time.monotonic() - started, 6)
+            self.assertFalse(result.success)
+            self.assert_tree_stopped(pid_files)
+            self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        finally:
+            _cleanup_tree_pids(pid_files, marker)
+
+    @unittest.skipUnless(
+        os.name == "nt" and shutil.which("wsl.exe"), "requires local WSL"
+    )
+    def test_wsl_deadline_reaps_only_its_descendants_in_separate_sessions(self):
+        from muse_bridge import windows_path_to_wsl
+
+        pid_file = self.workspace / "wsl-grandchild.pid"
+        marker = f"goncloud-test-{secrets.token_hex(12)}"
+        fixture = (
+            "import pathlib, subprocess, sys, time; "
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', sys.argv[2]], start_new_session=True); "
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)"
+        )
+        command = [
+            "wsl.exe",
+            "-d",
+            "Ubuntu",
+            "--exec",
+            "python3",
+            "-I",
+            "-S",
+            "-c",
+            fixture,
+            windows_path_to_wsl(pid_file),
+            marker,
+        ]
+        check = (
+            "import pathlib, os, sys; "
+            "pid = int(pathlib.Path(sys.argv[1]).read_text()); "
+            "p = pathlib.Path('/proc') / str(pid); "
+            "alive = p.exists() and ') Z ' not in (p / 'stat').read_text(); "
+            "owned = alive and sys.argv[2].encode() in (p / 'cmdline').read_bytes(); "
+            "os.kill(pid, 9) if owned and sys.argv[3] == 'cleanup' else None; "
+            "raise SystemExit(1 if alive else 0)"
+        )
+        try:
+            # Cold WSL startup is not the behavior under test. Warm only a
+            # harmless interpreter before timing the descendant fixture.
+            try:
+                warmup = subprocess.run(
+                    command[:4] + ["/usr/bin/python3", "-I", "-S", "-c", "pass"],
+                    capture_output=True,
+                    timeout=45,
+                )
+            except subprocess.TimeoutExpired:
+                self.skipTest("isolated WSL interpreter unavailable within 45s")
+            if warmup.returncode != 0:
+                self.skipTest("Ubuntu isolated Python interpreter unavailable")
+            started = time.monotonic()
+            try:
+                evidence = run_cli(command, "", self.workspace, timeout=5)
+            except SubscriptionProcessError as error:
+                self.assertIn("timed out after 5s", str(error))
+            else:
+                self.fail(f"synthetic fixture returned before deadline: {evidence}")
+            self.assertLess(time.monotonic() - started, 10)
+            self.assertTrue(pid_file.exists(), "fixture did not start")
+            status = subprocess.run(
+                command[:4]
+                + [
+                    "python3",
+                    "-I",
+                    "-S",
+                    "-c",
+                    check,
+                    windows_path_to_wsl(pid_file),
+                    marker,
+                    "check",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertEqual(status.returncode, 0, "WSL descendant survived timeout")
+        finally:
+            if pid_file.exists():
+                subprocess.run(
+                    command[:4]
+                    + [
+                        "python3",
+                        "-I",
+                        "-S",
+                        "-c",
+                        check,
+                        windows_path_to_wsl(pid_file),
+                        marker,
+                        "cleanup",
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                )
 
     def test_timeout_contains_descendant_after_parent_exits_early(self):
         """Inherited output handles cannot keep an escaped grandchild alive."""
@@ -444,6 +615,8 @@ class SafeProcessTests(unittest.TestCase):
                 configurations = []
 
                 def guard_launch_config(config, *args, **kwargs):
+                    if not isinstance(config, dict):
+                        return original_dumps(config, *args, **kwargs)
                     configurations.append(config)
                     self.assertEqual(Path(config["executable"]), trusted_shell)
                     self.assertEqual(Path(config["command"][0]), trusted_shell)

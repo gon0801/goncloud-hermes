@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import sys
+import os
+import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -91,13 +95,14 @@ class MuseBridgeTests(unittest.TestCase):
             )
 
         prompt = 'review $(danger) "quoted" and `literal`'
-        result = delegate_to_muse(
-            prompt,
-            Path(r"C:\dev\repo"),
-            actor_role="implementer",
-            max_steps=3,
-            runner=fake_runner,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = delegate_to_muse(
+                prompt,
+                Path(directory),
+                actor_role="implementer",
+                max_steps=3,
+                runner=fake_runner,
+            )
 
         self.assertEqual(result["text"], "done")
         self.assertEqual(result["actor_role"], "implementer")
@@ -112,6 +117,43 @@ class MuseBridgeTests(unittest.TestCase):
         )
 
         self.assertIn("goncloud_muse_delegate", manifest["provides_tools"])
+
+    def test_direct_muse_result_redacts_assignment_environment_and_identity(self):
+        sensitive = (
+            "opaque-muse-fixture",
+            "sk-synthetic-pattern",
+            "fixture@example.test",
+            "private synthetic assignment",
+        )
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "stream": {"kind": "session", "id": sensitive[0]},
+                        "payload_type": "run.terminal.completed",
+                        "payload": {
+                            "terminal": "completed",
+                            "text": " ".join(sensitive),
+                        },
+                    }
+                ),
+                stderr="",
+            )
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[0]}),
+        ):
+            result = delegate_to_muse(
+                sensitive[-1], Path(directory), "scout", runner=runner
+            )
+        self.assertTrue(
+            all(value not in repr(result) for value in sensitive),
+            "Muse exposed synthetic sensitive content",
+        )
 
 
 if __name__ == "__main__":

@@ -135,6 +135,25 @@ class TerminalParserTests(unittest.TestCase):
                 parse_terminal_envelope(text, role="scout")
             self.assertNotIn("secret-marker", str(error.exception))
 
+    def test_redaction_cannot_shrink_original_input_envelope_or_field_limits(self):
+        credential = "\u00e9" * 100
+        cases = (
+            ("input", "sk-fixture" * 3000 + "\n" + fenced(envelope())),
+            ("envelope", fenced(envelope(evidence=[credential] * 8))),
+            ("summary", fenced(envelope(summary="sk-fixture" * 50))),
+            ("evidence", fenced(envelope(evidence=["sk-fixture" * 13]))),
+        )
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": credential}):
+            for name, text in cases:
+                with self.subTest(limit=name):
+                    with self.assertRaises(WorkflowError):
+                        parse_terminal_envelope(text, role="scout")
+                    result = InvocationResult(
+                        True, text, "fixture", "fixture", "subscription"
+                    )
+                    with self.assertRaises(WorkflowError):
+                        parse_terminal_envelope(result.text, role="scout")
+
 
 class LocalOrchestratorTests(unittest.TestCase):
     def setUp(self):
@@ -219,6 +238,69 @@ class LocalOrchestratorTests(unittest.TestCase):
             self.orchestrator.resume(result["workflow_id"])["outcome"], "delivered"
         )
         self.assertEqual(len(self.requests), 7)
+
+    def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
+        self,
+    ):
+        from subscriptions.adapters.codex import CodexAdapter
+        from subscriptions.adapters.grok import GrokAdapter
+
+        approved = fenced(envelope(review={"decision": "approve", "severity": None}))
+        for index, (adapter_type, events) in enumerate(
+            (
+                (
+                    CodexAdapter,
+                    [
+                        {
+                            "type": "item.completed",
+                            "item": {"type": "agent_message", "text": approved},
+                        }
+                    ],
+                ),
+                (
+                    CodexAdapter,
+                    [
+                        {
+                            "type": "item.completed",
+                            "item": {"type": "agent_message", "text": approved},
+                        },
+                        {"type": "turn.failed"},
+                    ],
+                ),
+                (GrokAdapter, [{"type": "text", "data": approved}]),
+                (
+                    GrokAdapter,
+                    [
+                        {"type": "text", "data": approved},
+                        {"type": "end", "stopReason": "error"},
+                    ],
+                ),
+            )
+        ):
+            with self.subTest(adapter=adapter_type.__name__, case=index):
+                self.db = self.root / f"invalid-cli-review-{index}.db"
+                self.router.adapters["opencode_go"] = self
+                first = self.start(
+                    request_key=f"invalid-cli-review-{index}", stop_after="adversary"
+                )
+
+                def runner(command, **kwargs):
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout="\n".join(json.dumps(event) for event in events),
+                        stderr="",
+                    )
+
+                self.router.adapters["opencode_go"] = adapter_type(runner=runner)
+                result = self.orchestrator.resume(first["workflow_id"])
+                self.assertEqual(result["outcome"], "blocked")
+                self.assertNotEqual(result["stages"]["reviewer"]["status"], "done")
+                self.assertNotEqual(
+                    (result["stages"]["reviewer"].get("review") or {}).get("decision"),
+                    "approve",
+                )
+                self.assertNotEqual(result["stages"]["entrega"]["status"], "done")
 
     def test_legacy_handoff_is_normalized_before_status_and_downstream_prompt(self):
         first = self.start(stop_after="scout")

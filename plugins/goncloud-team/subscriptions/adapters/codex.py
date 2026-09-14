@@ -21,29 +21,65 @@ def parse_codex_jsonl(output: str) -> dict:
     texts: list[str] = []
     thread_id = None
     completed = False
+    invalid = False
     for line in output.splitlines():
+        if not line.strip():
+            continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            invalid = True
             continue
         if not isinstance(event, dict):
+            invalid = True
+            continue
+        if any(
+            key in event and not isinstance(event[key], str)
+            for key in ("type", "thread_id", "session_id")
+        ):
+            invalid = True
             continue
         thread_id = event.get("thread_id") or event.get("session_id") or thread_id
         event_type = str(event.get("type") or "")
-        if "turn.completed" in event_type or event_type == "task_complete":
+        if event_type in {"error", "turn.failed", "task_failed"} or event.get("error"):
+            invalid = True
+        if event_type == "turn.completed":
+            invalid = invalid or completed
             completed = True
         item = event.get("item")
         if isinstance(item, dict):
             kind = item.get("type") or item.get("item_type")
+            if not isinstance(kind, str):
+                invalid = True
+                continue
+            if kind == "error" or item.get("error"):
+                invalid = True
             if kind in {"agent_message", "message"}:
-                texts.append(str(item.get("text") or item.get("message") or ""))
+                text = item.get("text") or item.get("message") or ""
+                if not isinstance(text, str) or completed:
+                    invalid = True
+                else:
+                    texts.append(text)
         message = event.get("msg")
+        if isinstance(message, dict) and not isinstance(message.get("type"), str):
+            invalid = True
+            continue
         if isinstance(message, dict) and message.get("type") == "agent_message":
-            texts.append(str(message.get("message") or ""))
+            text = message.get("message") or ""
+            if not isinstance(text, str) or completed:
+                invalid = True
+            else:
+                texts.append(text)
+        if isinstance(message, dict) and message.get("type") in {
+            "error",
+            "turn.failed",
+        }:
+            invalid = True
     return {
         "text": "\n".join(text for text in texts if text),
         "session_id": thread_id,
         "completed": completed,
+        "terminal_valid": completed and not invalid,
     }
 
 
@@ -114,7 +150,11 @@ class CodexAdapter(SubscriptionAdapter):
             return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
 
         parsed = parse_codex_jsonl(evidence.stdout)
-        if evidence.returncode == 0 and (parsed["completed"] or parsed["text"]):
+        if (
+            evidence.returncode == 0
+            and parsed["terminal_valid"]
+            and parsed["text"].strip()
+        ):
             return InvocationResult(
                 success=True,
                 text=parsed["text"],
@@ -123,7 +163,9 @@ class CodexAdapter(SubscriptionAdapter):
                 billing_mode=route.billing_mode,
                 session_id=parsed["session_id"] or "",
             )
-        failure = classify_failure(
-            evidence.returncode, evidence.stdout, evidence.stderr
+        failure = (
+            FailureKind.TASK_FAILURE
+            if evidence.returncode == 0
+            else classify_failure(evidence.returncode, evidence.stdout, evidence.stderr)
         )
         return self._failed_result(route, failure)

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
+from .redaction import redact_text, sensitive_values
+
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
 _CLEANUP_GRACE_SECONDS = 4
@@ -37,6 +39,61 @@ _WINDOWS_GATE_LAUNCHER = (
     "child.communicate(input=payload)\n"
     "raise SystemExit(child.wait())\n"
 )
+
+# A Windows Job cannot contain Linux descendants. This isolated Linux guardian
+# owns/reaps its descendants, including children that create another session.
+# Its absolute deadline survives loss of wsl.exe and includes WSL startup time.
+_WSL_PROCESS_GUARD = """
+import ctypes, os, pathlib, signal, subprocess, sys, time
+deadline = float(sys.argv[1])
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+    raise SystemExit(125)
+stopped = False
+def stop(signum, frame):
+    global stopped
+    stopped = True
+for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    signal.signal(sig, stop)
+children_file = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
+def children():
+    return [int(pid) for pid in children_file.read_text().split()]
+code = 124
+child = None
+try:
+    if time.time() < deadline and not stopped:
+        child = subprocess.Popen(sys.argv[2:], start_new_session=True)
+        while time.time() < deadline and not stopped:
+            code = child.poll()
+            if code is not None:
+                break
+            time.sleep(min(0.02, max(0, deadline - time.time())))
+        else:
+            code = 124
+finally:
+    cleanup_deadline = time.monotonic() + 0.9
+    while True:
+        owned = children()
+        if not owned:
+            break
+        for pid in owned:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        while True:
+            try:
+                if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                    break
+            except ChildProcessError:
+                break
+        if time.monotonic() >= cleanup_deadline:
+            code = 125
+            break
+        time.sleep(0.01)
+    if child is not None:
+        child.returncode = code
+raise SystemExit(code)
+"""
 
 
 class _WindowsProcessJob:
@@ -164,9 +221,7 @@ class ProcessEvidence:
 
 
 def _redact_and_cap(text: str, secrets: Sequence[str]) -> str:
-    redacted = text or ""
-    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
-        redacted = redacted.replace(secret, "[redacted]")
+    redacted = redact_text(text, secrets)
     if len(redacted) > _MAX_OUTPUT_CHARS:
         keep = _MAX_OUTPUT_CHARS // 2
         dropped = len(redacted) - 2 * keep
@@ -400,7 +455,7 @@ def run_cli(
     command = [str(value) for value in command]
     overlay = dict(env_overlay or {})
     child_env = {**os.environ, **overlay}
-    secrets = tuple(overlay.values())
+    secrets = sensitive_values(child_env) + tuple(overlay.values())
     prompt_path: Path | None = None
     started = time.monotonic()
     try:
@@ -414,13 +469,33 @@ def run_cli(
         else:
             stdin_text = prompt
         if runner is subprocess.run:
+            wsl = (
+                len(command) > 4
+                and Path(command[0]).name.lower() == "wsl.exe"
+                and command[1] == "-d"
+                and command[3] == "--exec"
+            )
+            if wsl:
+                command = command[:4] + [
+                    "/usr/bin/python3",
+                    "-I",
+                    "-S",
+                    "-c",
+                    _WSL_PROCESS_GUARD,
+                    str(time.time() + timeout),
+                    *command[4:],
+                ]
             returncode, stdout, stderr = _run_with_process_tree(
                 _resolve_windows_shim(command),
                 cwd=workspace,
                 env=child_env,
                 stdin_text=stdin_text,
-                timeout=timeout,
+                timeout=timeout + 1 if wsl else timeout,
             )
+            if wsl and returncode == 124:
+                raise subprocess.TimeoutExpired(command, timeout)
+            if wsl and returncode == 125:
+                raise SubscriptionProcessError("vendor process containment unavailable")
         else:
             completed = runner(
                 command,
@@ -438,14 +513,14 @@ def run_cli(
             returncode = completed.returncode
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
-    except subprocess.TimeoutExpired as error:
+    except subprocess.TimeoutExpired:
         raise SubscriptionProcessError(
             f"vendor process timed out after {timeout}s"
-        ) from error
-    except FileNotFoundError as error:
-        raise SubscriptionProcessError(
-            "vendor command not found: " + command[0]
-        ) from error
+        ) from None
+    except FileNotFoundError:
+        raise SubscriptionProcessError("vendor command not found") from None
+    except OSError:
+        raise SubscriptionProcessError("vendor process unavailable") from None
     finally:
         if prompt_path is not None:
             prompt_path.unlink(missing_ok=True)

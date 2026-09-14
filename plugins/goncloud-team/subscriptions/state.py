@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .private_files import open_private_file
+from .redaction import redact_data, redact_text
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscription_attempts (
@@ -358,16 +359,16 @@ class SubscriptionStateStore:
                     int(slot),
                     int(attempt),
                     adapter,
-                    model,
+                    redact_text(model),
                     billing_mode,
                     mode,
                     1 if success else 0,
                     failure,
-                    session_id,
+                    redact_text(session_id),
                     start_revision,
                     end_revision,
-                    json.dumps(sorted(changed_files), ensure_ascii=False),
-                    detail,
+                    json.dumps(redact_data(sorted(changed_files)), ensure_ascii=False),
+                    redact_text(detail),
                     status,
                     owner,
                     disposition,
@@ -403,10 +404,10 @@ class SubscriptionStateStore:
                 (
                     int(success),
                     failure,
-                    session_id,
+                    redact_text(session_id),
                     end_revision,
-                    json.dumps(sorted(changed_files), ensure_ascii=False),
-                    detail,
+                    json.dumps(redact_data(sorted(changed_files)), ensure_ascii=False),
+                    redact_text(detail),
                     disposition,
                     workflow_id,
                     stage_id,
@@ -462,8 +463,8 @@ class SubscriptionStateStore:
                 (
                     int(success),
                     failure,
-                    detail,
-                    session_id,
+                    redact_text(detail),
+                    redact_text(session_id),
                     attempt_id,
                     workflow_id,
                     stage_id,
@@ -534,7 +535,13 @@ class SubscriptionStateStore:
                 "THEN subscription_health.failure ELSE excluded.failure END, "
                 "detail=excluded.detail, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-                (adapter, 1 if ready else 0, account_class, failure, safe_detail),
+                (
+                    adapter,
+                    1 if ready else 0,
+                    redact_text(account_class),
+                    failure,
+                    safe_detail,
+                ),
             )
             conn.commit()
 
@@ -563,7 +570,7 @@ class SubscriptionStateStore:
                 (
                     adapter,
                     int(ready),
-                    account_class,
+                    redact_text(account_class),
                     failure,
                     _health_detail(ready=ready, failure=failure),
                     int(not ready),
@@ -581,7 +588,7 @@ class SubscriptionStateStore:
             return None
         return {
             "ready": bool(row["ready"]),
-            "account_class": row["account_class"],
+            "account_class": redact_text(row["account_class"]),
             "failure": row["failure"],
             "detail": _health_detail(ready=bool(row["ready"]), failure=row["failure"]),
             "cooldown_until": row["cooldown_until"],
@@ -626,4 +633,4 @@ def _attempt_view(row: sqlite3.Row) -> dict[str, Any]:
         view["changed_files"] = json.loads(row["changed_files"] or "[]")
     except json.JSONDecodeError:
         view["changed_files"] = []
-    return view
+    return redact_data(view)

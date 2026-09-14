@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 try:  # Loaded as a subpackage of the Hermes plugin.
@@ -59,11 +65,15 @@ class MuseAdapter(SubscriptionAdapter):
                 max_steps=request.max_steps,
                 timeout=self.timeout_seconds,
                 runner=self.runner,
+                model=route.model,
             )
         except MuseBridgeError as error:
-            failure = classify_failure(1, "", str(error))
-            return self._failed_result(route, failure)
+            return self._failed_result(route, error.failure)
 
+        if outcome.get("model") != route.model:
+            return self._failed_result(route, FailureKind.MODEL_UNAVAILABLE)
+        if not isinstance(outcome.get("text"), str) or not outcome["text"].strip():
+            return self._failed_result(route, FailureKind.TASK_FAILURE)
         if outcome.get("terminal") != "completed":
             failure = classify_failure(
                 1,

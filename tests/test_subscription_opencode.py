@@ -260,7 +260,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
-        self.assertIn("not found", result.text)
+        self.assertEqual(result.text, "opencode_go invocation failed (task_failure)")
 
     def test_probe_reports_only_credential_classes_it_can_see(self):
         auth_listing = "Credentials\n- OpenCode Zen api\n- Z.AI Coding Plan api\n"

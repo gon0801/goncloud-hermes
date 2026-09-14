@@ -12,6 +12,7 @@ from uuid import uuid4
 from .adapters import build_adapter_registry
 from .catalog import compile_profile_routes, load_routing_source
 from .process import run_cli
+from .redaction import sanitize_result
 from .state import SubscriptionBusy, SubscriptionStateStore
 from .types import (
     AdapterHealth,
@@ -160,7 +161,7 @@ class SubscriptionRouter:
                     request.workflow_id, request.stage_id, owner
                 ):
                     return self._stage_busy()
-            return result
+            return sanitize_result(result, (request.prompt,))
         finally:
             self.store.release_stage(request.workflow_id, request.stage_id, owner)
 
@@ -181,7 +182,16 @@ class SubscriptionRouter:
         if request.result_transform is None:
             recorded = self.store.latest_success(request.workflow_id, request.stage_id)
             if recorded is not None:
-                return _result_from_attempt(recorded)
+                return self._recover_result(request, recorded, owner)
+            attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
+            if (
+                attempts
+                and attempts[-1]["status"] == "completed"
+                and attempts[-1]["disposition"] == "skipped"
+            ):
+                routes = tuple(
+                    route for route in routes if route.slot > attempts[-1]["slot"]
+                )
         else:
             routes = tuple(routes)
             attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
@@ -228,22 +238,53 @@ class SubscriptionRouter:
             ):
                 return self._stage_busy()
             stored_health = self.store.health(route.adapter)
-            if self._in_cooldown(route.adapter) and not (
+            cooling = self._in_cooldown(route.adapter) and not (
                 stored_health and stored_health["quarantined"]
-            ):
-                continue
+            )
             adapter = self.adapters.get(route.adapter)
             if adapter is None:
                 continue
             attempt_no = self.store.next_attempt(
                 request.workflow_id, request.stage_id, route.slot
             )
-            availability = self._availability(route)
+            denied = False
+            if cooling:
+                availability = AdapterHealth(False, route.adapter, FailureKind.QUOTA)
+            elif getattr(adapter, "probe_is_generative", False):
+                # Authorization runs outside OS locks: it may itself publish
+                # health. Recheck that publication under exclusion before any
+                # generative probe, and renew the lease after the callback.
+                try:
+                    if request.pre_invoke is not None:
+                        request.pre_invoke()
+                except Exception:
+                    denied = True
+                if denied:
+                    availability = AdapterHealth(
+                        False, route.adapter, FailureKind.INVALID_REQUEST
+                    )
+                else:
+                    if not self.store.renew_stage(
+                        request.workflow_id,
+                        request.stage_id,
+                        owner,
+                        _STAGE_LEASE_SECONDS,
+                    ):
+                        return self._stage_busy()
+                    try:
+                        with self.store.dispatch_lock(route.adapter):
+                            availability = self._availability(route)
+                    except SubscriptionBusy:
+                        return self._stage_busy()
+            else:
+                availability = self._availability(route)
             if not availability.ready:
                 failure = availability.failure or FailureKind.TASK_FAILURE
                 skipped = InvocationResult(
                     success=False,
-                    text=f"{route.adapter} invocation failed ({failure.value})",
+                    text="subscription assignment authorization changed; request refused"
+                    if denied
+                    else f"{route.adapter} invocation failed ({failure.value})",
                     adapter=route.adapter,
                     model=route.model,
                     billing_mode=route.billing_mode,
@@ -266,8 +307,10 @@ class SubscriptionRouter:
                     changed_files=list(self.git.changed_files(request.workspace)),
                     detail=skipped.text,
                     owner=owner,
-                    disposition="skipped",
+                    disposition="denied" if denied else "skipped",
                 )
+                if denied:
+                    return skipped
                 attempted_any = True
                 last_failure = skipped
                 continue
@@ -431,13 +474,13 @@ class SubscriptionRouter:
             result = self.adapters[route.adapter].invoke(request, route)
             if request.result_transform is not None:
                 result = request.result_transform(result)
-            return result
+            return sanitize_result(result, (request.prompt,))
         except Exception:
-            if request.result_transform is None:
-                raise
             return InvocationResult(
                 success=False,
-                text="local terminal validation failed",
+                text="local terminal validation failed"
+                if request.result_transform is not None
+                else "subscription invocation failed",
                 adapter=route.adapter,
                 model=route.model,
                 billing_mode=route.billing_mode,
@@ -446,12 +489,12 @@ class SubscriptionRouter:
 
     def _recover_result(self, request, recorded, owner):
         result = _result_from_attempt(recorded)
-        if request.result_transform is None:
-            return result
         if request.pre_invoke is not None:
             request.pre_invoke()
         try:
-            result = request.result_transform(result)
+            if request.result_transform is not None:
+                result = request.result_transform(result)
+            result = sanitize_result(result, (request.prompt,))
         except Exception:
             result = replace(
                 result,
@@ -513,11 +556,15 @@ class SubscriptionRouter:
             until = until.replace(tzinfo=timezone.utc)
         return until > datetime.now(timezone.utc)
 
-    def _availability(self, route: RouteSpec) -> AdapterHealth:
-        """Use bounded health evidence, probing and normalizing it when stale."""
+    def _cached_health(self, route: RouteSpec):
         cached = self.store.health(route.adapter)
         if not (cached and cached["quarantined"]):
             cached = self.store.fresh_health(route.adapter, self.health_ttl_seconds)
+        return cached
+
+    def _availability(self, route: RouteSpec) -> AdapterHealth:
+        """Read/probe health; generative callers own the adapter exclusion lock."""
+        cached = self._cached_health(route)
         if cached is not None:
             failure = cached.get("failure")
             return AdapterHealth(

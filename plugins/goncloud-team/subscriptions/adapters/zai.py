@@ -26,6 +26,7 @@ class ZAIAdapter(SubscriptionAdapter):
 
     billing_mode = "subscription"
     account_class = "zai_coding_plan"
+    probe_is_generative = True
 
     def __init__(
         self,

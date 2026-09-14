@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,11 @@ PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
 
 from subscriptions.adapters import build_adapter_registry  # noqa: E402
-from subscriptions.adapters._http import request_json, SubscriptionHttpError  # noqa: E402
+from subscriptions.adapters._http import (  # noqa: E402
+    MAX_BODY_CHARS,
+    request_json,
+    SubscriptionHttpError,
+)
 from subscriptions.router import SubscriptionRouter  # noqa: E402
 from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.adapters.deepseek import DeepSeekAdapter  # noqa: E402
@@ -453,6 +458,30 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(result.session_id, "grok_s1")
         self.assertEqual(result.billing_mode, "subscription")
 
+    def test_grok_requires_nonempty_text_and_uncontradicted_success_terminal(self):
+        for output in (
+            GROK_ACP.rsplit("\n", 1)[0],
+            '{"type":"end","stopReason":"end_turn"}',
+            GROK_ACP.replace("grok ", " ").replace("answered", " "),
+            GROK_ACP.replace("end_turn", "error"),
+            GROK_ACP.replace('"stopReason":"end_turn",', ""),
+            GROK_ACP + '\n{"type":"error","message":"failed"}',
+            GROK_ACP + '\n{"type":"end","stopReason":"cancelled"}',
+            GROK_ACP + "\nnot-json",
+            GROK_ACP + '\n{"type":[]}',
+            GROK_ACP + '\n{"sessionUpdate":{"update":["agent_message"],"content":"x"}}',
+            GROK_ACP + '\n{"type":"end","sessionId":{"private":"value"}}',
+        ):
+            with self.subTest(case=output[-50:]):
+                try:
+                    result = GrokAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+                        request(self.workspace), route_for("grok", "grok-4.6")
+                    )
+                except Exception:
+                    self.fail("malformed Grok frame escaped the adapter")
+                self.assertFalse(result.success)
+                self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+
 
 class HttpAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -472,6 +501,133 @@ class HttpAdapterTests(unittest.TestCase):
                 request_json("POST", endpoint.url, headers={}, payload={})
         self.assertFalse(caught.exception.timeout)
         self.assertNotIn("raw-private-fixture", str(caught.exception))
+
+    def test_http_boundary_and_adapters_redact_header_environment_and_identity(self):
+        sensitive = (
+            "opaque-header-fixture",
+            "opaque-inherited-fixture",
+            "sk-synthetic-pattern",
+            "fixture@example.test",
+        )
+        for adapter_type, credentials, body_fn in (
+            (ZAIAdapter, {"auth_token": sensitive[0]}, zai_ok_body),
+            (DeepSeekAdapter, {"api_key": sensitive[0]}, deepseek_ok_body),
+        ):
+            with (
+                self.subTest(adapter=adapter_type.__name__),
+                patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[1]}),
+                FakeEndpoint(body=body_fn(" ".join(sensitive))) as endpoint,
+            ):
+                _, body = request_json(
+                    "POST",
+                    endpoint.url,
+                    headers={"Authorization": f"Bearer {sensitive[0]}"},
+                    payload={},
+                )
+                result = adapter_type(**credentials, base_url=endpoint.url).invoke(
+                    request(self.workspace), route_for("zai", "fixture-model")
+                )
+            self.assertTrue(
+                all(value not in repr((body, result)) for value in sensitive),
+                "HTTP exposed synthetic sensitive content",
+            )
+
+    def test_http_redacts_before_evidence_truncation(self):
+        sentinel = "opaque-boundary-fixture"
+        raw = "x" * (MAX_BODY_CHARS - 10) + sentinel + "tail"
+        with (
+            patch.dict(os.environ, {"SERVICE_PASSWORD": sentinel}),
+            FakeEndpoint(body=raw) as endpoint,
+        ):
+            _, body = request_json("GET", endpoint.url, headers={})
+        self.assertTrue(
+            sentinel[:10] not in body, "HTTP truncation exposed a credential prefix"
+        )
+        self.assertLessEqual(len(body), MAX_BODY_CHARS)
+
+    def test_http_discards_oversized_response_before_returning_partial_secret(self):
+        sentinel = "opaque-large-fixture"
+        raw = "x" * (MAX_BODY_CHARS * 4 - 10) + sentinel
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": sentinel}):
+            with FakeEndpoint(body=raw) as endpoint:
+                with self.assertRaises(SubscriptionHttpError):
+                    request_json("GET", endpoint.url, headers={})
+            with FakeEndpoint(status=429, body=raw) as endpoint:
+                status, body = request_json("GET", endpoint.url, headers={})
+        self.assertEqual(status, 429)
+        self.assertEqual(body, "")
+
+    def test_zai_router_cannot_generate_health_while_adapter_is_owned(self):
+        with FakeEndpoint(body=zai_ok_body("GONCLOUD_PROBE_OK")) as endpoint:
+            adapter = ZAIAdapter(auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url)
+            router = SubscriptionRouter(
+                adapters={"zai": adapter}, db_path=self.workspace / "probe-lock.db"
+            )
+            with router.store.dispatch_lock("zai"):
+                result = router.run(
+                    request(self.workspace), [route_for("zai", "glm-5.3")]
+                )
+            self.assertFalse(result.success)
+            self.assertEqual(endpoint.requests, [])
+            self.assertIsNone(router.store.health("zai"))
+
+    def test_zai_router_denial_precedes_generative_health_probe(self):
+        def denied():
+            raise ValueError("revoked synthetic authority")
+
+        with FakeEndpoint(body=zai_ok_body("GONCLOUD_PROBE_OK")) as endpoint:
+            adapter = ZAIAdapter(auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url)
+            router = SubscriptionRouter(
+                adapters={"zai": adapter}, db_path=self.workspace / "probe-denied.db"
+            )
+            result = router.run(
+                replace(request(self.workspace), pre_invoke=denied),
+                [route_for("zai", "glm-5.3")],
+            )
+            self.assertEqual(result.failure, FailureKind.INVALID_REQUEST)
+            self.assertEqual(endpoint.requests, [])
+            self.assertIsNone(router.store.health("zai"))
+            attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+            self.assertEqual([row["disposition"] for row in attempts], ["denied"])
+
+    def test_zai_health_authorization_can_publish_quarantine_without_nested_lock(self):
+        with FakeEndpoint(body=zai_ok_body("GONCLOUD_PROBE_OK")) as endpoint:
+            adapter = ZAIAdapter(auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url)
+            router = SubscriptionRouter(
+                adapters={"zai": adapter}, db_path=self.workspace / "probe-publish.db"
+            )
+
+            def publish():
+                router.store.save_live_health(
+                    "zai", ready=False, account_class="subscription", failure="auth"
+                )
+
+            result = router.run(
+                replace(request(self.workspace), pre_invoke=publish),
+                [route_for("zai", "glm-5.3")],
+            )
+            self.assertEqual(result.failure, FailureKind.AUTH)
+            self.assertEqual(endpoint.requests, [])
+            self.assertTrue(router.store.health("zai")["quarantined"])
+
+    def test_zai_cached_health_expiry_cannot_bypass_probe_authorization(self):
+        def denied():
+            raise ValueError("revoked")
+
+        with FakeEndpoint(body=zai_ok_body("GONCLOUD_PROBE_OK")) as endpoint:
+            adapter = ZAIAdapter(auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url)
+            router = SubscriptionRouter(
+                adapters={"zai": adapter}, db_path=self.workspace / "probe-expiry.db"
+            )
+            with patch.object(
+                router, "_cached_health", side_effect=[{"ready": True}, None]
+            ):
+                result = router.run(
+                    replace(request(self.workspace), pre_invoke=denied),
+                    [route_for("zai", "glm-5.3")],
+                )
+            self.assertEqual(result.failure, FailureKind.INVALID_REQUEST)
+            self.assertEqual(len(endpoint.requests), 0)
 
     def test_zai_probe_requires_exact_generated_marker(self):
         for body, ready in (

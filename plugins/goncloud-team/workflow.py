@@ -29,10 +29,12 @@ try:  # Loaded as the Hermes plugin package.
     from .subscriptions.catalog import compile_profile_routes
     from .subscriptions.router import SubscriptionRouter
     from .subscriptions.types import InvocationRequest
+    from .subscriptions.redaction import sanitize_result, redact_data
 except ImportError:  # Loaded with the plugin directory on sys.path.
     from subscriptions.catalog import compile_profile_routes  # type: ignore
     from subscriptions.router import SubscriptionRouter  # type: ignore
     from subscriptions.types import InvocationRequest  # type: ignore
+    from subscriptions.redaction import sanitize_result, redact_data
 
 
 TEAM_ROLES = (
@@ -629,7 +631,7 @@ class WorkflowService:
             result_transform=result_transform,
         )
         authorize()
-        result = router.run(request, routes)
+        result = sanitize_result(router.run(request, routes), (instruction,))
         evidence = {
             "workflow_id": workflow_id,
             "stage_id": task_id,
@@ -701,6 +703,12 @@ class WorkflowService:
 
         with self._connect() as conn, write_txn(conn):
             root = self._require_workflow_root(conn, workflow_id)
+            if root.assignee != "claw" or root.status not in {
+                "todo",
+                "ready",
+                "running",
+            }:
+                raise WorkflowError("director is not executable or assigned to claw")
             task = self._require_task(conn, task_id)
             if task.assignee != self.actor_role:
                 raise WorkflowError(
@@ -802,11 +810,13 @@ class WorkflowService:
                     f"{task.assignee}, not {self.actor_role}"
                 )
             self._require_subscription_membership(conn, workflow_id, stage_id)
-            record = {
-                key: result.get(key)
-                for key in _SUBSCRIPTION_EVIDENCE_KEYS
-                if result.get(key) is not None
-            }
+            record = redact_data(
+                {
+                    key: result.get(key)
+                    for key in _SUBSCRIPTION_EVIDENCE_KEYS
+                    if result.get(key) is not None
+                }
+            )
             body = _SUBSCRIPTION_MARKER + json.dumps(
                 record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
