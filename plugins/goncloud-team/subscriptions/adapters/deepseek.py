@@ -14,6 +14,7 @@ from ..types import (
 )
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
+from ._live_probe import PROBE_PROMPT, minimal_http_probe
 
 _DEFAULT_BASE_URL = "https://api.deepseek.com"
 
@@ -74,6 +75,32 @@ class DeepSeekAdapter(SubscriptionAdapter):
         failure = failure_for_status(status) or FailureKind.AUTH
         return AdapterHealth(
             ready=False, account_class=self.account_class, failure=failure
+        )
+
+    def live_probe(self, route: RouteSpec) -> InvocationResult:
+        """Prove the replacement key by inference, billed only as DeepSeek API."""
+        if not self.api_key:
+            return InvocationResult(
+                success=False,
+                text="",
+                adapter=route.adapter,
+                model=route.model,
+                billing_mode=self.billing_mode,
+                failure=FailureKind.AUTH,
+            )
+        return minimal_http_probe(
+            route,
+            billing_mode=self.billing_mode,
+            url=f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            payload={
+                "model": route.model,
+                "max_tokens": 32,
+                "stream": False,
+                "messages": [{"role": "user", "content": PROBE_PROMPT}],
+            },
+            parse=_parse_completion_body,
+            timeout=self.probe_timeout_seconds,
         )
 
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:

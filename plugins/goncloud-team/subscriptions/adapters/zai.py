@@ -14,6 +14,7 @@ from ..types import (
 )
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
+from ._live_probe import PROBE_PROMPT, minimal_http_probe
 
 _ANTHROPIC_VERSION = "2023-06-01"
 #: Z.AI's documented Anthropic-compatible endpoint for the Coding Plan.
@@ -51,18 +52,41 @@ class ZAIAdapter(SubscriptionAdapter):
         return bool(self.auth_token and self.base_url)
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
-        """Credential presence only; availability is proven by live inference."""
-        if not self._configured():
-            return AdapterHealth(
-                ready=False,
-                account_class=self.account_class,
-                failure=FailureKind.AUTH,
-                detail="Z.AI Coding Plan token or endpoint is not configured",
-            )
+        """No non-generative endpoint proves this plan; require real inference."""
+        result = self.live_probe(route)
         return AdapterHealth(
-            ready=True,
+            ready=result.success,
             account_class=self.account_class,
-            detail="credential present; readiness is proven by live inference",
+            failure=result.failure,
+        )
+
+    def live_probe(self, route: RouteSpec) -> InvocationResult:
+        """One minimal inference through the bounded HTTP process boundary."""
+        if not self._configured():
+            return InvocationResult(
+                success=False,
+                text="",
+                adapter=route.adapter,
+                model=route.model,
+                billing_mode=self.billing_mode,
+                failure=FailureKind.AUTH,
+            )
+        return minimal_http_probe(
+            route,
+            billing_mode=self.billing_mode,
+            url=f"{self.base_url}/v1/messages",
+            headers={
+                "Authorization": f"Bearer {self.auth_token}",
+                "anthropic-version": _ANTHROPIC_VERSION,
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": route.model,
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": PROBE_PROMPT}],
+            },
+            parse=_parse_message_body,
+            timeout=self.probe_timeout_seconds,
         )
 
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:

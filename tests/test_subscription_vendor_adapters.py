@@ -473,6 +473,106 @@ class HttpAdapterTests(unittest.TestCase):
         self.assertFalse(caught.exception.timeout)
         self.assertNotIn("raw-private-fixture", str(caught.exception))
 
+    def test_zai_probe_requires_exact_generated_marker(self):
+        for body, ready in (
+            (zai_ok_body("GONCLOUD_PROBE_OK"), True),
+            (zai_ok_body("READY"), False),
+            (zai_ok_body(""), False),
+            ("{}", False),
+        ):
+            with self.subTest(body=body), FakeEndpoint(body=body) as endpoint:
+                adapter = ZAIAdapter(
+                    auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url
+                )
+                health = adapter.probe(route_for("zai", "glm-5.3"))
+            self.assertEqual(health.ready, ready)
+            self.assertEqual(len(endpoint.requests), 1)
+            seen = endpoint.requests[0]
+            self.assertEqual(seen["method"], "POST")
+            self.assertEqual(seen["path"], "/v1/messages")
+            payload = json.loads(seen["body"])
+            self.assertEqual(payload["model"], "glm-5.3")
+            self.assertLessEqual(payload["max_tokens"], 64)
+            self.assertIn("GONCLOUD_PROBE_OK", payload["messages"][0]["content"])
+            self.assertNotIn("tools", payload)
+            self.assertNotIn(ZAI_FIXTURE_TOKEN, repr(health))
+
+    def test_live_probes_enforce_exact_marker_billing_and_redact_failures(self):
+        for name, adapter_type, key, body_fn in (
+            ("zai", ZAIAdapter, {"auth_token": ZAI_FIXTURE_TOKEN}, zai_ok_body),
+            (
+                "deepseek",
+                DeepSeekAdapter,
+                {"api_key": DEEPSEEK_FIXTURE_KEY},
+                deepseek_ok_body,
+            ),
+        ):
+            for text, success in (
+                ("GONCLOUD_PROBE_OK", True),
+                ("GONCLOUD_PROBE_OK\n", False),
+                ("sk-sensitive owner@example.test", False),
+            ):
+                with (
+                    self.subTest(adapter=name, success=success),
+                    FakeEndpoint(body=body_fn(text)) as endpoint,
+                ):
+                    adapter = adapter_type(**key, base_url=endpoint.url)
+                    result = adapter.live_probe(route_for(name, "fixture-model"))
+                self.assertEqual(result.success, success)
+                self.assertEqual(
+                    result.billing_mode, "api" if name == "deepseek" else "subscription"
+                )
+                self.assertEqual(len(endpoint.requests), 1)
+                self.assertLessEqual(
+                    json.loads(endpoint.requests[0]["body"])["max_tokens"], 64
+                )
+                self.assertNotIn("sk-sensitive", repr(result))
+                self.assertNotIn("owner@example.test", repr(result))
+            for status, failure in (
+                (401, FailureKind.AUTH),
+                (429, FailureKind.QUOTA),
+                (500, FailureKind.TRANSPORT),
+            ):
+                with (
+                    self.subTest(adapter=name, status=status),
+                    FakeEndpoint(
+                        status=status, body=body_fn("GONCLOUD_PROBE_OK")
+                    ) as endpoint,
+                ):
+                    result = adapter_type(**key, base_url=endpoint.url).live_probe(
+                        route_for(name, "fixture-model")
+                    )
+                self.assertFalse(result.success)
+                self.assertEqual(result.failure, failure)
+
+    def test_live_http_probe_deadline_uses_bounded_worker_without_mutation(self):
+        for name, adapter_type, key, body in (
+            (
+                "zai",
+                ZAIAdapter,
+                {"auth_token": ZAI_FIXTURE_TOKEN},
+                zai_ok_body("GONCLOUD_PROBE_OK"),
+            ),
+            (
+                "deepseek",
+                DeepSeekAdapter,
+                {"api_key": DEEPSEEK_FIXTURE_KEY},
+                deepseek_ok_body("GONCLOUD_PROBE_OK"),
+            ),
+        ):
+            with (
+                self.subTest(adapter=name),
+                DripEndpoint(body=body.ljust(600)) as endpoint,
+            ):
+                adapter = adapter_type(**key, base_url=endpoint.url)
+                adapter.probe_timeout_seconds = 0.5
+                start = time.monotonic()
+                result = adapter.live_probe(route_for(name, "fixture-model"))
+                self.assertEqual(result.failure, FailureKind.TIMEOUT)
+                self.assertLess(time.monotonic() - start, 5)
+                self.assertTrue(endpoint.finished.wait(1))
+                self.assertEqual(endpoint.active, 0)
+
     def test_invalid_chunked_quota_response_cools_down_and_advances_both_adapters(self):
         raw = "raw-private-fixture-not-a-chunk-size\r\n"
         for first_name in ("zai", "deepseek"):
