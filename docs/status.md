@@ -41,7 +41,10 @@ detenido hasta el cutover separado indicado arriba.
 - Inicio automatico del gateway instalado en la carpeta Startup de Windows; la entrada se conserva, pero el proceso actual esta detenido.
 - Se archivo evidencia de una conexion anterior del bot de Telegram en modo polling, con mensaje entrante y respuesta saliente comprobados; esa conexion no esta activa.
 
-## Operacion real
+## Operacion real historica anterior al freeze
+
+Este bloque conserva evidencia anterior al freeze de Telegram. No implica
+trafico actual: el gateway `claw` permanece detenido hasta un cutover separado.
 
 - El usuario ya proporciono su tabla actual de ocho posiciones por agente: `model-routing.source.json`. Esta aplicada; las vinculaciones y limites comprobados estan en `docs/model-routing.md`.
 - WSL 2.7.14, Ubuntu 26.04 y Muse Code CLI 1.2.1 instalados. Login e inferencia real comprobados sin copiar secretos al repositorio ni convertir la suscripcion en API.
