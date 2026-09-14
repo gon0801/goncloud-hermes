@@ -137,11 +137,7 @@ def delegate_to_muse(
                 runner=runner,
             )
         except SubscriptionProcessError as exc:
-            failure = (
-                FailureKind.TIMEOUT
-                if "timed out" in str(exc)
-                else FailureKind.TASK_FAILURE
-            )
+            failure = exc.failure
             raise MuseBridgeError(
                 f"Muse delegation failed ({failure.value})", failure
             ) from exc

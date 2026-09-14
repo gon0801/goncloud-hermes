@@ -12,7 +12,12 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
-from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
+from . import (
+    SubscriptionAdapter,
+    build_assignment_prompt,
+    classify_failure,
+    health_for_process_error,
+)
 
 try:  # Loaded as a subpackage of the Hermes plugin.
     from ...muse_bridge import MuseBridgeError, delegate_to_muse
@@ -26,6 +31,7 @@ class MuseAdapter(SubscriptionAdapter):
     """Delegate one bounded stage to the owner's Muse subscription in WSL."""
 
     # WSL cold starts can exceed the default probe window by a wide margin.
+    max_probe_timeout_seconds = 120
     probe_timeout_seconds = 120
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
@@ -39,11 +45,7 @@ class MuseAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return AdapterHealth(
-                ready=False,
-                account_class="muse_cli",
-                detail=str(error),
-            )
+            return health_for_process_error("muse_cli", error)
         if evidence.returncode != 0:
             return AdapterHealth(
                 ready=False,

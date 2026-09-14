@@ -31,9 +31,13 @@ from subscriptions.adapters._http import (  # noqa: E402
 )
 from subscriptions.router import SubscriptionRouter  # noqa: E402
 from subscriptions.state import SubscriptionStateStore  # noqa: E402
+from subscriptions.adapters.claude import ClaudeAdapter  # noqa: E402
+from subscriptions.adapters.codex import CodexAdapter  # noqa: E402
 from subscriptions.adapters.deepseek import DeepSeekAdapter  # noqa: E402
 from subscriptions.adapters.grok import GrokAdapter  # noqa: E402
 from subscriptions.adapters.kimi import KimiAdapter, parse_kimi_jsonl  # noqa: E402
+from subscriptions.adapters.muse import MuseAdapter  # noqa: E402
+from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
 from subscriptions.adapters.zai import ZAIAdapter  # noqa: E402
 from subscriptions.types import (  # noqa: E402
     FailureKind,
@@ -946,6 +950,53 @@ class HttpAdapterTests(unittest.TestCase):
         )
         self.assertFalse(result.success)
         self.assertIn(result.failure, {FailureKind.TASK_FAILURE, FailureKind.TIMEOUT})
+
+
+class TimingOutRunner:
+    """Every vendor CLI launch exceeds its deadline instead of answering."""
+
+    def __call__(self, command, **kwargs):
+        raise subprocess.TimeoutExpired(list(command), kwargs.get("timeout", 1))
+
+
+class ProbeFailureClassificationTests(unittest.TestCase):
+    """A probe the vendor never answered must advance the slot, not block it."""
+
+    def probes(self):
+        runner = TimingOutRunner()
+        return {
+            "claude": (ClaudeAdapter(runner=runner), route_for("claude", "m", slot=2)),
+            "codex": (CodexAdapter(runner=runner), route_for("codex", "m", slot=7)),
+            "grok": (GrokAdapter(runner=runner), route_for("grok", "m", slot=6)),
+            "kimi": (KimiAdapter(runner=runner), route_for("kimi", "m", slot=3)),
+            "muse": (MuseAdapter(runner=runner), route_for("muse", "m", slot=4)),
+            "opencode_go": (
+                OpenCodeAdapter(runner=runner),
+                route_for("opencode_go", "m", slot=0),
+            ),
+            "opencode_zen": (
+                OpenCodeAdapter(runner=runner),
+                route_for("opencode_zen", "m", slot=1),
+            ),
+        }
+
+    def test_every_cli_probe_reports_a_vendor_timeout_as_a_timeout(self):
+        observed = {}
+        for name, (adapter, route) in self.probes().items():
+            health = adapter.probe(route)
+            observed[name] = (health.ready, health.failure)
+
+        self.assertEqual(
+            observed,
+            {name: (False, FailureKind.TIMEOUT) for name in observed},
+        )
+
+    def test_a_probe_timeout_is_a_failure_the_router_advances_past(self):
+        from subscriptions.router import _ADVANCING_FAILURES
+
+        for name, (adapter, route) in self.probes().items():
+            with self.subTest(adapter=name):
+                self.assertIn(adapter.probe(route).failure, _ADVANCING_FAILURES)
 
 
 if __name__ == "__main__":

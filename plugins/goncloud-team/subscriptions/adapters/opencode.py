@@ -17,7 +17,12 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
-from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
+from . import (
+    SubscriptionAdapter,
+    build_assignment_prompt,
+    classify_failure,
+    health_for_process_error,
+)
 
 #: Slot identity, not the historical label prefix, selects the subscription.
 _PROVIDER_PREFIXES = {"opencode_go": "opencode-go", "opencode_zen": "opencode"}
@@ -94,12 +99,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return AdapterHealth(
-                ready=False,
-                account_class=route.adapter,
-                failure=FailureKind.TASK_FAILURE,
-                detail=str(error),
-            )
+            return health_for_process_error(route.adapter, error)
         if evidence.returncode != 0:
             return AdapterHealth(
                 ready=False,
@@ -139,9 +139,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            if "timed out" in str(error):
-                return self._failed_result(route, FailureKind.TIMEOUT)
-            return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
+            return self._failed_result(route, error.failure, str(error))
 
         if evidence.returncode != 0:
             failure = classify_failure(

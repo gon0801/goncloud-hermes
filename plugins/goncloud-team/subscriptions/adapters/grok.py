@@ -13,7 +13,12 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
-from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
+from . import (
+    SubscriptionAdapter,
+    build_assignment_prompt,
+    classify_failure,
+    health_for_process_error,
+)
 
 
 def parse_grok_ndjson(output: str) -> dict:
@@ -96,12 +101,7 @@ class GrokAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return AdapterHealth(
-                ready=False,
-                account_class=self.account_class,
-                failure=FailureKind.TASK_FAILURE,
-                detail=str(error),
-            )
+            return health_for_process_error(self.account_class, error)
         haystack = (evidence.stdout or "").lower()
         if evidence.returncode != 0 or "logged in" not in haystack:
             return AdapterHealth(
@@ -145,9 +145,7 @@ class GrokAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            if "timed out" in str(error):
-                return self._failed_result(route, FailureKind.TIMEOUT)
-            return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
+            return self._failed_result(route, error.failure, str(error))
 
         parsed = parse_grok_ndjson(evidence.stdout)
         if (

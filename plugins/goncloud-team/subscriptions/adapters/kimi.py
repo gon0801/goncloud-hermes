@@ -13,7 +13,12 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
-from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
+from . import (
+    SubscriptionAdapter,
+    build_assignment_prompt,
+    classify_failure,
+    health_for_process_error,
+)
 
 _SUCCESS_SUBTYPES = {"success", "success_streamcomplete", "streamcomplete"}
 
@@ -112,9 +117,7 @@ class KimiAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return AdapterHealth(
-                ready=False, account_class=self.account_class, detail=str(error)
-            )
+            return health_for_process_error(self.account_class, error)
         if evidence.returncode != 0:
             return AdapterHealth(
                 ready=False,
@@ -149,9 +152,7 @@ class KimiAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            if "timed out" in str(error):
-                return self._failed_result(route, FailureKind.TIMEOUT)
-            return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
+            return self._failed_result(route, error.failure, str(error))
 
         parsed = parse_kimi_jsonl(evidence.stdout)
         if evidence.returncode == 0:

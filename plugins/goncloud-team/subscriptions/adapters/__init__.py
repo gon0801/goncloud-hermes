@@ -42,6 +42,9 @@ _TRANSPORT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+#: Every vendor process shares this hard ceiling, probes included.
+_ABSOLUTE_DEADLINE_SECONDS = 300
+
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
     "403": FailureKind.AUTH,
@@ -68,6 +71,20 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
     if _INVALID_PATTERN.search(haystack):
         return FailureKind.INVALID_REQUEST
     return FailureKind.TASK_FAILURE
+
+
+def health_for_process_error(account_class: str, error: Exception) -> AdapterHealth:
+    """Report a probe the vendor never answered with the error's own kind.
+
+    A probe that hit its deadline is recoverable and must advance the slot;
+    reporting it as a task failure blocks the stage on a slow launch instead.
+    """
+    return AdapterHealth(
+        ready=False,
+        account_class=account_class,
+        failure=getattr(error, "failure", None) or FailureKind.TASK_FAILURE,
+        detail=str(error),
+    )
 
 
 def build_assignment_prompt(request: InvocationRequest) -> str:
@@ -99,20 +116,31 @@ class SubscriptionAdapter:
 
     name: str = ""
     billing_mode = "subscription"
+    # An adapter may raise its own ceilings up to the absolute process deadline
+    # when its launch path genuinely needs longer (a WSL cold start outruns the
+    # default probe window); clamping a declared window to the default instead
+    # reports a healthy account as a failed one.
+    max_timeout_seconds = _ABSOLUTE_DEADLINE_SECONDS
+    max_probe_timeout_seconds = 30
     timeout_seconds = 300
     probe_timeout_seconds = 30
     probe_is_generative = False
 
     def __init__(self, runner=None) -> None:
         self.runner = runner if runner is not None else subprocess.run
+        # Class-declared values bypass __setattr__, so force them through it.
+        self.max_timeout_seconds = self.max_timeout_seconds
+        self.max_probe_timeout_seconds = self.max_probe_timeout_seconds
         self.timeout_seconds = self.timeout_seconds
         self.probe_timeout_seconds = self.probe_timeout_seconds
 
     def __setattr__(self, name, value) -> None:
-        if name == "timeout_seconds":
-            value = min(value, 300)
+        if name in {"max_timeout_seconds", "max_probe_timeout_seconds"}:
+            value = min(value, _ABSOLUTE_DEADLINE_SECONDS)
+        elif name == "timeout_seconds":
+            value = min(value, self.max_timeout_seconds)
         elif name == "probe_timeout_seconds":
-            value = min(value, 30)
+            value = min(value, self.max_probe_timeout_seconds)
         super().__setattr__(name, value)
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
@@ -146,6 +174,7 @@ __all__ = [
     "build_adapter_registry",
     "build_assignment_prompt",
     "classify_failure",
+    "health_for_process_error",
 ]
 
 

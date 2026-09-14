@@ -266,6 +266,54 @@ class SafeProcessTests(unittest.TestCase):
         self.assertEqual(adapter.timeout_seconds, 300)
         self.assertEqual(adapter.probe_timeout_seconds, 30)
 
+    def test_an_adapter_may_declare_a_longer_probe_window_it_actually_needs(self):
+        # A WSL cold start outruns the default probe window; silently clamping a
+        # declared window turns a healthy account into a false negative.
+        class ColdStartAdapter(SubscriptionAdapter):
+            max_probe_timeout_seconds = 120
+            probe_timeout_seconds = 120
+
+        adapter = ColdStartAdapter()
+
+        self.assertEqual(adapter.probe_timeout_seconds, 120)
+        adapter.probe_timeout_seconds = 240
+        self.assertEqual(adapter.probe_timeout_seconds, 120)
+
+    def test_a_declared_probe_window_still_obeys_the_absolute_process_limit(self):
+        class UnboundedAdapter(SubscriptionAdapter):
+            max_probe_timeout_seconds = 9000
+            max_timeout_seconds = 9000
+            probe_timeout_seconds = 9000
+            timeout_seconds = 9000
+
+        adapter = UnboundedAdapter()
+
+        self.assertEqual(adapter.max_probe_timeout_seconds, 300)
+        self.assertEqual(adapter.max_timeout_seconds, 300)
+        self.assertEqual(adapter.probe_timeout_seconds, 300)
+        self.assertEqual(adapter.timeout_seconds, 300)
+
+    def test_the_muse_adapter_keeps_the_wsl_cold_start_probe_window(self):
+        self.assertEqual(MuseAdapter().probe_timeout_seconds, 120)
+
+    def test_a_vendor_timeout_error_carries_the_timeout_failure_kind(self):
+        def timing_out(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(["vendor"], 1)
+
+        with self.assertRaises(SubscriptionProcessError) as raised:
+            run_cli(["vendor"], "task", self.workspace, 1, runner=timing_out)
+
+        self.assertEqual(raised.exception.failure, FailureKind.TIMEOUT)
+
+    def test_a_launch_failure_is_not_reported_as_a_vendor_timeout(self):
+        def missing(*_args, **_kwargs):
+            raise FileNotFoundError("vendor")
+
+        with self.assertRaises(SubscriptionProcessError) as raised:
+            run_cli(["vendor"], "task", self.workspace, 1, runner=missing)
+
+        self.assertEqual(raised.exception.failure, FailureKind.TASK_FAILURE)
+
     def test_timeout_terminates_the_entire_child_process_tree(self):
         """A timed-out CLI cannot leave its direct child running in the background."""
         command, pid_files, marker = _tree_command(self.workspace, parent_wait=True)

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
 from .redaction import redact_text, sensitive_values
+from .types import FailureKind
 
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
@@ -207,7 +208,18 @@ def _resolve_windows_shim(command: list[str]) -> list[str]:
 
 
 class SubscriptionProcessError(RuntimeError):
-    """A vendor process could not be launched or did not terminate in time."""
+    """A vendor process could not be launched or did not terminate in time.
+
+    The kind travels with the error so callers never have to re-derive it from
+    the message: a deadline is recoverable and advances the slot, while a launch
+    failure is not, and guessing that difference from text blocks live stages.
+    """
+
+    def __init__(
+        self, message: str, failure: FailureKind = FailureKind.TASK_FAILURE
+    ) -> None:
+        super().__init__(message)
+        self.failure = failure
 
 
 @dataclass(frozen=True)
@@ -515,7 +527,7 @@ def run_cli(
             stderr = completed.stderr or ""
     except subprocess.TimeoutExpired:
         raise SubscriptionProcessError(
-            f"vendor process timed out after {timeout}s"
+            f"vendor process timed out after {timeout}s", FailureKind.TIMEOUT
         ) from None
     except FileNotFoundError:
         raise SubscriptionProcessError("vendor command not found") from None
