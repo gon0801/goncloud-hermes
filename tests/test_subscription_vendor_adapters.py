@@ -306,6 +306,22 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
         self.assertNotIn("raw-subtype-secret", repr(result))
 
+    def test_kimi_malformed_exit_zero_cannot_be_reclassified_as_transport(self):
+        output = "\n".join(
+            [
+                '{"type":"assistant","message":{"content":["provider.connection_error raw-secret"]}}',
+                '{"type":"result","subtype":"success","result":"answer"}',
+            ]
+        )
+
+        result = KimiAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("raw-secret", repr(result))
+
     def test_kimi_error_result_cannot_approve_partial_text(self):
         result = KimiAdapter(
             runner=FakeCliRunner(

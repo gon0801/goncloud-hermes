@@ -175,6 +175,17 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
 
+    def test_malformed_exit_zero_cannot_be_reclassified_as_transport(self):
+        output = f"{SUCCESS_JSONL}\nprovider.connection_error raw-secret"
+
+        result = OpenCodeAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route(0, "opencode_go", "muse")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("raw-secret", repr(result))
+
     def test_embedded_jsonl_error_cannot_approve_terminal_event(self):
         adapter = OpenCodeAdapter(
             runner=FakeCliRunner(

@@ -150,19 +150,17 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return self._failed_result(route, failure)
 
         parsed = parse_opencode_jsonl(evidence.stdout)
-        if (
-            evidence.returncode == 0
-            and parsed["terminal_valid"]
-            and parsed["text"].strip()
-        ):
-            return InvocationResult(
-                success=True,
-                text=parsed["text"],
-                adapter=route.adapter,
-                model=route.model,
-                billing_mode=route.billing_mode,
-                session_id=parsed["session_id"] or "",
-            )
+        if evidence.returncode == 0:
+            if parsed["terminal_valid"] and parsed["text"].strip():
+                return InvocationResult(
+                    success=True,
+                    text=parsed["text"],
+                    adapter=route.adapter,
+                    model=route.model,
+                    billing_mode=route.billing_mode,
+                    session_id=parsed["session_id"] or "",
+                )
+            return self._failed_result(route, FailureKind.TASK_FAILURE)
         return self._failed_result(
             route,
             classify_failure(evidence.returncode, evidence.stdout, evidence.stderr),
