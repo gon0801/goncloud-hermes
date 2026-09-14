@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import patch
 
@@ -412,6 +414,106 @@ class SafeProcessTests(unittest.TestCase):
             evidence = run_cli(["vendor.cmd"], "", self.workspace, timeout=5)
         self.assertEqual(evidence.returncode, 0, evidence.stderr)
         self.assertEqual(evidence.stdout.strip(), "shim-ok")
+
+    @unittest.skipUnless(os.name == "nt", "Windows command shims are Windows-only")
+    def test_shim_ignores_cmd_exe_shadowed_in_cwd_or_path(self):
+        systemroot = os.environ["SYSTEMROOT"]
+        trusted_shell = Path(systemroot) / "System32" / "cmd.exe"
+        original_dumps = json.dumps
+        for location in ("cwd", "path"):
+            with self.subTest(location=location):
+                root = self.workspace / location
+                root.mkdir()
+                vendor_bin = root / "bin"
+                vendor_bin.mkdir()
+                shadow_dir = root if location == "cwd" else vendor_bin
+                malicious_marker = root / "malicious-shell-ran.txt"
+                # Inert fixture: the config guard below must reject this path
+                # before Popen, even while reproducing the vulnerable lookup.
+                (shadow_dir / "cmd.exe").write_text(
+                    f"@echo untrusted>{malicious_marker}\n", encoding="utf-8"
+                )
+                vendor_marker = root / "vendor-ran.txt"
+                (vendor_bin / "vendor.cmd").write_text(
+                    "@echo off\n"
+                    'if not "%VENDOR_TOKEN%"=="sentinel-only-for-test" exit /b 17\n'
+                    f'echo ran>"{vendor_marker}"\n'
+                    "echo shim-ok\n",
+                    encoding="utf-8",
+                )
+                configurations = []
+
+                def guard_launch_config(config, *args, **kwargs):
+                    configurations.append(config)
+                    self.assertEqual(Path(config["executable"]), trusted_shell)
+                    self.assertEqual(Path(config["command"][0]), trusted_shell)
+                    return original_dumps(config, *args, **kwargs)
+
+                with (
+                    chdir(root),
+                    patch.dict(
+                        os.environ,
+                        {"SYSTEMROOT": systemroot, "PATH": str(vendor_bin)},
+                        clear=True,
+                    ),
+                    patch("subscriptions.process.json.dumps", guard_launch_config),
+                ):
+                    evidence = run_cli(
+                        ["vendor.cmd"],
+                        "",
+                        root,
+                        timeout=5,
+                        env_overlay={"VENDOR_TOKEN": "sentinel-only-for-test"},
+                    )
+                self.assertEqual(len(configurations), 1)
+                self.assertEqual(evidence.returncode, 0, evidence.stderr)
+                self.assertEqual(evidence.stdout.strip(), "shim-ok")
+                self.assertTrue(vendor_marker.is_file())
+                self.assertFalse(malicious_marker.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows command shims are Windows-only")
+    def test_shim_fails_closed_without_an_absolute_system_shell_file(self):
+        trusted_shell_dir = Path(os.environ["SYSTEMROOT"]) / "System32"
+        missing_shell_root = self.workspace / "sentinel-systemroot"
+        missing_shell_root.mkdir()
+        directory_shell_root = self.workspace / "directory-systemroot"
+        (directory_shell_root / "System32" / "cmd.exe").mkdir(parents=True)
+        (self.workspace / "vendor.cmd").write_text("@echo shim-ok\n", encoding="utf-8")
+        for systemroot in (
+            None,
+            "",
+            "relative-systemroot",
+            str(missing_shell_root),
+            str(directory_shell_root),
+        ):
+            with self.subTest(systemroot=systemroot):
+                environment = {
+                    "PATH": os.pathsep.join(
+                        (str(self.workspace), str(trusted_shell_dir))
+                    )
+                }
+                if systemroot is not None:
+                    environment["SYSTEMROOT"] = systemroot
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch(
+                        "subscriptions.process.subprocess.Popen",
+                        side_effect=AssertionError("unsafe shell launch attempted"),
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        SubscriptionProcessError, "system shell unavailable"
+                    ) as caught:
+                        run_cli(
+                            ["vendor.cmd"],
+                            "private prompt",
+                            self.workspace,
+                            timeout=5,
+                            env_overlay={"VENDOR_TOKEN": "sentinel-only-for-test"},
+                        )
+                self.assertNotIn("sentinel", str(caught.exception))
+                self.assertNotIn("private prompt", str(caught.exception))
+                self.assertNotIn(str(self.workspace), str(caught.exception))
 
     @unittest.skipUnless(os.name == "nt", "Windows Job Objects are Windows-only")
     def test_bootstrap_cannot_import_workspace_or_pythonpath_before_assignment(self):

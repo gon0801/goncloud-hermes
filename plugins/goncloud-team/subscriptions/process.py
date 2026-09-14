@@ -136,8 +136,16 @@ def _resolve_windows_shim(command: list[str]) -> list[str]:
         return command
     resolved = shutil.which(command[0])
     if resolved and resolved.lower().endswith((".cmd", ".bat")):
-        # /d skips registry AutoRun; the resolved absolute path is explicit.
-        return ["cmd.exe", "/d", "/c", resolved, *command[1:]]
+        # The internal shell must never use provider PATH/cwd lookup. /d skips
+        # registry AutoRun; SYSTEMROOT comes from the host, not the overlay.
+        shell = Path(os.environ.get("SYSTEMROOT", "")) / "System32" / "cmd.exe"
+        try:
+            available = shell.is_absolute() and shell.is_file()
+        except OSError:
+            available = False
+        if not available:
+            raise SubscriptionProcessError("Windows system shell unavailable")
+        return [str(shell), "/d", "/c", resolved, *command[1:]]
     return command
 
 
@@ -273,12 +281,15 @@ def _run_with_process_tree(
         # Resolve without executing vendor code: the bootstrap deliberately has
         # no PATH, and Windows CreateProcess ignores PATH in a child's env.
         try:
-            search_path = env.get("PATH", os.defpath)
-            if systemroot := os.environ.get("SYSTEMROOT"):
-                # CreateProcess also finds system tools outside PATH. Preserve
-                # that fallback for cmd.exe when resolving npm command shims.
-                search_path += os.pathsep + os.path.join(systemroot, "System32")
-            executable = shutil.which(command[0], path=search_path)
+            if os.path.isabs(command[0]) and os.path.isfile(command[0]):
+                executable = command[0]
+            else:
+                # Only provider executables use search-path resolution. The
+                # internal shim shell already has a validated absolute path.
+                search_path = env.get("PATH", os.defpath)
+                if systemroot := os.environ.get("SYSTEMROOT"):
+                    search_path += os.pathsep + os.path.join(systemroot, "System32")
+                executable = shutil.which(command[0], path=search_path)
             if executable is None:
                 raise FileNotFoundError(command[0])
             launch_config = json.dumps(
