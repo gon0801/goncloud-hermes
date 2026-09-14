@@ -193,13 +193,18 @@ class SubscriptionStateStore:
             self.db_path.with_name(self.db_path.name + ".dispatch-" + tag + ".lock")
         ):
             active = True
+            consumed = False
             owner_thread = threading.get_ident()
 
             def publish(**health):
-                if not active or threading.get_ident() != owner_thread:
+                nonlocal consumed
+                if not active or consumed or threading.get_ident() != owner_thread:
                     raise SubscriptionBusy(
-                        "live proof publication requires its active lock"
+                        "live proof publication requires its unused active lock"
                     )
+                # An exception can leave the commit outcome uncertain. Consume
+                # before database entry and never retry through this capability.
+                consumed = True
                 self._save_live_health_locked(adapter, **health)
 
             try:

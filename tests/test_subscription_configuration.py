@@ -1602,6 +1602,56 @@ while True:
             publish(**health)
         self.assertIsNone(store.health("opencode_go"))
 
+    def test_scoped_publisher_cannot_replace_failed_proof_with_success(self):
+        from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
+
+        store = SubscriptionStateStore(self.db_path)
+        with store.dispatch_lock("opencode_go") as publish:
+            publish(ready=False, account_class="subscription", failure="auth")
+            first = store.health("opencode_go")
+            self.assertTrue(first["quarantined"])
+            with self.assertRaises(SubscriptionBusy):
+                publish(ready=True, account_class="subscription", failure=None)
+            self.assertEqual(store.health("opencode_go"), first)
+
+    def test_scoped_publisher_is_consumed_even_when_database_write_raises(self):
+        from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
+
+        store = SubscriptionStateStore(self.db_path)
+        original = store._save_live_health_locked
+        for after_write in (False, True):
+            with self.subTest(after_write=after_write):
+                store.save_live_health(
+                    "opencode_go",
+                    ready=False,
+                    account_class="subscription",
+                    failure="auth",
+                )
+
+                def fail(*args, **kwargs):
+                    if after_write:
+                        original(*args, **kwargs)
+                    raise RuntimeError("fixture database boundary failure")
+
+                with store.dispatch_lock("opencode_go") as publish:
+                    with patch.object(
+                        store, "_save_live_health_locked", side_effect=fail
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "fixture database"):
+                            publish(
+                                ready=False,
+                                account_class="subscription",
+                                failure="timeout",
+                            )
+                    first = store.health("opencode_go")
+                    self.assertTrue(first["quarantined"])
+                    self.assertEqual(
+                        first["failure"], "timeout" if after_write else "auth"
+                    )
+                    with self.assertRaises(SubscriptionBusy):
+                        publish(ready=True, account_class="subscription", failure=None)
+                    self.assertEqual(store.health("opencode_go"), first)
+
     def test_live_failure_survives_ttl_and_only_exact_proof_restores_route(self):
         from subscriptions.router import SubscriptionRouter
         from subscriptions.state import SubscriptionStateStore
