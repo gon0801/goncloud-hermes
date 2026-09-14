@@ -168,7 +168,16 @@ class FailoverTests(RouterTestCase):
 
     def test_exhausted_chain_blocks_with_owner_facing_evidence(self):
         router = self.router()
-        for name in ("opencode_go", "opencode_zen", "claude", "kimi", "muse", "zai", "grok", "codex"):
+        for name in (
+            "opencode_go",
+            "opencode_zen",
+            "claude",
+            "kimi",
+            "muse",
+            "zai",
+            "grok",
+            "codex",
+        ):
             self.fake_adapters[name].result = failed(FailureKind.AUTH, name)
 
         result = router.run(request(self.workspace), routes_for_main())
@@ -235,7 +244,9 @@ class MutationContinuationTests(RouterTestCase):
             return failed(FailureKind.AUTH, route.adapter)
 
         self.fake_adapters["opencode_go"].result = fail_after_edit
-        self.fake_adapters["opencode_zen"].result = completed("continued", "opencode_zen")
+        self.fake_adapters["opencode_zen"].result = completed(
+            "continued", "opencode_zen"
+        )
 
         router.run(
             request(self.git_repo, workflow_id="wf-mut", stage_id="st-mut"),
@@ -272,7 +283,9 @@ class MutationContinuationTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.AUTH, "opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed("recovered", "opencode_zen")
+        self.fake_adapters["opencode_zen"].result = completed(
+            "recovered", "opencode_zen"
+        )
         second = fresh.run(
             request(self.git_repo, workflow_id="wf-r", stage_id="st-r"),
             routes_for_main(),
@@ -293,7 +306,9 @@ class StatusTests(RouterTestCase):
         self.assertEqual(len(status["routes"]), 8)
         deepseekless = [r for r in status["routes"] if r["adapter"] == "codex"]
         self.assertEqual(deepseekless[0]["slot"], 7)
-        self.assertTrue(all(r["billing_mode"] == "subscription" for r in status["routes"]))
+        self.assertTrue(
+            all(r["billing_mode"] == "subscription" for r in status["routes"])
+        )
 
     def test_status_reports_api_billing_for_deepseek_profile(self):
         router = self.router()
@@ -320,7 +335,9 @@ class StatusTests(RouterTestCase):
 
     def test_status_reports_stage_evidence(self):
         router = self.router()
-        self.fake_adapters["opencode_go"].result = failed(FailureKind.QUOTA, "opencode_go")
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.QUOTA, "opencode_go"
+        )
         self.fake_adapters["opencode_zen"].result = completed("done", "opencode_zen")
         router.run(request(self.workspace), routes_for_main())
 
@@ -330,9 +347,7 @@ class StatusTests(RouterTestCase):
         self.assertEqual(status["stage"]["attempts"][0]["slot"], 0)
         self.assertEqual(status["stage"]["attempts"][0]["failure"], "quota")
         self.assertEqual(status["stage"]["attempts"][1]["success"], 1)
-        self.assertEqual(
-            status["stage"]["attempts"][1]["billing_mode"], "subscription"
-        )
+        self.assertEqual(status["stage"]["attempts"][1]["billing_mode"], "subscription")
 
 
 class StateStoreTests(RouterTestCase):

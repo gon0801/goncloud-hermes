@@ -43,9 +43,7 @@ def request_json(
     opener=None,
 ) -> tuple[int, str]:
     """One JSON request; returns (status, capped body) or raises."""
-    data = (
-        json.dumps(payload).encode("utf-8") if payload is not None else None
-    )
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url, data=data, headers=dict(headers), method=method
     )
@@ -66,7 +64,5 @@ def request_json(
             "endpoint unreachable: " + reason, timeout="timed out" in reason.lower()
         ) from error
     except TimeoutError as error:
-        raise SubscriptionHttpError(
-            "endpoint timed out", timeout=True
-        ) from error
+        raise SubscriptionHttpError("endpoint timed out", timeout=True) from error
     return int(status), body[:MAX_BODY_CHARS]

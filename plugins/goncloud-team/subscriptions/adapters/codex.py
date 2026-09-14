@@ -6,7 +6,13 @@ import json
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 
@@ -22,9 +28,7 @@ def parse_codex_jsonl(output: str) -> dict:
             continue
         if not isinstance(event, dict):
             continue
-        thread_id = (
-            event.get("thread_id") or event.get("session_id") or thread_id
-        )
+        thread_id = event.get("thread_id") or event.get("session_id") or thread_id
         event_type = str(event.get("type") or "")
         if "turn.completed" in event_type or event_type == "task_complete":
             completed = True
@@ -65,7 +69,8 @@ class CodexAdapter(SubscriptionAdapter):
                 failure=FailureKind.TASK_FAILURE,
                 detail=str(error),
             )
-        haystack = (evidence.stdout or "").lower()
+        # The npm shim prints this status on stderr while stdout stays empty.
+        haystack = f"{evidence.stdout or ''}\n{evidence.stderr or ''}".lower()
         if evidence.returncode == 0 and "chatgpt" in haystack:
             return AdapterHealth(
                 ready=True,
@@ -78,9 +83,7 @@ class CodexAdapter(SubscriptionAdapter):
             detail="no ChatGPT subscription login",
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         command = [
             "codex",
             "exec",
@@ -88,6 +91,10 @@ class CodexAdapter(SubscriptionAdapter):
             "--json",
             "--sandbox",
             "workspace-write",
+            # Stage workspaces are validated absolute directories already;
+            # skipping the git-repo convenience check keeps non-git
+            # workspaces usable without weakening the sandbox.
+            "--skip-git-repo-check",
             "--cd",
             str(request.workspace),
             "--model",

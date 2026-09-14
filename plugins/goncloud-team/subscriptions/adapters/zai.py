@@ -5,11 +5,19 @@ from __future__ import annotations
 import json
 import os
 
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
 
 _ANTHROPIC_VERSION = "2023-06-01"
+#: Z.AI's documented Anthropic-compatible endpoint for the Coding Plan.
+_DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
 
 
 class ZAIAdapter(SubscriptionAdapter):
@@ -26,10 +34,17 @@ class ZAIAdapter(SubscriptionAdapter):
         base_url: str | None = None,
     ) -> None:
         super().__init__(runner=runner)
-        self.auth_token = (
-            auth_token if auth_token is not None else os.environ.get("ZAI_AUTH_TOKEN", "")
+        if auth_token is None:
+            auth_token = os.environ.get("GLM_API_KEY") or os.environ.get(
+                "ZAI_AUTH_TOKEN", ""
+            )
+        self.auth_token = auth_token
+        configured_base = (
+            base_url
+            or os.environ.get("GLM_BASE_URL")
+            or os.environ.get("ZAI_BASE_URL")
+            or _DEFAULT_BASE_URL
         )
-        configured_base = base_url or os.environ.get("ZAI_BASE_URL", "")
         self.base_url = configured_base.rstrip("/")
 
     def _configured(self) -> bool:
@@ -50,9 +65,7 @@ class ZAIAdapter(SubscriptionAdapter):
             detail="credential present; readiness is proven by live inference",
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         if not self._configured():
             return self._failed_result(
                 route, FailureKind.AUTH, "Z.AI Coding Plan is not configured"

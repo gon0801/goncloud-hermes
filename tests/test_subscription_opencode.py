@@ -12,7 +12,6 @@ PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
 
 from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
-from subscriptions.process import SubscriptionProcessError  # noqa: E402
 from subscriptions.types import (  # noqa: E402
     FailureKind,
     InvocationRequest,
@@ -83,9 +82,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
             route(0, "opencode_go", "muse-spark-1.3-contributor"),
         )
 
-        self.assertEqual(
-            runner.command[:4], ["opencode", "run", "--format", "json"]
-        )
+        self.assertEqual(runner.command[:4], ["opencode", "run", "--format", "json"])
         self.assertEqual(
             runner.command[4:6],
             ["--model", "opencode-go/muse-spark-1.3-contributor"],
@@ -132,6 +129,13 @@ class OpenCodeAdapterTests(unittest.TestCase):
             (1, "model mystery-x is not available", FailureKind.MODEL_UNAVAILABLE),
             (2, "invalid request payload", FailureKind.INVALID_REQUEST),
             (1, "agent could not finish", FailureKind.TASK_FAILURE),
+            # Tool listings legitimately contain "auth"; that is not an
+            # authentication failure (grok streams its available_commands).
+            (
+                1,
+                "available_commands tools: saikit-auth-security, code-review",
+                FailureKind.TASK_FAILURE,
+            ),
         ]
         for returncode, stderr, expected in cases:
             adapter = OpenCodeAdapter(
@@ -150,9 +154,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         adapter = OpenCodeAdapter(runner=timeout_runner)
 
-        result = adapter.invoke(
-            request(self.workspace), route(0, "opencode_go", "k3")
-        )
+        result = adapter.invoke(request(self.workspace), route(0, "opencode_go", "k3"))
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TIMEOUT)
@@ -163,9 +165,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         adapter = OpenCodeAdapter(runner=missing_runner)
 
-        result = adapter.invoke(
-            request(self.workspace), route(0, "opencode_go", "k3")
-        )
+        result = adapter.invoke(request(self.workspace), route(0, "opencode_go", "k3"))
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
@@ -183,7 +183,9 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         adapter = OpenCodeAdapter(runner=auth_runner)
 
-        zen_health = adapter.probe(route(1, "opencode_zen", "muse-spark-1.3-contributor-free"))
+        zen_health = adapter.probe(
+            route(1, "opencode_zen", "muse-spark-1.3-contributor-free")
+        )
         go_health = adapter.probe(route(0, "opencode_go", "muse-spark-1.3-contributor"))
 
         self.assertTrue(zen_health.ready)

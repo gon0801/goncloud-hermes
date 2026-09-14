@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -88,7 +90,8 @@ class SubscriptionStateStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self):
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(
             self.db_path,
             timeout=30,
@@ -100,7 +103,11 @@ class SubscriptionStateStore:
             conn.execute("PRAGMA busy_timeout=30000")
         except sqlite3.OperationalError:
             pass
-        return conn
+        try:
+            yield conn
+        finally:
+            # Closing releases Windows file locks and checkpoints WAL files.
+            conn.close()
 
     # -- attempts ---------------------------------------------------------
 

@@ -6,7 +6,13 @@ import json
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 _SUCCESS_SUBTYPES = {"success", "success_streamcomplete", "streamcomplete"}
@@ -74,9 +80,10 @@ class KimiAdapter(SubscriptionAdapter):
             detail="auth is proven only by live inference",
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
+        # kimi resolves models through its configured aliases (config.toml
+        # defines them as kimi-code/<name>), so qualify bare table models.
+        model = route.model if "/" in route.model else f"kimi-code/{route.model}"
         command = [
             "kimi",
             "-p",
@@ -84,7 +91,7 @@ class KimiAdapter(SubscriptionAdapter):
             "--output-format",
             "stream-json",
             "--model",
-            route.model,
+            model,
         ]
         try:
             evidence = run_cli(

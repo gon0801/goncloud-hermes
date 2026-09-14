@@ -5,11 +5,19 @@ from __future__ import annotations
 import re
 import subprocess
 
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 
 _AUTH_PATTERN = re.compile(
-    r"unauthorized|authentication|\bauth\b|credential|api[ _-]?key|"
-    r"not logged in|login required|forbidden|expired|signed out",
+    r"unauthorized|not authenticated|authentication|credential|"
+    r"api[ _-]?key|not logged in|login required|sign in required|"
+    r"forbidden|\bexpired\b|signed out|invalid token|"
+    r"token (is )?(invalid|expired|missing)",
     re.IGNORECASE,
 )
 _QUOTA_PATTERN = re.compile(

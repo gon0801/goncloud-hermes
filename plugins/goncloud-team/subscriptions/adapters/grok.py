@@ -6,14 +6,21 @@ import json
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 
 def parse_grok_ndjson(output: str) -> dict:
-    """Accumulate agent text from ACP session-update stream lines."""
+    """Accumulate agent text from grok streaming-json (and ACP) lines."""
     texts: list[str] = []
     session_id = None
+    ended = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
@@ -22,6 +29,10 @@ def parse_grok_ndjson(output: str) -> dict:
         if not isinstance(event, dict):
             continue
         session_id = event.get("sessionId") or session_id
+        if event.get("type") == "text" and "data" in event:
+            texts.append(str(event.get("data") or ""))
+        if event.get("type") == "end":
+            ended = True
         update = event.get("sessionUpdate")
         if not isinstance(update, dict):
             continue
@@ -33,7 +44,7 @@ def parse_grok_ndjson(output: str) -> dict:
                 texts.append(str(content.get("text") or ""))
             elif isinstance(content, str):
                 texts.append(content)
-    return {"text": "".join(texts), "session_id": session_id}
+    return {"text": "".join(texts), "session_id": session_id, "ended": ended}
 
 
 class GrokAdapter(SubscriptionAdapter):
@@ -75,9 +86,7 @@ class GrokAdapter(SubscriptionAdapter):
             )
         return AdapterHealth(ready=True, account_class=self.account_class)
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         command = [
             "grok",
             "--output-format",
@@ -106,7 +115,7 @@ class GrokAdapter(SubscriptionAdapter):
             return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
 
         parsed = parse_grok_ndjson(evidence.stdout)
-        if evidence.returncode == 0 and parsed["text"]:
+        if evidence.returncode == 0 and (parsed["text"] or parsed["ended"]):
             return InvocationResult(
                 success=True,
                 text=parsed["text"],

@@ -9,8 +9,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..process import ProcessEvidence, SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..process import SubscriptionProcessError, run_cli
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 #: Slot identity, not the historical label prefix, selects the subscription.
@@ -85,9 +91,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
             detail=f"credential class not installed: {expected}",
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         command = [
             "opencode",
             "run",

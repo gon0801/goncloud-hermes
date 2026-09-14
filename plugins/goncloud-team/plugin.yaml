@@ -11,5 +11,7 @@ provides_tools:
   - goncloud_consult
   - goncloud_engineering_review
   - goncloud_muse_delegate
+  - goncloud_subscription_run
+  - goncloud_subscription_status
 provides_hooks:
   - pre_tool_call

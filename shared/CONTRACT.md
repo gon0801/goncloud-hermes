@@ -10,6 +10,10 @@ La cadena es scout -> ingenieria -> implementer -> verifier -> adversary -> revi
 
 Antes de iniciar una tarea Kanban lee kanban_show y los handoffs. El director entrega objetivo, ruta absoluta, alcance, autorizaciones existentes y criterios de aceptacion. Cada handoff incluye revision Git exacta, archivos, resultado, pruebas y hallazgos pendientes. Los datos privados no se copian al repositorio. La memoria es una ayuda; una fuente actual comprobada prevalece sobre un recuerdo viejo.
 
+## Enrutador de suscripciones
+
+Ejecuta el trabajo de tu etapa con goncloud_subscription_run; tu perfil queda ligado por el contexto, nunca por argumento. La evidencia durable registra el adaptador, la posicion (Primary..F7), el modelo y el tipo de facturacion realmente usados; DeepSeek es la unica ruta pagada por API. El coordinador dirige la cadena; el trabajador de suscripcion ejecuta la etapa: identidades distintas, ambas registradas en el handoff. Consulta a pares con goncloud_consult antes de escalar al director. Ante fallo del proveedor, el enrutador avanza de posicion o continua desde el estado registrado; nunca repitas la tarea a ciegas ni publiques por tu cuenta.
+
 ## Calidad y cierre
 
 El implementer no aprueba su propio cambio. El adversary no repara el cambio que examina. El reviewer adjudica todos los hallazgos con razones y evidencia. Toda correccion invalida la evidencia de la revision anterior para el codigo cambiado: volver a verificar lo afectado sobre la nueva revision.

@@ -8,6 +8,7 @@ becomes evidence.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,17 @@ from typing import Literal, Mapping, Sequence
 
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
+
+
+def _resolve_windows_shim(command: list[str]) -> list[str]:
+    """npm installs CLIs as .cmd shims that CreateProcess cannot execute."""
+    if os.name != "nt":
+        return command
+    resolved = shutil.which(command[0])
+    if resolved and resolved.lower().endswith((".cmd", ".bat")):
+        # /d skips registry AutoRun; the resolved absolute path is explicit.
+        return ["cmd.exe", "/d", "/c", resolved, *command[1:]]
+    return command
 
 
 class SubscriptionProcessError(RuntimeError):
@@ -41,7 +53,9 @@ def _redact_and_cap(text: str, secrets: Sequence[str]) -> str:
         keep = _MAX_OUTPUT_CHARS // 2
         dropped = len(redacted) - 2 * keep
         redacted = (
-            redacted[:keep] + f"\n...[truncated {dropped} chars]...\n" + redacted[-keep:]
+            redacted[:keep]
+            + f"\n...[truncated {dropped} chars]...\n"
+            + redacted[-keep:]
         )
     return redacted
 
@@ -89,12 +103,16 @@ def run_cli(
         else:
             stdin_text = prompt
         completed = runner(
-            command,
+            # Only the real subprocess boundary needs Windows shim handling;
+            # injected runners simulate their own transport.
+            _resolve_windows_shim(command) if runner is subprocess.run else command,
             cwd=workspace,
             env=child_env,
             input=stdin_text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             shell=False,

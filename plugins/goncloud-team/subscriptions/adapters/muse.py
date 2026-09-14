@@ -20,6 +20,8 @@ class MuseAdapter(SubscriptionAdapter):
     """Delegate one bounded stage to the owner's Muse subscription in WSL."""
 
     max_steps = 80
+    # WSL cold starts can exceed the default probe window by a wide margin.
+    probe_timeout_seconds = 120
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Muse exposes no non-generative auth probe; report install state."""
@@ -49,9 +51,7 @@ class MuseAdapter(SubscriptionAdapter):
             detail="auth is proven only by live inference",
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         try:
             outcome = delegate_to_muse(
                 prompt=build_assignment_prompt(request),

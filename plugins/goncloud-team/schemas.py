@@ -145,3 +145,92 @@ MUSE_DELEGATE = {
         "required": ["prompt", "workspace"],
     },
 }
+
+SUBSCRIPTION_RUN = {
+    "name": "goncloud_subscription_run",
+    "description": (
+        "Execute the current native stage through the owner's subscription router "
+        "(Primary OpenCode Go, F1 OpenCode Zen, F2-F7 by model family; DeepSeek is "
+        "the only API-billed exception). The calling profile is bound from the "
+        "Hermes context and can never be supplied as an argument. The handoff "
+        "records the adapter, slot, model, and billing mode actually used."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "Goncloud engineering workflow root id.",
+            },
+            "task_id": {
+                "type": "string",
+                "description": "The active native Kanban stage task id.",
+            },
+            "instruction": {
+                "type": "string",
+                "description": "Complete self-contained stage assignment.",
+            },
+            "repository": {
+                "type": "string",
+                "description": (
+                    "Absolute repository path; must match the stage workspace."
+                ),
+            },
+            "revision": {
+                "type": "string",
+                "description": "Exact owner-approved baseline revision.",
+            },
+            "sources": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "reference": {"type": "string"},
+                        "observed_at": {"type": "string"},
+                    },
+                    "required": ["reference", "observed_at"],
+                },
+                "description": "Dated provenance records supporting the stage.",
+            },
+            "max_steps": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "Bounded step ceiling for the subscription worker.",
+            },
+        },
+        "required": [
+            "workflow_id",
+            "task_id",
+            "instruction",
+            "repository",
+            "revision",
+            "sources",
+            "max_steps",
+        ],
+    },
+}
+
+SUBSCRIPTION_STATUS = {
+    "name": "goncloud_subscription_status",
+    "description": (
+        "Read the non-generative subscription route matrix for the calling "
+        "profile: slot, adapter, model, billing mode, and cached adapter health. "
+        "Optionally include the durable attempt evidence of one workflow stage."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "Optional workflow root id for stage evidence.",
+            },
+            "stage_id": {
+                "type": "string",
+                "description": "Optional stage task id for attempt evidence.",
+            },
+        },
+        "required": [],
+    },
+}

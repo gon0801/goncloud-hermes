@@ -32,7 +32,10 @@ class MuseBridgeTests(unittest.TestCase):
             Path(r"C:\temp\muse prompt.txt"),
             max_steps=7,
         )
-        self.assertEqual(command[:5], ["wsl.exe", "-d", "Ubuntu", "--exec", "/home/goncloud/.local/bin/muse"])
+        self.assertEqual(
+            command[:5],
+            ["wsl.exe", "-d", "Ubuntu", "--exec", "/home/goncloud/.local/bin/muse"],
+        )
         self.assertEqual(command[-2:], ["--max-model-steps", "7"])
         self.assertIn("/mnt/c/temp/muse prompt.txt", command)
         self.assertNotIn("bash", command)
@@ -72,8 +75,7 @@ class MuseBridgeTests(unittest.TestCase):
 
         def fake_runner(command, **kwargs):
             prompt_path = Path(
-                command[command.index("--prompt-file") + 1]
-                .replace("/mnt/c/", "C:/")
+                command[command.index("--prompt-file") + 1].replace("/mnt/c/", "C:/")
             )
             observed.update(
                 command=command,

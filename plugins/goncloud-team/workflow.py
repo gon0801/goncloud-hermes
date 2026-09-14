@@ -22,6 +22,15 @@ from hermes_cli.kanban_db import (
 from hermes_cli.kanban_db_connect import connect_closing, write_txn
 from hermes_cli.kanban_db_graph import decompose_triage_task
 
+try:  # Loaded as the Hermes plugin package.
+    from .subscriptions.catalog import compile_profile_routes
+    from .subscriptions.router import SubscriptionRouter
+    from .subscriptions.types import InvocationRequest
+except ImportError:  # Loaded with the plugin directory on sys.path.
+    from subscriptions.catalog import compile_profile_routes  # type: ignore
+    from subscriptions.router import SubscriptionRouter  # type: ignore
+    from subscriptions.types import InvocationRequest  # type: ignore
+
 
 TEAM_ROLES = (
     "claw",
@@ -49,10 +58,29 @@ HIGH_SEVERITIES = {"high", "critical"}
 _WORKFLOW_KEY_PREFIX = "goncloud-workflow:"
 _CONTRACT_MARKER = "GONCLOUD_ENGINEERING_V1\n"
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
+_SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
+_SUBSCRIPTION_EVIDENCE_KEYS = (
+    "workflow_id",
+    "stage_id",
+    "profile",
+    "slot",
+    "success",
+    "adapter",
+    "model",
+    "billing_mode",
+    "failure",
+    "session_id",
+    "mode",
+)
 
 
 class WorkflowError(ValueError):
     """A rejected workflow operation safe to return through a model tool."""
+
+
+def _build_subscription_router(**_kwargs):
+    """Factory seam so tests can substitute a scripted router."""
+    return SubscriptionRouter()
 
 
 def _required_text(value: Any, field: str) -> str:
@@ -382,6 +410,170 @@ class WorkflowService:
                 "target_role": target_role,
                 "source_status": self._require_task(conn, task_id).status,
             }
+
+    def subscription_run(
+        self,
+        *,
+        workflow_id: str,
+        task_id: str,
+        instruction: str,
+        repository: str,
+        revision: str,
+        sources: Iterable[dict[str, Any]],
+        max_steps: int,
+    ) -> dict[str, Any]:
+        """Run the current stage through the profile's subscription routes."""
+        self._require_known_actor()
+        workflow_id = _required_text(workflow_id, "workflow_id")
+        task_id = _required_text(task_id, "task_id")
+        instruction = _required_text(instruction, "instruction")
+        revision = _required_text(revision, "revision")
+        repo_input = _required_text(repository, "repository")
+        try:
+            max_steps_value = int(max_steps)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowError("max_steps must be an integer") from exc
+        if not 1 <= max_steps_value <= 500:
+            raise WorkflowError("max_steps must be between 1 and 500")
+        source_rows = self._validate_sources(sources)
+        del source_rows  # provenance is validated, not forwarded to vendors
+        repo = Path(repo_input).expanduser()
+        if not repo.is_absolute():
+            raise WorkflowError("repository must be an absolute path")
+        try:
+            repo = repo.resolve(strict=True)
+        except OSError as exc:
+            raise WorkflowError(f"repository is unavailable: {exc}") from exc
+        if not repo.is_dir():
+            raise WorkflowError("repository must be an existing directory")
+
+        with self._connect() as conn:
+            root = self._require_workflow_root(conn, workflow_id)
+            task = self._require_task(conn, task_id)
+            if task.assignee != self.actor_role:
+                raise WorkflowError(
+                    f"task {task_id} is not assigned to role {self.actor_role}"
+                )
+            if task.workspace_kind != "dir" or not task.workspace_path:
+                raise WorkflowError(
+                    f"task {task_id} workspace does not match repository"
+                )
+            try:
+                task_repo = Path(task.workspace_path).expanduser().resolve()
+            except OSError as exc:
+                raise WorkflowError(
+                    f"task {task_id} workspace does not match repository: {exc}"
+                ) from exc
+            if task_repo != repo:
+                raise WorkflowError(
+                    f"task {task_id} workspace does not match repository"
+                )
+            contract = self._contract_of(root)
+            if contract.get("revision") != revision:
+                raise WorkflowError("revision does not match the workflow contract")
+
+        router = _build_subscription_router()
+        routes = compile_profile_routes(self.actor_role, router.routing_source)
+        request = InvocationRequest(
+            workflow_id=workflow_id,
+            stage_id=task_id,
+            role=self.actor_role,
+            prompt=instruction,
+            workspace=repo,
+            start_revision=revision,
+            current_revision=revision,
+        )
+        result = router.run(request, routes)
+        evidence = {
+            "workflow_id": workflow_id,
+            "stage_id": task_id,
+            "profile": self.actor_role,
+            "slot": None,
+            "success": result.success,
+            "adapter": result.adapter,
+            "model": result.model,
+            "billing_mode": result.billing_mode,
+            "failure": result.failure.value if result.failure else None,
+            "session_id": result.session_id,
+            "text": (result.text or "")[:2000],
+        }
+        attempts = []
+        store = getattr(router, "store", None)
+        if store is not None:
+            for attempt in store.stage_attempts(workflow_id, task_id):
+                attempts.append(
+                    {
+                        "slot": attempt["slot"],
+                        "adapter": attempt["adapter"],
+                        "model": attempt["model"],
+                        "billing_mode": attempt["billing_mode"],
+                        "mode": attempt["mode"],
+                        "success": attempt["success"],
+                        "failure": attempt["failure"],
+                    }
+                )
+                if attempt["success"]:
+                    evidence["slot"] = attempt["slot"]
+        evidence["attempts"] = attempts
+        self.attach_subscription_result(evidence)
+        return evidence
+
+    def subscription_status(
+        self,
+        *,
+        workflow_id: Optional[str] = None,
+        stage_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Non-generative route matrix for the calling profile."""
+        self._require_known_actor()
+        router = _build_subscription_router()
+        return router.status(
+            self.actor_role, workflow_id=workflow_id, stage_id=stage_id
+        )
+
+    def attach_subscription_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Record durable subscription evidence on its own stage, or refuse."""
+        self._require_known_actor()
+        if not isinstance(result, dict):
+            raise WorkflowError("subscription result must be an object")
+        workflow_id = _required_text(result.get("workflow_id"), "workflow_id")
+        stage_id = _required_text(result.get("stage_id"), "stage_id")
+        with self._connect() as conn:
+            self._require_workflow_root(conn, workflow_id)
+            task = self._require_task(conn, stage_id)
+            if task.assignee != self.actor_role:
+                raise WorkflowError(
+                    f"stage identity mismatch: task {stage_id} belongs to "
+                    f"{task.assignee}, not {self.actor_role}"
+                )
+            initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
+            corrective = self._correction_ids(conn, workflow_id)
+            if stage_id not in set(initial_ids) | set(corrective.values()):
+                raise WorkflowError(
+                    f"stage identity mismatch: task {stage_id} is not a stage "
+                    f"of workflow {workflow_id}"
+                )
+            record = {
+                key: result.get(key)
+                for key in _SUBSCRIPTION_EVIDENCE_KEYS
+                if result.get(key) is not None
+            }
+            body = _SUBSCRIPTION_MARKER + json.dumps(
+                record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            if any(comment.body == body for comment in list_comments(conn, stage_id)):
+                return {"attached": False, "duplicate": True, "stage_id": stage_id}
+            add_comment(conn, stage_id, self.actor_role, body)
+        return {"attached": True, "stage_id": stage_id}
+
+    @staticmethod
+    def _contract_of(root: Any) -> dict[str, Any]:
+        try:
+            return json.loads((root.body or "")[len(_CONTRACT_MARKER) :])
+        except json.JSONDecodeError as exc:
+            raise WorkflowError(
+                f"workflow {root.id} has a malformed source contract"
+            ) from exc
 
     def guard_native_completion(self, task_id: str) -> Optional[dict[str, str]]:
         """Veto a reviewer card bypassing the durable adjudication tool.

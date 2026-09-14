@@ -62,7 +62,7 @@ class SafeProcessTests(unittest.TestCase):
 
         evidence = run_cli(
             ["vendor", "exec", "-"],
-            'literal $(unsafe) `text`',
+            "literal $(unsafe) `text`",
             self.workspace,
             timeout=30,
             env_overlay={"VENDOR_TOKEN": "super-secret"},
@@ -74,7 +74,7 @@ class SafeProcessTests(unittest.TestCase):
         self.assertNotIn("super-secret", joined)
         self.assertNotIn("literal $(unsafe) `text`", joined)
         self.assertFalse(runner.shell)
-        self.assertEqual(runner.kwargs["input"], 'literal $(unsafe) `text`')
+        self.assertEqual(runner.kwargs["input"], "literal $(unsafe) `text`")
         self.assertEqual(runner.kwargs["cwd"], self.workspace)
         self.assertEqual(
             runner.kwargs["env"]["VENDOR_TOKEN"],
@@ -108,9 +108,7 @@ class SafeProcessTests(unittest.TestCase):
         def capture_runner(command, **kwargs):
             captured["command"] = list(command)
             captured["text"] = runner_path(command).read_text(encoding="utf-8")
-            return subprocess.CompletedProcess(
-                command, 0, stdout="done", stderr=""
-            )
+            return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
 
         def runner_path(command):
             index = command.index("--prompt-file")

@@ -15,3 +15,6 @@ runtime/
 local/
 *.log
 .pytest_cache/
+subscription-router.env
+subscription-router.env.*
+secrets.backup*

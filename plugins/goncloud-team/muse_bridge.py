@@ -121,7 +121,9 @@ def delegate_to_muse(
             prompt_path.unlink(missing_ok=True)
 
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "unknown Muse CLI error").strip()
+        detail = (
+            completed.stderr or completed.stdout or "unknown Muse CLI error"
+        ).strip()
         raise MuseBridgeError(f"Muse delegation failed: {detail[-1000:]}")
 
     result = parse_muse_jsonl(completed.stdout)

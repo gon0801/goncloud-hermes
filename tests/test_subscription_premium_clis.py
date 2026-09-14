@@ -81,7 +81,9 @@ def route_for(adapter, model, slot=4, billing="subscription"):
     )
 
 
-def request(workspace, prompt="Produce the stage deliverable.", mode="start", changed=()):
+def request(
+    workspace, prompt="Produce the stage deliverable.", mode="start", changed=()
+):
     return InvocationRequest(
         workflow_id="wf-4",
         stage_id="stage-implementer",
@@ -116,10 +118,14 @@ class MuseAdapterTests(unittest.TestCase):
         runner = self._muse_runner()
 
         result = MuseAdapter(runner=runner).invoke(
-            request(self.workspace), route_for("muse", "muse-spark-1.3-contributor-free")
+            request(self.workspace),
+            route_for("muse", "muse-spark-1.3-contributor-free"),
         )
 
-        self.assertEqual(runner.command[:5], ["wsl.exe", "-d", "Ubuntu", "--exec", "/home/goncloud/.local/bin/muse"])
+        self.assertEqual(
+            runner.command[:5],
+            ["wsl.exe", "-d", "Ubuntu", "--exec", "/home/goncloud/.local/bin/muse"],
+        )
         self.assertIn("Produce the stage deliverable.", runner.prompt_text)
         self.assertFalse(runner.prompt_path.exists())
         self.assertTrue(result.success)
@@ -132,7 +138,8 @@ class MuseAdapterTests(unittest.TestCase):
         runner = FakeCliRunner(stderr="auth session expired", returncode=1)
 
         result = MuseAdapter(runner=runner).invoke(
-            request(self.workspace), route_for("muse", "muse-spark-1.3-contributor-free")
+            request(self.workspace),
+            route_for("muse", "muse-spark-1.3-contributor-free"),
         )
 
         self.assertFalse(result.success)
@@ -166,9 +173,9 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertFalse(runner.kwargs["shell"])
 
     def test_claude_result_parses_stream_and_session(self):
-        result = ClaudeAdapter(
-            runner=FakeCliRunner(stdout=CLAUDE_STREAM)
-        ).invoke(request(self.workspace), route_for("claude", "claude-fable-5-1", slot=6))
+        result = ClaudeAdapter(runner=FakeCliRunner(stdout=CLAUDE_STREAM)).invoke(
+            request(self.workspace), route_for("claude", "claude-fable-5-1", slot=6)
+        )
 
         self.assertTrue(result.success)
         self.assertEqual(result.text, "partial answer")
@@ -176,10 +183,12 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(result.billing_mode, "subscription")
 
     def test_claude_error_result_is_failure(self):
-        stream = CLAUDE_STREAM.replace('"subtype":"success"', '"subtype":"error_during_execution"')
-        result = ClaudeAdapter(
-            runner=FakeCliRunner(stdout=stream)
-        ).invoke(request(self.workspace), route_for("claude", "claude-sonnet-5", slot=2))
+        stream = CLAUDE_STREAM.replace(
+            '"subtype":"success"', '"subtype":"error_during_execution"'
+        )
+        result = ClaudeAdapter(runner=FakeCliRunner(stdout=stream)).invoke(
+            request(self.workspace), route_for("claude", "claude-sonnet-5", slot=2)
+        )
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
@@ -196,12 +205,12 @@ class ClaudeAdapterTests(unittest.TestCase):
             {"loggedIn": True, "authMethod": "api_key", "apiProvider": "anthropic"}
         )
 
-        ready = ClaudeAdapter(
-            runner=FakeCliRunner(stdout=subscribed)
-        ).probe(route_for("claude", "claude-sonnet-5"))
-        refused = ClaudeAdapter(
-            runner=FakeCliRunner(stdout=api_key)
-        ).probe(route_for("claude", "claude-sonnet-5"))
+        ready = ClaudeAdapter(runner=FakeCliRunner(stdout=subscribed)).probe(
+            route_for("claude", "claude-sonnet-5")
+        )
+        refused = ClaudeAdapter(runner=FakeCliRunner(stdout=api_key)).probe(
+            route_for("claude", "claude-sonnet-5")
+        )
 
         self.assertTrue(ready.ready)
         self.assertEqual(ready.account_class, "claude_max")
@@ -231,9 +240,7 @@ class CodexAdapterTests(unittest.TestCase):
             runner.command[sandbox_at : sandbox_at + 2],
             ["--sandbox", "workspace-write"],
         )
-        self.assertNotIn(
-            "--dangerously-bypass-approvals-and-sandbox", runner.command
-        )
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", runner.command)
         cd_at = runner.command.index("--cd")
         self.assertEqual(runner.command[cd_at + 1], str(self.workspace))
         model_at = runner.command.index("--model")

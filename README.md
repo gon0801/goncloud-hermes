@@ -21,7 +21,13 @@ Desde este repositorio, abre el director:
 
 Ejemplo de orden: "En C:\dev\mi-proyecto, implementa X, comprueba Y y entrega una rama local. Consulta entre especialistas; no publiques ni despliegues."
 
-El director utiliza `goncloud_engineering_start` para crear la cadena, `goncloud_consult` para preguntar a otro rol y `goncloud_engineering_status` para consolidar resultados. El revisor utiliza `goncloud_engineering_review`. Cualquier rol puede encargar una tarea especializada a la suscripcion autenticada de Muse mediante `goncloud_muse_delegate`, sin pedir al usuario que retransmita mensajes. El tablero nativo conserva dependencias, comentarios e intentos entre reinicios.
+El director utiliza `goncloud_engineering_start` para crear la cadena, `goncloud_consult` para preguntar a otro rol y `goncloud_engineering_status` para consolidar resultados. El revisor utiliza `goncloud_engineering_review`. Cada etapa ejecuta su trabajo con `goncloud_subscription_run` (perfil ligado por contexto, nunca por argumento) y `goncloud_subscription_status` expone la matriz de rutas sin inferencia. Cualquier rol puede encargar una tarea especializada a la suscripcion autenticada de Muse mediante `goncloud_muse_delegate`, sin pedir al usuario que retransmita mensajes. El tablero nativo conserva dependencias, comentarios e intentos entre reinicios.
+
+## Enrutador de suscripciones
+
+La tabla de ocho posiciones por agente se compila por slot, no por prefijo historico: Primary usa OpenCode Go, F1 usa OpenCode Zen y F2-F7 se vinculan a la suscripcion de la familia del modelo (Muse, Claude Max, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok). DeepSeek es la unica ruta facturada por API y queda marcada `billing_mode=api` en toda la evidencia. Los fallos de autenticacion, cuota, modelo o timeout avanzan de posicion; despues de una mutacion del workspace el siguiente intento recibe una continuacion con la revision y los archivos cambiados registrados, nunca una repeticion a ciegas. Las credenciales viven en los almacenes nativos de cada CLI o en el env privado `%LOCALAPPDATA%\hermes\subscription-router.env` (fuera de Git); los prompts viajan por stdin o archivo temporal privado y la salida de cada CLI se redacta y acota antes de convertirse en evidencia.
+
+Verificado con inferencia real por adaptador: siete de nueve PASS (Go, Muse, Claude Max, ChatGPT/Codex, Z.AI, Grok y DeepSeek-api); OpenCode Zen en cuarentena (limite de uso de la capa free) y Kimi con error de conexion del proveedor — en ambos casos el router avanza de slot. La matriz vigente y los pendientes estan en [docs/model-routing.md](docs/model-routing.md) y [docs/status.md](docs/status.md).
 
 ## Instalacion reproducible
 

@@ -106,9 +106,7 @@ class SubscriptionRouter:
         self, request: InvocationRequest, routes: Iterable[RouteSpec]
     ) -> InvocationResult:
         """Execute one stage assignment across the slot chain."""
-        recorded = self.store.latest_success(
-            request.workflow_id, request.stage_id
-        )
+        recorded = self.store.latest_success(request.workflow_id, request.stage_id)
         if recorded is not None:
             return _result_from_attempt(recorded)
 
@@ -219,7 +217,10 @@ class SubscriptionRouter:
     def _record_health(self, adapter: str, result: InvocationResult) -> None:
         if result.success:
             self.store.save_health(
-                adapter, ready=True, account_class=adapter, detail="live attempt succeeded"
+                adapter,
+                ready=True,
+                account_class=adapter,
+                detail="live attempt succeeded",
             )
             return
         failure = result.failure
@@ -274,7 +275,5 @@ def _result_from_attempt(attempt: dict) -> InvocationResult:
         model=attempt["model"],
         billing_mode=attempt["billing_mode"],
         session_id=attempt.get("session_id") or "",
-        failure=None
-        if not attempt.get("failure")
-        else FailureKind(attempt["failure"]),
+        failure=None if not attempt.get("failure") else FailureKind(attempt["failure"]),
     )

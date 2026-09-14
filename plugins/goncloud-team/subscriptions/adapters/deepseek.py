@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 import os
 
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
 
@@ -58,7 +64,9 @@ class DeepSeekAdapter(SubscriptionAdapter):
             return AdapterHealth(
                 ready=False,
                 account_class=self.account_class,
-                failure=FailureKind.TIMEOUT if error.timeout else FailureKind.TASK_FAILURE,
+                failure=FailureKind.TIMEOUT
+                if error.timeout
+                else FailureKind.TASK_FAILURE,
                 detail=str(error),
             )
         if status == 200:
@@ -68,9 +76,7 @@ class DeepSeekAdapter(SubscriptionAdapter):
             ready=False, account_class=self.account_class, failure=failure
         )
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         if not self.api_key:
             return self._failed_result(
                 route, FailureKind.AUTH, "DeepSeek API key is not configured"

@@ -6,6 +6,32 @@ Fuente autoritativa: tabla pegada por el usuario el 2026-09-13, conservada liter
 
 Tabla registrada y aplicada a los nueve perfiles con `configure_team.py --apply-model-routing`. Cada perfil conserva Primary y F1-F7 en orden; `main` se traduce a `claw` y `entrega` hereda `main`.
 
+## Enrutador por slot (2026-09-13)
+
+La vinculacion la determina la posicion, no el prefijo historico: Primary consume OpenCode Go, F1 OpenCode Zen y F2-F7 la suscripcion de la familia del modelo (`opencode/gpt-6-astra` en F2+ se enruta a Codex/ChatGPT, `opencode/claude-*` a Claude Max, `opencode/muse-*` a Muse CLI, `opencode-go-resp/muse-*` a Muse). DeepSeek es la unica ruta `billing_mode=api`. `entrega` hereda `main`; los slots `dup` se conservan como intentos distintos y solo se limpia el identificador del modelo.
+
+Implementacion: `plugins/goncloud-team/subscriptions` compila la tabla en rutas tipadas, invoca adaptadores por CLI/API, registra intentos en SQLite privado (`subscription_attempts`/`subscription_health`) y avanza solo en fallos de autenticacion, cuota, modelo o timeout. Tras una mutacion del workspace, el siguiente intento recibe `mode=continue` con revision y archivos cambiados. La herramienta `goncloud_subscription_run` liga el perfil por contexto y la evidencia de cada etapa queda en comentarios Kanban nativos (`GONCLOUD_SUBSCRIPTION_V1`).
+
+Credenciales: OAuth/sesiones nativas por CLI (nunca se copian); GLM y DeepSeek migradas de lanzadores en texto plano al env privado `%LOCALAPPDATA%\hermes\subscription-router.env` con `scripts/configure_subscriptions.py --migrate-launchers --verify` (dos fases: probe real antes de reescribir; backups `.goncloud-backup` fuera de Git). Z.AI Coding Plan consume su endpoint documentado compatible con Anthropic.
+
+Comprobado en vivo: fallback forzado Go(auth) -> Zen(quota) -> F2 Claude Max con inferencia real ("READY"), y continuacion tras mutacion con diff registrado ("LISTO"). Verificaciones unitarias: 65 pruebas del enrutador/adaptadores.
+
+## Matriz live 2026-09-14 (inferencia real minima, sin identificadores de cuenta)
+
+| Adaptador | Disponible | Facturacion | Evidencia |
+|---|---|---|---|
+| opencode_go | si | suscripcion | PASS "READY" (muse-spark-1.3-contributor) |
+| opencode_zen | no (cuarentena) | suscripcion | CLI cuelga en silencio; coordinador nativo reporta 429 FreeUsageLimitError |
+| muse | si | suscripcion | PASS "READY" (WSL) |
+| claude | si | suscripcion | PASS "LISTO" (claude-sonnet-5, Max) |
+| codex | si | suscripcion | PASS "READY" (gpt-6-astra, ChatGPT) |
+| kimi | no | suscripcion | FAIL provider.connection_error (endpoint Kimi; coordinador nativo ve 401) |
+| zai | si | suscripcion | PASS "READY" (glm-5.3, Coding Plan) |
+| grok | si | suscripcion | PASS "READY" (grok-4.6, grok.com) |
+| deepseek | si | api | PASS "READY" (deepseek-flash; unica ruta API) |
+
+Pendientes: (1) OpenCode Zen sin inferencia completada — hipotesis saldo/limite de la capa free, no autenticacion; re-probar tras reposicion de cuota. (2) Kimi con error de conexion/credencial del proveedor; el router avanza de slot sin intervention. Ninguna ruta se marca disponible solo por existencia de credencial.
+
 ## Compatibilidad comprobada en Hermes 3f86ed75
 
 - `fallback_providers` admite una lista ordenada de pares proveedor/modelo.

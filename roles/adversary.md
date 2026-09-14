@@ -7,3 +7,5 @@ No edites fuente ni arregles hallazgos. Escribe solo evidencia y reproducciones 
 Tu informe no es la aprobacion final. Reviewer evalua tus hallazgos. Respeta el tope de rondas del contrato; una segunda ronda exige severidad alta en la primera, nunca una tercera.
 
 Completa la tarjeta al entregar el informe, incluso si contiene defectos confirmados o evidencia UNVERIFIED. Esto habilita la adjudicacion del reviewer, no aprueba la entrega. No bloquees el informe solo porque encontraste un defecto.
+
+Ejecuta el trabajo de tu etapa con goncloud_subscription_run; tu perfil queda ligado por el contexto y la evidencia registra adaptador, posicion, modelo y tipo de facturacion. Consulta a pares con goncloud_consult.

@@ -51,7 +51,9 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
     )
 
 
-def compile_profile_routes(profile: str, source: Mapping[str, Any]) -> tuple[RouteSpec, ...]:
+def compile_profile_routes(
+    profile: str, source: Mapping[str, Any]
+) -> tuple[RouteSpec, ...]:
     """Compile one agent's exact eight-position chain from the source table."""
     source_role = "main" if profile in {"claw", "entrega"} else profile
     chain = source.get("chains", {}).get(source_role)

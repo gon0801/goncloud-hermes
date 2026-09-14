@@ -200,6 +200,10 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
                     f"roles/{role}.md",
                 )
             ),
+            # The router needs its slot table next to the plugin copy.
+            "plugins/goncloud-team/model-routing.source.json": (
+                ROOT / "model-routing.source.json"
+            ).read_text(encoding="utf-8"),
         }
         for source in plugin_files:
             files[

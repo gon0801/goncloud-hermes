@@ -6,7 +6,13 @@ import json
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
-from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+from ..types import (
+    AdapterHealth,
+    FailureKind,
+    InvocationRequest,
+    InvocationResult,
+    RouteSpec,
+)
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 
 #: Autonomous session mode that still keeps the CLI's sandbox intact.
@@ -93,12 +99,11 @@ class ClaudeAdapter(SubscriptionAdapter):
             "apiProvider"
         ) in {"firstParty", "claude.ai"}
 
-    def invoke(
-        self, request: InvocationRequest, route: RouteSpec
-    ) -> InvocationResult:
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         command = [
             "claude",
             "--print",
+            "--verbose",
             "--output-format",
             "stream-json",
             "--permission-mode",

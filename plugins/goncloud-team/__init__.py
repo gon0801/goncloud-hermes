@@ -13,15 +13,22 @@ from .schemas import (
     ENGINEERING_START,
     ENGINEERING_STATUS,
     MUSE_DELEGATE,
+    SUBSCRIPTION_RUN,
+    SUBSCRIPTION_STATUS,
 )
 from .workflow import WorkflowService
+
+
+def _build_service(ctx):
+    """Bind the durable service to the calling profile; test seam."""
+    return WorkflowService(actor_role=ctx.profile_name)
 
 
 def _handler(ctx, method_name: str):
     def handle(args: dict, **kwargs) -> str:
         del kwargs
         try:
-            service = WorkflowService(actor_role=ctx.profile_name)
+            service = _build_service(ctx)
             result = getattr(service, method_name)(**dict(args or {}))
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except Exception as exc:
@@ -37,6 +44,18 @@ def register(ctx) -> None:
         ("goncloud_engineering_status", ENGINEERING_STATUS, "status", "📋"),
         ("goncloud_consult", CONSULT, "consult", "🤝"),
         ("goncloud_engineering_review", ENGINEERING_REVIEW, "review", "🔎"),
+        (
+            "goncloud_subscription_run",
+            SUBSCRIPTION_RUN,
+            "subscription_run",
+            "🧭",
+        ),
+        (
+            "goncloud_subscription_status",
+            SUBSCRIPTION_STATUS,
+            "subscription_status",
+            "📡",
+        ),
     ):
         ctx.register_tool(
             name=name,

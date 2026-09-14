@@ -27,9 +27,10 @@ from subscriptions.types import (  # noqa: E402
 
 GROK_ACP = "\n".join(
     [
-        '{"sessionUpdate":{"update":"session_config","sessionId":"grok_s1"}}',
-        '{"sessionUpdate":{"update":"agent_message_chunk","content":{"text":"grok "}}}',
-        '{"sessionUpdate":{"update":"agent_message_chunk","content":{"text":"answered"}}}',
+        '{"type":"thought","data":"."}',
+        '{"type":"text","data":"grok "}',
+        '{"type":"text","data":"answered"}',
+        '{"type":"end","stopReason":"end_turn","sessionId":"grok_s1"}',
     ]
 )
 
@@ -72,7 +73,9 @@ def route_for(adapter, model, slot=5, billing="subscription"):
     )
 
 
-def request(workspace, prompt="Summarize the stage evidence.", mode="start", changed=()):
+def request(
+    workspace, prompt="Summarize the stage evidence.", mode="start", changed=()
+):
     return InvocationRequest(
         workflow_id="wf-5",
         stage_id="stage-verifier",
@@ -121,9 +124,7 @@ class FakeEndpoint:
                 pass
 
         self._server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(
-            target=self._server.serve_forever, daemon=True
-        )
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     def start(self) -> str:
         self.thread.start()
@@ -208,8 +209,9 @@ class KimiGrokTests(unittest.TestCase):
             runner.command[runner.command.index("--output-format") + 1],
             "stream-json",
         )
+        # Bare table models are qualified with kimi's configured alias prefix.
         self.assertEqual(
-            runner.command[runner.command.index("--model") + 1], "k3"
+            runner.command[runner.command.index("--model") + 1], "kimi-code/k3"
         )
         self.assertIn("Summarize the stage evidence.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
@@ -238,9 +240,7 @@ class KimiGrokTests(unittest.TestCase):
 
         command = runner.command
         self.assertEqual(command[0], "grok")
-        self.assertEqual(
-            command[command.index("--permission-mode") + 1], "dontAsk"
-        )
+        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
         self.assertEqual(
             command[command.index("--output-format") + 1], "streaming-json"
@@ -297,7 +297,9 @@ class HttpAdapterTests(unittest.TestCase):
             )
         self.assertEqual(result.failure, FailureKind.AUTH)
 
-        with FakeEndpoint(status=402, body='{"error":"insufficient balance"}') as endpoint:
+        with FakeEndpoint(
+            status=402, body='{"error":"insufficient balance"}'
+        ) as endpoint:
             result = DeepSeekAdapter(
                 api_key=DEEPSEEK_FIXTURE_KEY, base_url=endpoint.url
             ).invoke(
