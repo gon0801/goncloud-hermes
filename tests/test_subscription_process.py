@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -189,43 +191,67 @@ class SafeProcessTests(unittest.TestCase):
 
         self.assertEqual(adapter.timeout_seconds, 300)
         self.assertEqual(adapter.probe_timeout_seconds, 30)
+        adapter.timeout_seconds = 7
+        adapter.probe_timeout_seconds = 8
+        self.assertEqual(adapter.timeout_seconds, 7)
+        self.assertEqual(adapter.probe_timeout_seconds, 8)
+        adapter.timeout_seconds = 900
+        adapter.probe_timeout_seconds = 120
+        self.assertEqual(adapter.timeout_seconds, 300)
+        self.assertEqual(adapter.probe_timeout_seconds, 30)
 
     def test_timeout_terminates_the_entire_child_process_tree(self):
         """A timed-out CLI cannot leave its direct child running in the background."""
-        parent_pid_file = self.workspace / "parent.pid"
-        grandchild_pid_file = self.workspace / "grandchild.pid"
-        command = [
-            sys.executable,
-            "-c",
-            (
-                "import os, pathlib, subprocess, sys, time; "
-                "parent = pathlib.Path(sys.argv[1]); "
-                "grandchild = pathlib.Path(sys.argv[2]); "
-                "parent.write_text(str(os.getpid()), encoding='utf-8'); "
-                "child = subprocess.Popen([sys.executable, '-c', "
-                "'import time; time.sleep(60)']); "
-                "grandchild.write_text(str(child.pid), encoding='utf-8'); "
-                "time.sleep(60)"
-            ),
-            str(parent_pid_file),
-            str(grandchild_pid_file),
-        ]
-        tracked_pids: list[int] = []
+        command, pid_files, marker = _tree_command(self.workspace, parent_wait=True)
         try:
             started = time.monotonic()
             with self.assertRaisesRegex(SubscriptionProcessError, "timed out after 1s"):
                 run_cli(command, "", self.workspace, timeout=1)
             self.assertLess(time.monotonic() - started, 6)
-
-            tracked_pids = [
-                int(parent_pid_file.read_text(encoding="utf-8")),
-                int(grandchild_pid_file.read_text(encoding="utf-8")),
-            ]
-            self.assertFalse(_pid_is_alive(tracked_pids[0]))
-            self.assertFalse(_pid_is_alive(tracked_pids[1]))
+            self.assert_tree_stopped(pid_files)
         finally:
-            for pid in tracked_pids:
-                _terminate_test_pid(pid)
+            _cleanup_tree_pids(pid_files, marker)
+
+    def test_timeout_contains_descendant_after_parent_exits_early(self):
+        """Inherited output handles cannot keep an escaped grandchild alive."""
+        command, pid_files, marker = _tree_command(self.workspace, parent_wait=False)
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(SubscriptionProcessError, "timed out after 1s"):
+                run_cli(command, "", self.workspace, timeout=1)
+            self.assertLess(time.monotonic() - started, 6)
+            self.assert_tree_stopped(pid_files)
+        finally:
+            _cleanup_tree_pids(pid_files, marker)
+
+    @unittest.skipUnless(os.name == "nt", "taskkill is Windows-only")
+    def test_taskkill_failure_does_not_replace_the_timeout(self):
+        """A taskkill launch error still returns the normalized timeout outcome."""
+        for cleanup_error in (PermissionError, FileNotFoundError):
+            with self.subTest(cleanup_error=cleanup_error.__name__):
+                command, pid_files, marker = _tree_command(
+                    self.workspace, parent_wait=False
+                )
+                try:
+                    with patch(
+                        "subscriptions.process.subprocess.run",
+                        side_effect=cleanup_error("taskkill unavailable"),
+                    ) as taskkill:
+                        with self.assertRaisesRegex(
+                            SubscriptionProcessError, "timed out after 1s"
+                        ):
+                            run_cli(
+                                command, "", self.workspace, timeout=1, runner=taskkill
+                            )
+                    self.assert_tree_stopped(pid_files)
+                finally:
+                    _cleanup_tree_pids(pid_files, marker)
+
+    def assert_tree_stopped(self, pid_files: tuple[Path, Path]) -> None:
+        for pid in _pids_from_files(pid_files):
+            self.assertFalse(
+                _pid_is_alive(pid), f"child process {pid} survived timeout"
+            )
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -239,6 +265,9 @@ def _pid_is_alive(pid: int) -> bool:
             shell=False,
         )
         return f'"{pid}"' in probe.stdout
+    stat_path = Path(f"/proc/{pid}/stat")
+    if stat_path.is_file() and ") Z " in stat_path.read_text(encoding="utf-8"):
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -248,9 +277,51 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
-def _terminate_test_pid(pid: int) -> None:
+def _tree_command(
+    workspace: Path, *, parent_wait: bool
+) -> tuple[list[str], tuple[Path, Path], str]:
+    parent_pid_file = workspace / "parent.pid"
+    grandchild_pid_file = workspace / "grandchild.pid"
+    marker = f"goncloud-test-{secrets.token_hex(12)}"
+    parent_tail = "time.sleep(60)" if parent_wait else ""
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os, pathlib, subprocess, sys, time; "
+            "parent = pathlib.Path(sys.argv[1]); "
+            "grandchild = pathlib.Path(sys.argv[2]); "
+            "parent.write_text(str(os.getpid()), encoding='utf-8'); "
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(8)', sys.argv[3]]); "
+            "grandchild.write_text(str(child.pid), encoding='utf-8'); "
+            f"{parent_tail}"
+        ),
+        str(parent_pid_file),
+        str(grandchild_pid_file),
+        marker,
+    ]
+    return command, (parent_pid_file, grandchild_pid_file), marker
+
+
+def _pids_from_files(pid_files: tuple[Path, Path]) -> tuple[int, ...]:
+    found = []
+    for pid_file in pid_files:
+        try:
+            found.append(int(pid_file.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return tuple(found)
+
+
+def _cleanup_tree_pids(pid_files: tuple[Path, Path], marker: str) -> None:
+    for pid in _pids_from_files(pid_files):
+        _terminate_test_pid(pid, marker)
+
+
+def _terminate_test_pid(pid: int, marker: str) -> None:
     """Best-effort cleanup scoped to a PID created by this test only."""
-    if not _pid_is_alive(pid):
+    if not _pid_is_alive(pid) or not _is_our_test_process(pid, marker):
         return
     if os.name == "nt":
         subprocess.run(
@@ -263,6 +334,34 @@ def _terminate_test_pid(pid: int) -> None:
         )
     else:
         os.kill(pid, 9)
+
+
+def _is_our_test_process(pid: int, marker: str) -> bool:
+    if os.name == "nt":
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    f"$process = Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; "
+                    f"if ($process -and $process.CommandLine -like '*{marker}*') {{ exit 0 }}; "
+                    "exit 1"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            shell=False,
+        )
+        return result.returncode == 0
+    proc_cmdline = Path(f"/proc/{pid}/cmdline")
+    try:
+        return marker.encode("utf-8") in proc_cmdline.read_bytes()
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

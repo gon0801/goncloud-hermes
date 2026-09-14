@@ -19,7 +19,98 @@ from typing import Literal, Mapping, Sequence
 
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
-_CLEANUP_GRACE_SECONDS = 5
+_CLEANUP_GRACE_SECONDS = 4
+
+
+class _WindowsProcessJob:
+    """A kill-on-close Job Object that contains a Windows CLI's descendants."""
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("per_process_user_time_limit", ctypes.c_longlong),
+                ("per_job_user_time_limit", ctypes.c_longlong),
+                ("limit_flags", wintypes.DWORD),
+                ("minimum_working_set_size", ctypes.c_size_t),
+                ("maximum_working_set_size", ctypes.c_size_t),
+                ("active_process_limit", wintypes.DWORD),
+                ("affinity", ctypes.c_size_t),
+                ("priority_class", wintypes.DWORD),
+                ("scheduling_class", wintypes.DWORD),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "read_operation_count",
+                    "write_operation_count",
+                    "other_operation_count",
+                    "read_transfer_count",
+                    "write_transfer_count",
+                    "other_transfer_count",
+                )
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("basic_limit_information", BasicLimitInformation),
+                ("io_info", IoCounters),
+                ("process_memory_limit", ctypes.c_size_t),
+                ("job_memory_limit", ctypes.c_size_t),
+                ("peak_process_memory_used", ctypes.c_size_t),
+                ("peak_job_memory_used", ctypes.c_size_t),
+            ]
+
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        self._kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        self._kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        self._kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.INT,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._handle = self._kernel32.CreateJobObjectW(None, None)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimitInformation()
+        limits.basic_limit_information.limit_flags = 0x00002000
+        if not self._kernel32.SetInformationJobObject(
+            self._handle,
+            9,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def assign(self, process: subprocess.Popen[str]) -> None:
+        if not self._kernel32.AssignProcessToJobObject(self._handle, process._handle):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def close(self) -> None:
+        if self._handle:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
+def _create_windows_process_job() -> _WindowsProcessJob | None:
+    if os.name != "nt":
+        return None
+    try:
+        return _WindowsProcessJob()
+    except OSError:
+        return None
 
 
 def _resolve_windows_shim(command: list[str]) -> list[str]:
@@ -73,9 +164,16 @@ def _write_private_prompt(prompt: str) -> Path:
     return Path(name)
 
 
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+def _terminate_process_tree(
+    process: subprocess.Popen[str], job: _WindowsProcessJob | None
+) -> None:
     """Kill only the timed-out process and descendants in its own group."""
     if os.name == "nt":
+        if job is not None:
+            try:
+                job.close()
+            except OSError:
+                pass
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -85,14 +183,27 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 check=False,
                 shell=False,
             )
-        except subprocess.TimeoutExpired:
-            # The parent is still our own process and is safer to stop than leave.
-            process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except OSError:
             pass
+
+
+def _close_process_streams(process: subprocess.Popen[str]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
 
 
 def _run_with_process_tree(
@@ -119,25 +230,54 @@ def _run_with_process_tree(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen(command, **popen_kwargs)
+    job = _create_windows_process_job()
+    try:
+        process = subprocess.Popen(command, **popen_kwargs)
+    except BaseException:
+        if job is not None:
+            try:
+                job.close()
+            except OSError:
+                pass
+        raise
+    if job is not None:
+        try:
+            job.assign(process)
+        except OSError:
+            try:
+                job.close()
+            except OSError:
+                pass
+            job = None
     try:
         stdout, stderr = process.communicate(input=stdin_text, timeout=timeout)
     except subprocess.TimeoutExpired:
         cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
-        _terminate_process_tree(process)
+        _terminate_process_tree(process, job)
         try:
             remaining = cleanup_deadline - time.monotonic()
             if remaining > 0:
                 process.communicate(timeout=remaining)
-            elif process.poll() is None:
-                process.kill()
-        except subprocess.TimeoutExpired:
-            process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except OSError:
+                pass
         finally:
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+            if job is not None:
+                try:
+                    job.close()
+                except OSError:
+                    pass
+            _close_process_streams(process)
         raise
+    finally:
+        if job is not None:
+            try:
+                job.close()
+            except OSError:
+                pass
     return process.returncode, stdout or "", stderr or ""
 
 
