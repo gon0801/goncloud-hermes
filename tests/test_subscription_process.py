@@ -281,6 +281,46 @@ class SafeProcessTests(unittest.TestCase):
         self.assertTrue(failed_job.closed)
         self.assertFalse(side_effect.exists())
 
+    def test_real_vendor_receives_byte_exact_stdin_prompt(self):
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        ]
+        for prompt in ("short", "x" * 10_000, "Héllo 👋\n日本語"):
+            with self.subTest(length=len(prompt)):
+                evidence = run_cli(command, prompt, self.workspace, timeout=5)
+                self.assertEqual(evidence.stdout, prompt)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Objects are Windows-only")
+    def test_bootstrap_cannot_import_workspace_or_pythonpath_before_assignment(self):
+        bootstrap_marker = self.workspace / "bootstrap-ran.txt"
+        pythonpath = self.workspace / "pythonpath"
+        pythonpath.mkdir()
+        (self.workspace / "subprocess.py").write_text(
+            f"from pathlib import Path; Path(r'{bootstrap_marker}').write_text('cwd')",
+            encoding="utf-8",
+        )
+        (pythonpath / "sitecustomize.py").write_text(
+            f"from pathlib import Path; Path(r'{bootstrap_marker}').write_text('path')",
+            encoding="utf-8",
+        )
+        failed_job = _FailingJob(delay_seconds=0.2)
+        with patch(
+            "subscriptions.process._create_windows_process_job", return_value=failed_job
+        ):
+            with self.assertRaisesRegex(
+                SubscriptionProcessError, "containment unavailable"
+            ):
+                run_cli(
+                    _side_effect_command(self.workspace / "vendor-ran.txt"),
+                    "",
+                    self.workspace,
+                    timeout=1,
+                    env_overlay={"PYTHONPATH": str(pythonpath)},
+                )
+        self.assertFalse(bootstrap_marker.exists())
+
     def assert_tree_stopped(self, pid_files: tuple[Path, Path]) -> None:
         pids = _required_pids(pid_files)
         self.assertEqual(len(pids), 2)
@@ -359,10 +399,12 @@ def _required_pids(pid_files: tuple[Path, Path]) -> tuple[int, int]:
 
 
 class _FailingJob:
-    def __init__(self) -> None:
+    def __init__(self, delay_seconds: float = 0) -> None:
         self.closed = False
+        self.delay_seconds = delay_seconds
 
     def assign(self, process) -> None:
+        time.sleep(self.delay_seconds)
         raise OSError("job assignment failed")
 
     def close(self) -> None:

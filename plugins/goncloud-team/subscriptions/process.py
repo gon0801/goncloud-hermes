@@ -7,6 +7,7 @@ becomes evidence.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import shutil
@@ -21,13 +22,19 @@ from typing import Literal, Mapping, Sequence
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
 _CLEANUP_GRACE_SECONDS = 4
-_WINDOWS_GATE = "goncloud-subscription-start\n"
+_WINDOWS_GATE = "goncloud-subscription-start!"
 _WINDOWS_GATE_LAUNCHER = (
-    "import subprocess, sys; "
-    "sys.stdin.readline(); "
-    "child = subprocess.Popen(sys.argv[1:], stdin=sys.stdin, "
-    "stdout=sys.stdout, stderr=sys.stderr); "
-    "raise SystemExit(child.wait())"
+    "import json, subprocess, sys\n"
+    f"gate = sys.stdin.buffer.read({len(_WINDOWS_GATE.encode('ascii'))})\n"
+    f"if gate != {(_WINDOWS_GATE.encode('ascii'))!r}:\n"
+    "    raise SystemExit(125)\n"
+    "config = json.load(open(sys.argv[1], encoding='utf-8'))\n"
+    "payload = sys.stdin.buffer.read()\n"
+    "child = subprocess.Popen(config['command'], cwd=config['cwd'], "
+    "env=config['env'], stdin=subprocess.PIPE, stdout=sys.stdout.buffer, "
+    "stderr=sys.stderr.buffer)\n"
+    "child.communicate(input=payload)\n"
+    "raise SystemExit(child.wait())\n"
 )
 
 
@@ -173,6 +180,29 @@ def _write_private_prompt(prompt: str) -> Path:
     return Path(name)
 
 
+def _write_private_launch_config(
+    command: list[str], cwd: Path, env: Mapping[str, str]
+) -> Path:
+    handle, name = tempfile.mkstemp(prefix="goncloud-launch-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as config_file:
+            json.dump(
+                {"command": command, "cwd": str(cwd), "env": dict(env)}, config_file
+            )
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def _windows_bootstrap_env() -> dict[str, str]:
+    return {
+        name: value
+        for name in ("COMSPEC", "SYSTEMROOT", "WINDIR")
+        if (value := os.environ.get(name))
+    }
+
+
 def _terminate_process_tree(
     process: subprocess.Popen[str], job: _WindowsProcessJob | None
 ) -> None:
@@ -249,22 +279,37 @@ def _run_with_process_tree(
     job = _create_windows_process_job()
     if windows and job is None:
         raise SubscriptionProcessError("vendor process containment unavailable")
+    config_path: Path | None = None
     launched_command = command
     launched_stdin = stdin_text
+    launch_cwd = cwd
+    launch_env = env
     if windows:
         # This trusted launcher blocks on its first input line. Its Job Object is
         # assigned before communicate releases that line, so the vendor never
         # executes outside the Job even if it immediately creates descendants.
+        try:
+            config_path = _write_private_launch_config(command, cwd, env)
+        except BaseException:
+            try:
+                job.close()
+            except OSError:
+                pass
+            raise
         launched_command = [
             sys.executable,
+            "-I",
+            "-S",
             "-c",
             _WINDOWS_GATE_LAUNCHER,
-            *command,
+            str(config_path),
         ]
         launched_stdin = _WINDOWS_GATE + (stdin_text or "")
+        launch_cwd = Path(sys.executable).resolve().parent
+        launch_env = _windows_bootstrap_env()
     popen_kwargs = {
-        "cwd": cwd,
-        "env": env,
+        "cwd": launch_cwd,
+        "env": launch_env,
         "stdin": subprocess.PIPE if launched_stdin is not None else None,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -278,50 +323,51 @@ def _run_with_process_tree(
     else:
         popen_kwargs["start_new_session"] = True
     try:
-        process = subprocess.Popen(launched_command, **popen_kwargs)
-    except BaseException:
-        if job is not None:
-            try:
-                job.close()
-            except OSError:
-                pass
-        raise
-    if job is not None:
         try:
-            job.assign(process)
-        except OSError:
-            _fail_closed_launcher(process, job)
-            raise SubscriptionProcessError("vendor process containment unavailable")
-    try:
-        stdout, stderr = process.communicate(input=launched_stdin, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
-        _terminate_process_tree(process, job)
-        try:
-            remaining = cleanup_deadline - time.monotonic()
-            if remaining > 0:
-                process.communicate(timeout=remaining)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                if process.poll() is None:
-                    process.kill()
-            except OSError:
-                pass
-        finally:
+            process = subprocess.Popen(launched_command, **popen_kwargs)
+        except BaseException:
             if job is not None:
                 try:
                     job.close()
                 except OSError:
                     pass
-            _close_process_streams(process)
-        raise
+            raise
+        if job is not None:
+            try:
+                job.assign(process)
+            except OSError:
+                _fail_closed_launcher(process, job)
+                raise SubscriptionProcessError("vendor process containment unavailable")
+        try:
+            stdout, stderr = process.communicate(input=launched_stdin, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
+            _terminate_process_tree(process, job)
+            try:
+                remaining = cleanup_deadline - time.monotonic()
+                if remaining > 0:
+                    process.communicate(timeout=remaining)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                except OSError:
+                    pass
+            finally:
+                _close_process_streams(process)
+            raise
+        return process.returncode, stdout or "", stderr or ""
     finally:
         if job is not None:
             try:
                 job.close()
             except OSError:
                 pass
-    return process.returncode, stdout or "", stderr or ""
+        if config_path is not None:
+            try:
+                config_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def run_cli(
