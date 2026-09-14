@@ -267,6 +267,25 @@ class MigrationTests(unittest.TestCase):
                     )
         self.assertEqual(list(self.root.glob("subscription-backup-*")), [])
 
+    @unittest.skipUnless(os.name == "nt", "Windows relative aliases")
+    def test_relative_components_are_validated_before_normalization_or_writes(self):
+        original_directory = Path.cwd()
+        try:
+            os.chdir(self.root)
+            for spelling in ("store.env.", "store.env "):
+                with self.subTest(spelling=spelling):
+                    with self.assertRaises(MigrationError):
+                        module.write_private_env(
+                            Path(spelling), {"GLM_API_KEY": GLM_SECRET}
+                        )
+                    self.assertEqual(list(self.root.iterdir()), [])
+            for spelling in ("unsafe. /store.env", "NUL", "NUL/store.env"):
+                with self.subTest(spelling=spelling):
+                    with self.assertRaises(MigrationError):
+                        module._checked_path(Path(spelling))
+        finally:
+            os.chdir(original_directory)
+
     @unittest.skipUnless(os.name == "nt", "Windows object ownership")
     def test_existing_writable_handle_prevents_public_object_mutation(self):
         launcher = seeded_deepseek_launcher(self.root)
@@ -594,6 +613,10 @@ class MigrationTests(unittest.TestCase):
     def test_private_env_write_is_atomic_and_restricted(self):
         target = private_env(self.root)
         module.write_private_env(target, {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET})
+        self.assertEqual(target.stat().st_nlink, 1)
+        self.assertEqual(
+            module.read_private_env(target), {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET}
+        )
         first = target.read_text(encoding="utf-8")
 
         self.assertIn("DEEPSEEK_API_KEY=", first)
@@ -605,8 +628,54 @@ class MigrationTests(unittest.TestCase):
             target, {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET, "GLM_API_KEY": GLM_SECRET}
         )
         second = target.read_text(encoding="utf-8")
+        self.assertEqual(target.stat().st_nlink, 1)
+        self.assertEqual(
+            module.read_private_env(target),
+            {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET, "GLM_API_KEY": GLM_SECRET},
+        )
         self.assertEqual(second.count("DEEPSEEK_API_KEY="), 1)
         self.assertIn("GLM_API_KEY=", second)
+
+    def test_published_store_still_rejects_external_hardlinks(self):
+        target = private_env(self.root)
+        module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+        before = target.read_bytes()
+        os.link(target, self.root / "external-link.env")
+        with self.assertRaises(MigrationError):
+            module.read_private_env(target)
+        with self.assertRaises(MigrationError):
+            module.write_private_env(target, {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET})
+        self.assertEqual(target.read_bytes(), before)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX ownership-preserving restoration")
+    def test_posix_changed_object_is_restored_without_residual_hardlink(self):
+        from subscriptions import private_files
+
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER=before\n")
+        expected = module._snapshot(target)[1]
+        target.write_bytes(b"OTHER=external edit\n")
+        transaction = self.root / "private-transaction"
+        transaction.mkdir(mode=0o700)
+        with self.assertRaises(OSError):
+            private_files.move_owned(target, transaction / "displaced", expected)
+        self.assertEqual(target.read_bytes(), b"OTHER=external edit\n")
+        self.assertEqual(target.stat().st_nlink, 1)
+        self.assertEqual(module.read_private_env(target), {"OTHER": "external edit"})
+
+    @unittest.skipUnless(os.name == "posix", "POSIX exclusive publication")
+    def test_posix_exclusive_publication_preserves_existing_destination(self):
+        from subscriptions import private_files
+
+        source, target = self.root / "candidate", self.root / "destination"
+        source.write_bytes(b"candidate")
+        target.write_bytes(b"external")
+        with self.assertRaises(FileExistsError):
+            private_files.publish_exclusive(source, target)
+        self.assertEqual(source.read_bytes(), b"candidate")
+        self.assertEqual(target.read_bytes(), b"external")
+        self.assertEqual(source.stat().st_nlink, 1)
+        self.assertEqual(target.stat().st_nlink, 1)
 
     def test_unverified_evidence_never_cleans_launcher_or_changes_store(self):
         launcher = seeded_deepseek_launcher(self.root)

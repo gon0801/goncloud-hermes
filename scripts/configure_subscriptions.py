@@ -175,12 +175,10 @@ def _checked_path(path: Path) -> Path:
             spelling = spelling[4:]
             if not re.match(r"^[A-Za-z]:[\\/]", spelling):
                 raise MigrationError("unsupported credential device path")
-        if not re.match(r"^[A-Za-z]:[\\/]", os.path.abspath(spelling)):
-            raise MigrationError("unsupported credential device path")
+        parsed = Path(spelling)
+        components = parsed.parts[1:] if parsed.anchor else parsed.parts
         if any(
-            part.rstrip(" .") != part
-            for part in Path(spelling).parts[1:]
-            if part not in {".", ".."}
+            part.rstrip(" .") != part for part in components if part not in {".", ".."}
         ):
             raise MigrationError("ambiguous credential path spelling")
         if ":" in spelling[2:]:
@@ -188,9 +186,9 @@ def _checked_path(path: Path) -> Path:
         devices = {"CON", "PRN", "AUX", "NUL"} | {
             f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
         }
-        if any(
-            part.split(".")[0].upper() in devices for part in Path(spelling).parts[1:]
-        ):
+        if any(part.split(".")[0].upper() in devices for part in components):
+            raise MigrationError("unsupported credential device path")
+        if not re.match(r"^[A-Za-z]:[\\/]", os.path.abspath(spelling)):
             raise MigrationError("unsupported credential device path")
     absolute = Path(os.path.abspath(spelling))
     for candidate in (absolute, *absolute.parents):

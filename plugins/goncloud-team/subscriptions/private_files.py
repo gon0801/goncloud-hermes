@@ -414,7 +414,7 @@ def move_owned(source: Path, destination: Path, expected) -> None:
 
     On POSIX the source name may race: move it into a unique private slot FIRST,
     then inspect it. A mismatching object is preserved and exclusively restored;
-    it is never overwritten/deleted. Publication uses link's O_EXCL semantics.
+    it is never overwritten/deleted. Publication uses rename's NOREPLACE flag.
     """
     with stable_directories([source.parent, destination.parent]) as directories:
         if os.name == "nt":
@@ -438,13 +438,10 @@ def move_owned(source: Path, destination: Path, expected) -> None:
             )
             try:
                 if file_fingerprint(descriptor) != expected:
-                    os.link(
-                        destination.name,
-                        source.name,
-                        src_dir_fd=directories[destination.parent],
-                        dst_dir_fd=directories[source.parent],
-                        follow_symlinks=False,
-                    )
+                    _posix_rename_exclusive(destination, source, directories)
+                    sync_directory(destination.parent)
+                    if source.parent != destination.parent:
+                        sync_directory(source.parent)
                     raise OSError("object ownership changed; displaced object retained")
             finally:
                 os.close(descriptor)
@@ -507,6 +504,37 @@ def _protect_displaced(descriptor, directory_descriptor):
             kernel.LocalFree(descriptor_pointer)
 
 
+def _posix_rename_exclusive(source: Path, destination: Path, directories) -> None:
+    """Move one link atomically without overwriting another writer's object.
+
+    Unlike link+unlink this cannot leave a second link after interruption, and
+    never introduces a check/unlink race. Unsupported native/filesystem support
+    fails closed: there is deliberately no ordinary rename or hardlink fallback.
+    """
+    import ctypes
+
+    try:
+        rename = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError:
+        raise OSError(errno.ENOTSUP, "exclusive POSIX rename unavailable") from None
+    rename.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(
+        directories[source.parent],
+        os.fsencode(source.name),
+        directories[destination.parent],
+        os.fsencode(destination.name),
+        1,
+    ):
+        raise OSError(ctypes.get_errno(), "exclusive POSIX rename failed")
+
+
 def publish_exclusive(source: Path, destination: Path) -> None:
     """Publish a private candidate over an absent name, never an existing file."""
     with stable_directories([source.parent, destination.parent]) as directories:
@@ -514,14 +542,7 @@ def publish_exclusive(source: Path, destination: Path) -> None:
             with _windows_owned(source) as descriptor:
                 _rename_handle(descriptor, destination, directories[destination.parent])
         else:
-            os.link(
-                source.name,
-                destination.name,
-                src_dir_fd=directories[source.parent],
-                dst_dir_fd=directories[destination.parent],
-                follow_symlinks=False,
-            )
-            # Keep the private source link: no public-name unlink race exists.
+            _posix_rename_exclusive(source, destination, directories)
         sync_directory(destination.parent)
         if source.parent != destination.parent:
             sync_directory(source.parent)
