@@ -1,8 +1,8 @@
 """Safe process boundary for vendor CLI execution.
 
-Prompts travel by stdin or a private temporary file, secrets travel only in
-the child environment, and captured output is redacted and capped before it
-becomes evidence.
+Prompts travel by stdin or a private temporary file. Vendors receive secrets
+through their environment; Windows bootstrap configuration travels over a
+private pipe. Captured output is redacted and capped before it becomes evidence.
 """
 
 from __future__ import annotations
@@ -28,9 +28,10 @@ _WINDOWS_GATE_LAUNCHER = (
     f"gate = sys.stdin.buffer.read({len(_WINDOWS_GATE.encode('ascii'))})\n"
     f"if gate != {(_WINDOWS_GATE.encode('ascii'))!r}:\n"
     "    raise SystemExit(125)\n"
-    "config = json.load(open(sys.argv[1], encoding='utf-8'))\n"
+    "config = json.loads(sys.stdin.buffer.readline())\n"
     "payload = sys.stdin.buffer.read()\n"
-    "child = subprocess.Popen(config['command'], cwd=config['cwd'], "
+    "child = subprocess.Popen(config['command'], executable=config['executable'], "
+    "cwd=config['cwd'], "
     "env=config['env'], stdin=subprocess.PIPE, stdout=sys.stdout.buffer, "
     "stderr=sys.stderr.buffer)\n"
     "child.communicate(input=payload)\n"
@@ -180,21 +181,6 @@ def _write_private_prompt(prompt: str) -> Path:
     return Path(name)
 
 
-def _write_private_launch_config(
-    command: list[str], cwd: Path, env: Mapping[str, str]
-) -> Path:
-    handle, name = tempfile.mkstemp(prefix="goncloud-launch-", suffix=".json")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as config_file:
-            json.dump(
-                {"command": command, "cwd": str(cwd), "env": dict(env)}, config_file
-            )
-    except BaseException:
-        Path(name).unlink(missing_ok=True)
-        raise
-    return Path(name)
-
-
 def _windows_bootstrap_env() -> dict[str, str]:
     return {
         name: value
@@ -279,17 +265,30 @@ def _run_with_process_tree(
     job = _create_windows_process_job()
     if windows and job is None:
         raise SubscriptionProcessError("vendor process containment unavailable")
-    config_path: Path | None = None
     launched_command = command
     launched_stdin = stdin_text
     launch_cwd = cwd
     launch_env = env
     if windows:
-        # This trusted launcher blocks on its first input line. Its Job Object is
-        # assigned before communicate releases that line, so the vendor never
-        # executes outside the Job even if it immediately creates descendants.
+        # Resolve without executing vendor code: the bootstrap deliberately has
+        # no PATH, and Windows CreateProcess ignores PATH in a child's env.
         try:
-            config_path = _write_private_launch_config(command, cwd, env)
+            search_path = env.get("PATH", os.defpath)
+            if systemroot := os.environ.get("SYSTEMROOT"):
+                # CreateProcess also finds system tools outside PATH. Preserve
+                # that fallback for cmd.exe when resolving npm command shims.
+                search_path += os.pathsep + os.path.join(systemroot, "System32")
+            executable = shutil.which(command[0], path=search_path)
+            if executable is None:
+                raise FileNotFoundError(command[0])
+            launch_config = json.dumps(
+                {
+                    "command": command,
+                    "executable": os.path.abspath(executable),
+                    "cwd": str(cwd),
+                    "env": dict(env),
+                }
+            )
         except BaseException:
             try:
                 job.close()
@@ -302,9 +301,12 @@ def _run_with_process_tree(
             "-S",
             "-c",
             _WINDOWS_GATE_LAUNCHER,
-            str(config_path),
         ]
-        launched_stdin = _WINDOWS_GATE + (stdin_text or "")
+        # communicate sends this only after Job assignment. JSON escapes
+        # embedded newlines, so the anonymous pipe frames config separately
+        # from the payload forwarded to the vendor's own stdin pipe. Neither
+        # credentials nor launch config enter a file or the bootstrap's env.
+        launched_stdin = _WINDOWS_GATE + launch_config + "\n" + (stdin_text or "")
         launch_cwd = Path(sys.executable).resolve().parent
         launch_env = _windows_bootstrap_env()
     popen_kwargs = {
@@ -361,11 +363,6 @@ def _run_with_process_tree(
         if job is not None:
             try:
                 job.close()
-            except OSError:
-                pass
-        if config_path is not None:
-            try:
-                config_path.unlink(missing_ok=True)
             except OSError:
                 pass
 

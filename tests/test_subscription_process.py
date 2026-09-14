@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ sys.path.insert(0, str(PLUGIN_DIR))
 from subscriptions.process import (  # noqa: E402
     ProcessEvidence,
     SubscriptionProcessError,
+    _WindowsProcessJob,
     run_cli,
 )
 from subscriptions.adapters import SubscriptionAdapter  # noqa: E402
@@ -281,7 +283,7 @@ class SafeProcessTests(unittest.TestCase):
         self.assertTrue(failed_job.closed)
         self.assertFalse(side_effect.exists())
 
-    def test_real_vendor_receives_byte_exact_stdin_prompt(self):
+    def test_real_vendor_receives_semantically_exact_stdin_prompt(self):
         command = [
             sys.executable,
             "-c",
@@ -291,6 +293,125 @@ class SafeProcessTests(unittest.TestCase):
             with self.subTest(length=len(prompt)):
                 evidence = run_cli(command, prompt, self.workspace, timeout=5)
                 self.assertEqual(evidence.stdout, prompt)
+
+    @unittest.skipUnless(os.name == "nt", "Windows executable lookup is Windows-only")
+    def test_path_only_executable_preserves_vendor_arguments_cwd_and_environment(self):
+        vendor_bin = self.workspace / "bin"
+        vendor_bin.mkdir()
+        executable = vendor_bin / "goncloud-path-vendor.exe"
+        systemroot = os.environ["SYSTEMROOT"]
+        shutil.copyfile(Path(systemroot) / "System32" / "cmd.exe", executable)
+        marker = self.workspace / "vendor-ran.txt"
+        script = self.workspace / "check_vendor.py"
+        script.write_text(
+            "import os, pathlib, sys\n"
+            "assert sys.argv[1:] == ['first', 'last']\n"
+            f"assert pathlib.Path.cwd() == pathlib.Path({str(self.workspace)!r})\n"
+            f"assert os.environ['PATH'] == {str(vendor_bin)!r}\n"
+            "assert os.environ['VENDOR_TOKEN'] == 'sentinel-only-for-test'\n"
+            f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+            "print('vendor-ok')\n",
+            encoding="utf-8",
+        )
+        original_assign = _WindowsProcessJob.assign
+
+        def assign_after_gate_check(job, process):
+            time.sleep(0.2)
+            self.assertFalse(marker.exists())
+            original_assign(job, process)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"SYSTEMROOT": systemroot, "PATH": str(vendor_bin)},
+                clear=True,
+            ),
+            patch.object(_WindowsProcessJob, "assign", assign_after_gate_check),
+        ):
+            evidence = run_cli(
+                [
+                    executable.name,
+                    "/d",
+                    "/c",
+                    sys.executable,
+                    str(script),
+                    "first",
+                    "last",
+                ],
+                "",
+                self.workspace,
+                timeout=5,
+                env_overlay={"VENDOR_TOKEN": "sentinel-only-for-test"},
+            )
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        self.assertEqual(evidence.stdout.strip(), "vendor-ok")
+        self.assertTrue(marker.exists())
+
+    @unittest.skipUnless(
+        os.name == "nt", "Windows launch configuration is Windows-only"
+    )
+    def test_launch_configuration_never_creates_a_file_or_enters_bootstrap_environment(
+        self,
+    ):
+        original_mkstemp = tempfile.mkstemp
+        original_popen = subprocess.Popen
+        created_files = []
+        bootstrap_invocations = []
+        sentinel = "sentinel-only-for-test"
+
+        def track_temporary_file(*args, **kwargs):
+            descriptor, path = original_mkstemp(*args, **kwargs)
+            created_files.append(path)
+            return descriptor, path
+
+        def track_bootstrap(command, **kwargs):
+            bootstrap_invocations.append((command, kwargs["env"]))
+            return original_popen(command, **kwargs)
+
+        command = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os, sys; "
+            "assert os.environ['VENDOR_TOKEN'] == 'sentinel-only-for-test'; "
+            "assert sys.stdin.read() == 'vendor prompt'; print('private-ok')",
+        ]
+        with (
+            patch.dict(
+                os.environ, {"SYSTEMROOT": os.environ["SYSTEMROOT"]}, clear=True
+            ),
+            patch("subscriptions.process.tempfile.mkstemp", track_temporary_file),
+            patch("subscriptions.process.subprocess.Popen", track_bootstrap),
+        ):
+            evidence = run_cli(
+                command,
+                "vendor prompt",
+                self.workspace,
+                timeout=5,
+                env_overlay={"VENDOR_TOKEN": sentinel},
+            )
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        self.assertEqual(evidence.stdout.strip(), "private-ok")
+        self.assertEqual(created_files, [], "launch configuration was exposed on disk")
+        self.assertEqual(len(bootstrap_invocations), 1)
+        bootstrap_command, bootstrap_env = bootstrap_invocations[0]
+        self.assertNotIn(sentinel, repr(bootstrap_command))
+        self.assertNotIn(sentinel, repr(bootstrap_env))
+
+    @unittest.skipUnless(os.name == "nt", "Windows command shims are Windows-only")
+    def test_cmd_shim_resolves_system_shell_when_path_contains_only_vendor_directory(
+        self,
+    ):
+        (self.workspace / "vendor.cmd").write_text("@echo shim-ok\n", encoding="utf-8")
+        with patch.dict(
+            os.environ,
+            {"SYSTEMROOT": os.environ["SYSTEMROOT"], "PATH": str(self.workspace)},
+            clear=True,
+        ):
+            evidence = run_cli(["vendor.cmd"], "", self.workspace, timeout=5)
+        self.assertEqual(evidence.returncode, 0, evidence.stderr)
+        self.assertEqual(evidence.stdout.strip(), "shim-ok")
 
     @unittest.skipUnless(os.name == "nt", "Windows Job Objects are Windows-only")
     def test_bootstrap_cannot_import_workspace_or_pythonpath_before_assignment(self):
