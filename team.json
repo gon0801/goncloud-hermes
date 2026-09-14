@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "3f86ed75dad1933036c52018e991dbd839837126",
+  "upstream_version": "0.21.2",
+  "director": "claw",
+  "profiles": {
+    "claw": "Director: recibe objetivos, coordina especialistas y entrega resultados consolidados.",
+    "operaciones": "Negocio: MercadoLibre, Amazon, inventario, pedidos, reportes y reglas comerciales.",
+    "ingenieria": "Planificador tecnico: arquitectura, diagnostico, alcance y criterios de aceptacion.",
+    "scout": "Investigador: hechos, codigo, dependencias, documentacion y fuentes verificables.",
+    "implementer": "Forja: implementacion minima completa, pruebas de regresion y correcciones.",
+    "verifier": "Verificacion independiente: tests, build, hooks, requisitos y revision exacta.",
+    "adversary": "Prueba adversarial: casos limite, concurrencia, fallos parciales y limites de confianza.",
+    "reviewer": "Revision final: adjudica hallazgos, comprueba correccion y aprueba o devuelve.",
+    "entrega": "Cierre: entrega, despliegue autorizado, comprobacion posterior y reporte al director."
+  },
+  "kanban": {
+    "orchestrator_profile": "claw",
+    "default_assignee": "claw",
+    "auto_decompose": false,
+    "review_dispatch": true,
+    "max_in_progress": 3,
+    "max_in_progress_per_profile": 1,
+    "failure_limit": 2
+  }
+}

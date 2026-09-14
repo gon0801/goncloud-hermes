@@ -1,0 +1,17 @@
+.claude/
+.codex/
+.harness-mem/
+.superpowers/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+auth.json
+*.db
+*.db-*
+runtime/
+local/
+*.log
+.pytest_cache/

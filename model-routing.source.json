@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "source": "User-provided OpenClaw routing table, 2026-09-13; supersedes historical repository snapshots",
+  "status": "applied_with_native_provider_aliases",
+  "columns": ["Primary", "F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+  "profile_names": {"main": "claw"},
+  "profile_inheritance": {"entrega": "main"},
+  "chains": {
+    "main": [
+      "opencode-go/muse-spark-1.3-contributor",
+      "opencode/muse-spark-1.3-contributor-free",
+      "anthropic/claude-sonnet-5",
+      "kimi/k3",
+      "opencode/muse-spark-1.3-contributor-free dup",
+      "zai/glm-5.3",
+      "xai/grok-4.6",
+      "opencode/gpt-6-astra"
+    ],
+    "operaciones": [
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode/deepseek-v4-flash",
+      "anthropic/claude-sonnet-5",
+      "opencode/muse-spark-1.3-contributor-free",
+      "zai/glm-5.3",
+      "kimi/k3",
+      "xai/grok-4.6",
+      "opencode/gpt-6-astra"
+    ],
+    "ingenieria": [
+      "opencode-go/muse-spark-1.3-contributor",
+      "opencode/muse-spark-1.3-contributor-free",
+      "opencode/gpt-6-astra",
+      "kimi/k3",
+      "zai/glm-5.3",
+      "opencode/muse-spark-1.3-contributor-free dup",
+      "opencode/claude-fable-5-1",
+      "xai/grok-4.6"
+    ],
+    "implementer": [
+      "opencode-go/muse-spark-1.3-contributor",
+      "opencode/muse-spark-1.3-contributor-free",
+      "opencode-go-resp/muse-spark-1.3-contributor",
+      "zai/glm-5.3",
+      "kimi/k3",
+      "opencode/gpt-6-astra",
+      "xai/grok-4.6",
+      "opencode/claude-fable-5-1"
+    ],
+    "reviewer": [
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode/deepseek-v4-flash",
+      "opencode/claude-fable-5-1",
+      "kimi/k3",
+      "opencode/muse-spark-1.3-contributor-free",
+      "zai/glm-5.3",
+      "opencode/gpt-6-astra",
+      "xai/grok-4.6"
+    ],
+    "adversary": [
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode/deepseek-v4-flash",
+      "xai/grok-4.6",
+      "kimi/k3",
+      "zai/glm-5.3",
+      "opencode/muse-spark-1.3-contributor-free",
+      "opencode/claude-fable-5-1",
+      "opencode/gpt-6-astra"
+    ],
+    "verifier": [
+      "opencode-go/muse-spark-1.3-contributor",
+      "opencode/muse-spark-1.3-contributor-free",
+      "opencode/gpt-6-astra",
+      "opencode/muse-spark-1.3-contributor-free dup",
+      "kimi/k3",
+      "zai/glm-5.3",
+      "opencode/claude-fable-5-1",
+      "xai/grok-4.6"
+    ],
+    "scout": [
+      "opencode-go/deepseek-v4.1-flash",
+      "opencode/deepseek-v4-flash",
+      "zai/glm-5.3",
+      "opencode/muse-spark-1.3-contributor-free",
+      "kimi/k3",
+      "xai/grok-4.6",
+      "anthropic/claude-sonnet-5",
+      "deepseek/deepseek-flash"
+    ]
+  },
+  "bindings": {
+    "duplicate_marker": "Preserved in this source record and stripped from the runtime model ID",
+    "opencode-go-resp": "Mapped to Hermes native opencode-go, whose Muse route already uses the Responses transport",
+    "entrega": "Confirmed by the user to inherit main"
+  }
+}

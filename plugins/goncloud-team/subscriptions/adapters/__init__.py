@@ -1,0 +1,162 @@
+"""Vendor adapter contracts and shared failure classification."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+
+from ..types import AdapterHealth, FailureKind, InvocationRequest, InvocationResult, RouteSpec
+
+_AUTH_PATTERN = re.compile(
+    r"unauthorized|authentication|\bauth\b|credential|api[ _-]?key|"
+    r"not logged in|login required|forbidden|expired|signed out",
+    re.IGNORECASE,
+)
+_QUOTA_PATTERN = re.compile(
+    r"\bquota\b|\bbalance\b|insufficient|rate[ _-]?limit|usage[ _-]?limit|"
+    r"\bexceeded\b|\b429\b|out of credit",
+    re.IGNORECASE,
+)
+_MODEL_PATTERN = re.compile(
+    r"model (is )?not|unknown model|no such model|not available|"
+    r"does not exist|deprecat|\b404\b",
+    re.IGNORECASE,
+)
+_INVALID_PATTERN = re.compile(
+    r"invalid request|bad request|malformed|schema|\b400\b", re.IGNORECASE
+)
+
+_STATUS_CODES = {
+    "401": FailureKind.AUTH,
+    "403": FailureKind.AUTH,
+    "429": FailureKind.QUOTA,
+    "404": FailureKind.MODEL_UNAVAILABLE,
+    "400": FailureKind.INVALID_REQUEST,
+}
+
+
+def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
+    """Best-effort vendor failure classification from redacted evidence."""
+    haystack = f"{stdout}\n{stderr}".lower()
+    for code, failure in _STATUS_CODES.items():
+        if re.search(rf"\b{code}\b", haystack):
+            return failure
+    if _AUTH_PATTERN.search(haystack):
+        return FailureKind.AUTH
+    if _QUOTA_PATTERN.search(haystack):
+        return FailureKind.QUOTA
+    if _MODEL_PATTERN.search(haystack):
+        return FailureKind.MODEL_UNAVAILABLE
+    if _INVALID_PATTERN.search(haystack):
+        return FailureKind.INVALID_REQUEST
+    return FailureKind.TASK_FAILURE
+
+
+def build_assignment_prompt(request: InvocationRequest) -> str:
+    """Compose the bounded assignment, including continuation state."""
+    lines = [
+        f"Goncloud stage {request.stage_id} of workflow {request.workflow_id}.",
+        f"Role: {request.role}.",
+        f"Workspace: {request.workspace} "
+        f"(owner-approved baseline revision {request.start_revision}).",
+    ]
+    if request.mode == "continue":
+        lines.append(
+            "CONTINUATION: a previous subscription worker already mutated this "
+            "workspace before failing. Continue from the recorded state; do not "
+            "redo completed work and do not replay the original task blindly."
+        )
+        lines.append(f"Current recorded revision: {request.current_revision}.")
+        if request.changed_files:
+            lines.append("Files already changed by the previous attempt:")
+            lines.extend(f"- {name}" for name in request.changed_files)
+    lines.append("")
+    lines.append(request.prompt)
+    return "\n".join(lines)
+
+
+class SubscriptionAdapter:
+    """Common shape for one vendor binding; subclasses fill the CLI details."""
+
+    name: str = ""
+    billing_mode = "subscription"
+    timeout_seconds = 900
+    probe_timeout_seconds = 30
+
+    def __init__(self, runner=None) -> None:
+        self.runner = runner if runner is not None else subprocess.run
+
+    def probe(self, route: RouteSpec) -> AdapterHealth:
+        raise NotImplementedError
+
+    def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
+        raise NotImplementedError
+
+    def _failed_result(
+        self, route: RouteSpec, failure: FailureKind, detail: str = ""
+    ) -> InvocationResult:
+        text = f"{route.adapter} invocation failed ({failure.value})"
+        # Launch/timeout details carry no secrets; vendor output stays out.
+        if detail and failure is not FailureKind.TIMEOUT:
+            text = f"{text}: {detail}"
+        return InvocationResult(
+            success=False,
+            text=text,
+            adapter=route.adapter,
+            model=route.model,
+            billing_mode=route.billing_mode,
+            failure=failure,
+        )
+
+
+__all__ = [
+    "SubscriptionAdapter",
+    "AdapterHealth",
+    "FailureKind",
+    "InvocationRequest",
+    "InvocationResult",
+    "RouteSpec",
+    "build_adapter_registry",
+    "build_assignment_prompt",
+    "classify_failure",
+]
+
+
+def build_adapter_registry(
+    *,
+    runner=None,
+    zai_auth_token: str | None = None,
+    zai_base_url: str | None = None,
+    deepseek_api_key: str | None = None,
+    deepseek_base_url: str | None = None,
+) -> dict:
+    """One adapter instance per vendor binding, keyed by adapter id."""
+    from .claude import ClaudeAdapter
+    from .codex import CodexAdapter
+    from .deepseek import DeepSeekAdapter
+    from .grok import GrokAdapter
+    from .kimi import KimiAdapter
+    from .muse import MuseAdapter
+    from .opencode import OpenCodeAdapter
+    from .zai import ZAIAdapter
+
+    opencode = OpenCodeAdapter(runner=runner)
+    return {
+        "opencode_go": opencode,
+        "opencode_zen": opencode,
+        "muse": MuseAdapter(runner=runner),
+        "claude": ClaudeAdapter(runner=runner),
+        "codex": CodexAdapter(runner=runner),
+        "kimi": KimiAdapter(runner=runner),
+        "zai": ZAIAdapter(
+            runner=runner,
+            auth_token=zai_auth_token,
+            base_url=zai_base_url,
+        ),
+        "grok": GrokAdapter(runner=runner),
+        "deepseek": DeepSeekAdapter(
+            runner=runner,
+            api_key=deepseek_api_key,
+            base_url=deepseek_base_url,
+        ),
+    }

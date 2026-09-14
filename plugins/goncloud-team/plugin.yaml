@@ -1,0 +1,15 @@
+name: goncloud-team
+version: 0.1.0
+description: Durable Goncloud engineering workflow and peer consultations on native Hermes Kanban.
+author: Goncloud
+kind: standalone
+platforms:
+  - windows
+provides_tools:
+  - goncloud_engineering_start
+  - goncloud_engineering_status
+  - goncloud_consult
+  - goncloud_engineering_review
+  - goncloud_muse_delegate
+provides_hooks:
+  - pre_tool_call
