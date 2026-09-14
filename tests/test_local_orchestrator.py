@@ -16,6 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path.home() / "AppData/Local/hermes/hermes-agent"))
 sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from hermes_cli.kanban_db import (  # noqa: E402
     complete_task,
@@ -28,7 +29,7 @@ from workflow import WorkflowError, WorkflowService  # noqa: E402
 from subscriptions.router import SubscriptionRouter  # noqa: E402
 from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from local_orchestrator import LocalOrchestrator, parse_terminal_envelope  # noqa: E402
-from tests.test_subscription_router import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SOURCES = [{"reference": "owner-approved local test", "observed_at": "2026-09-14"}]
 ORDER = [

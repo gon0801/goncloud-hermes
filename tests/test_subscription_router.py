@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import subprocess
 import sqlite3
-import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import replace
@@ -18,6 +16,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.catalog import compile_profile_routes  # noqa: E402
 from subscriptions.router import GitInspector, SubscriptionRouter  # noqa: E402
@@ -104,19 +105,6 @@ def request(workspace, workflow_id="wf-6", stage_id="st-6", prompt="Do it once."
         start_revision="",
         current_revision="",
     )
-
-
-def cleanup_temp_directory(directory):
-    # Windows can briefly report a nonempty directory while file deletions
-    # settle. Retry that specific error; persistent failures still fail the test.
-    for attempt in range(20):
-        try:
-            directory.cleanup()
-            return
-        except OSError as error:
-            if os.name != "nt" or error.winerror != 145 or attempt == 19:
-                raise
-            time.sleep(0.05)
 
 
 class RouterTestCase(unittest.TestCase):

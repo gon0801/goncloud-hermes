@@ -18,6 +18,7 @@ PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 HERMES_ROOT = Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent"
 sys.path.insert(0, str(HERMES_ROOT))
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
 
 if "goncloud_team" not in sys.modules:
     _SPEC = importlib.util.spec_from_file_location(
@@ -38,7 +39,7 @@ from subscriptions.router import SubscriptionRouter  # noqa: E402
 from subscriptions.types import AdapterHealth, InvocationRequest, InvocationResult  # noqa: E402
 from goncloud_team.schemas import SUBSCRIPTION_RUN  # noqa: E402
 from workflow import WorkflowError, WorkflowService  # noqa: E402
-from tests.test_subscription_router import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SOURCES = [
     {

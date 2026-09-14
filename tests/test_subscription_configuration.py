@@ -23,9 +23,10 @@ module = importlib.util.module_from_spec(SPEC)
 sys.modules["configure_subscriptions"] = module
 SPEC.loader.exec_module(module)
 sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
+sys.path.insert(0, str(ROOT / "tests"))
 from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from subscriptions.process import ProcessEvidence  # noqa: E402
-from tests.test_subscription_router import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 MigrationError = module.MigrationError
 migrate_launcher_secrets = module.migrate_launcher_secrets
@@ -844,7 +845,8 @@ class MigrationTests(unittest.TestCase):
         code = """
 import os, sys
 from pathlib import Path
-from tests.test_subscription_configuration import module, passing_probe
+sys.path.insert(0, str(Path.cwd() / "tests"))
+from test_subscription_configuration import module, passing_probe
 root = Path(sys.argv[1])
 write = module._publish_exclusive
 def crash_after_write(source, path, **kwargs):
@@ -1173,7 +1175,8 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         code = """
 import os, sys
 from pathlib import Path
-from tests.test_subscription_configuration import module, passing_probe
+sys.path.insert(0, str(Path.cwd() / "tests"))
+from test_subscription_configuration import module, passing_probe
 root, victim = Path(sys.argv[1]), sys.argv[2]
 replace = module._publish_exclusive
 def die_after_replace(source, destination):
@@ -1435,7 +1438,7 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
         import time
         from subscriptions.router import SubscriptionRouter
         from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
-        from tests.test_subscription_router import (
+        from test_subscription_router import (
             SOURCE,
             ScriptedAdapter,
             completed,
@@ -1552,7 +1555,7 @@ while True:
 
     def test_live_probe_lock_also_excludes_threads_until_publication(self):
         from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
-        from tests.test_subscription_router import ScriptedAdapter, completed
+        from test_subscription_router import ScriptedAdapter, completed
 
         entered, release = threading.Event(), threading.Event()
         adapter = ScriptedAdapter("codex")
@@ -1655,7 +1658,7 @@ while True:
     def test_live_failure_survives_ttl_and_only_exact_proof_restores_route(self):
         from subscriptions.router import SubscriptionRouter
         from subscriptions.state import SubscriptionStateStore
-        from tests.test_subscription_router import (
+        from test_subscription_router import (
             SOURCE,
             ScriptedAdapter,
             completed,
@@ -1765,7 +1768,7 @@ while True:
             self.assertEqual(health.get("quarantined"), False)
 
     def test_real_probe_uses_persisted_fixtures_and_table_models_over_local_http(self):
-        from tests.test_subscription_vendor_adapters import (
+        from test_subscription_vendor_adapters import (
             FakeEndpoint,
             zai_ok_body,
             deepseek_ok_body,
@@ -1820,7 +1823,7 @@ while True:
             self.assertEqual(len(zai.requests), 1)
 
     def test_live_matrix_uses_one_http_inference_per_family_and_private_store(self):
-        from tests.test_subscription_vendor_adapters import (
+        from test_subscription_vendor_adapters import (
             FakeEndpoint,
             zai_ok_body,
             deepseek_ok_body,
