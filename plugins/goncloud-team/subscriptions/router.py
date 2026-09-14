@@ -277,6 +277,12 @@ class SubscriptionRouter:
                 )
                 # Authorization says nothing about vendor health or quota.
                 return denied if recorded else self._stage_busy()
+            # Authorization may block longer than the lease. Fence a stale
+            # owner and restore the full invocation/cleanup budget at dispatch.
+            if not self.store.renew_stage(
+                request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
+            ):
+                return self._stage_busy()
             result = self._invoke_route(request, route)
             revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision

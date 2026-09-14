@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,6 +158,98 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_expiry_during_guard_fences_old_owner_after_second_router_claims(self):
+        old_router, new_router = self.router(), self.router()
+        clock = [datetime.now(timezone.utc)]
+        self.fake_adapters["opencode_go"].result = completed(
+            "new owner result", "opencode_go"
+        )
+        new_results = []
+
+        def delayed_guard():
+            clock[0] += timedelta(seconds=601)
+            new_results.append(
+                new_router.run(request(self.workspace), routes_for_main())
+            )
+
+        with patch("subscriptions.state._utcnow", side_effect=lambda: clock[0]):
+            result = old_router.run(
+                replace(request(self.workspace), pre_invoke=delayed_guard),
+                routes_for_main(),
+            )
+
+        self.assertTrue(new_results[0].success)
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(old_router.calls, [])
+        self.assertEqual(new_router.calls, ["opencode_go"])
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+        attempts = old_router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(
+            [row["status"] for row in attempts], ["interrupted", "completed"]
+        )
+        self.assertEqual([row["success"] for row in attempts], [False, True])
+        self.assertEqual(attempts[1]["detail"], "new owner result")
+        with old_router.store._connect() as conn:
+            owners = conn.execute(
+                "SELECT owner FROM subscription_attempts ORDER BY id"
+            ).fetchall()
+        self.assertNotEqual(owners[0]["owner"], owners[1]["owner"])
+
+    def test_guard_delay_renews_full_invocation_and_cleanup_budget(self):
+        router = self.router()
+        clock = [datetime.now(timezone.utc)]
+
+        def delayed_guard():
+            clock[0] += timedelta(seconds=400)
+
+        def bounded_invocation(request, route):
+            with router.store._connect() as conn:
+                lease = conn.execute(
+                    "SELECT expires_at FROM subscription_stage_leases "
+                    "WHERE workflow_id = ? AND stage_id = ?",
+                    ("wf-6", "st-6"),
+                ).fetchone()
+            remaining = (
+                datetime.fromisoformat(lease["expires_at"]) - clock[0]
+            ).total_seconds()
+            self.assertGreaterEqual(remaining, 305)
+            clock[0] += timedelta(seconds=305)
+            return completed("bounded invocation completed", route.adapter)
+
+        self.fake_adapters["opencode_go"].result = bounded_invocation
+        with patch("subscriptions.state._utcnow", side_effect=lambda: clock[0]):
+            result = router.run(
+                replace(request(self.workspace), pre_invoke=delayed_guard),
+                routes_for_main(),
+            )
+        self.assertTrue(result.success)
+        self.assertEqual(
+            router.store.stage_attempts("wf-6", "st-6")[0]["status"], "completed"
+        )
+
+    def test_guard_outliving_lease_without_takeover_refuses_and_remains_resumable(self):
+        router = self.router()
+        clock = [datetime.now(timezone.utc)]
+        self.fake_adapters["opencode_go"].result = completed("resumed", "opencode_go")
+
+        def delayed_guard():
+            clock[0] += timedelta(seconds=720)
+
+        with patch("subscriptions.state._utcnow", side_effect=lambda: clock[0]):
+            result = router.run(
+                replace(request(self.workspace), pre_invoke=delayed_guard),
+                routes_for_main(),
+            )
+            self.assertFalse(result.success)
+            self.assertEqual(router.calls, [])
+            self.assertEqual(
+                router.store.stage_attempts("wf-6", "st-6")[0]["status"], "interrupted"
+            )
+            resumed = self.router().run(request(self.workspace), routes_for_main())
+        self.assertTrue(resumed.success)
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+
     def test_authorization_guard_errors_are_terminal_and_sanitized(self):
         router = self.router()
 
