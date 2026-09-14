@@ -10,7 +10,7 @@ import tempfile
 import unittest
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1326,6 +1326,128 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
 
 
 class LiveEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.db_path = Path(self.tmp.name) / "router.db"
+        self.environment = patch.dict(
+            os.environ, {"GONCLOUD_SUBSCRIPTION_DB": str(self.db_path)}
+        )
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def test_live_failure_survives_ttl_and_only_exact_proof_restores_route(self):
+        from subscriptions.router import SubscriptionRouter
+        from subscriptions.state import SubscriptionStateStore
+        from tests.test_subscription_router import (
+            SOURCE,
+            ScriptedAdapter,
+            completed,
+            failed,
+            request,
+            routes_for_main,
+        )
+
+        adapters = {
+            name: ScriptedAdapter(name) for name in ("opencode_go", "opencode_zen")
+        }
+        for adapter in adapters.values():
+            adapter.timeout_seconds = 300
+            adapter.probe_timeout_seconds = 30
+        adapters["opencode_go"].result = failed(FailureKind.TIMEOUT, "opencode_go")
+        adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        store = SubscriptionStateStore(self.db_path)
+        store.save_health("opencode_zen", ready=True, account_class="subscription")
+        before = store.health("opencode_zen")
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry", return_value=adapters
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            summary = module.run_live_probe_all(only="opencode_go")
+            self.assertEqual(summary["passed"], 0)
+            self.assertEqual(store.health("opencode_zen"), before)
+            self.assertIsNotNone(store.health("opencode_go"))
+            self.assertTrue(store.health("opencode_go")["quarantined"])
+            # Ordinary health updates cannot erase a live-proof quarantine.
+            store.save_health(
+                "opencode_go",
+                ready=False,
+                account_class="subscription",
+                failure="auth",
+                detail="sk-private owner@example.test",
+            )
+            store.save_health("opencode_go", ready=True, account_class="subscription")
+            router = SubscriptionRouter(
+                adapters=adapters,
+                store=store,
+                routing_source=SOURCE,
+                health_ttl_seconds=-1,
+            )
+            adapters["opencode_go"].requests.clear()
+            adapters["opencode_go"].probes.clear()
+            result = router.run(request(Path(self.tmp.name)), routes_for_main()[:2])
+            self.assertTrue(result.success)
+            self.assertEqual(result.adapter, "opencode_zen")
+            self.assertEqual(adapters["opencode_go"].requests, [])
+            self.assertEqual(adapters["opencode_go"].probes, [])
+            attempts = store.stage_attempts("wf-6", "st-6")
+            self.assertEqual([item["slot"] for item in attempts], [0, 1])
+            self.assertNotIn("sk-private", repr(store.health("opencode_go")))
+            self.assertNotIn("owner@", repr(store.health("opencode_go")))
+            store.set_cooldown("opencode_go", hours=1)
+            result = router.run(
+                request(Path(self.tmp.name), stage_id="cooldown"), routes_for_main()[:2]
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(
+                [item["slot"] for item in store.stage_attempts("wf-6", "cooldown")],
+                [0, 1],
+            )
+            adapters["opencode_go"].result = completed(
+                "GONCLOUD_PROBE_OK extra", adapter="opencode_go"
+            )
+            module.run_live_probe_all(only="opencode_go")
+            self.assertTrue(store.health("opencode_go")["quarantined"])
+            adapters["opencode_go"].result = completed(
+                "GONCLOUD_PROBE_OK", adapter="opencode_go"
+            )
+            module.run_live_probe_all(only="opencode_go")
+            self.assertFalse(store.health("opencode_go")["quarantined"])
+            self.assertIsNone(store.cooldown_until("opencode_go"))
+            result = router.run(
+                request(Path(self.tmp.name), stage_id="restored"), routes_for_main()[:2]
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.adapter, "opencode_go")
+
+    def test_existing_health_database_migrates_concurrently_without_losing_state(self):
+        import sqlite3
+        from subscriptions.state import SubscriptionStateStore
+
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+            conn.execute(
+                "CREATE TABLE subscription_health (adapter TEXT PRIMARY KEY, "
+                "ready INTEGER NOT NULL, account_class TEXT NOT NULL, failure TEXT, "
+                "detail TEXT NOT NULL DEFAULT '', cooldown_until TEXT, "
+                "updated_at TEXT NOT NULL DEFAULT '')"
+            )
+            conn.execute(
+                "INSERT INTO subscription_health(adapter, ready, account_class) "
+                "VALUES ('opencode_zen', 0, 'subscription')"
+            )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            stores = list(
+                pool.map(SubscriptionStateStore, [self.db_path, self.db_path])
+            )
+        for store in stores:
+            health = store.health("opencode_zen")
+            self.assertEqual(health["ready"], False)
+            self.assertEqual(health["account_class"], "subscription")
+            self.assertEqual(health.get("quarantined"), False)
+
     def test_real_probe_uses_persisted_fixtures_and_table_models_over_local_http(self):
         from tests.test_subscription_vendor_adapters import (
             FakeEndpoint,

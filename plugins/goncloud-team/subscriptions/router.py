@@ -222,7 +222,10 @@ class SubscriptionRouter:
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
                 return self._stage_busy()
-            if self._in_cooldown(route.adapter):
+            stored_health = self.store.health(route.adapter)
+            if self._in_cooldown(route.adapter) and not (
+                stored_health and stored_health["quarantined"]
+            ):
                 continue
             adapter = self.adapters.get(route.adapter)
             if adapter is None:
@@ -480,7 +483,9 @@ class SubscriptionRouter:
 
     def _availability(self, route: RouteSpec) -> AdapterHealth:
         """Use bounded health evidence, probing and normalizing it when stale."""
-        cached = self.store.fresh_health(route.adapter, self.health_ttl_seconds)
+        cached = self.store.health(route.adapter)
+        if not (cached and cached["quarantined"]):
+            cached = self.store.fresh_health(route.adapter, self.health_ttl_seconds)
         if cached is not None:
             failure = cached.get("failure")
             return AdapterHealth(

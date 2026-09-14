@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS subscription_health (
     failure TEXT,
     detail TEXT NOT NULL DEFAULT '',
     cooldown_until TEXT,
+    quarantined INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 """
@@ -123,6 +124,14 @@ class SubscriptionStateStore:
             if "terminal" not in columns:
                 conn.execute(
                     "ALTER TABLE subscription_attempts ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0"
+                )
+            health_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(subscription_health)")
+            }
+            if "quarantined" not in health_columns:
+                conn.execute(
+                    "ALTER TABLE subscription_health ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0"
                 )
             conn.commit()
 
@@ -437,11 +446,40 @@ class SubscriptionStateStore:
                 "INSERT INTO subscription_health "
                 "(adapter, ready, account_class, failure, detail, updated_at) "
                 "VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
-                "ON CONFLICT(adapter) DO UPDATE SET ready=excluded.ready, "
-                "account_class=excluded.account_class, failure=excluded.failure, "
+                "ON CONFLICT(adapter) DO UPDATE SET "
+                "ready=CASE WHEN subscription_health.quarantined THEN 0 ELSE excluded.ready END, "
+                "account_class=excluded.account_class, "
+                "failure=CASE WHEN subscription_health.quarantined AND excluded.ready "
+                "THEN subscription_health.failure ELSE excluded.failure END, "
                 "detail=excluded.detail, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
                 (adapter, 1 if ready else 0, account_class, failure, safe_detail),
+            )
+            conn.commit()
+
+    def save_live_health(
+        self, adapter: str, *, ready: bool, account_class: str, failure: Optional[str]
+    ) -> None:
+        """Publish normalized inference proof; ordinary probes cannot lift quarantine."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO subscription_health "
+                "(adapter, ready, account_class, failure, detail, quarantined) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(adapter) DO UPDATE SET ready=excluded.ready, "
+                "account_class=excluded.account_class, failure=excluded.failure, "
+                "detail=excluded.detail, quarantined=excluded.quarantined, "
+                "cooldown_until=CASE WHEN excluded.ready THEN NULL "
+                "ELSE subscription_health.cooldown_until END, "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                (
+                    adapter,
+                    int(ready),
+                    account_class,
+                    failure,
+                    _health_detail(ready=ready, failure=failure),
+                    int(not ready),
+                ),
             )
             conn.commit()
 
@@ -459,6 +497,7 @@ class SubscriptionStateStore:
             "failure": row["failure"],
             "detail": _health_detail(ready=bool(row["ready"]), failure=row["failure"]),
             "cooldown_until": row["cooldown_until"],
+            "quarantined": bool(row["quarantined"]),
             "updated_at": row["updated_at"],
         }
 
