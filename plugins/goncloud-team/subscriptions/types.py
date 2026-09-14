@@ -48,6 +48,9 @@ class InvocationRequest:
     pre_invoke: Callable[[], None] | None = field(
         default=None, repr=False, compare=False
     )
+    result_transform: Callable[[InvocationResult], InvocationResult] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if type(self.max_steps) is not int or not 1 <= self.max_steps <= 200:

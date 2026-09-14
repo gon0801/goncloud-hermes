@@ -352,7 +352,22 @@ class SubscriptionRouter:
     def _invoke_route(
         self, request: InvocationRequest, route: RouteSpec
     ) -> InvocationResult:
-        return self.adapters[route.adapter].invoke(request, route)
+        try:
+            result = self.adapters[route.adapter].invoke(request, route)
+            if request.result_transform is not None:
+                result = request.result_transform(result)
+            return result
+        except Exception:
+            if request.result_transform is None:
+                raise
+            return InvocationResult(
+                success=False,
+                text="local terminal validation failed",
+                adapter=route.adapter,
+                model=route.model,
+                billing_mode=route.billing_mode,
+                failure=FailureKind.TASK_FAILURE,
+            )
 
     def _absorb_workspace_state(self, request: InvocationRequest) -> InvocationRequest:
         """A recorded mutation turns a fresh run into an explicit continuation."""

@@ -422,6 +422,7 @@ class WorkflowService:
         revision: str,
         sources: Iterable[dict[str, Any]],
         max_steps: int,
+        result_transform=None,
     ) -> dict[str, Any]:
         """Run the current stage through the profile's subscription routes."""
         self._require_known_actor()
@@ -465,6 +466,7 @@ class WorkflowService:
             current_revision=revision,
             max_steps=max_steps,
             pre_invoke=authorize,
+            result_transform=result_transform,
         )
         authorize()
         result = router.run(request, routes)
