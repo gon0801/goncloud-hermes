@@ -69,6 +69,31 @@ class TerminalParserTests(unittest.TestCase):
             rejected,
         )
 
+    def test_prose_glued_to_the_opening_fence_is_still_the_terminal(self):
+        # Vendors differ on whether they break the line before the fence, and a
+        # missing newline is not evidence that the stage failed.
+        expected = envelope(summary="Plan ready.", evidence=["base revision clean"])
+        for text in (
+            "Plan on the way." + fenced(expected),
+            "Plan on the way. " + fenced(expected),
+            "Plan on the way.\n" + fenced(expected),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    parse_terminal_envelope(text, role="ingenieria"), expected
+                )
+
+    def test_a_glued_fence_still_obeys_every_other_rule(self):
+        valid = envelope()
+        for text in (
+            "Prose." + fenced(valid) + "\nAPPROVED",
+            "Prose." + "```json\n" + json.dumps({"status": "completed"}) + "\n```",
+            "Prose." + "```python\n{}\n```",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(WorkflowError):
+                    parse_terminal_envelope(text, role="ingenieria")
+
     def test_malformed_trailing_multiple_objects_and_wrong_fences_fail_closed(self):
         valid = fenced(envelope())
         for text in (

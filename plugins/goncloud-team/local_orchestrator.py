@@ -31,7 +31,10 @@ except ImportError:
 
 MAX_TERMINAL_BYTES = 1800
 MAX_INPUT_BYTES = 24000
-_FENCE = re.compile(r"^```([^\r\n]*)\r?$", re.MULTILINE)
+# Vendors differ on whether they break the line before the opening fence, so the
+# fence may carry a prose prefix. The closing fence is still checked separately
+# for standing alone, and nothing may follow it.
+_FENCE = re.compile(r"```([^\r\n]*)\r?$", re.MULTILINE)
 _SENSITIVE = re.compile(
     r"\b(?:sk-[\w-]+|Bearer\s+[\w.\-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,})",
     re.IGNORECASE,
@@ -79,6 +82,8 @@ def parse_terminal_envelope(text: str, *, role: str) -> dict:
             raise _invalid_terminal()
         opening, closing = fences[-2:]
         if opening.group(1) != "json" or closing.group(1) != "":
+            raise _invalid_terminal()
+        if text[: closing.start()].rsplit("\n", 1)[-1].strip():
             raise _invalid_terminal()
         if text[closing.end() :].strip():
             raise _invalid_terminal()
@@ -527,7 +532,8 @@ class LocalOrchestrator:
     def _instruction(instruction, directions, role):
         return (
             f"{instruction}\n\nStage duties: {directions}\n"
-            "Return one final fenced json object and no content after its closing fence. "
+            "Return one final fenced json object, its closing fence alone on its own "
+            "line, and no content after that closing fence. "
             "Exact keys: status (completed or blocked), summary (nonempty, at most 400 characters), "
             "evidence (at most 8 nonempty strings of at most 120 characters), review. "
             "Total JSON at most 1800 UTF-8 bytes. Do not include credentials, account identities, "
