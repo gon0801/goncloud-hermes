@@ -148,6 +148,33 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertTrue(parsed["terminal_valid"])
         self.assertFalse(partial["terminal_valid"])
 
+    def test_malformed_jsonl_after_terminal_invalidates_parser_and_invoke(self):
+        output = f"{SUCCESS_JSONL}\nnot-json-secret"
+        parsed = parse_opencode_jsonl(output)
+        result = OpenCodeAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route(0, "opencode_go", "muse")
+        )
+
+        self.assertFalse(parsed["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("not-json-secret", result.text)
+
+    def test_step_finish_requires_stop_reason_for_terminal_evidence(self):
+        text = '{"type":"text","part":{"type":"text","text":"answer"}}'
+        stopped = parse_opencode_jsonl(
+            f'{text}\n{{"type":"step_finish","part":{{"type":"step-finish","reason":"stop"}}}}'
+        )
+        truncated = f'{text}\n{{"type":"step_finish","part":{{"type":"step-finish","reason":"length"}}}}'
+        result = OpenCodeAdapter(runner=FakeCliRunner(stdout=truncated)).invoke(
+            request(self.workspace), route(0, "opencode_go", "muse")
+        )
+
+        self.assertTrue(stopped["terminal_valid"])
+        self.assertFalse(parse_opencode_jsonl(truncated)["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+
     def test_embedded_jsonl_error_cannot_approve_terminal_event(self):
         adapter = OpenCodeAdapter(
             runner=FakeCliRunner(
@@ -181,6 +208,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
             (1, "disconnected before response", FailureKind.TRANSPORT),
             (1, "DNS lookup failed", FailureKind.TRANSPORT),
             (1, "connection refused", FailureKind.TRANSPORT),
+            (1, "user disconnected from the session", FailureKind.TASK_FAILURE),
             # Tool listings legitimately contain "auth"; that is not an
             # authentication failure (grok streams its available_commands).
             (

@@ -25,20 +25,31 @@ def parse_kimi_jsonl(output: str) -> dict:
     result_text = None
     subtype = None
     saw_error = False
+    malformed = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            if line.strip():
+                malformed = True
             continue
         if not isinstance(event, dict):
+            malformed = True
             continue
         event_type = str(event.get("type") or "").lower()
         if "error" in event_type or event.get("error"):
             saw_error = True
         session_id = event.get("session_id") or session_id
         if event_type == "assistant":
-            message = event.get("message") or {}
-            for block in message.get("content") or []:
+            message = event.get("message")
+            if not isinstance(message, dict):
+                malformed = True
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                malformed = True
+                continue
+            for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
                     texts.append(str(block.get("text") or ""))
         if event_type == "result":
@@ -49,7 +60,9 @@ def parse_kimi_jsonl(output: str) -> dict:
         "text": str(text or ""),
         "session_id": session_id,
         "subtype": subtype,
-        "terminal_valid": bool(subtype in _SUCCESS_SUBTYPES and not saw_error),
+        "terminal_valid": bool(
+            subtype in _SUCCESS_SUBTYPES and not saw_error and not malformed
+        ),
     }
 
 

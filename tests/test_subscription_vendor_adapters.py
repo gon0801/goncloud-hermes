@@ -237,6 +237,37 @@ class KimiGrokTests(unittest.TestCase):
         self.assertTrue(parsed["terminal_valid"])
         self.assertFalse(rejected["terminal_valid"])
 
+    def test_kimi_malformed_jsonl_after_terminal_invalidates_parser_and_invoke(self):
+        output = f"{KIMI_STREAM}\nnot-json-secret"
+        parsed = parse_kimi_jsonl(output)
+        result = KimiAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertFalse(parsed["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("not-json-secret", result.text)
+
+    def test_kimi_invalid_message_shape_invalidates_stream_without_leaking_raw_data(
+        self,
+    ):
+        output = "\n".join(
+            [
+                '{"type":"assistant","message":"raw-secret"}',
+                '{"type":"result","subtype":"success","result":"answer"}',
+            ]
+        )
+        parsed = parse_kimi_jsonl(output)
+        result = KimiAdapter(runner=FakeCliRunner(stdout=output)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertFalse(parsed["terminal_valid"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertNotIn("raw-secret", repr(result))
+
     def test_kimi_error_result_cannot_approve_partial_text(self):
         result = KimiAdapter(
             runner=FakeCliRunner(

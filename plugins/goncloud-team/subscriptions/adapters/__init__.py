@@ -35,7 +35,7 @@ _INVALID_PATTERN = re.compile(
 )
 _TRANSPORT_PATTERN = re.compile(
     r"connection[ _-]?error|connection reset|reset by peer|"
-    r"disconnected(?:[ _-]?before[ _-]?response)?|"
+    r"disconnected[ _-]+before[ _-]+response|"
     r"dns(?: lookup| resolution)? (?:failure|failed|error)|name or service not known|"
     r"getaddrinfo|connection refused|econnreset|econnrefused|enotfound|"
     r"network is unreachable|socket hang up",

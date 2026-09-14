@@ -30,12 +30,16 @@ def parse_opencode_jsonl(output: str) -> dict:
     session_id = None
     terminal_valid = False
     saw_error = False
+    malformed = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            if line.strip():
+                malformed = True
             continue
         if not isinstance(event, dict):
+            malformed = True
             continue
         event_type = str(event.get("type") or "").lower()
         if "error" in event_type or event.get("error"):
@@ -56,12 +60,16 @@ def parse_opencode_jsonl(output: str) -> dict:
                 saw_error = True
             if part_type == "text":
                 text_parts.append(str(part.get("text") or ""))
-            if event_type == "step_finish" and part_type == "step-finish":
+            if (
+                event_type == "step_finish"
+                and part_type == "step-finish"
+                and reason == "stop"
+            ):
                 terminal_valid = True
     return {
         "session_id": session_id,
         "text": "".join(text_parts),
-        "terminal_valid": terminal_valid and not saw_error,
+        "terminal_valid": terminal_valid and not saw_error and not malformed,
     }
 
 
