@@ -27,7 +27,16 @@ sys.path.insert(0, str(PLUGIN_DIR))
 from subscriptions.adapters import classify_failure  # noqa: E402
 from subscriptions.adapters._live_probe import PROBE_MARKER, PROBE_PROMPT  # noqa: E402
 from subscriptions.process import ProcessEvidence  # noqa: E402
-from subscriptions.private_files import open_private_file  # noqa: E402
+from subscriptions.private_files import (  # noqa: E402
+    open_private_file,
+    stable_directories,
+    create_private_directory,
+    certify_files,
+    read_owned,
+    directory_is_pinned,
+    move_owned as _move_owned,
+    publish_exclusive as _publish_exclusive,
+)
 from subscriptions.types import (  # noqa: E402
     AdapterHealth,
     FailureKind,
@@ -160,7 +169,30 @@ def parse_assignments(text: str) -> dict[str, str]:
 
 def _checked_path(path: Path) -> Path:
     """Reject aliases before resolving; every later operation uses this result."""
-    absolute = Path(path).absolute()
+    spelling = str(path)
+    if os.name == "nt":
+        if spelling.startswith("\\\\?\\"):
+            spelling = spelling[4:]
+            if not re.match(r"^[A-Za-z]:[\\/]", spelling):
+                raise MigrationError("unsupported credential device path")
+        if not re.match(r"^[A-Za-z]:[\\/]", os.path.abspath(spelling)):
+            raise MigrationError("unsupported credential device path")
+        if any(
+            part.rstrip(" .") != part
+            for part in Path(spelling).parts[1:]
+            if part not in {".", ".."}
+        ):
+            raise MigrationError("ambiguous credential path spelling")
+        if ":" in spelling[2:]:
+            raise MigrationError("unsupported credential stream path")
+        devices = {"CON", "PRN", "AUX", "NUL"} | {
+            f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+        }
+        if any(
+            part.split(".")[0].upper() in devices for part in Path(spelling).parts[1:]
+        ):
+            raise MigrationError("unsupported credential device path")
+    absolute = Path(os.path.abspath(spelling))
     for candidate in (absolute, *absolute.parents):
         try:
             info = candidate.lstat()
@@ -172,7 +204,7 @@ def _checked_path(path: Path) -> Path:
             )
         if candidate == absolute and stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
             raise MigrationError("credential files cannot have hard-link aliases")
-    return absolute.resolve()
+    return absolute if directory_is_pinned(absolute.parent) else absolute.resolve()
 
 
 def _private_store_path(path: Path) -> Path:
@@ -201,12 +233,14 @@ _UNCONDITIONAL = object()
 
 def _snapshot(path: Path):
     """Capture one stable file identity and content, or an absent-file identity."""
-    path = _checked_path(path)
     try:
-        with path.open("rb") as handle:
-            before = os.fstat(handle.fileno())
-            data = handle.read()
-            after = os.fstat(handle.fileno())
+        with read_owned(path) as descriptor:
+            before = os.fstat(descriptor)
+            chunks = []
+            while chunk := os.read(descriptor, 65536):
+                chunks.append(chunk)
+            data = b"".join(chunks)
+            after = os.fstat(descriptor)
     except FileNotFoundError:
         return None, None
 
@@ -216,7 +250,6 @@ def _snapshot(path: Path):
             info.st_ino,
             info.st_size,
             info.st_mtime_ns,
-            info.st_ctime_ns,
         )
 
     if identity(before) != identity(after):
@@ -227,30 +260,46 @@ def _snapshot(path: Path):
 def _atomic_write(
     path: Path, data: bytes, *, expected=_UNCONDITIONAL, before_publish=None
 ) -> None:
-    """Flush a unique private file before atomically replacing its destination."""
+    """Move an owned old object aside, then publish exclusively; retain recovery.
+
+    No check/replace or check/unlink pair touches a public destination. Even an
+    external writer winning the vacant publication slot retains its own object.
+    """
     path = _checked_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path = _checked_path(path)
-    temporary = path.parent / f".subscription-{uuid.uuid4().hex}"
-    descriptor = open_private_file(temporary)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
+    with stable_directories([path.parent]):
+        if expected is _UNCONDITIONAL:
+            expected = _snapshot(path)[1]
+        transaction = path.parent / f"subscription-backup-{uuid.uuid4().hex}"
+        create_private_directory(transaction)
+        temporary = transaction / f".subscription-{uuid.uuid4().hex}"
+        _write_candidate(temporary, data)
+        if before_publish is not None:
+            before_publish(_snapshot(temporary)[1][0])
+        if expected is not None:
+            _move_owned(path, transaction / "displaced-original", expected)
+        try:
+            _publish_exclusive(temporary, path)
+        except BaseException:
+            if expected is not None:
+                try:
+                    _publish_exclusive(transaction / "displaced-original", path)
+                except BaseException:
+                    pass  # Neither the external winner nor its old object is lost.
+            raise
+
+
+def _write_candidate(path: Path, data: bytes) -> None:
+    with stable_directories([path.parent]):
+        descriptor = open_private_file(path)
+        try:
+            handle = os.fdopen(descriptor, "wb")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        _checked_path(path)
-        if expected is not _UNCONDITIONAL and _snapshot(path)[1] != expected:
-            raise MigrationError("credential file changed before publication")
-        if before_publish is not None:
-            # Rename preserves the candidate's file ID and write timestamp.
-            # Persist that identity before replace, so recovery can distinguish
-            # our file from an external writer publishing identical bytes.
-            before_publish(_snapshot(temporary)[1][0][:4])
-            if expected is not _UNCONDITIONAL and _snapshot(path)[1] != expected:
-                raise MigrationError("credential file changed before publication")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _encode_private_env(values: dict[str, str]) -> bytes:
@@ -267,18 +316,20 @@ def write_private_env(
 ) -> None:
     """Validate environment lines before an atomic, mode-restricted write."""
     data = _encode_private_env(values)
-    _atomic_write(
-        _private_store_path(path),
-        data,
-        expected=expected,
-        before_publish=before_publish,
-    )
+    path = _private_store_path(path)
+    with stable_directories([path.parent]):
+        if _private_store_path(path) != path:
+            raise MigrationError("private store parent changed")
+        _atomic_write(
+            path,
+            data,
+            expected=expected,
+            before_publish=before_publish,
+        )
 
 
 def read_private_env(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        return {}
-    return _parse_private_env(path.read_bytes())
+    return _parse_private_env(_snapshot(_checked_path(path))[0] or b"")
 
 
 def _parse_private_env(data: bytes) -> dict[str, str]:
@@ -391,6 +442,10 @@ def _migrate_batch(entries, private_env: Path, probe) -> MigrationResult:
     """Verify all replacements before cleanup; retain backups across crashes."""
     if not callable(probe):
         raise MigrationError("verified live probe required")
+    if os.name != "nt":
+        # No portable primitive can deny an uncooperative POSIX open writer.
+        # Refuse BEFORE creating a store or journal, not during rollback.
+        raise MigrationError("safe credential migration ownership unavailable")
     private_env = _private_store_path(private_env)
     entries = [
         (
@@ -405,11 +460,32 @@ def _migrate_batch(entries, private_env: Path, probe) -> MigrationResult:
         private_env.with_name(private_env.name + ".lock"),
         _journal_path(private_env),
     }
-    for launcher, _, sidecar in entries:
-        if any(path in reserved for path in (launcher, sidecar)):
+    targets = [
+        path
+        for launcher, _, sidecar in entries
+        for path in (launcher, sidecar)
+        if path is not None
+    ]
+    paths = list(reserved) + targets
+    for index, path in enumerate(paths):
+        if any(
+            path == other or (path.exists() and other.exists() and path.samefile(other))
+            for other in paths[:index]
+        ):
             raise MigrationError("credential paths must be distinct")
-    with _migration_lock(private_env):
-        return _migrate_locked(entries, private_env, probe)
+    try:
+        with stable_directories([path.parent for path in paths]):
+            private_env = _private_store_path(private_env)
+            # Object moves cannot cross volumes; refuse before writing snapshots.
+            if any(
+                path.parent.stat().st_dev != private_env.parent.stat().st_dev
+                for path in targets
+            ):
+                raise MigrationError("credential transaction requires one volume")
+            with _migration_lock(private_env):
+                return _migrate_locked(entries, private_env, probe)
+    except OSError:
+        raise MigrationError("safe credential transaction unavailable") from None
 
 
 def _journal_path(private_env: Path) -> Path:
@@ -420,89 +496,109 @@ def _digest(data: bytes | None):
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
+def _as_fingerprint(value):
+    if value is None:
+        return None
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or len(value[0]) != 4
+        or any(type(item) is not int for item in value[0])
+        or not re.fullmatch(r"[0-9a-f]{64}", value[1])
+    ):
+        raise ValueError("invalid private identity")
+    return tuple(value[0]), value[1]
+
+
+def _retire_journal(private_env, directory, fingerprint):
+    # Moving by owned handle never unlinks an external journal replacement.
+    _move_owned(
+        _journal_path(private_env), directory / "completed-journal", fingerprint
+    )
+
+
+def _restore_operation(operation, directory):
+    target = Path(operation["target"])
+    before = _as_fingerprint(operation["before"])
+    candidate = _as_fingerprint(operation["candidate_identity"])
+    original = directory / operation["displaced"]
+    current = _snapshot(target)[1]
+    if current == before:
+        return
+    if current is not None:
+        if current != candidate:
+            raise MigrationError("migration recovery preserved an uncertain object")
+        _move_owned(target, directory / f"retired-{uuid.uuid4().hex}", candidate)
+    if before is not None:
+        # Restore the original OBJECT, not a copy inferred from matching bytes.
+        if _snapshot(original)[1] != before:
+            raise MigrationError("migration recovery requires the original object")
+        _publish_exclusive(original, target)
+
+
 def _recover_migration(private_env: Path, allowed_targets: set[Path]) -> None:
-    """Rollback from effective bytes, never from a post-replace Python flag."""
-    journal_path = _checked_path(_journal_path(private_env))
-    if not journal_path.exists():
+    """Idempotent rollback using recorded identities, including pre-publish gaps."""
+    journal_path = _journal_path(private_env)
+    data, journal_identity = _snapshot(journal_path)
+    if data is None:
         return
     try:
-        if journal_path.stat().st_size > 65536:
+        if len(data) > 65536:
             raise ValueError()
-        document = json.loads(journal_path.read_bytes())
-        signature = document["store_after_signature"]
-        if signature is not None and (
-            not isinstance(signature, list)
-            or len(signature) != 4
-            or any(type(value) is not int for value in signature)
-        ):
-            raise ValueError()
-        backup_dir = _checked_path(Path(document["backup_dir"]))
+        document = json.loads(data)
+        directory = _private_store_path(Path(document["backup_dir"]))
         if (
-            document["version"] != 1
-            or backup_dir.parent != private_env.parent
-            or not backup_dir.name.startswith("subscription-backup-")
+            document["version"] != 2
+            or directory.parent != private_env.parent
+            or not directory.name.startswith("subscription-backup-")
         ):
             raise ValueError()
-        entries = document["entries"]
-        if not isinstance(entries, list) or not entries:
+        operations = document["operations"]
+        if not operations or Path(operations[0]["target"]) != private_env:
             raise ValueError()
-        recovery = []
         seen = set()
-        for entry in entries:
-            target = _checked_path(Path(entry["target"]))
-            if target not in allowed_targets or target in seen:
+        for index, operation in enumerate(operations):
+            target = _checked_path(Path(operation["target"]))
+            if target in seen or (index and target not in allowed_targets):
                 raise ValueError()
             seen.add(target)
-            backup_name = entry["backup"]
-            if Path(backup_name).name != backup_name:
-                raise ValueError()
-            backup = _private_store_path(backup_dir / backup_name)
-            original = backup.read_bytes()
-            if _digest(original) != entry["before"]:
-                raise ValueError()
-            recovery.append((target, original, entry["before"], entry["after"]))
-        old_store = None
-        if document["store_before"] is not None:
-            old_store = _private_store_path(
-                backup_dir / "store-before.bin"
-            ).read_bytes()
-            if _digest(old_store) != document["store_before"]:
-                raise ValueError()
+            for field in ("candidate", "displaced"):
+                if Path(operation[field]).name != operation[field]:
+                    raise ValueError()
+            _as_fingerprint(operation["before"])
+            _as_fingerprint(operation["candidate_identity"])
     except (OSError, ValueError, KeyError, TypeError):
         raise MigrationError(
             "migration recovery requires intact private snapshots"
         ) from None
 
-    # All snapshots and destinations are validated before the first restoration.
-    for target, original, before, after in recovery:
-        current, fingerprint = _snapshot(target)
-        if _digest(current) == before:
-            continue
-        if _digest(current) != after:
+    with stable_directories([directory]):
+        uncertain = False
+        for operation in operations[1:]:
+            try:
+                _restore_operation(operation, directory)
+            except (MigrationError, OSError):
+                uncertain = True
+        if uncertain:
             raise MigrationError("migration recovery preserved an uncertain launcher")
-        _atomic_write(target, original, expected=fingerprint)
-    # A restoration can itself be interrupted after replace. Re-read every
-    # launcher before restoring/removing the candidate store, even on retry.
-    if any(
-        _digest(_snapshot(target)[0]) != before for target, _, before, _ in recovery
-    ):
-        raise MigrationError("migration recovery preserved an uncertain launcher")
-    current_store, fingerprint = _snapshot(private_env)
-    if (
-        _digest(current_store) == document["store_after"]
-        and fingerprint is not None
-        and list(fingerprint[0][:4]) == document["store_after_signature"]
-    ):
-        if old_store is None:
-            # Nothing may delete the store while a cleaned launcher is uncertain.
-            if _snapshot(private_env)[1] != fingerprint:
-                raise MigrationError("replacement store changed during recovery")
-            private_env.unlink()
-        elif current_store != old_store:
-            _atomic_write(private_env, old_store, expected=fingerprint)
-    # An intervening external store edit is preserved. All launcher snapshots
-    # are now restored, so this transaction no longer owns any destructive state.
-    journal_path.unlink()
+        # Pin EVERY restored original through store retirement and journal commit.
+        # If the platform cannot certify immutability, retain both for recovery.
+        with certify_files(
+            [
+                (Path(item["target"]), _as_fingerprint(item["before"]))
+                for item in operations[1:]
+            ]
+        ):
+            _restore_operation(operations[0], directory)
+            _retire_journal(private_env, directory, journal_identity)
+
+
+def _publish_operation(operation, directory):
+    target = Path(operation["target"])
+    before = _as_fingerprint(operation["before"])
+    if before is not None:
+        _move_owned(target, directory / operation["displaced"], before)
+    _publish_exclusive(directory / operation["candidate"], target)
 
 
 def _migrate_locked(entries, private_env: Path, probe) -> MigrationResult:
@@ -514,11 +610,10 @@ def _migrate_locked(entries, private_env: Path, probe) -> MigrationResult:
     }
     _recover_migration(private_env, allowed_targets)
     old_store, original_fingerprint = _snapshot(private_env)
-    originals = {}
-    backups = []
     try:
         stored = _parse_private_env(old_store or b"")
         replacements = []
+        originals = {}
         for launcher, secret_name, sidecar in entries:
             if secret_name not in _SECRET_ADAPTERS:
                 raise MigrationError("unknown credential binding")
@@ -529,23 +624,27 @@ def _migrate_locked(entries, private_env: Path, probe) -> MigrationResult:
             value = assignments.get(_SECRET_VAR)
             target = launcher
             replacement = _rewritten_launcher(original)
-            originals[launcher] = (original, fingerprint)
-            if not value and sidecar is not None and sidecar.is_file():
-                sidecar_bytes, fingerprint = _snapshot(sidecar)
-                if sidecar_bytes != f"# {_MIGRATED_NOTE}\n".encode():
+            if not value and sidecar is not None:
+                sidecar_bytes, sidecar_identity = _snapshot(sidecar)
+                if (
+                    sidecar_bytes is not None
+                    and sidecar_bytes != f"# {_MIGRATED_NOTE}\n".encode()
+                ):
                     value = sidecar_bytes.decode("utf-8").strip()
-                    target, original = sidecar, sidecar_bytes
-                    originals[target] = (original, fingerprint)
+                    target, original, fingerprint = (
+                        sidecar,
+                        sidecar_bytes,
+                        sidecar_identity,
+                    )
                     replacement = f"# {_MIGRATED_NOTE}\n".encode()
             if not value:
                 if stored.get(secret_name):
-                    continue  # No credential cleanup remains after a previous run.
+                    continue
                 raise MigrationError("no credential found")
-            if target.resolve() == private_env.resolve():
-                raise MigrationError("credential paths must be distinct")
             stored[secret_name] = value
             if assignments.get(_BASE_VAR) and secret_name == "GLM_API_KEY":
                 stored["GLM_BASE_URL"] = assignments[_BASE_VAR]
+            originals[target] = (original, fingerprint)
             replacements.append(
                 _Replacement(secret_name, target, original, replacement)
             )
@@ -553,94 +652,86 @@ def _migrate_locked(entries, private_env: Path, probe) -> MigrationResult:
             return MigrationResult(tuple(name for _, name, _ in entries), private_env)
 
         candidate_store = _encode_private_env(stored)
-        backup_dir = Path(
-            tempfile.mkdtemp(prefix="subscription-backup-", dir=private_env.parent)
-        )
-        journal_entries = []
-        replacement_by_target = {item.target: item.replacement for item in replacements}
-        for index, (target, (original, fingerprint)) in enumerate(originals.items()):
-            if _snapshot(target)[1] != fingerprint:
-                raise MigrationError("launcher changed during preparation")
-            backup = _private_store_path(
-                backup_dir / f"{index}-{target.name}.goncloud-backup"
+        directory = private_env.parent / f"subscription-backup-{uuid.uuid4().hex}"
+        create_private_directory(directory)
+        backups = []
+        operations = []
+        with stable_directories([directory]):
+            pending = [(private_env, candidate_store, original_fingerprint)] + [
+                (item.target, item.replacement, originals[item.target][1])
+                for item in replacements
+            ]
+            for index, (target, candidate_data, before) in enumerate(pending):
+                candidate = directory / f"candidate-{index}"
+                _write_candidate(candidate, candidate_data)
+                operations.append(
+                    {
+                        "target": str(target),
+                        "before": before,
+                        "candidate": candidate.name,
+                        "candidate_identity": _snapshot(candidate)[1],
+                        "displaced": f"displaced-{index}",
+                    }
+                )
+                if index:
+                    backup = directory / f"{index}-{target.name}.goncloud-backup"
+                    _write_candidate(backup, originals[target][0])
+                    backups.append(backup)
+            # One immutable write-ahead journal records every candidate identity.
+            # Every later move/publication is recoverable without post-write flags.
+            journal = {
+                "version": 2,
+                "backup_dir": str(directory),
+                "operations": operations,
+            }
+            journal_candidate = directory / "journal-candidate"
+            _write_candidate(journal_candidate, json.dumps(journal).encode())
+            journal_identity = _snapshot(journal_candidate)[1]
+            _publish_exclusive(journal_candidate, _journal_path(private_env))
+            _publish_operation(operations[0], directory)
+            store_identity = _as_fingerprint(operations[0]["candidate_identity"])
+            for item in replacements:
+                current_store, fingerprint = _snapshot(private_env)
+                if fingerprint != store_identity:
+                    raise MigrationError(
+                        "replacement store changed before verification"
+                    )
+                values = _parse_private_env(current_store)
+                try:
+                    evidence = probe(item.secret_name, values[item.secret_name])
+                except Exception:
+                    raise MigrationError("verified live probe required") from None
+                if (
+                    not isinstance(evidence, InvocationResult)
+                    or sanitize_live_result(
+                        _SECRET_ADAPTERS[item.secret_name], evidence
+                    )["status"]
+                    != "ready"
+                ):
+                    raise MigrationError("verified live probe required")
+            # Keep the proven replacement immutable throughout all cleanup.
+            with certify_files([(private_env, store_identity)]):
+                for operation in operations[1:]:
+                    _publish_operation(operation, directory)
+                with certify_files(
+                    [
+                        (
+                            Path(item["target"]),
+                            _as_fingerprint(item["candidate_identity"]),
+                        )
+                        for item in operations[1:]
+                    ]
+                ):
+                    _retire_journal(private_env, directory, journal_identity)
+            return MigrationResult(
+                tuple(name for _, name, _ in entries), private_env, tuple(backups)
             )
-            _atomic_write(backup, original)
-            backups.append(backup)
-            journal_entries.append(
-                {
-                    "target": str(target),
-                    "backup": backup.name,
-                    "before": _digest(original),
-                    "after": _digest(replacement_by_target.get(target, original)),
-                }
-            )
-        if old_store is not None:
-            _atomic_write(
-                _private_store_path(backup_dir / "store-before.bin"), old_store
-            )
-        journal = {
-            "version": 1,
-            "backup_dir": str(backup_dir),
-            "entries": journal_entries,
-            "store_before": _digest(old_store),
-            "store_after": _digest(candidate_store),
-            "store_after_signature": None,
-        }
-        _atomic_write(
-            _private_store_path(_journal_path(private_env)),
-            json.dumps(journal).encode(),
-        )
-
-        # The original fingerprint was captured under the lock, before parsing
-        # any launcher. Check it inside atomic publication after flushing temp.
-        def record_candidate_identity(signature):
-            journal["store_after_signature"] = list(signature)
-            _atomic_write(
-                _private_store_path(_journal_path(private_env)),
-                json.dumps(journal).encode(),
-            )
-
-        write_private_env(
-            private_env,
-            stored,
-            expected=original_fingerprint,
-            before_publish=record_candidate_identity,
-        )
-        for item in replacements:
-            replacement_values = read_private_env(private_env)
-            if replacement_values != stored:
-                raise MigrationError("replacement store changed before verification")
-            try:
-                evidence = probe(item.secret_name, replacement_values[item.secret_name])
-            except Exception:
-                raise MigrationError("verified live probe required") from None
-            adapter = _SECRET_ADAPTERS[item.secret_name]
-            if (
-                not isinstance(evidence, InvocationResult)
-                or sanitize_live_result(adapter, evidence)["status"] != "ready"
-            ):
-                raise MigrationError("verified live probe required")
-
-        if _snapshot(private_env)[0] != candidate_store:
-            raise MigrationError("replacement store changed after verification")
-        for item in replacements:
-            _atomic_write(
-                item.target, item.replacement, expected=originals[item.target][1]
-            )
-        if _snapshot(private_env)[0] != candidate_store or any(
-            _snapshot(item.target)[0] != item.replacement for item in replacements
-        ):
-            raise MigrationError("migration changed before completion")
-        _journal_path(private_env).unlink()
-        return MigrationResult(
-            tuple(name for _, name, _ in entries), private_env, tuple(backups)
-        )
     except BaseException as error:
         try:
             _recover_migration(private_env, allowed_targets)
             restored = True
         except BaseException:
-            restored = False  # Journal and store survive uncertain recovery.
+            restored = False
         if not isinstance(error, Exception):
             raise
         if isinstance(error, MigrationError) and restored:

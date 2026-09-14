@@ -91,6 +91,421 @@ class MigrationTests(unittest.TestCase):
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.root = Path(self.tmp.name)
 
+    @unittest.skipUnless(os.name == "nt", "Windows extended path aliases")
+    def test_extended_private_store_alias_of_sidecar_is_rejected_prewrite(self):
+        launcher = self.root / "glm.ps1"
+        launcher.write_bytes(b"$env:ANTHROPIC_AUTH_TOKEN = $key\n")
+        sidecar = self.root / "apikey.txt"
+        sidecar.write_text(GLM_SECRET)
+        before = sidecar.read_bytes()
+        alias = Path("\\\\?\\" + str(sidecar))
+        with self.assertRaises(MigrationError):
+            migrate_one(
+                launcher,
+                alias,
+                passing_probe(),
+                secret_name="GLM_API_KEY",
+                sidecar=sidecar,
+            )
+        self.assertEqual(sidecar.read_bytes(), before)
+        self.assertEqual(list(self.root.glob("subscription-backup-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows stable directory handles")
+    def test_parent_swap_at_first_secret_write_cannot_redirect_into_git(self):
+        repo = self.root / "checkout"
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        destination = self.root / "private"
+        destination.mkdir()
+        target = destination / "store.env"
+        actual_fdopen = os.fdopen
+        attempts = []
+
+        def swap_before_content(descriptor, *args, **kwargs):
+            try:
+                destination.rename(self.root / "displaced-private")
+            except OSError:
+                attempts.append("blocked")
+            else:
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(destination), str(repo)],
+                    check=True,
+                    capture_output=True,
+                )
+                attempts.append("redirected")
+            return actual_fdopen(descriptor, *args, **kwargs)
+
+        try:
+            with patch.object(module.os, "fdopen", side_effect=swap_before_content):
+                module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+            self.assertEqual(attempts, ["blocked"])
+            self.assertFalse((repo / "store.env").exists())
+            self.assertEqual(list(repo.glob(".subscription-*")), [])
+        finally:
+            if "redirected" in attempts:
+                os.rmdir(destination)
+
+    def test_external_identical_launcher_is_not_owned_by_content_digest(self):
+        glm, deepseek = seeded_launchers(self.root)
+        target = private_env(self.root)
+        publish = module._publish_exclusive
+        external_identity = []
+
+        def replace_identical_then_fail(source, destination):
+            if Path(destination) == glm and not external_identity:
+                external = self.root / "external-launcher"
+                external.write_bytes(deepseek.read_bytes())
+                os.replace(external, deepseek)
+                external_identity.append(deepseek.stat().st_ino)
+                raise OSError("fixture interruption")
+            return publish(source, destination)
+
+        with patch.object(
+            module, "_publish_exclusive", side_effect=replace_identical_then_fail
+        ):
+            with self.assertRaises(MigrationError):
+                migrate_launcher_secrets(glm, deepseek, target, passing_probe())
+        self.assertEqual(deepseek.stat().st_ino, external_identity[0])
+        self.assertNotIn(DEEPSEEK_SECRET.encode(), deepseek.read_bytes())
+        self.assertTrue(target.exists())
+        self.assertTrue(module._journal_path(target).exists())
+
+    def test_external_creation_in_empty_publication_slot_is_never_overwritten(self):
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER=old\n")
+        publish = module._publish_exclusive
+        external = b"OTHER=external writer\n"
+
+        def win_publication_slot(source, destination):
+            if Path(destination) == target:
+                target.write_bytes(external)
+            return publish(source, destination)
+
+        with patch.object(
+            module, "_publish_exclusive", side_effect=win_publication_slot
+        ):
+            with self.assertRaises((MigrationError, OSError)):
+                module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+        self.assertEqual(target.read_bytes(), external)
+        self.assertTrue(
+            any(
+                p.read_bytes() == b"OTHER=old\n" for p in self.root.rglob("displaced-*")
+            )
+        )
+
+    @unittest.skipUnless(os.name == "nt", "Windows CRT handle transfer")
+    def test_fstat_failure_after_crt_transfer_closes_descriptor(self):
+        from subscriptions import private_files
+
+        actual_close = os.close
+        closed = []
+
+        def close(descriptor):
+            closed.append(descriptor)
+            actual_close(descriptor)
+
+        with (
+            patch.object(private_files.os, "fstat", side_effect=OSError("fixture")),
+            patch.object(private_files.os, "close", side_effect=close),
+        ):
+            with self.assertRaises(OSError):
+                private_files.open_private_file(self.root / "empty-private")
+        self.assertEqual(len(closed), 1)
+
+    def test_posix_directory_sync_flushes_directory_descriptor(self):
+        from subscriptions import private_files
+
+        with (
+            patch.object(private_files.os, "name", "posix"),
+            patch.object(private_files.os, "open", return_value=71) as opened,
+            patch.object(private_files.os, "fsync") as synced,
+            patch.object(private_files.os, "close") as closed,
+        ):
+            private_files.sync_directory(self.root)
+        self.assertEqual(opened.call_count, 1)
+        synced.assert_called_once_with(71)
+        closed.assert_called_once_with(71)
+
+    def test_unsupported_ownership_platform_fails_before_any_write(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        before = set(self.root.iterdir())
+        with patch.object(module.os, "name", "posix"):
+            with self.assertRaises(MigrationError):
+                module._migrate_batch(
+                    [(launcher, "DEEPSEEK_API_KEY", None)], target, passing_probe()
+                )
+        self.assertEqual(set(self.root.iterdir()), before)
+
+    @unittest.skipUnless(os.name == "nt", "Windows alias normalization")
+    def test_extended_prefix_uses_same_canonical_lock(self):
+        glm, deepseek = seeded_launchers(self.root)
+        target = private_env(self.root)
+        alias = Path("\\\\?\\" + str(target))
+        with module._migration_lock(target):
+            with self.assertRaisesRegex(MigrationError, "migration already running"):
+                migrate_one(
+                    deepseek, alias, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+        self.assertEqual(list(self.root.glob("subscription-backup-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows aliases")
+    def test_trailing_and_device_aliases_are_rejected_prewrite(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        for target in [
+            Path(str(private_env(self.root)) + "."),
+            Path(str(private_env(self.root)) + " "),
+            Path("\\\\.\\" + str(private_env(self.root))),
+            Path(str(private_env(self.root)) + ":stream"),
+        ]:
+            with self.subTest(alias_kind=target.suffix):
+                with self.assertRaises(MigrationError):
+                    migrate_one(
+                        launcher,
+                        target,
+                        passing_probe(),
+                        secret_name="DEEPSEEK_API_KEY",
+                    )
+        self.assertEqual(list(self.root.glob("subscription-backup-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows object ownership")
+    def test_existing_writable_handle_prevents_public_object_mutation(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER=original\n")
+        with target.open("r+b") as external_handle:
+            with self.assertRaises(MigrationError):
+                migrate_one(
+                    launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+            external_handle.seek(0)
+            external_handle.write(b"OTHER=external\n")
+            external_handle.truncate()
+            external_handle.flush()
+        self.assertEqual(target.read_bytes(), b"OTHER=external\n")
+        self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
+
+    @unittest.skipUnless(os.name == "nt", "Windows rename by owned handle")
+    def test_external_write_at_exact_owned_rename_boundary_is_denied(self):
+        from subscriptions import private_files
+
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER=original\n")
+        rename = private_files._rename_handle
+        attempts = []
+
+        def race_after_ownership(descriptor, destination, directory_descriptor):
+            if Path(destination).name == "displaced-0":
+                with self.assertRaises(OSError):
+                    target.write_bytes(b"OTHER=external\n")
+                attempts.append(True)
+            return rename(descriptor, destination, directory_descriptor)
+
+        with patch.object(
+            private_files, "_rename_handle", side_effect=race_after_ownership
+        ):
+            migrate_one(
+                launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
+            )
+        self.assertEqual(attempts, [True])
+        self.assertIn("DEEPSEEK_API_KEY", target.read_text())
+        self.assertTrue(
+            any(
+                path.read_bytes() == b"OTHER=original\n"
+                for path in self.root.rglob("displaced-0")
+            )
+        )
+
+    def test_external_store_wins_at_recovery_retirement_boundary(self):
+        launcher = seeded_deepseek_launcher(self.root)
+        target = private_env(self.root)
+        move = module._move_owned
+        external = b"OTHER=external recovery edit\n"
+
+        def race_before_owned_move(source, destination, expected):
+            if Path(source) == target and Path(destination).name.startswith("retired-"):
+                replacement = self.root / "external-store"
+                replacement.write_bytes(external)
+                os.replace(replacement, target)
+            return move(source, destination, expected)
+
+        with patch.object(module, "_move_owned", side_effect=race_before_owned_move):
+            with self.assertRaises(MigrationError):
+                migrate_one(
+                    launcher, target, failing_probe(), secret_name="DEEPSEEK_API_KEY"
+                )
+        self.assertEqual(target.read_bytes(), external)
+        self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
+        self.assertTrue(module._journal_path(target).exists())
+
+    def test_interrupt_after_every_original_move_restores_exact_objects(self):
+        for victim in ("subscription-router.env", "deepseek.cmd", "glm-code.ps1"):
+            for interrupt in (KeyboardInterrupt, SystemExit):
+                with self.subTest(victim=victim, interruption=interrupt.__name__):
+                    glm, deepseek = seeded_launchers(self.root)
+                    target = private_env(self.root)
+                    target.write_bytes(b"OTHER=original\n")
+                    originals = {
+                        path: (path.read_bytes(), path.stat().st_ino)
+                        for path in (glm, deepseek, target)
+                    }
+                    move = module._move_owned
+                    stopped = False
+
+                    def stop_after_move(source, destination, expected):
+                        nonlocal stopped
+                        move(source, destination, expected)
+                        if Path(source).name == victim and not stopped:
+                            stopped = True
+                            raise interrupt()
+
+                    with patch.object(
+                        module, "_move_owned", side_effect=stop_after_move
+                    ):
+                        with self.assertRaises(interrupt):
+                            migrate_launcher_secrets(
+                                glm, deepseek, target, passing_probe()
+                            )
+                    self.assertEqual(
+                        {
+                            path: (path.read_bytes(), path.stat().st_ino)
+                            for path in originals
+                        },
+                        originals,
+                    )
+                    self.assertFalse(module._journal_path(target).exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows pinned parent before creation")
+    def test_directory_swap_before_candidate_open_is_blocked(self):
+        target_dir = self.root / "private"
+        target_dir.mkdir()
+        target = target_dir / "store.env"
+        open_private = module.open_private_file
+        attempts = []
+
+        def swap_before_open(path, **kwargs):
+            with self.assertRaises(OSError):
+                target_dir.rename(self.root / "displaced")
+            attempts.append(True)
+            return open_private(path, **kwargs)
+
+        with patch.object(module, "open_private_file", side_effect=swap_before_open):
+            module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+        self.assertEqual(attempts, [True])
+
+    @unittest.skipUnless(os.name == "nt", "Windows mutable reparse-point boundary")
+    def test_reparse_mutation_of_pinned_parent_never_writes_into_git(self):
+        import struct
+        import win32file
+        import win32con
+
+        repo = self.root / "checkout"
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        target_dir = self.root / "private"
+        target_dir.mkdir()
+        target = target_dir / "store.env"
+        create = module.create_private_directory
+        mutated = []
+        tag = 0xA0000003
+
+        def reparse_handle():
+            return win32file.CreateFile(
+                str(target_dir),
+                win32con.GENERIC_WRITE,
+                7,
+                None,
+                win32con.OPEN_EXISTING,
+                0x02200000,
+                None,
+            )
+
+        def change_parent_before_transaction_directory(path):
+            substitute = ("\\??\\" + str(repo)).encode("utf-16-le")
+            display = str(repo).encode("utf-16-le")
+            names = substitute + b"\0\0" + display + b"\0\0"
+            data = (
+                struct.pack(
+                    "<IHHHHHH",
+                    tag,
+                    8 + len(names),
+                    0,
+                    0,
+                    len(substitute),
+                    len(substitute) + 2,
+                    len(display),
+                )
+                + names
+            )
+            handle = reparse_handle()
+            try:
+                win32file.DeviceIoControl(handle, 0x900A4, data, 0)
+            finally:
+                handle.Close()
+            mutated.append(True)
+            return create(path)
+
+        try:
+            with patch.object(
+                module,
+                "create_private_directory",
+                side_effect=change_parent_before_transaction_directory,
+            ):
+                try:
+                    module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+                except (OSError, MigrationError):
+                    pass  # A no-follow refusal is also safe before any Git write.
+            self.assertEqual(
+                mutated, [True], "exercise actual reparse mutation, not a mock"
+            )
+            self.assertFalse((repo / "store.env").exists())
+            self.assertEqual(list(repo.glob("subscription-backup-*")), [])
+        finally:
+            if mutated:
+                handle = reparse_handle()
+                try:
+                    win32file.DeviceIoControl(
+                        handle, 0x900AC, struct.pack("<IHH", tag, 0, 0), 0
+                    )
+                finally:
+                    handle.Close()
+
+    def test_move_and_publish_sync_both_directory_boundaries(self):
+        from subscriptions import private_files
+
+        target = private_env(self.root)
+        target.write_bytes(b"OTHER=original\n")
+        with patch.object(private_files, "sync_directory") as synced:
+            module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
+        called = [args.args[0] for args in synced.call_args_list]
+        self.assertGreaterEqual(called.count(self.root), 3)
+        self.assertTrue(
+            any(
+                path.parent == self.root
+                and path.name.startswith("subscription-backup-")
+                for path in called
+            )
+        )
+
+    def test_posix_directory_sync_ignores_only_unsupported_errors(self):
+        import errno
+        from subscriptions import private_files
+
+        for error in (errno.EINVAL, errno.ENOTSUP, errno.EIO):
+            with (
+                patch.object(private_files.os, "name", "posix"),
+                patch.object(private_files.os, "open", return_value=71),
+                patch.object(
+                    private_files.os, "fsync", side_effect=OSError(error, "fixture")
+                ),
+                patch.object(private_files.os, "close") as closed,
+            ):
+                if error == errno.EIO:
+                    with self.assertRaises(OSError):
+                        private_files.sync_directory(self.root)
+                else:
+                    private_files.sync_directory(self.root)
+                closed.assert_called_once_with(71)
+
     def test_migration_removes_plaintext_only_after_probe(self):
         glm, deepseek = seeded_launchers(self.root)
         stream = io.StringIO()
@@ -285,7 +700,7 @@ class MigrationTests(unittest.TestCase):
     def test_cleanup_replace_failure_restores_bytes_and_keeps_recovery(self):
         glm, deepseek = seeded_launchers(self.root)
         originals = {p: p.read_bytes() for p in (glm, deepseek)}
-        actual_replace = os.replace
+        actual_replace = module._publish_exclusive
         failed = False
 
         def replace(source, target):
@@ -295,7 +710,7 @@ class MigrationTests(unittest.TestCase):
                 raise OSError("private failure owner@example.test")
             return actual_replace(source, target)
 
-        with patch.object(module.os, "replace", side_effect=replace):
+        with patch.object(module, "_publish_exclusive", side_effect=replace):
             with self.assertRaises(MigrationError):
                 migrate_launcher_secrets(
                     glm, deepseek, private_env(self.root), passing_probe()
@@ -362,12 +777,12 @@ import os, sys
 from pathlib import Path
 from tests.test_subscription_configuration import module, passing_probe
 root = Path(sys.argv[1])
-write = module._atomic_write
-def crash_after_write(path, data, **kwargs):
-    write(path, data, **kwargs)
+write = module._publish_exclusive
+def crash_after_write(source, path, **kwargs):
+    write(source, path, **kwargs)
     if path == root / "deepseek.cmd":
         os._exit(73)
-module._atomic_write = crash_after_write
+module._publish_exclusive = crash_after_write
 module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", root / "subscription-router.env", passing_probe())
 """
         result = subprocess.run(
@@ -395,7 +810,14 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
     def test_atomic_write_failure_leaves_existing_store_and_no_temp_secrets(self):
         target = private_env(self.root)
         target.write_bytes(b"OTHER_KEY=preserved\n")
-        with patch.object(module.os, "replace", side_effect=OSError("fixture")):
+        publish = module._publish_exclusive
+
+        def reject_candidate(source, destination):
+            if Path(source).name.startswith(".subscription-"):
+                raise OSError("fixture")
+            return publish(source, destination)
+
+        with patch.object(module, "_publish_exclusive", side_effect=reject_candidate):
             with self.assertRaises(OSError):
                 module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
         self.assertEqual(target.read_bytes(), b"OTHER_KEY=preserved\n")
@@ -490,7 +912,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         def fdopen(descriptor, *args, **kwargs):
             handle = actual_fdopen(descriptor, *args, **kwargs)
             try:
-                temporary = next(self.root.glob(".subscription-*"))
+                temporary = next(self.root.rglob(".subscription-*"))
                 self.assertEqual(temporary.stat().st_size, 0)
                 assert_private(temporary)
                 opened.append(temporary)
@@ -503,6 +925,8 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
             module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
         self.assertEqual(len(opened), 1)
         assert_private(target)
+        for backup in self.root.rglob("displaced-*"):
+            assert_private(backup)
 
     def test_symlink_store_is_rejected_before_any_credential_write(self):
         target = self.root / "canonical.env"
@@ -562,7 +986,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                     target = private_env(self.root)
                     target.unlink(missing_ok=True)
                     originals = {p: p.read_bytes() for p in (glm, deepseek)}
-                    replace = os.replace
+                    replace = module._publish_exclusive
                     interrupted = False
 
                     def after_replace(source, destination):
@@ -572,7 +996,9 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                             interrupted = True
                             raise interrupt()
 
-                    with patch.object(module.os, "replace", side_effect=after_replace):
+                    with patch.object(
+                        module, "_publish_exclusive", side_effect=after_replace
+                    ):
                         with self.assertRaises(interrupt):
                             migrate_launcher_secrets(
                                 glm, deepseek, target, passing_probe()
@@ -608,7 +1034,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         target = private_env(self.root)
         target.write_bytes(b"OTHER_KEY=old\n")
         changed = b"OTHER_KEY=edited after candidate flush\n"
-        actual_write = module.write_private_env
+        actual_write = module._write_candidate
         actual_fsync = os.fsync
 
         def write_with_late_edit(path, values, **kwargs):
@@ -619,9 +1045,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
             with patch.object(module.os, "fsync", side_effect=after_flush):
                 actual_write(path, values, **kwargs)
 
-        with patch.object(
-            module, "write_private_env", side_effect=write_with_late_edit
-        ):
+        with patch.object(module, "_write_candidate", side_effect=write_with_late_edit):
             with self.assertRaises(MigrationError):
                 migrate_one(
                     launcher, target, passing_probe(), secret_name="DEEPSEEK_API_KEY"
@@ -635,7 +1059,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
         originals = {p: p.read_bytes() for p in (glm, deepseek)}
-        actual_replace = os.replace
+        actual_replace = module._publish_exclusive
         interrupted = set()
 
         def interrupt_publication_and_recovery(source, destination):
@@ -653,7 +1077,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                 raise KeyboardInterrupt()
 
         with patch.object(
-            module.os, "replace", side_effect=interrupt_publication_and_recovery
+            module, "_publish_exclusive", side_effect=interrupt_publication_and_recovery
         ):
             with self.assertRaises(KeyboardInterrupt):
                 migrate_launcher_secrets(glm, deepseek, target, passing_probe())
@@ -682,12 +1106,12 @@ import os, sys
 from pathlib import Path
 from tests.test_subscription_configuration import module, passing_probe
 root, victim = Path(sys.argv[1]), sys.argv[2]
-replace = os.replace
+replace = module._publish_exclusive
 def die_after_replace(source, destination):
     replace(source, destination)
     if Path(destination).name == victim:
         os._exit(73)
-module.os.replace = die_after_replace
+module._publish_exclusive = die_after_replace
 module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", root / "subscription-router.env", passing_probe())
 """
         for victim in ("subscription-router.env", "deepseek.cmd", "glm-code.ps1"):
@@ -725,7 +1149,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
     def test_unknown_launcher_during_rollback_keeps_store_and_journal(self):
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
-        actual_replace = os.replace
+        actual_replace = module._publish_exclusive
         user_edit = b"user changed launcher\n"
 
         def fail_second_publication(source, destination):
@@ -734,7 +1158,9 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                 raise OSError("fixture")
             actual_replace(source, destination)
 
-        with patch.object(module.os, "replace", side_effect=fail_second_publication):
+        with patch.object(
+            module, "_publish_exclusive", side_effect=fail_second_publication
+        ):
             with self.assertRaises(MigrationError):
                 migrate_launcher_secrets(glm, deepseek, target, passing_probe())
         self.assertEqual(deepseek.read_bytes(), user_edit)
@@ -808,22 +1234,21 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
         originals = {p: p.read_bytes() for p in (glm, deepseek)}
-        actual_replace = os.replace
         externally_written = []
 
-        def fail_and_replace_store(source, destination):
-            if Path(destination) == glm:
+        def replace_store_before_cleanup(name, value):
+            if name == "GLM_API_KEY":
                 external = self.root / "external-edit.env"
                 current = target.read_bytes()
                 external.write_bytes(current)
-                actual_replace(external, target)
+                os.replace(external, target)
                 externally_written.append(current)
-                raise OSError("fixture")
-            actual_replace(source, destination)
+            return passing_probe()(name, value)
 
-        with patch.object(module.os, "replace", side_effect=fail_and_replace_store):
-            with self.assertRaises(MigrationError):
-                migrate_launcher_secrets(glm, deepseek, target, passing_probe())
+        with self.assertRaises(MigrationError):
+            migrate_launcher_secrets(
+                glm, deepseek, target, replace_store_before_cleanup
+            )
         self.assertTrue(
             target.exists(), "rollback must retain externally published store"
         )
