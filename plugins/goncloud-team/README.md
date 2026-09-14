@@ -66,7 +66,7 @@ command arguments or CLI output. They remain in the existing private Kanban
 workflow contract for resume, so **do not put secrets in assignments or sources**.
 The CLI limits instruction and source files to 32,768 characters.
 
-`--revision` defaults to the repository's current Git commit. Optional
+On first creation, `--revision` defaults to the repository's current Git commit. Optional
 `--sources-file` reads a JSON list of `reference`/`observed_at` records; otherwise
 the runner records the local owner assignment and its observation time.
 `--request-key` enables repeatable start requests; the same key must retain the
@@ -75,6 +75,11 @@ and persists with the workflow. `--affects-business-rules` enables the existing
 business acceptance direction. Use the same Kanban database and subscription
 database across commands (`HERMES_KANBAN_DB` and `GONCLOUD_SUBSCRIPTION_DB` can
 select isolated local stores).
+
+Repeated starts with the same request key reuse the original revision and
+source observation time when those flags are omitted. Explicit revision/source
+changes still fail the service's exact contract comparison; invalid source
+files (including JSON `null`) are rejected.
 
 Every worker must end its response with a fenced JSON object:
 
@@ -99,6 +104,12 @@ unset, preserving existing subscription callers. A crash after inference can
 reuse the persisted envelope and finish the native handoff without another
 vendor invocation. Downstream roles receive completed stages' bounded evidence.
 
+Recovery also normalizes previously cached results before exposing or handing
+them off. Completed task failures and exhausted route chains remain terminal
+across a crash; resume blocks them without another invocation. A crash between
+recoverable slots resumes at the next slot, while an interrupted attempt may
+resume its own slot with the router's existing continuation evidence.
+
 Approval always passes through `WorkflowService.review` and its native run
 metadata. A first high/critical rejection opens exactly one corrective
 `implementer -> verifier -> adversary -> reviewer` round; any unresolved second
@@ -106,6 +117,14 @@ review blocks delivery. Other rejected or blocked stages stop the runner.
 External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
 Delivery closes the director root after all stages and review gates finish.
+
+Reviewer envelopes remain available as bounded handoff/status evidence,
+including evidence needed by a corrective implementer. Decisions still come
+only from the review service's metadata. Local complete/block and director
+closure use connection-local SQL guards evaluated inside the native Kanban
+UPDATE, so reassignment, a changed status/contract, or withdrawn approval cannot
+slip between authorization and the transition. Native lifecycle hooks retain
+their own commit boundary.
 
 All command results are JSON, including sanitized errors. Exit status is 0 for
 delivery, pause, pending/waiting/running state; 1 for blocked work; 2 for invalid

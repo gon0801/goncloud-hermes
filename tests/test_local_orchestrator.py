@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +26,7 @@ from hermes_cli.kanban_db import (  # noqa: E402
 from hermes_cli.kanban_db_connect import connect_closing  # noqa: E402
 from workflow import WorkflowError, WorkflowService  # noqa: E402
 from subscriptions.router import SubscriptionRouter  # noqa: E402
-from subscriptions.types import AdapterHealth, InvocationResult  # noqa: E402
+from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from local_orchestrator import LocalOrchestrator, parse_terminal_envelope  # noqa: E402
 from tests.test_subscription_router import cleanup_temp_directory  # noqa: E402
 
@@ -218,6 +219,237 @@ class LocalOrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(len(self.requests), 7)
 
+    def test_legacy_handoff_is_normalized_before_status_and_downstream_prompt(self):
+        first = self.start(stop_after="scout")
+        metadata = {
+            "goncloud_local": {
+                "terminal": envelope(summary="sk-legacy-private owner@example.test"),
+                "attempts": [],
+            }
+        }
+        with connect_closing(self.db) as conn:
+            conn.execute(
+                "UPDATE task_runs SET metadata=? WHERE task_id=?",
+                (json.dumps(metadata), first["stages"]["scout"]["id"]),
+            ).close()
+            conn.commit()
+        status = self.orchestrator.status(first["workflow_id"])
+        self.orchestrator.resume(first["workflow_id"], stop_after="ingenieria")
+        public = repr(status) + self.requests[-1].prompt
+        self.assertNotIn("sk-legacy-private", public)
+        self.assertNotIn("owner@example.test", public)
+
+    def test_blocked_reviewer_retains_terminal_evidence_in_status(self):
+        self.responses["reviewer"] = fenced(
+            envelope(
+                review={"decision": "reject", "severity": "medium"},
+                evidence=["Review reproduction: failing_case.py:8"],
+            )
+        )
+        result = self.start()
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(
+            result["stages"]["reviewer"]["terminal"]["evidence"],
+            ["Review reproduction: failing_case.py:8"],
+        )
+
+    def test_owner_block_during_invocation_cannot_be_completed(self):
+        original = self.invoke
+
+        def block_during_invoke(request, route):
+            result = original(request, route)
+            with connect_closing(self.db) as conn:
+                conn.execute(
+                    "UPDATE tasks SET status='blocked' WHERE id=?", (request.stage_id,)
+                ).close()
+                conn.commit()
+            return result
+
+        with patch.object(self, "invoke", side_effect=block_during_invoke):
+            with self.assertRaises(WorkflowError):
+                self.start()
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, self.requests[0].stage_id).status, "blocked"
+            )
+
+    def test_status_change_between_check_and_completion_is_fenced(self):
+        import local_orchestrator as local
+
+        native = local.complete_task
+
+        def block_before_update(conn, task_id, **kwargs):
+            with connect_closing(self.db) as other:
+                other.execute(
+                    "UPDATE tasks SET status='blocked' WHERE id=?", (task_id,)
+                ).close()
+                other.commit()
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "complete_task", side_effect=block_before_update):
+            with self.assertRaises(WorkflowError):
+                self.start()
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, self.requests[0].stage_id).status, "blocked"
+            )
+
+    def prepare_unexecuted_workflow(self):
+        with patch.object(self.orchestrator, "resume", return_value={}):
+            self.start()
+        with connect_closing(self.db) as conn:
+            root = next(task for task in list_tasks(conn) if task.assignee == "claw")
+        return self.service().status(workflow_id=root.id)
+
+    def test_cached_direct_service_success_is_normalized_before_resume_handoff(self):
+        initial = self.prepare_unexecuted_workflow()
+        self.responses["scout"] = fenced(
+            envelope(
+                summary="sk-cached-private owner@example.test",
+                evidence=["validator.py:42"],
+            )
+        )
+        self.service("scout").subscription_run(
+            workflow_id=initial["workflow_id"],
+            task_id=initial["stages"]["scout"]["id"],
+            instruction="Inspect.",
+            repository=str(self.repo),
+            revision="baseline",
+            sources=SOURCES,
+            max_steps=17,
+        )
+        result = self.orchestrator.resume(
+            initial["workflow_id"], stop_after="ingenieria"
+        )
+        self.assertEqual([r.role for r in self.requests], ["scout", "ingenieria"])
+        public = (
+            repr(result)
+            + self.requests[-1].prompt
+            + repr(
+                self.router.store.stage_attempts(
+                    initial["workflow_id"], initial["stages"]["scout"]["id"]
+                )
+            )
+        )
+        self.assertNotIn("sk-cached-private", public)
+        self.assertNotIn("owner@example.test", public)
+
+    def test_cached_malformed_success_becomes_durable_failure_without_reinvocation(
+        self,
+    ):
+        initial = self.prepare_unexecuted_workflow()
+        self.responses["scout"] = "sk-cached-private owner@example.test"
+        self.service("scout").subscription_run(
+            workflow_id=initial["workflow_id"],
+            task_id=initial["stages"]["scout"]["id"],
+            instruction="Inspect.",
+            repository=str(self.repo),
+            revision="baseline",
+            sources=SOURCES,
+            max_steps=17,
+        )
+        result = self.orchestrator.resume(initial["workflow_id"])
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(len(self.requests), 1)
+        attempts = self.router.store.stage_attempts(
+            initial["workflow_id"], initial["stages"]["scout"]["id"]
+        )
+        self.assertFalse(attempts[0]["success"])
+        self.assertNotIn("sk-cached-private", repr(attempts))
+
+    def test_terminal_task_failure_survives_crash_without_reinvocation(self):
+        self.responses["scout"] = "malformed"
+        with patch.object(
+            self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.start()
+        request = self.requests[0]
+        result = self.orchestrator.resume(request.workflow_id)
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(
+            len(
+                self.router.store.stage_attempts(request.workflow_id, request.stage_id)
+            ),
+            1,
+        )
+
+    def test_exhausted_advancing_failure_survives_crash_without_reinvocation(self):
+        original = self.invoke
+
+        def timeout(request, route):
+            return replace(
+                original(request, route),
+                success=False,
+                failure=FailureKind.TIMEOUT,
+                text="private timeout",
+            )
+
+        with (
+            patch.object(self, "invoke", side_effect=timeout),
+            patch.object(
+                self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+            ),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.start()
+        request = self.requests[0]
+        self.router.store.save_health(
+            "opencode_go", ready=True, account_class="subscription"
+        )
+        result = self.orchestrator.resume(request.workflow_id)
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(len(self.requests), 1)
+
+    def test_crash_between_advancing_slots_resumes_at_next_slot(self):
+        self.router.adapters["opencode_zen"] = self
+        original, availability = self.invoke, self.router._availability
+        called = []
+
+        def invoke(request, route):
+            called.append(route.adapter)
+            result = original(request, route)
+            return (
+                replace(result, success=False, failure=FailureKind.TIMEOUT)
+                if route.adapter == "opencode_go"
+                else result
+            )
+
+        def interrupt(route):
+            if route.adapter == "opencode_zen":
+                raise KeyboardInterrupt
+            return availability(route)
+
+        with patch.object(self, "invoke", side_effect=invoke):
+            with patch.object(self.router, "_availability", side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.start()
+            self.router.store.save_health(
+                "opencode_go", ready=True, account_class="subscription"
+            )
+            result = self.orchestrator.resume(
+                self.requests[0].workflow_id, stop_after="scout"
+            )
+        self.assertEqual(result["outcome"], "paused")
+        self.assertEqual(called, ["opencode_go", "opencode_zen"])
+
+    def test_interrupted_attempt_can_resume_with_a_new_attempt(self):
+        original = self.invoke
+
+        def interrupt(request, route):
+            original(request, route)
+            raise KeyboardInterrupt
+
+        with patch.object(self, "invoke", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.start()
+        result = self.orchestrator.resume(
+            self.requests[0].workflow_id, stop_after="scout"
+        )
+        self.assertEqual(result["outcome"], "paused")
+        self.assertEqual(len(self.requests), 2)
+
     def test_downstream_assignment_contains_durable_predecessor_evidence(self):
         self.responses["scout"] = fenced(
             envelope(
@@ -316,6 +548,88 @@ class LocalOrchestratorTests(unittest.TestCase):
             self.assertEqual(stage.status, "ready")
             self.assertEqual(stage.assignee, "ingenieria")
 
+    def test_reassignment_between_check_and_completion_is_fenced(self):
+        import local_orchestrator as local
+
+        native = local.complete_task
+
+        def changed(conn, task_id, **kwargs):
+            with connect_closing(self.db) as other:
+                other.execute(
+                    "UPDATE tasks SET assignee=? WHERE id=?", ("ingenieria", task_id)
+                ).close()
+                other.commit()
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "complete_task", side_effect=changed):
+            with self.assertRaises(WorkflowError):
+                self.start(stop_after="scout")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, self.requests[0].stage_id).status, "ready")
+
+    def test_reassignment_between_check_and_block_is_fenced(self):
+        import local_orchestrator as local
+
+        native = local.block_task
+        self.responses["scout"] = fenced(envelope(status="blocked"))
+
+        def changed(conn, task_id, **kwargs):
+            with connect_closing(self.db) as other:
+                other.execute(
+                    "UPDATE tasks SET assignee=? WHERE id=?", ("ingenieria", task_id)
+                ).close()
+                other.commit()
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "block_task", side_effect=changed):
+            with self.assertRaises(WorkflowError):
+                self.start()
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, self.requests[0].stage_id).status, "ready")
+
+    def test_root_close_fences_reassigned_director(self):
+        import local_orchestrator as local
+
+        native = local.complete_task
+
+        def changed(conn, task_id, **kwargs):
+            if get_task(conn, task_id).assignee == "claw":
+                with connect_closing(self.db) as other:
+                    other.execute(
+                        "UPDATE tasks SET assignee=? WHERE id=?",
+                        ("operaciones", task_id),
+                    ).close()
+                    other.commit()
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "complete_task", side_effect=changed):
+            with self.assertRaises(WorkflowError):
+                self.start()
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, self.requests[0].workflow_id).status, "ready"
+            )
+
+    def test_root_close_fences_removed_review_approval(self):
+        import local_orchestrator as local
+
+        native = local.complete_task
+
+        def changed(conn, task_id, **kwargs):
+            if get_task(conn, task_id).assignee == "claw":
+                reviewer = next(r for r in self.requests if r.role == "reviewer")
+                with connect_closing(self.db) as other:
+                    other.execute(
+                        "UPDATE task_runs SET metadata='{}' WHERE task_id=?",
+                        (reviewer.stage_id,),
+                    ).close()
+                    other.commit()
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "complete_task", side_effect=changed):
+            with self.assertRaises(WorkflowError):
+                self.start()
+
     def test_real_cli_status_and_completed_resume_use_persisted_state(self):
         first = self.start()
         environment = {
@@ -342,6 +656,85 @@ class LocalOrchestratorTests(unittest.TestCase):
             self.assertEqual(result.stderr, "")
             self.assertEqual(json.loads(result.stdout)["outcome"], "delivered")
             self.assertNotIn("Inspect this repository", result.stdout)
+
+    def test_real_cli_repeated_start_reuses_implicit_sources_and_revision(self):
+        first = self.start(stop_after="scout")
+        instruction = self.root / "instruction.txt"
+        instruction.write_text(
+            "Inspect this repository without external actions.", encoding="utf-8"
+        )
+        environment = {
+            **os.environ,
+            "HERMES_KANBAN_DB": str(self.db),
+            "GONCLOUD_SUBSCRIPTION_DB": str(self.root / "routes.db"),
+        }
+        argv = [
+            sys.executable,
+            str(ROOT / "scripts/run_local_workflow.py"),
+            "start",
+            "--repository",
+            str(self.repo),
+            "--request-key",
+            "local-1",
+            "--instruction-file",
+            str(instruction),
+            "--max-steps",
+            "17",
+            "--stop-after",
+            "scout",
+            "--json",
+        ]
+        for _ in range(2):
+            result = subprocess.run(
+                argv, env=environment, capture_output=True, text=True, timeout=30
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(
+                json.loads(result.stdout)["workflow_id"], first["workflow_id"]
+            )
+            self.assertEqual(json.loads(result.stdout)["outcome"], "paused")
+        result = subprocess.run(
+            argv + ["--revision", "changed"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 2)
+
+    def test_reviewer_evidence_survives_review_and_reaches_corrective_implementer(self):
+        self.reviews = [
+            {"decision": "reject", "severity": "high"},
+            {"decision": "approve", "severity": None},
+        ]
+        original = self.invoke
+
+        def with_evidence(request, route):
+            result = original(request, route)
+            if (
+                request.role == "reviewer"
+                and sum(r.role == "reviewer" for r in self.requests) == 1
+            ):
+                result = replace(
+                    result,
+                    text=fenced(
+                        envelope(
+                            summary="Fix the documented race.",
+                            review={"decision": "reject", "severity": "high"},
+                            evidence=["Proof: concurrency_case.py:17"],
+                        )
+                    ),
+                )
+            return result
+
+        with patch.object(self, "invoke", side_effect=with_evidence):
+            result = self.start()
+        correction = [r for r in self.requests if r.role == "implementer"][1]
+        self.assertIn("Proof: concurrency_case.py:17", correction.prompt)
+        self.assertEqual(
+            result["stages"]["reviewer"]["terminal"]["evidence"],
+            ["Proof: concurrency_case.py:17"],
+        )
 
     def test_fresh_instance_resumes_without_repeating_scout_or_losing_limit(self):
         first = self.start(stop_after="scout")
@@ -534,6 +927,34 @@ class LocalCliTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertEqual(json.loads(out.getvalue())["outcome"], "error")
             self.assertNotIn("sk-private", out.getvalue() + err.getvalue())
+
+    def test_explicit_null_sources_file_is_rejected(self):
+        calls = []
+
+        class Orchestrator:
+            def start(self, **kwargs):
+                calls.append(kwargs)
+                return {"outcome": "paused"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            sources = Path(directory) / "sources.json"
+            sources.write_text("null", encoding="utf-8")
+            out = io.StringIO()
+            with redirect_stdout(out), patch("sys.stdin", io.StringIO("Inspect.")):
+                code = self.cli.main(
+                    [
+                        "start",
+                        "--repository",
+                        str(ROOT),
+                        "--revision",
+                        "baseline",
+                        "--sources-file",
+                        str(sources),
+                    ],
+                    orchestrator_factory=Orchestrator,
+                )
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
 
     def test_instruction_file_and_sources_are_read_without_argument_echo(self):
         calls = []

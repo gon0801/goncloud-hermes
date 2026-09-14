@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS subscription_attempts (
     detail TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'completed',
     owner TEXT NOT NULL DEFAULT '',
+    terminal INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(workflow_id, stage_id, slot, attempt)
 );
@@ -70,6 +71,7 @@ _ATTEMPT_COLUMNS = (
     "changed_files",
     "detail",
     "status",
+    "terminal",
     "created_at",
 )
 
@@ -118,6 +120,10 @@ class SubscriptionStateStore:
                         f"ALTER TABLE subscription_attempts ADD COLUMN {name} "
                         f"TEXT NOT NULL DEFAULT '{default}'"
                     )
+            if "terminal" not in columns:
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
 
     @contextlib.contextmanager
@@ -342,6 +348,54 @@ class SubscriptionStateStore:
                 (workflow_id, stage_id),
             ).fetchone()
         return _attempt_view(row) if row is not None else None
+
+    def normalize_completed_attempt(
+        self,
+        *,
+        workflow_id,
+        stage_id,
+        attempt_id,
+        owner,
+        success,
+        failure,
+        detail,
+        session_id="",
+    ) -> bool:
+        """Replace recovered evidence only while its stage lease is owned."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._owns_stage(conn, workflow_id, stage_id, owner):
+                return False
+            updated = conn.execute(
+                "UPDATE subscription_attempts SET success=?, failure=?, detail=?, session_id=?, terminal=1 "
+                "WHERE id=? AND workflow_id=? AND stage_id=? AND status='completed'",
+                (
+                    int(success),
+                    failure,
+                    detail,
+                    session_id,
+                    attempt_id,
+                    workflow_id,
+                    stage_id,
+                ),
+            ).rowcount
+            conn.commit()
+            return bool(updated)
+
+    def mark_stage_terminal(self, workflow_id, stage_id, owner) -> bool:
+        """Fence a final local result before releasing its execution lease."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._owns_stage(conn, workflow_id, stage_id, owner):
+                return False
+            conn.execute(
+                "UPDATE subscription_attempts SET terminal=1 WHERE id=("
+                "SELECT id FROM subscription_attempts WHERE workflow_id=? AND stage_id=? "
+                "AND status='completed' ORDER BY id DESC LIMIT 1)",
+                (workflow_id, stage_id),
+            )
+            conn.commit()
+            return True
 
     def next_attempt(self, workflow_id: str, stage_id: str, slot: int) -> int:
         with self._lock, self._connect() as conn:

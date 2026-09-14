@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -77,28 +76,19 @@ def main(argv=None, *, orchestrator_factory=None):
                         instruction = source.read(32769)
                 if not instruction.strip() or len(instruction) > 32768:
                     raise ValueError("invalid instruction")
-                revision = args.revision
-                if revision is None:
-                    sys.path.insert(0, str(ROOT / "plugins" / "goncloud-team"))
-                    from subscriptions.router import GitInspector
-
-                    revision = GitInspector().current_revision(Path(args.repository))
-                sources = [
-                    {
-                        "reference": "owner local assignment",
-                        "observed_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                ]
+                sources = None
                 if args.sources_file:
                     with args.sources_file.open(encoding="utf-8-sig") as source:
                         raw = source.read(32769)
                     if len(raw) > 32768:
                         raise ValueError("oversized sources")
                     sources = json.loads(raw)
+                    if not isinstance(sources, list):
+                        raise ValueError("sources must be a list")
                 result = orchestrator.start(
                     request_key=args.request_key or uuid4().hex,
                     repository=args.repository,
-                    revision=revision,
+                    revision=args.revision,
                     instruction=instruction,
                     sources=sources,
                     max_steps=args.max_steps,

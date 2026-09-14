@@ -6,11 +6,14 @@ import json
 import os
 import re
 from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 
 from hermes_cli.kanban_db import block_task, complete_task, list_runs, parent_ids
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
+    from .subscriptions.router import GitInspector
     from .workflow import (
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
@@ -18,6 +21,7 @@ try:
         WorkflowService,
     )
 except ImportError:
+    from subscriptions.router import GitInspector
     from workflow import (
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
@@ -141,22 +145,37 @@ def _sanitize(text, instruction=""):
     return _SENSITIVE.sub("[redacted]", text)
 
 
+def _normalized_terminal(text, role, instruction):
+    parsed = parse_terminal_envelope(text, role=role)
+    parsed["summary"] = _sanitize(parsed["summary"], instruction)
+    parsed["evidence"] = [_sanitize(item, instruction) for item in parsed["evidence"]]
+    text = (
+        "```json\n"
+        + json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        + "\n```"
+    )
+    if len(text.encode("utf-8")) > MAX_TERMINAL_BYTES:
+        raise _invalid_terminal()
+    return parsed, text
+
+
+def _safe_handoff(value, role, instruction):
+    try:
+        text = (
+            "```json\n" + json.dumps(value, ensure_ascii=False) + "\n```"
+            if isinstance(value, dict)
+            else value
+        )
+        return _normalized_terminal(text, role, instruction)[0]
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
 def _terminal_transform(role, instruction):
     def transform(result):
         if not result.success:
             return replace(result, text="subscription stage failed", session_id="")
-        parsed = parse_terminal_envelope(result.text, role=role)
-        parsed["summary"] = _sanitize(parsed["summary"], instruction)
-        parsed["evidence"] = [
-            _sanitize(item, instruction) for item in parsed["evidence"]
-        ]
-        text = (
-            "```json\n"
-            + json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-            + "\n```"
-        )
-        if len(text.encode("utf-8")) > MAX_TERMINAL_BYTES:
-            raise _invalid_terminal()
+        _, text = _normalized_terminal(result.text, role, instruction)
         return replace(result, text=text, session_id="")
 
     return transform
@@ -194,14 +213,56 @@ class LocalOrchestrator:
         if type(max_steps) is not int or not 1 <= max_steps <= 200:
             raise WorkflowError("max_steps must be an integer between 1 and 200")
         service = self.services("claw")
-        started = service.start(
+        original = service.start_contract(request_key=request_key)
+        resolved_revision = (
+            revision
+            if revision is not None
+            else (
+                original["revision"]
+                if original
+                else GitInspector().current_revision(Path(repository))
+            )
+        )
+        resolved_sources = (
+            sources
+            if sources is not None
+            else (
+                original["sources"]
+                if original
+                else [
+                    {
+                        "reference": "owner local assignment",
+                        "observed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ]
+            )
+        )
+        assignment = dict(
             request_key=request_key,
             repository=repository,
-            revision=revision,
+            revision=resolved_revision,
             instruction=instruction,
-            sources=sources,
+            sources=resolved_sources,
             affects_business_rules=affects_business_rules,
         )
+        try:
+            started = service.start(**assignment)
+        except WorkflowError:
+            # Concurrent first starts may compute different implicit timestamps.
+            # Retry once against the winner's immutable provenance; explicit
+            # changes still go through the service's exact contract comparison.
+            winner = (
+                service.start_contract(request_key=request_key)
+                if original is None and (revision is None or sources is None)
+                else None
+            )
+            if winner is None:
+                raise
+            if revision is None:
+                assignment["revision"] = winner["revision"]
+            if sources is None:
+                assignment["sources"] = winner["sources"]
+            started = service.start(**assignment)
         workflow_id = started["workflow_id"]
         with service._connect() as conn, write_txn(conn):
             conn.execute(
@@ -246,6 +307,9 @@ class LocalOrchestrator:
         # Native titles and results may contain the private assignment; expose
         # only explicit status and the bounded metadata this driver produced.
         with service._connect() as conn:
+            instruction = service._contract_of(
+                service._require_workflow_root(conn, workflow_id)
+            )["instruction"]
             output = {
                 "workflow_id": state["workflow_id"],
                 "root": {"id": state["root"]["id"], "status": state["root"]["status"]},
@@ -265,8 +329,11 @@ class LocalOrchestrator:
                         metadata = run.metadata or {}
                         local = metadata.get("goncloud_local")
                         if isinstance(local, dict):
-                            entry["terminal"] = local["terminal"]
-                            entry["attempts"] = local["attempts"]
+                            terminal = _safe_handoff(
+                                local.get("terminal"), role, instruction
+                            )
+                            if terminal:
+                                entry["terminal"] = terminal
                     if role == "reviewer":
                         review = service._recorded_review_run(conn, stage["id"])
                         if review:
@@ -280,6 +347,18 @@ class LocalOrchestrator:
                         workflow_id=workflow_id, stage_id=stage["id"]
                     )
                     attempts = route_status.get("stage", {}).get("attempts", [])
+                    if "terminal" not in entry:
+                        for attempt in reversed(attempts):
+                            if (
+                                attempt.get("success")
+                                and attempt.get("status") == "completed"
+                            ):
+                                terminal = _safe_handoff(
+                                    attempt.get("detail"), role, instruction
+                                )
+                                if terminal:
+                                    entry["terminal"] = terminal
+                                break
                     entry["attempts"] = [
                         {key: item.get(key) for key in _ATTEMPT_KEYS}
                         for item in attempts
@@ -343,7 +422,9 @@ class LocalOrchestrator:
             if pending is None:
                 if not self._approved(state):
                     return self._report(workflow_id, "blocked")
-                with service._connect() as conn:
+                with service.local_transition(
+                    workflow_id=workflow_id, task_id=workflow_id, require_approval=True
+                ) as (conn, root):
                     if not complete_task(
                         conn,
                         workflow_id,
@@ -380,7 +461,11 @@ class LocalOrchestrator:
                         continue
                     for run in list_runs(conn, previous["id"]):
                         metadata = run.metadata or {}
-                        terminal = metadata.get("goncloud_local", {}).get("terminal")
+                        terminal = _safe_handoff(
+                            metadata.get("goncloud_local", {}).get("terminal"),
+                            previous_role,
+                            contract["instruction"],
+                        )
                         if terminal:
                             handoffs.append(
                                 {"role": previous_role, "terminal": terminal}
@@ -458,13 +543,33 @@ class LocalOrchestrator:
 
     @staticmethod
     def _finish_stage(service, workflow_id, task_id, role, terminal, result):
-        with service._connect() as conn:
-            task = service._require_task(conn, task_id)
-            if task.assignee != service.actor_role:
-                raise WorkflowError("stage assignment changed; transition refused")
+        local_handoff = {
+            "terminal": terminal,
+            "attempts": [
+                {key: row.get(key) for key in _ATTEMPT_KEYS}
+                for row in result.get("attempts", [])
+            ],
+        }
+        if (
+            role == "reviewer"
+            and terminal is not None
+            and terminal["status"] == "completed"
+        ):
+            service.review(
+                workflow_id=workflow_id,
+                task_id=task_id,
+                summary=terminal["summary"],
+                local_handoff=local_handoff,
+                **terminal["review"],
+            )
+            return
         if terminal is None or terminal["status"] == "blocked":
-            with service._connect() as conn:
-                task = service._require_task(conn, task_id)
+            with service.local_transition(
+                workflow_id=workflow_id, task_id=task_id, allow_blocked=True
+            ) as (
+                conn,
+                task,
+            ):
                 if task.status not in {"done", "blocked"}:
                     if not block_task(
                         conn,
@@ -474,25 +579,12 @@ class LocalOrchestrator:
                     ):
                         raise WorkflowError("native Kanban refused stage blocking")
             return
-        if role == "reviewer":
-            service.review(
-                workflow_id=workflow_id,
-                task_id=task_id,
-                summary=terminal["summary"],
-                **terminal["review"],
-            )
-            return
-        metadata = {
-            "goncloud_local": {
-                "terminal": terminal,
-                "attempts": [
-                    {key: row.get(key) for key in _ATTEMPT_KEYS}
-                    for row in result.get("attempts", [])
-                ],
-            }
-        }
-        with service._connect() as conn:
-            task = service._require_task(conn, task_id)
+        metadata = {"goncloud_local": local_handoff}
+        with service.local_transition(
+            workflow_id=workflow_id,
+            task_id=task_id,
+            require_approval=(role == "entrega"),
+        ) as (conn, task):
             if task.status != "done" and not complete_task(
                 conn,
                 task_id,

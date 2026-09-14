@@ -151,7 +151,16 @@ class SubscriptionRouter:
         ):
             return self._stage_busy()
         try:
-            return self._run_owned(request, routes, owner)
+            result = self._run_owned(request, routes, owner)
+            if request.result_transform is not None and not (
+                result.adapter == "router"
+                and result.failure is FailureKind.TASK_FAILURE
+            ):
+                if not self.store.mark_stage_terminal(
+                    request.workflow_id, request.stage_id, owner
+                ):
+                    return self._stage_busy()
+            return result
         finally:
             self.store.release_stage(request.workflow_id, request.stage_id, owner)
 
@@ -169,9 +178,40 @@ class SubscriptionRouter:
     def _run_owned(
         self, request: InvocationRequest, routes: Iterable[RouteSpec], owner: str
     ) -> InvocationResult:
-        recorded = self.store.latest_success(request.workflow_id, request.stage_id)
-        if recorded is not None:
-            return _result_from_attempt(recorded)
+        if request.result_transform is None:
+            recorded = self.store.latest_success(request.workflow_id, request.stage_id)
+            if recorded is not None:
+                return _result_from_attempt(recorded)
+        else:
+            routes = tuple(routes)
+            attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
+            if attempts:
+                latest = attempts[-1]
+                if latest["status"] == "completed":
+                    failure = (
+                        FailureKind(latest["failure"]) if latest["failure"] else None
+                    )
+                    mutated = bool(
+                        latest["changed_files"]
+                        or latest["end_revision"] != latest["start_revision"]
+                    )
+                    if (
+                        latest["success"]
+                        or latest["terminal"]
+                        or failure not in _ADVANCING_FAILURES
+                        or (failure is FailureKind.TRANSPORT and mutated)
+                        or latest["slot"]
+                        == max((route.slot for route in routes), default=-1)
+                    ):
+                        return self._recover_result(request, latest, owner)
+                    # A crash between slots resumes the next distinct attempt.
+                    routes = tuple(
+                        route for route in routes if route.slot > latest["slot"]
+                    )
+                elif latest["status"] == "interrupted":
+                    routes = tuple(
+                        route for route in routes if route.slot >= latest["slot"]
+                    )
 
         request = self._absorb_workspace_state(request)
         last_failure: Optional[InvocationResult] = None
@@ -368,6 +408,35 @@ class SubscriptionRouter:
                 billing_mode=route.billing_mode,
                 failure=FailureKind.TASK_FAILURE,
             )
+
+    def _recover_result(self, request, recorded, owner):
+        result = _result_from_attempt(recorded)
+        if request.result_transform is None:
+            return result
+        if request.pre_invoke is not None:
+            request.pre_invoke()
+        try:
+            result = request.result_transform(result)
+        except Exception:
+            result = replace(
+                result,
+                success=False,
+                text="local terminal validation failed",
+                session_id="",
+                failure=FailureKind.TASK_FAILURE,
+            )
+        if not self.store.normalize_completed_attempt(
+            workflow_id=request.workflow_id,
+            stage_id=request.stage_id,
+            attempt_id=recorded["id"],
+            owner=owner,
+            success=result.success,
+            failure=result.failure.value if result.failure else None,
+            detail=result.text,
+            session_id=result.session_id,
+        ):
+            return self._stage_busy()
+        return result
 
     def _absorb_workspace_state(self, request: InvocationRequest) -> InvocationRequest:
         """A recorded mutation turns a fresh run into an explicit continuation."""

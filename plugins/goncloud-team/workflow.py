@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -135,6 +137,135 @@ class WorkflowService:
         if self.actor_role != expected:
             raise WorkflowError(f"this operation requires role {expected}")
 
+    @contextmanager
+    def local_transition(
+        self,
+        *,
+        workflow_id,
+        task_id,
+        require_approval=False,
+        allow_blocked=False,
+        connection=None,
+    ):
+        """Fence authorization inside the native transition's own transaction.
+
+        Native complete/block must own their commit because lifecycle hooks run
+        after it. A connection-local trigger compares this snapshot atomically
+        at their UPDATE; no nested transaction or persistent trigger is needed.
+        """
+        self._require_known_actor()
+        with (
+            nullcontext(connection) if connection is not None else self._connect()
+        ) as conn:
+            with write_txn(conn):
+                root = self._require_workflow_root(conn, workflow_id)
+                task = self._require_task(conn, task_id)
+                if task.assignee != self.actor_role or root.assignee != "claw":
+                    raise WorkflowError("stage assignment changed; transition refused")
+                if root.status not in {"todo", "ready", "running"}:
+                    raise WorkflowError("director is not executable")
+                if task.status not in {"ready", "running", "done"} and not (
+                    allow_blocked and task.status == "blocked"
+                ):
+                    raise WorkflowError("stage dependencies are incomplete")
+                initial = self._decomposed_child_ids(conn, workflow_id) or []
+                correction = self._correction_ids(conn, workflow_id)
+                membership = set(initial) | set(correction.values())
+                if task_id != workflow_id and task_id not in membership:
+                    raise WorkflowError("task is not a stage of workflow")
+                watched = {workflow_id, task_id, *parent_ids(conn, task_id)}
+                review_ids = []
+                if task_id == workflow_id:
+                    self._require_actor("claw")
+                    if any(
+                        self._require_task(conn, member).status != "done"
+                        for member in membership
+                    ):
+                        raise WorkflowError("workflow stages are incomplete")
+                    watched |= membership
+                if require_approval:
+                    if len(initial) != len(INITIAL_STAGES):
+                        raise WorkflowError("workflow graph is incomplete")
+                    reviewer_id = (
+                        correction.get("reviewer")
+                        or dict(zip(INITIAL_STAGES, initial))["reviewer"]
+                    )
+                    reviewer = self._require_task(conn, reviewer_id)
+                    review = self._recorded_review_run(conn, reviewer_id)
+                    if (
+                        reviewer.status != "done"
+                        or reviewer.assignee != "reviewer"
+                        or not review
+                        or review.get("decision") != "approve"
+                        or review.get("result", {}).get("outcome") != "approved"
+                    ):
+                        raise WorkflowError("durable reviewer approval is required")
+                    watched.add(reviewer_id)
+                    review_ids = [reviewer_id]
+                columns = (
+                    "id",
+                    "assignee",
+                    "status",
+                    "workspace_kind",
+                    "workspace_path",
+                    "body",
+                    "current_run_id",
+                    "idempotency_key",
+                )
+                conn.execute(
+                    "CREATE TEMP TABLE goncloud_local_target (id TEXT PRIMARY KEY)"
+                ).close()
+                conn.execute(
+                    "INSERT INTO goncloud_local_target VALUES (?)", (task_id,)
+                ).close()
+                conn.execute(
+                    "CREATE TEMP TABLE goncloud_local_expected (id TEXT PRIMARY KEY, assignee, status, workspace_kind, workspace_path, body, current_run_id, idempotency_key)"
+                ).close()
+                for member in watched:
+                    conn.execute(
+                        "INSERT INTO goncloud_local_expected SELECT "
+                        + ",".join(columns)
+                        + " FROM tasks WHERE id=?",
+                        (member,),
+                    ).close()
+                conn.execute(
+                    "CREATE TEMP TABLE goncloud_local_reviews (id INTEGER PRIMARY KEY, metadata, ended_at)"
+                ).close()
+                for reviewer_id in review_ids:
+                    conn.execute(
+                        "INSERT INTO goncloud_local_reviews SELECT id,metadata,ended_at FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL",
+                        (reviewer_id,),
+                    ).close()
+                changed = " OR ".join(
+                    f"t.{column} IS NOT e.{column}" for column in columns[1:]
+                )
+                conn.execute(
+                    "CREATE TEMP TRIGGER goncloud_local_fence BEFORE UPDATE OF status ON main.tasks "
+                    "WHEN OLD.id IN (SELECT id FROM goncloud_local_target) BEGIN "
+                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM goncloud_local_expected e "
+                    "LEFT JOIN main.tasks t ON t.id=e.id WHERE t.id IS NULL OR "
+                    + changed
+                    + ") "
+                    "OR EXISTS(SELECT 1 FROM goncloud_local_reviews e LEFT JOIN main.task_runs r ON r.id=e.id "
+                    "WHERE r.id IS NULL OR r.metadata IS NOT e.metadata OR r.ended_at IS NOT e.ended_at) "
+                    "THEN RAISE(ABORT, 'local transition authorization changed') END; END"
+                ).close()
+            try:
+                yield conn, task
+            except sqlite3.DatabaseError:
+                raise WorkflowError(
+                    "local transition authorization changed; transition refused"
+                ) from None
+            finally:
+                for name in ("goncloud_local_fence",):
+                    conn.execute(f"DROP TRIGGER IF EXISTS temp.{name}").close()
+                for name in (
+                    "goncloud_local_target",
+                    "goncloud_local_expected",
+                    "goncloud_local_reviews",
+                ):
+                    conn.execute(f"DROP TABLE IF EXISTS temp.{name}").close()
+
     def start(
         self,
         *,
@@ -231,6 +362,18 @@ class WorkflowService:
                     "workflow root exists without a complete native stage graph"
                 )
             return self._start_result(root_id, child_ids)
+
+    def start_contract(self, *, request_key: str) -> Optional[dict]:
+        """Read the original provenance for an idempotent local start."""
+        self._require_actor("claw")
+        key = _WORKFLOW_KEY_PREFIX + _required_text(request_key, "request_key")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM tasks WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._contract_of(self._require_workflow_root(conn, row[0]))
 
     @staticmethod
     def _validate_sources(sources: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
@@ -696,6 +839,7 @@ class WorkflowService:
         decision: str,
         summary: str,
         severity: Optional[str] = None,
+        local_handoff: Optional[dict] = None,
     ) -> dict[str, Any]:
         """Adjudicate review and enforce the hard two-round ceiling."""
         self._require_actor("reviewer")
@@ -806,12 +950,21 @@ class WorkflowService:
 
             record = {**requested, "task_id": task_id, "result": result}
             self._add_review_audit(conn, workflow_id, record)
-            self._finish_recorded_review(conn, task_id, record)
+            if local_handoff is None:
+                self._finish_recorded_review(conn, task_id, record)
+            else:
+                with self.local_transition(
+                    workflow_id=workflow_id, task_id=task_id, connection=conn
+                ):
+                    self._finish_recorded_review(conn, task_id, record, local_handoff)
             return result
 
     @staticmethod
     def _finish_recorded_review(
-        conn: Any, task_id: str, record: dict[str, Any]
+        conn: Any,
+        task_id: str,
+        record: dict[str, Any],
+        local_handoff: Optional[dict] = None,
     ) -> None:
         task = get_task(conn, task_id)
         if task is None:
@@ -830,6 +983,8 @@ class WorkflowService:
         if task.status == "done":
             return
         metadata = {"goncloud_review": record}
+        if local_handoff is not None:
+            metadata["goncloud_local"] = local_handoff
         if not complete_task(
             conn,
             task_id,
