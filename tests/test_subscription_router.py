@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import subprocess
+import sqlite3
+import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -100,10 +105,23 @@ def request(workspace, workflow_id="wf-6", stage_id="st-6", prompt="Do it once."
     )
 
 
+def cleanup_temp_directory(directory):
+    # Windows can briefly report a nonempty directory while file deletions
+    # settle. Retry that specific error; persistent failures still fail the test.
+    for attempt in range(20):
+        try:
+            directory.cleanup()
+            return
+        except OSError as error:
+            if os.name != "nt" or error.winerror != 145 or attempt == 19:
+                raise
+            time.sleep(0.05)
+
+
 class RouterTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
         self.db_path = self.workspace / "router.db"
         self.fake_adapters = {
@@ -139,6 +157,66 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_concurrent_stage_runs_invoke_vendor_once(self):
+        routers = [self.router(), self.router()]
+        start = threading.Barrier(2)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked(request, route):
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("test did not release invocation")
+            return completed("done", route.adapter)
+
+        self.fake_adapters["opencode_go"].result = blocked
+
+        def run(router):
+            start.wait(10)
+            return router.run(request(self.workspace), routes_for_main())
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(run, router) for router in routers]
+            try:
+                self.assertTrue(entered.wait(10))
+                done, _ = wait(futures, timeout=2, return_when=FIRST_COMPLETED)
+                self.assertEqual(len(done), 1, "contender must return while owner runs")
+                contender = next(iter(done)).result()
+                self.assertFalse(contender.success)
+                self.assertIn("stage already running", contender.text)
+                running = routers[0].store.stage_attempts("wf-6", "st-6")
+                self.assertEqual(len(running), 1)
+                self.assertEqual(running[0]["status"], "running")
+            finally:
+                release.set()
+            results = [future.result() for future in futures]
+
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+        self.assertEqual(sum(result.success for result in results), 1)
+        attempts = routers[0].store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["status"], "completed")
+
+    def test_interrupted_attempt_is_durable_and_releases_stage(self):
+        router = self.router()
+
+        def interrupt(request, route):
+            raise KeyboardInterrupt()
+
+        self.fake_adapters["opencode_go"].result = interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            router.run(request(self.workspace), routes_for_main())
+
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["status"], "interrupted")
+        self.assertFalse(attempts[0]["success"])
+        self.fake_adapters["opencode_go"].result = completed("recovered")
+        self.assertTrue(
+            self.router().run(request(self.workspace), routes_for_main()).success
+        )
+        self.assertEqual(len(router.store.stage_attempts("wf-6", "st-6")), 2)
+
     def test_quarantined_probe_detail_is_redacted_from_durable_status(self):
         router = self.router()
         go = self.fake_adapters["opencode_go"]
@@ -398,6 +476,87 @@ class MutationContinuationTests(RouterTestCase):
             check=True,
         )
 
+    def test_clean_commit_causes_continuation(self):
+        router = self.router()
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "changed.py").write_text("new\n", encoding="utf-8")
+        self._run_git("add", "changed.py")
+        self._run_git("commit", "-q", "-m", "changed")
+        self.assertEqual(self._run_git("status", "--porcelain").stdout, "")
+
+        absorbed = router._absorb_workspace_state(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+            )
+        )
+
+        self.assertEqual(absorbed.mode, "continue")
+        self.assertEqual(absorbed.changed_files, ("changed.py",))
+        self.assertEqual(
+            absorbed.current_revision, self._run_git("rev-parse", "HEAD").stdout.strip()
+        )
+
+    def test_clean_commit_transport_failure_blocks_with_durable_evidence(self):
+        router = self.router()
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        def commit_then_fail(request, route):
+            (self.git_repo / "changed.py").write_text("new\n", encoding="utf-8")
+            self._run_git("add", "changed.py")
+            self._run_git("commit", "-q", "-m", "changed")
+            return failed(FailureKind.TRANSPORT, route.adapter)
+
+        self.fake_adapters["opencode_go"].result = commit_then_fail
+        self.fake_adapters["opencode_zen"].result = completed("must not run")
+        result = router.run(
+            replace(
+                request(self.git_repo), start_revision=start, current_revision=start
+            ),
+            routes_for_main(),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(router.calls, ["opencode_go"])
+        evidence = SubscriptionStateStore(self.db_path).stage_mutation("wf-6", "st-6")
+        self.assertEqual(evidence["changed_files"], ["changed.py"])
+        self.assertEqual(
+            evidence["end_revision"], self._run_git("rev-parse", "HEAD").stdout.strip()
+        )
+
+    def test_empty_commit_advances_auth_as_continuation_and_survives_restart(self):
+        router = self.router()
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        def commit_then_fail(request, route):
+            self._run_git("commit", "--allow-empty", "-q", "-m", "empty mutation")
+            return failed(FailureKind.AUTH, route.adapter)
+
+        self.fake_adapters["opencode_go"].result = commit_then_fail
+        self.fake_adapters["opencode_zen"].result = failed(FailureKind.TASK_FAILURE)
+        initial = replace(
+            request(self.git_repo), start_revision=start, current_revision=start
+        )
+        router.run(initial, routes_for_main())
+
+        continuation = self.fake_adapters["opencode_zen"].requests[0]
+        self.assertEqual(continuation.mode, "continue")
+        self.assertEqual(continuation.changed_files, ())
+        self.assertNotEqual(continuation.current_revision, start)
+        evidence = SubscriptionStateStore(self.db_path).stage_mutation("wf-6", "st-6")
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence["end_revision"], continuation.current_revision)
+        # Even a caller supplying today's revision must retain the recorded mutation.
+        absorbed = self.router()._absorb_workspace_state(
+            replace(
+                initial,
+                start_revision=continuation.current_revision,
+                current_revision=continuation.current_revision,
+            )
+        )
+        self.assertEqual(absorbed.mode, "continue")
+
     def test_mutation_turns_next_attempt_into_continuation(self):
         router = self.router()
 
@@ -515,6 +674,156 @@ class StatusTests(RouterTestCase):
 
 
 class StateStoreTests(RouterTestCase):
+    def test_concurrent_open_migrates_existing_attempts_without_losing_success(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.executescript("""
+                CREATE TABLE subscription_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL, stage_id TEXT NOT NULL,
+                    slot INTEGER NOT NULL, attempt INTEGER NOT NULL,
+                    adapter TEXT NOT NULL, model TEXT NOT NULL,
+                    billing_mode TEXT NOT NULL, mode TEXT NOT NULL,
+                    success INTEGER NOT NULL, failure TEXT,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    start_revision TEXT NOT NULL DEFAULT '',
+                    end_revision TEXT NOT NULL DEFAULT '',
+                    changed_files TEXT NOT NULL DEFAULT '[]',
+                    detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '',
+                    UNIQUE(workflow_id, stage_id, slot, attempt)
+                );
+                INSERT INTO subscription_attempts
+                (workflow_id, stage_id, slot, attempt, adapter, model, billing_mode,
+                 mode, success, detail)
+                VALUES ('wf', 'st', 0, 0, 'kimi', 'k3', 'subscription', 'start', 1, 'done');
+            """)
+        finally:
+            conn.close()
+        start = threading.Barrier(2)
+
+        def reopen(_):
+            start.wait(10)
+            return SubscriptionStateStore(self.db_path).latest_success("wf", "st")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(reopen, range(2)))
+        self.assertEqual([row["detail"] for row in results], ["done", "done"])
+        self.assertEqual([row["status"] for row in results], ["completed", "completed"])
+
+    def test_reclaimed_lease_marks_crashed_attempt_and_fences_old_owner(self):
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf", "st", "crashed", 60))
+        values = dict(
+            workflow_id="wf",
+            stage_id="st",
+            slot=0,
+            attempt=0,
+            adapter="kimi",
+            model="k3",
+            billing_mode="subscription",
+            mode="start",
+            success=False,
+            failure=None,
+            session_id="",
+            start_revision="r0",
+            end_revision="r0",
+            changed_files=[],
+            detail="attempt running",
+            status="running",
+            owner="crashed",
+        )
+        store.record_attempt(**values)
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_stage_leases SET expires_at = ?",
+                ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),),
+            )
+            conn.commit()
+        reopened = SubscriptionStateStore(self.db_path)
+        self.assertTrue(reopened.claim_stage("wf", "st", "recovered", 60))
+        self.assertEqual(
+            reopened.stage_attempts("wf", "st")[0]["status"], "interrupted"
+        )
+        self.assertFalse(store.renew_stage("wf", "st", "crashed", 60))
+        self.assertFalse(
+            store.finish_attempt(
+                workflow_id="wf",
+                stage_id="st",
+                slot=0,
+                attempt=0,
+                owner="crashed",
+                success=True,
+                failure=None,
+                session_id="s",
+                end_revision="r1",
+                changed_files=["wrong.py"],
+                detail="stale success",
+            )
+        )
+        self.assertIsNone(store.latest_success("wf", "st"))
+        values.update(attempt=1, owner="recovered")
+        reopened.record_attempt(**values)
+        store.release_stage("wf", "st", "crashed")
+        self.assertEqual(reopened.stage_attempts("wf", "st")[1]["status"], "running")
+        self.assertTrue(
+            reopened.finish_attempt(
+                workflow_id="wf",
+                stage_id="st",
+                slot=0,
+                attempt=1,
+                owner="recovered",
+                success=True,
+                failure=None,
+                session_id="s",
+                end_revision="r1",
+                changed_files=["done.py"],
+                detail="done",
+            )
+        )
+        self.assertEqual(store.latest_success("wf", "st")["detail"], "done")
+
+    def test_expired_lease_is_recoverable_and_wrong_owner_cannot_release(self):
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf", "st", "old", 60))
+        reopened = SubscriptionStateStore(self.db_path)
+        self.assertFalse(reopened.claim_stage("wf", "st", "new", 60))
+        reopened.release_stage("wf", "st", "new")
+        self.assertFalse(reopened.claim_stage("wf", "st", "new", 60))
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_stage_leases SET expires_at = ?",
+                ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),),
+            )
+            conn.commit()
+        self.assertTrue(reopened.claim_stage("wf", "st", "new", 60))
+        store.release_stage("wf", "st", "old")
+        self.assertFalse(store.claim_stage("wf", "st", "third", 60))
+        reopened.release_stage("wf", "st", "new")
+        self.assertTrue(store.claim_stage("wf", "st", "third", 60))
+
+    def test_duplicate_attempt_is_rejected_instead_of_silently_hidden(self):
+        store = SubscriptionStateStore(self.db_path)
+        values = dict(
+            workflow_id="wf",
+            stage_id="st",
+            slot=0,
+            attempt=0,
+            adapter="kimi",
+            model="k3",
+            billing_mode="subscription",
+            mode="start",
+            success=False,
+            failure="auth",
+            session_id="",
+            start_revision="",
+            end_revision="",
+            changed_files=[],
+            detail="",
+        )
+        store.record_attempt(**values)
+        with self.assertRaises(sqlite3.IntegrityError):
+            store.record_attempt(**values)
+
     def test_concurrent_attempt_recording_keeps_unique_keys(self):
         store = SubscriptionStateStore(self.db_path)
         errors = []
@@ -618,6 +927,21 @@ class GitInspectorTests(unittest.TestCase):
         self.assertEqual(inspector.changed_files(self.repo), ())
         (self.repo / "new.py").write_text("x", encoding="utf-8")
         self.assertEqual(inspector.changed_files(self.repo), ("new.py",))
+
+    def test_unstaged_and_renamed_paths_preserve_spaces_and_unicode(self):
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "t")
+        name = " space ñ.txt"
+        (self.repo / name).write_text("baseline", encoding="utf-8")
+        self._git("add", "--", name)
+        self._git("commit", "-q", "-m", "baseline")
+        (self.repo / name).write_text("dirty", encoding="utf-8")
+        inspector = GitInspector()
+        self.assertEqual(inspector.changed_files(self.repo), (name,))
+        self._git("restore", "--", name)
+        self._git("mv", "--", name, " renamed ñ.txt")
+        self.assertEqual(inspector.changed_files(self.repo), (" renamed ñ.txt",))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
+from uuid import uuid4
 
 from .adapters import build_adapter_registry
 from .catalog import compile_profile_routes, load_routing_source
@@ -29,6 +30,9 @@ _ADVANCING_FAILURES = {
     FailureKind.TRANSPORT,
 }
 _QUOTA_COOLDOWN_MINUTES = 15
+# Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
+# cleanup grace, and the bounded Git evidence reads after invocation.
+_STAGE_LEASE_SECONDS = 600
 
 
 def default_db_path() -> Path:
@@ -55,27 +59,42 @@ class GitInspector:
             )
         except Exception:  # noqa: BLE001 - git is advisory evidence only
             return 1, ""
-        return evidence.returncode, (evidence.stdout or "").strip()
+        return evidence.returncode, evidence.stdout or ""
 
     def current_revision(self, workspace: Path) -> str:
         code, revision = self._git(workspace, "rev-parse", "HEAD")
-        return revision if code == 0 else ""
+        return revision.strip() if code == 0 else ""
 
     def changed_files(self, workspace: Path) -> tuple[str, ...]:
         code, porcelain = self._git(
-            workspace, "status", "--porcelain", "--untracked-files=all"
+            workspace, "status", "--porcelain", "-z", "--untracked-files=all"
         )
         if code != 0:
             return ()
         names = []
-        for line in porcelain.splitlines():
-            entry = line[3:].strip() if len(line) > 3 else ""
-            if not entry:
+        entries = iter(porcelain.split("\0"))
+        for entry in entries:
+            if len(entry) <= 3:
                 continue
-            if " -> " in entry:
-                entry = entry.split(" -> ", 1)[1]
-            names.append(entry.strip('"'))
+            names.append(entry[3:])
+            if "R" in entry[:2] or "C" in entry[:2]:
+                # In -z format the destination precedes the original path.
+                next(entries, None)
         return tuple(dict.fromkeys(names))
+
+    def mutation_since(
+        self, workspace: Path, revision: str
+    ) -> tuple[str, tuple[str, ...], bool]:
+        current = self.current_revision(workspace)
+        committed = ()
+        if revision and current and revision != current:
+            code, names = self._git(
+                workspace, "diff", "--name-only", "-z", f"{revision}..{current}", "--"
+            )
+            if code == 0:
+                committed = tuple(name for name in names.split("\0") if name)
+        files = tuple(sorted(set(committed) | set(self.changed_files(workspace))))
+        return current, files, bool(files or current != revision)
 
 
 class SubscriptionRouter:
@@ -110,6 +129,30 @@ class SubscriptionRouter:
         self, request: InvocationRequest, routes: Iterable[RouteSpec]
     ) -> InvocationResult:
         """Execute one stage assignment across the slot chain."""
+        owner = uuid4().hex
+        if not self.store.claim_stage(
+            request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
+        ):
+            return self._stage_busy()
+        try:
+            return self._run_owned(request, routes, owner)
+        finally:
+            self.store.release_stage(request.workflow_id, request.stage_id, owner)
+
+    @staticmethod
+    def _stage_busy() -> InvocationResult:
+        return InvocationResult(
+            success=False,
+            text="stage already running or ownership expired; retry later",
+            adapter="router",
+            model="",
+            billing_mode="subscription",
+            failure=FailureKind.TASK_FAILURE,
+        )
+
+    def _run_owned(
+        self, request: InvocationRequest, routes: Iterable[RouteSpec], owner: str
+    ) -> InvocationResult:
         recorded = self.store.latest_success(request.workflow_id, request.stage_id)
         if recorded is not None:
             return _result_from_attempt(recorded)
@@ -119,6 +162,10 @@ class SubscriptionRouter:
         attempted_any = False
 
         for route in routes:
+            if not self.store.renew_stage(
+                request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
+            ):
+                return self._stage_busy()
             if self._in_cooldown(route.adapter):
                 continue
             adapter = self.adapters.get(route.adapter)
@@ -154,15 +201,17 @@ class SubscriptionRouter:
                     end_revision=self.git.current_revision(request.workspace),
                     changed_files=list(self.git.changed_files(request.workspace)),
                     detail=skipped.text,
+                    owner=owner,
                 )
                 attempted_any = True
                 last_failure = skipped
                 continue
 
             attempted_any = True
-            result = self._invoke_route(request, route)
-            changed = self.git.changed_files(request.workspace)
-            revision = self.git.current_revision(request.workspace)
+            if not self.store.renew_stage(
+                request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
+            ):
+                return self._stage_busy()
             self.store.record_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -172,19 +221,41 @@ class SubscriptionRouter:
                 model=route.model,
                 billing_mode=route.billing_mode,
                 mode=request.mode,
+                success=False,
+                failure=None,
+                session_id="",
+                start_revision=request.start_revision,
+                end_revision=request.current_revision,
+                changed_files=list(request.changed_files),
+                detail="attempt running",
+                status="running",
+                owner=owner,
+            )
+            result = self._invoke_route(request, route)
+            revision, changed, mutated = self.git.mutation_since(
+                request.workspace, request.start_revision
+            )
+            changed = tuple(sorted(set(changed) | set(request.changed_files)))
+            mutated = mutated or request.mode == "continue"
+            recorded = self.store.finish_attempt(
+                workflow_id=request.workflow_id,
+                stage_id=request.stage_id,
+                slot=route.slot,
+                attempt=attempt_no,
+                owner=owner,
                 success=result.success,
                 failure=result.failure.value if result.failure else None,
                 session_id=result.session_id,
-                start_revision=request.start_revision,
                 end_revision=revision,
                 changed_files=list(changed),
                 detail=result.text[:2000],
             )
+            if not recorded:
+                return self._stage_busy()
             self._record_health(route.adapter, result)
             if result.success:
                 return result
             last_failure = result
-            mutated = bool(changed)
             if result.failure not in _ADVANCING_FAILURES:
                 # Task/invalid failures never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
@@ -233,13 +304,30 @@ class SubscriptionRouter:
 
     def _absorb_workspace_state(self, request: InvocationRequest) -> InvocationRequest:
         """A recorded mutation turns a fresh run into an explicit continuation."""
-        changed = self.git.changed_files(request.workspace)
-        revision = self.git.current_revision(request.workspace)
-        if not changed:
-            return request
+        evidence = self.store.stage_mutation(request.workflow_id, request.stage_id)
+        baseline = request.start_revision
+        if not baseline:
+            attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
+            baseline = next(
+                (row["start_revision"] for row in attempts if row["start_revision"]), ""
+            )
+        baseline = baseline or self.git.current_revision(request.workspace)
+        revision, changed, mutated = self.git.mutation_since(
+            request.workspace, baseline
+        )
+        changed = tuple(
+            sorted(
+                set(changed)
+                | set(request.changed_files)
+                | set(evidence["changed_files"] if evidence else ())
+            )
+        )
         return replace(
             request,
-            mode="continue",
+            mode="continue"
+            if mutated or evidence or request.mode == "continue"
+            else "start",
+            start_revision=baseline,
             current_revision=revision or request.current_revision,
             changed_files=changed,
         )
