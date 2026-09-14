@@ -58,7 +58,13 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
 
 def check_file(target, desired, previous=None):
     if target.exists():
-        current = target.read_text(encoding="utf-8")
+        current = (
+            target.read_bytes()
+            if isinstance(desired, bytes)
+            else target.read_text(encoding="utf-8")
+        )
+        if isinstance(desired, bytes) and isinstance(previous, str):
+            previous = previous.encode("utf-8")
         if current != desired and current != previous:
             raise ValueError(f"Local managed-file conflict: {target}")
 
@@ -70,8 +76,12 @@ def contained(path, parent):
     return resolved
 
 
-def write_changed(path, text):
-    if path.exists() and path.read_text(encoding="utf-8") == text:
+def write_changed(path, content):
+    if path.exists() and (
+        path.read_bytes() == content
+        if isinstance(content, bytes)
+        else path.read_text(encoding="utf-8") == content
+    ):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     # A recoverable copy; no credentials are included in the ownership manifest.
@@ -80,7 +90,10 @@ def write_changed(path, text):
         if not backup.exists():
             backup.write_bytes(path.read_bytes())
     temporary = path.with_name(path.name + ".goncloud-tmp")
-    temporary.write_text(text, encoding="utf-8", newline="\n")
+    if isinstance(content, bytes):
+        temporary.write_bytes(content)
+    else:
+        temporary.write_text(content, encoding="utf-8", newline="\n")
     temporary.replace(path)
 
 
@@ -156,7 +169,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
             # The router needs its slot table next to the plugin copy.
             "plugins/goncloud-team/model-routing.source.json": (
                 ROOT / "model-routing.source.json"
-            ).read_text(encoding="utf-8"),
+            ).read_bytes(),
         }
         for source in plugin_files:
             files[
@@ -179,7 +192,19 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
         write_changed(
             state_path,
             json.dumps(
-                {"config": desired, "files": files}, indent=2, ensure_ascii=False
+                {
+                    "config": desired,
+                    "files": {
+                        relative: (
+                            content.decode("utf-8")
+                            if isinstance(content, bytes)
+                            else content
+                        )
+                        for relative, content in files.items()
+                    },
+                },
+                indent=2,
+                ensure_ascii=False,
             )
             + "\n",
         )

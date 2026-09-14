@@ -1,11 +1,20 @@
 # Estado — 2026-09-14
 
-Base local implementada y operativa; enrutador de suscripciones por slot integrado, verificado con inferencia real por adaptador y cadena Telegram en curso.
+## Estado actual: recuperacion de Telegram (2026-09-14)
 
-## Recuperacion en curso (2026-09-14)
+- El gateway de Telegram del perfil `claw` esta detenido de forma reversible
+  hasta un cutover separado. Se preservan el perfil, token, lista de acceso,
+  script de servicio y entrada de inicio; no hay conexion, polling ni trafico
+  bidireccional activo.
+- Los perfiles de Hermes dejan de recibir cadenas nativas
+  `model`/`fallback_providers`; la tabla inmutable `model-routing.source.json`
+  se instala junto al plugin y excluye Copilot del catalogo nativo.
 
-- El gateway de Telegram del perfil `claw` queda detenido de forma reversible mientras se recupera el enrutamiento: se preservan el perfil, token, lista de acceso, script de servicio y entrada de inicio.
-- Los perfiles de Hermes dejan de recibir cadenas nativas `model`/`fallback_providers`; la tabla inmutable `model-routing.source.json` se instala junto al plugin y excluye Copilot del catalogo nativo.
+## Registro historico anterior a la recuperacion
+
+Las afirmaciones de esta seccion son evidencia archivada de una instalacion
+previa. No describen el estado actual del gateway de Telegram, que permanece
+detenido hasta el cutover separado indicado arriba.
 
 ## Enrutador de suscripciones (2026-09-14)
 
@@ -14,7 +23,7 @@ Base local implementada y operativa; enrutador de suscripciones por slot integra
 - Fallback comprobado en vivo: Go(auth) -> Zen(quota) -> F2 Claude Max con inferencia real ("READY"); continuacion tras mutacion con revision y diff registrados ("LISTO"). 65 pruebas unitarias del enrutador; idempotencia de etapa y continuacion nunca repeticion a ciegas.
 - Credenciales GLM/DeepSeek migradas de lanzadores en texto plano (dos fases: probe real antes de reescribir; backups `.goncloud-backup` fuera de Git) al env privado `%LOCALAPPDATA%\hermes\subscription-router.env`. Ningun token OAuth copiado entre aplicaciones; `auth.json` de OpenCode jamas leido por el plugin.
 - Bateria final: **96/96 pruebas, exit 0** con el venv de Hermes. Pre-commit completo: 8/8 candados. `git diff --check` limpio.
-- Plugin desplegado a los nueve perfiles (idempotente): 7 herramientas y 1 hook; Plugin Doctor OK. Gateway reiniciado y saludable (estado `running`).
+- Plugin desplegado a los nueve perfiles (idempotente): 7 herramientas y 1 hook; Plugin Doctor OK. El registro historico anotaba un gateway `running`.
 
 ## Instalado y comprobado
 
@@ -29,8 +38,8 @@ Base local implementada y operativa; enrutador de suscripciones por slot integra
 - Ultima version del plugin y contratos reaplicada a los nueve perfiles; Plugin Doctor pasa con cinco herramientas y un hook.
 - Tabla Primary + F1-F7 aplicada a los nueve perfiles. Una sesion real salto de credenciales/cuotas no disponibles hasta Z.AI y completo la solicitud.
 - Puente real director -> `goncloud_muse_delegate` -> Muse CLI verificado con `muse-spark-1.3-contributor`; resultado exacto `DIRECTOR_TO_MUSE_OK`.
-- Inicio automatico del gateway instalado en la carpeta Startup de Windows; proceso activo y estado profundo `running`.
-- Bot nuevo de Telegram conectado en modo polling y restringido a la lista privada del propietario. Mensaje entrante, inferencia y respuesta saliente comprobados.
+- Inicio automatico del gateway instalado en la carpeta Startup de Windows; la entrada se conserva, pero el proceso actual esta detenido.
+- Se archivo evidencia de una conexion anterior del bot de Telegram en modo polling, con mensaje entrante y respuesta saliente comprobados; esa conexion no esta activa.
 
 ## Operacion real
 

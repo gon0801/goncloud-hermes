@@ -1,10 +1,13 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +42,89 @@ class ConfigurationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "user-managed model conflict"):
             module.remove_owned_native_routing(existing, previous)
+
+    def test_compatibility_apply_migrates_owned_native_routing_idempotently(self):
+        upstream = Path(
+            os.environ.get(
+                "HERMES_INSTALL_DIR",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
+            )
+        )
+        self.assertTrue((upstream / "hermes_cli/profiles.py").is_file())
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            runtime = temporary / "runtime"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(upstream),
+            ]
+            env = {
+                **os.environ,
+                "HOME": str(temporary / "home"),
+                "LOCALAPPDATA": str(temporary / "local-app-data"),
+                "PYTHONUTF8": "1",
+            }
+            bootstrap = subprocess.run(
+                command, capture_output=True, text=True, env=env, timeout=120
+            )
+            self.assertEqual(bootstrap.returncode, 0, bootstrap.stderr)
+
+            profile = runtime / "profiles/claw"
+            config_path = profile / "config.yaml"
+            state_path = profile / "goncloud-managed.json"
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            native_model = {"provider": "opencode-go", "default": "muse"}
+            native_fallbacks = [{"provider": "opencode-zen", "model": "muse-free"}]
+            config["model"] = native_model
+            config["fallback_providers"] = native_fallbacks
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            state["config"]["model"] = native_model
+            state["config"]["fallback_providers"] = native_fallbacks
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            routing_source = (ROOT / "model-routing.source.json").read_bytes()
+            applied = subprocess.run(
+                [*command, "--apply-model-routing"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            managed = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertNotIn("model", migrated)
+            self.assertNotIn("fallback_providers", migrated)
+            self.assertNotIn("model", managed["config"])
+            self.assertNotIn("fallback_providers", managed["config"])
+            self.assertEqual(
+                (
+                    profile / "plugins/goncloud-team/model-routing.source.json"
+                ).read_bytes(),
+                routing_source,
+            )
+            self.assertEqual(
+                migrated["model_catalog"]["excluded_providers"],
+                ["copilot", "copilot-acp"],
+            )
+
+            first_config = config_path.read_bytes()
+            first_state = state_path.read_bytes()
+            reapplied = subprocess.run(
+                [*command, "--apply-model-routing"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(reapplied.returncode, 0, reapplied.stderr)
+            self.assertEqual(config_path.read_bytes(), first_config)
+            self.assertEqual(state_path.read_bytes(), first_state)
 
     def test_failed_verification_routes_report_to_reviewer(self):
         verifier = (ROOT / "roles/verifier.md").read_text(encoding="utf-8")
