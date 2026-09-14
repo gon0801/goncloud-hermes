@@ -45,8 +45,43 @@ class SlotSemanticsTests(unittest.TestCase):
         verifier = compile_profile_routes("verifier", source)
         self.assertEqual(len(verifier), 8)
         self.assertTrue(verifier[3].label.endswith(" dup"))
-        self.assertEqual(verifier[3].model, "muse-spark-1.3-contributor-free")
+        self.assertEqual(verifier[3].model, "muse-spark-1.3-contributor")
         self.assertEqual(verifier[3].adapter, "muse")
+
+    def test_the_zen_free_tier_name_is_not_sent_to_the_muse_cli(self):
+        # "-free" names OpenCode Zen's free tier, where it is a real model id.
+        # The Muse subscription serves the same family without that suffix and
+        # answers "model does not exist" when it is sent, so the suffix is
+        # provenance on the label exactly like " dup", never part of the id.
+        source = load_source()
+
+        zen = compile_profile_routes("claw", source)[1]
+        muse = compile_profile_routes("claw", source)[4]
+
+        self.assertEqual(zen.adapter, "opencode_zen")
+        self.assertEqual(zen.model, "muse-spark-1.3-contributor-free")
+        self.assertEqual(muse.adapter, "muse")
+        self.assertEqual(muse.model, "muse-spark-1.3-contributor")
+        # Both provenance markers survive on the label, stacked.
+        self.assertEqual(muse.label, "opencode/muse-spark-1.3-contributor-free dup")
+
+    def test_the_source_table_itself_is_never_rewritten(self):
+        source = load_source()
+
+        compile_profile_routes("claw", source)
+        compile_profile_routes("ingenieria", source)
+
+        self.assertEqual(
+            source["chains"]["main"][4],
+            "opencode/muse-spark-1.3-contributor-free dup",
+        )
+        self.assertEqual(
+            source["chains"]["ingenieria"][5],
+            "opencode/muse-spark-1.3-contributor-free dup",
+        )
+        self.assertEqual(
+            source["chains"]["main"][1], "opencode/muse-spark-1.3-contributor-free"
+        )
 
     def test_every_profile_compiles_eight_subscription_routes(self):
         source = load_source()

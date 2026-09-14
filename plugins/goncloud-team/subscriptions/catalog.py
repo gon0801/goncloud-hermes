@@ -41,6 +41,12 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
     # ``dup`` is provenance metadata on the label, never part of the model id.
     model = raw_model.removesuffix(" dup")
     adapter = _SLOT_FORCED_ADAPTERS.get(slot) or _family_adapter(model)
+    if adapter == "muse":
+        # ``-free`` names OpenCode Zen's free tier, where it is a real model id
+        # that slot 1 keeps. The Muse subscription serves the same family
+        # without it and refuses the suffixed id, so on this binding the suffix
+        # is provenance on the label, like ``dup``, not part of the model id.
+        model = model.removesuffix("-free")
     billing_mode = "api" if adapter == "deepseek" else "subscription"
     return RouteSpec(
         slot=slot,
