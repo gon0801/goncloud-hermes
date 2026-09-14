@@ -229,16 +229,27 @@ class WorkflowService:
                         (member,),
                     ).close()
                 conn.execute(
-                    "CREATE TEMP TABLE goncloud_local_reviews (id INTEGER PRIMARY KEY, metadata, ended_at)"
+                    "CREATE TEMP TABLE goncloud_local_review_tasks (task_id TEXT PRIMARY KEY)"
+                ).close()
+                conn.execute(
+                    "CREATE TEMP TABLE goncloud_local_reviews (id INTEGER PRIMARY KEY, task_id, started_at, metadata, ended_at)"
                 ).close()
                 for reviewer_id in review_ids:
                     conn.execute(
-                        "INSERT INTO goncloud_local_reviews SELECT id,metadata,ended_at FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL",
+                        "INSERT INTO goncloud_local_review_tasks VALUES (?)",
+                        (reviewer_id,),
+                    ).close()
+                    conn.execute(
+                        "INSERT INTO goncloud_local_reviews SELECT id,task_id,started_at,metadata,ended_at FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL",
                         (reviewer_id,),
                     ).close()
                 changed = " OR ".join(
                     f"t.{column} IS NOT e.{column}" for column in columns[1:]
                 )
+                # Match list_runs(include_active=False) and its started_at/id
+                # ordering. Both anti-joins fence the full ID set (and count),
+                # including inserts and active runs that close after validation.
+                # Metadata stays SQL data, never interpolated into trigger text.
                 conn.execute(
                     "CREATE TEMP TRIGGER goncloud_local_fence BEFORE UPDATE OF status ON main.tasks "
                     "WHEN OLD.id IN (SELECT id FROM goncloud_local_target) BEGIN "
@@ -247,7 +258,12 @@ class WorkflowService:
                     + changed
                     + ") "
                     "OR EXISTS(SELECT 1 FROM goncloud_local_reviews e LEFT JOIN main.task_runs r ON r.id=e.id "
-                    "WHERE r.id IS NULL OR r.metadata IS NOT e.metadata OR r.ended_at IS NOT e.ended_at) "
+                    "WHERE r.id IS NULL OR r.task_id IS NOT e.task_id OR r.started_at IS NOT e.started_at "
+                    "OR r.metadata IS NOT e.metadata OR r.ended_at IS NOT e.ended_at) "
+                    "OR EXISTS(SELECT 1 FROM main.task_runs r "
+                    "JOIN goncloud_local_review_tasks s ON s.task_id=r.task_id "
+                    "LEFT JOIN goncloud_local_reviews e ON e.id=r.id "
+                    "WHERE r.ended_at IS NOT NULL AND e.id IS NULL) "
                     "THEN RAISE(ABORT, 'local transition authorization changed') END; END"
                 ).close()
             try:
@@ -262,6 +278,7 @@ class WorkflowService:
                 for name in (
                     "goncloud_local_target",
                     "goncloud_local_expected",
+                    "goncloud_local_review_tasks",
                     "goncloud_local_reviews",
                 ):
                     conn.execute(f"DROP TABLE IF EXISTS temp.{name}").close()

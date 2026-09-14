@@ -630,6 +630,134 @@ class LocalOrchestratorTests(unittest.TestCase):
             with self.assertRaises(WorkflowError):
                 self.start()
 
+    def _assert_review_history_change_fenced(
+        self, target_role, *, change="insert", decision="reject"
+    ):
+        import local_orchestrator as local
+
+        first = self.start(stop_after="reviewer")
+        reviewer_id = first["stages"]["reviewer"]["id"]
+        with connect_closing(self.db) as conn:
+            record = self.service()._recorded_review_run(conn, reviewer_id)
+            latest = max(run.started_at for run in list_runs(conn, reviewer_id))
+            record = {
+                **record,
+                "decision": decision,
+                "severity": "high" if decision == "reject" else None,
+                "result": {
+                    **record["result"],
+                    "outcome": "blocked" if decision == "reject" else "approved",
+                },
+            }
+            metadata = json.dumps({"goncloud_review": record})
+            run_id = None
+            if change in {"reorder", "close"}:
+                cursor = conn.execute(
+                    "INSERT INTO task_runs (task_id,status,started_at,ended_at,metadata) VALUES (?,?,?,?,?)",
+                    (
+                        reviewer_id,
+                        "done",
+                        latest - 1 if change == "reorder" else latest + 1,
+                        latest if change == "reorder" else None,
+                        metadata,
+                    ),
+                )
+                run_id = cursor.lastrowid
+                cursor.close()
+                conn.commit()
+            self.assertEqual(
+                self.service()._recorded_review_run(conn, reviewer_id)["decision"],
+                "approve",
+            )
+        native = local.complete_task
+        interleaved = []
+
+        def changed(conn, task_id, **kwargs):
+            if get_task(conn, task_id).assignee == target_role:
+                with connect_closing(self.db) as other:
+                    if change == "insert":
+                        # Same timestamp: the higher run ID determines authority.
+                        other.execute(
+                            "INSERT INTO task_runs (task_id,status,started_at,ended_at,metadata) VALUES (?,?,?,?,?)",
+                            (reviewer_id, "done", latest, latest, metadata),
+                        ).close()
+                    elif change == "reorder":
+                        other.execute(
+                            "UPDATE task_runs SET started_at=? WHERE id=?",
+                            (latest + 1, run_id),
+                        ).close()
+                    else:
+                        other.execute(
+                            "UPDATE task_runs SET ended_at=? WHERE id=?",
+                            (latest, run_id),
+                        ).close()
+                    other.commit()
+                    self.assertEqual(
+                        self.service()._recorded_review_run(other, reviewer_id)[
+                            "decision"
+                        ],
+                        decision,
+                    )
+                interleaved.append(task_id)
+            return native(conn, task_id, **kwargs)
+
+        with patch.object(local, "complete_task", side_effect=changed):
+            with self.assertRaisesRegex(WorkflowError, "authorization changed"):
+                self.orchestrator.resume(first["workflow_id"])
+        self.assertEqual(len(interleaved), 1)
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, interleaved[0]).status, "ready")
+            self.assertNotEqual(get_task(conn, first["workflow_id"]).status, "done")
+        self.assertNotEqual(
+            self.orchestrator.status(first["workflow_id"])["outcome"], "delivered"
+        )
+
+    def test_delivery_fences_new_rejection_with_same_timestamp(self):
+        self._assert_review_history_change_fenced("entrega")
+
+    def test_root_close_fences_new_rejection_with_same_timestamp(self):
+        self._assert_review_history_change_fenced("claw")
+
+    def test_delivery_fences_new_approval_with_same_timestamp(self):
+        self._assert_review_history_change_fenced("entrega", decision="approve")
+
+    def test_root_close_fences_new_approval_with_same_timestamp(self):
+        self._assert_review_history_change_fenced("claw", decision="approve")
+
+    def test_delivery_fences_changed_approve_reject_order(self):
+        self._assert_review_history_change_fenced("entrega", change="reorder")
+
+    def test_root_close_fences_changed_approve_reject_order(self):
+        self._assert_review_history_change_fenced("claw", change="reorder")
+
+    def test_delivery_fences_newly_closed_rejection(self):
+        self._assert_review_history_change_fenced("entrega", change="close")
+
+    def test_root_close_fences_newly_closed_rejection(self):
+        self._assert_review_history_change_fenced("claw", change="close")
+
+    def test_review_fence_treats_large_metadata_as_data(self):
+        first = self.start(stop_after="reviewer")
+        reviewer_id = first["stages"]["reviewer"]["id"]
+        with connect_closing(self.db) as conn:
+            earliest = min(run.started_at for run in list_runs(conn, reviewer_id))
+            conn.execute(
+                "INSERT INTO task_runs (task_id,status,started_at,ended_at,metadata) VALUES (?,?,?,?,?)",
+                (
+                    reviewer_id,
+                    "done",
+                    earliest - 1,
+                    earliest,
+                    json.dumps({"untrusted": "'); DROP TABLE tasks; --" * 10000}),
+                ),
+            ).close()
+            conn.commit()
+        self.assertEqual(
+            self.orchestrator.resume(first["workflow_id"])["outcome"], "delivered"
+        )
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "done")
+
     def test_real_cli_status_and_completed_resume_use_persisted_state(self):
         first = self.start()
         environment = {
