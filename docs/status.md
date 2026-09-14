@@ -2,15 +2,30 @@
 
 ## Estado actual: aceptacion local completa (2026-09-14)
 
-- Codigo de runtime aprobado y desplegado: `0f206ca`. Nueve perfiles verificados;
+- Codigo de runtime aprobado y desplegado: `d0cca29`. Nueve perfiles verificados;
   fuente literal byte-identica, sin cadenas nativas administradas y con Copilot
   excluido. Backup previo de 18 archivos, con hashes comprobados, en
   `%LOCALAPPDATA%\hermes\recovery-backups\20260914T214024Z-task9b`; nada eliminado.
-- Matriz live actual: **5/9 ready**: Go, Claude Max, Z.AI y Grok por suscripcion;
-  DeepSeek por API. Cuatro cuarentenas durables: Zen `timeout` (301 s, limite de la
-  capa free), Muse `model_unavailable`, Codex `quota`, Kimi `transport`. Las cuatro
-  avanzan de slot; ninguna bloquea una etapa. Probes individuales secuenciales, sin
-  login interactivo, migracion ni limpieza de lanzadores. Tabla y slots intactos.
+- Matriz live actual: **6/9 ready**: Go, Muse, Claude Max, Z.AI y Grok por
+  suscripcion; DeepSeek por API. Tres cuarentenas durables: Zen `timeout` (301 s),
+  Codex `quota`, Kimi `transport`. Las tres avanzan de slot; ninguna bloquea una
+  etapa. Probes individuales secuenciales, sin login interactivo, migracion ni
+  limpieza de lanzadores. Tabla y slots intactos.
+- Las tres cuentas restantes dependen del propietario, no del codigo, y cada
+  diagnostico es una observacion directa del CLI o del endpoint, no una hipotesis:
+  - **Codex**: `codex login status` responde `Logged in using ChatGPT` y el
+    modelo `gpt-6-astra` esta vinculado; `codex exec` devuelve
+    `You've hit your usage limit ... try again at Sep 19th, 2026 10:36 AM`.
+    Configuracion completa y comprobada; sirve cuando vuelva la cuota.
+  - **Kimi**: `kimi doctor` valida la configuracion y el DNS/TLS de
+    `api.kimi.com` resuelve, pero la credencial guardada devuelve **401** contra
+    `/coding/v1/models`. El CLI lo reporta como `provider.connection_error`; el
+    hecho observado es credencial rechazada. Requiere `kimi login`.
+  - **Zen**: la credencial esta instalada (`opencode auth list`) y el modelo
+    `opencode/muse-spark-1.3-contributor-free` existe en el catalogo del CLI,
+    pero toda inferencia cuelga en silencio hasta el limite de 300 s. Coincide
+    con el `FreeUsageLimitError` 429 ya registrado: es saldo o limite de la capa
+    gratuita de esa cuenta.
 - Scout `t_f2e2bb6d`: completado por Go slot 0, `deepseek-v4.1-flash`, suscripcion;
   repositorio limpio y pausa tras scout, sin entrega.
 - Cadena completa `t_be290d83`: **entregada**. Las siete etapas en orden —scout,
@@ -30,8 +45,8 @@
   `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
   fixtures preservados en
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-- Bateria final: **338 tests, 335 aprobados y 3 skips de plataforma/privilegios**,
-  282.318 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
+- Bateria final: **340 tests, 337 aprobados y 3 skips de plataforma/privilegios**,
+  301.682 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
@@ -65,15 +80,20 @@ arreglo lleva su regresion observada en rojo primero.
   y eso bloqueo la cadena en las dos corridas anteriores. La valla de cierre y la
   prohibicion de contenido posterior siguen estrictas.
 
-### Pendiente de decision del propietario
+### El sufijo `-free` en la posicion de Muse
 
-El slot F4 de la tabla vincula el adaptador Muse al modelo
-`muse-spark-1.3-contributor-free`. El CLI de Muse responde textualmente que ese
-modelo no existe o no hay acceso: el sufijo `-free` es el nombre de la capa
-gratuita de OpenCode Zen, no un identificador de modelo de Muse. Quitarlo seria
-reinterpretar un slot, lo que el diseño prohibe, asi que no se toco: Muse queda
-`model_unavailable` y el router avanza. Tratar `-free` como el marcador `dup`
-requiere una decision explicita.
+`d0cca29`. La tabla vincula el adaptador Muse a
+`muse-spark-1.3-contributor-free`, y el CLI de Muse responde textualmente que
+ese modelo no existe o no hay acceso. El sufijo `-free` nombra la capa gratuita
+de **OpenCode Zen**, donde si es un identificador real y aparece en
+`opencode models`; la suscripcion de Muse sirve la misma familia sin el sufijo
+y respondio el marcador exacto en una prueba directa.
+
+Por eso el sufijo se trata como procedencia de la etiqueta, igual que ` dup`, y
+solo en la vinculacion a Muse: la posicion de Zen sigue enviando `-free`.
+`model-routing.source.json` no se modifico; lo unico que cambia es el
+identificador que recibe el CLI. La regresion cubre las dos posiciones y que la
+fuente no se reescribe.
 
 ### Incidencia previa del gate de pruebas
 
