@@ -8,6 +8,7 @@ becomes evidence.
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from typing import Literal, Mapping, Sequence
 
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
+_CLEANUP_GRACE_SECONDS = 5
 
 
 def _resolve_windows_shim(command: list[str]) -> list[str]:
@@ -71,6 +73,74 @@ def _write_private_prompt(prompt: str) -> Path:
     return Path(name)
 
 
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill only the timed-out process and descendants in its own group."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=_CLEANUP_GRACE_SECONDS,
+                check=False,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            # The parent is still our own process and is safer to stop than leave.
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _run_with_process_tree(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    stdin_text: str | None,
+    timeout: int,
+) -> tuple[int, str, str]:
+    """Run a real CLI in an isolated group so timeout cleanup includes children."""
+    popen_kwargs = {
+        "cwd": cwd,
+        "env": env,
+        "stdin": subprocess.PIPE if stdin_text is not None else None,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "shell": False,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, **popen_kwargs)
+    try:
+        stdout, stderr = process.communicate(input=stdin_text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
+        _terminate_process_tree(process)
+        try:
+            remaining = cleanup_deadline - time.monotonic()
+            if remaining > 0:
+                process.communicate(timeout=remaining)
+            elif process.poll() is None:
+                process.kill()
+        except subprocess.TimeoutExpired:
+            process.kill()
+        finally:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        raise
+    return process.returncode, stdout or "", stderr or ""
+
+
 def run_cli(
     command: Sequence[str],
     prompt: str,
@@ -81,6 +151,10 @@ def run_cli(
     runner=subprocess.run,
 ) -> ProcessEvidence:
     """Run one vendor command without shell interpolation or leaked secrets."""
+    if type(timeout) is not int or timeout <= 0:
+        raise SubscriptionProcessError(
+            "timeout must be a positive integer number of seconds"
+        )
     workspace = Path(workspace).resolve()
     if not workspace.is_absolute() or not workspace.is_dir():
         raise SubscriptionProcessError(
@@ -102,21 +176,31 @@ def run_cli(
             stdin_text = None
         else:
             stdin_text = prompt
-        completed = runner(
-            # Only the real subprocess boundary needs Windows shim handling;
-            # injected runners simulate their own transport.
-            _resolve_windows_shim(command) if runner is subprocess.run else command,
-            cwd=workspace,
-            env=child_env,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-            shell=False,
-        )
+        if runner is subprocess.run:
+            returncode, stdout, stderr = _run_with_process_tree(
+                _resolve_windows_shim(command),
+                cwd=workspace,
+                env=child_env,
+                stdin_text=stdin_text,
+                timeout=timeout,
+            )
+        else:
+            completed = runner(
+                command,
+                cwd=workspace,
+                env=child_env,
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+                shell=False,
+            )
+            returncode = completed.returncode
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
     except subprocess.TimeoutExpired as error:
         raise SubscriptionProcessError(
             f"vendor process timed out after {timeout}s"
@@ -129,8 +213,8 @@ def run_cli(
         if prompt_path is not None:
             prompt_path.unlink(missing_ok=True)
     return ProcessEvidence(
-        returncode=completed.returncode,
-        stdout=_redact_and_cap(completed.stdout or "", secrets),
-        stderr=_redact_and_cap(completed.stderr or "", secrets),
+        returncode=returncode,
+        stdout=_redact_and_cap(stdout, secrets),
+        stderr=_redact_and_cap(stderr, secrets),
         duration_seconds=time.monotonic() - started,
     )

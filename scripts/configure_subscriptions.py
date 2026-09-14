@@ -272,10 +272,10 @@ def run_live_probe_all(json_out: Path | None = None, only: str | None = None) ->
         order = tuple(name for name in order if name in selected)
     adapters = build_adapter_registry()
     results = []
-    # One-word diagnostics do not need the full 900s stage window.
+    # One-word diagnostics must remain inside the adapter process deadlines.
     for adapter in adapters.values():
         adapter.timeout_seconds = min(adapter.timeout_seconds, 300)
-        adapter.probe_timeout_seconds = min(adapter.probe_timeout_seconds, 120)
+        adapter.probe_timeout_seconds = min(adapter.probe_timeout_seconds, 30)
     with tempfile.TemporaryDirectory(prefix="goncloud-live-") as tmp:
         workspace = Path(tmp)
         for name in order:

@@ -98,11 +98,13 @@ class SubscriptionAdapter:
 
     name: str = ""
     billing_mode = "subscription"
-    timeout_seconds = 900
+    timeout_seconds = 300
     probe_timeout_seconds = 30
 
     def __init__(self, runner=None) -> None:
         self.runner = runner if runner is not None else subprocess.run
+        self.timeout_seconds = min(self.timeout_seconds, 300)
+        self.probe_timeout_seconds = min(self.probe_timeout_seconds, 30)
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
         raise NotImplementedError

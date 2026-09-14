@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from subscriptions.process import (  # noqa: E402
     SubscriptionProcessError,
     run_cli,
 )
+from subscriptions.adapters import SubscriptionAdapter  # noqa: E402
 
 
 class FakeRunner:
@@ -166,6 +169,100 @@ class SafeProcessTests(unittest.TestCase):
                 timeout=5,
                 runner=missing_runner,
             )
+
+    def test_deadline_must_be_a_positive_integer(self):
+        with self.assertRaisesRegex(SubscriptionProcessError, "positive integer"):
+            run_cli(
+                ["vendor"],
+                "task",
+                self.workspace,
+                timeout=1.5,
+                runner=FakeRunner(),
+            )
+
+    def test_adapter_deadlines_cannot_exceed_process_limits(self):
+        class OverdueAdapter(SubscriptionAdapter):
+            timeout_seconds = 900
+            probe_timeout_seconds = 120
+
+        adapter = OverdueAdapter()
+
+        self.assertEqual(adapter.timeout_seconds, 300)
+        self.assertEqual(adapter.probe_timeout_seconds, 30)
+
+    def test_timeout_terminates_the_entire_child_process_tree(self):
+        """A timed-out CLI cannot leave its direct child running in the background."""
+        parent_pid_file = self.workspace / "parent.pid"
+        grandchild_pid_file = self.workspace / "grandchild.pid"
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import os, pathlib, subprocess, sys, time; "
+                "parent = pathlib.Path(sys.argv[1]); "
+                "grandchild = pathlib.Path(sys.argv[2]); "
+                "parent.write_text(str(os.getpid()), encoding='utf-8'); "
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(60)']); "
+                "grandchild.write_text(str(child.pid), encoding='utf-8'); "
+                "time.sleep(60)"
+            ),
+            str(parent_pid_file),
+            str(grandchild_pid_file),
+        ]
+        tracked_pids: list[int] = []
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(SubscriptionProcessError, "timed out after 1s"):
+                run_cli(command, "", self.workspace, timeout=1)
+            self.assertLess(time.monotonic() - started, 6)
+
+            tracked_pids = [
+                int(parent_pid_file.read_text(encoding="utf-8")),
+                int(grandchild_pid_file.read_text(encoding="utf-8")),
+            ]
+            self.assertFalse(_pid_is_alive(tracked_pids[0]))
+            self.assertFalse(_pid_is_alive(tracked_pids[1]))
+        finally:
+            for pid in tracked_pids:
+                _terminate_test_pid(pid)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if os.name == "nt":
+        probe = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            shell=False,
+        )
+        return f'"{pid}"' in probe.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_test_pid(pid: int) -> None:
+    """Best-effort cleanup scoped to a PID created by this test only."""
+    if not _pid_is_alive(pid):
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            shell=False,
+        )
+    else:
+        os.kill(pid, 9)
 
 
 if __name__ == "__main__":
