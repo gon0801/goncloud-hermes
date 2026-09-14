@@ -1963,6 +1963,32 @@ while True:
             self.assertNotIn(raw, channel)
             self.assertNotIn("sk-sensitive", channel)
 
+    def test_live_matrix_keeps_the_probe_window_an_adapter_declared(self):
+        # Shrinking a declared window here reports a slow-launching but healthy
+        # account as failed; the ceiling belongs to the adapter contract.
+        from subscriptions.adapters import SubscriptionAdapter
+
+        class ColdStartAdapter(SubscriptionAdapter):
+            max_probe_timeout_seconds = 120
+            probe_timeout_seconds = 120
+
+            def probe(self, route):
+                self.observed = self.probe_timeout_seconds
+                return AdapterHealth(False, "cold", failure=FailureKind.TIMEOUT)
+
+        adapter = ColdStartAdapter()
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry",
+                return_value={"muse": adapter},
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            module.run_live_probe_all(only="muse")
+
+        self.assertEqual(adapter.observed, 120)
+
 
 class DeploymentTests(unittest.TestCase):
     def test_configure_team_copies_subscriptions_and_routing_source(self):

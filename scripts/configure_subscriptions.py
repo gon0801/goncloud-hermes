@@ -810,10 +810,9 @@ def _run_live_probe_all(json_out, only, *, private_env, state):
         deepseek_base_url=stored.get("DEEPSEEK_BASE_URL"),
     )
     results = []
-    # One-word diagnostics must remain inside the adapter process deadlines.
-    for adapter in adapters.values():
-        adapter.timeout_seconds = min(adapter.timeout_seconds, 300)
-        adapter.probe_timeout_seconds = min(adapter.probe_timeout_seconds, 30)
+    # Deadlines belong to the adapter contract, which already clamps every
+    # assignment to its declared ceiling. Re-clamping here to the default
+    # window silently shortened the windows adapters deliberately raised.
     with tempfile.TemporaryDirectory(prefix="goncloud-live-") as tmp:
         workspace = Path(tmp)
         for name in order:
