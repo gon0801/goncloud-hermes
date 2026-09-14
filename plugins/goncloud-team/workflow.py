@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -432,12 +433,25 @@ class WorkflowService:
             raise WorkflowError("max_steps must be an integer between 1 and 200")
         source_rows = self._validate_sources(sources)
         del source_rows  # provenance is validated, not forwarded to vendors
-        repo = self.validate_subscription_assignment(
+        assignment = dict(
             workflow_id=workflow_id,
             task_id=task_id,
             repository=repository,
             revision=revision,
         )
+        repo, fingerprint = self._subscription_assignment_snapshot(**assignment)
+
+        def authorize() -> None:
+            try:
+                _, current = self._subscription_assignment_snapshot(**assignment)
+            except Exception:
+                raise WorkflowError(
+                    "subscription assignment authorization changed; request refused"
+                ) from None
+            if current != fingerprint:
+                raise WorkflowError(
+                    "subscription assignment authorization changed; request refused"
+                )
 
         router = _build_subscription_router()
         routes = compile_profile_routes(self.actor_role, router.routing_source)
@@ -450,7 +464,9 @@ class WorkflowService:
             start_revision=revision,
             current_revision=revision,
             max_steps=max_steps,
+            pre_invoke=authorize,
         )
+        authorize()
         result = router.run(request, routes)
         evidence = {
             "workflow_id": workflow_id,
@@ -490,6 +506,22 @@ class WorkflowService:
         self, *, workflow_id: str, task_id: str, repository: str, revision: str
     ) -> Path:
         """Authorize an executable stage before constructing any vendor routes."""
+        repo, _ = self._subscription_assignment_snapshot(
+            workflow_id=workflow_id,
+            task_id=task_id,
+            repository=repository,
+            revision=revision,
+        )
+        return repo
+
+    def _subscription_assignment_snapshot(
+        self, *, workflow_id: str, task_id: str, repository: str, revision: str
+    ) -> tuple[Path, bytes]:
+        """Read authorization and its fingerprint in one short transaction.
+
+        The pre-invoke snapshot is the authorization linearization point.
+        Release the Kanban lock before inference so workers can use Kanban.
+        """
         self._require_known_actor()
         workflow_id = _required_text(workflow_id, "workflow_id")
         task_id = _required_text(task_id, "task_id")
@@ -505,14 +537,16 @@ class WorkflowService:
         if not repo.is_dir():
             raise WorkflowError("repository must be an existing directory")
 
-        with self._connect() as conn:
+        with self._connect() as conn, write_txn(conn):
             root = self._require_workflow_root(conn, workflow_id)
             task = self._require_task(conn, task_id)
             if task.assignee != self.actor_role:
                 raise WorkflowError(
                     f"task {task_id} is not assigned to role {self.actor_role}"
                 )
-            self._require_subscription_membership(conn, workflow_id, task_id)
+            membership = self._require_subscription_membership(
+                conn, workflow_id, task_id
+            )
             if task.status not in {"ready", "running"}:
                 raise WorkflowError(
                     f"task {task_id} cannot execute from status {task.status}"
@@ -540,16 +574,39 @@ class WorkflowService:
                 raise WorkflowError("repository does not match the workflow contract")
             if contract.get("revision") != revision:
                 raise WorkflowError("revision does not match the workflow contract")
-        return repo
+            authorization = [
+                self.actor_role,
+                root.idempotency_key,
+                membership,
+                *[
+                    [
+                        member.id,
+                        member.assignee,
+                        member.status,
+                        member.workspace_kind,
+                        member.workspace_path,
+                        member.body,
+                    ]
+                    for member in (root, task)
+                ],
+            ]
+            fingerprint = hashlib.sha256(
+                json.dumps(authorization, ensure_ascii=False).encode("utf-8")
+            ).digest()
+        return repo, fingerprint
 
-    def _require_subscription_membership(self, conn, workflow_id, stage_id) -> None:
+    def _require_subscription_membership(
+        self, conn, workflow_id, stage_id
+    ) -> tuple[str, ...]:
         initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
         corrective = self._correction_ids(conn, workflow_id)
-        if stage_id not in set(initial_ids) | set(corrective.values()):
+        membership = tuple(sorted(set(initial_ids) | set(corrective.values())))
+        if stage_id not in membership:
             raise WorkflowError(
                 f"stage identity mismatch: task {stage_id} is not a stage "
                 f"of workflow {workflow_id}"
             )
+        return membership
 
     def subscription_status(
         self,

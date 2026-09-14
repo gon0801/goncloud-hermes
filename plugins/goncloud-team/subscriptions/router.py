@@ -247,6 +247,36 @@ class SubscriptionRouter:
                 status="running",
                 owner=owner,
             )
+            # Probes and durable attempt reservation can outlive the initial
+            # workflow validation. Recheck at the invocation boundary, not
+            # before a potentially slow probe. Never publish callback errors.
+            try:
+                if request.pre_invoke is not None:
+                    request.pre_invoke()
+            except Exception:
+                denied = InvocationResult(
+                    success=False,
+                    text="subscription assignment authorization changed; request refused",
+                    adapter=route.adapter,
+                    model=route.model,
+                    billing_mode=route.billing_mode,
+                    failure=FailureKind.INVALID_REQUEST,
+                )
+                recorded = self.store.finish_attempt(
+                    workflow_id=request.workflow_id,
+                    stage_id=request.stage_id,
+                    slot=route.slot,
+                    attempt=attempt_no,
+                    owner=owner,
+                    success=False,
+                    failure=denied.failure.value,
+                    session_id="",
+                    end_revision=request.current_revision,
+                    changed_files=list(request.changed_files),
+                    detail=denied.text,
+                )
+                # Authorization says nothing about vendor health or quota.
+                return denied if recorded else self._stage_busy()
             result = self._invoke_route(request, route)
             revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision

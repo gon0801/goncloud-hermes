@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 
 class FailureKind(StrEnum):
@@ -43,6 +43,11 @@ class InvocationRequest:
     mode: Literal["start", "continue"] = "start"
     changed_files: tuple[str, ...] = ()
     max_steps: int = 40
+    # In-process authorization capability, never included in evidence or repr.
+    # Raise to revoke; legacy direct router callers need no workflow callback.
+    pre_invoke: Callable[[], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if type(self.max_steps) is not int or not 1 <= self.max_steps <= 200:

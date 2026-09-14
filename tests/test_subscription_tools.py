@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import tempfile
 import types
 import unittest
 from dataclasses import replace
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,8 +34,11 @@ import yaml  # noqa: E402
 from hermes_cli.kanban_db import block_task, complete_task, list_comments  # noqa: E402
 from hermes_cli.kanban_db_connect import connect_closing  # noqa: E402
 from subscriptions.adapters import build_assignment_prompt  # noqa: E402
-from subscriptions.types import InvocationRequest, InvocationResult  # noqa: E402
+from subscriptions.router import SubscriptionRouter  # noqa: E402
+from subscriptions.types import AdapterHealth, InvocationRequest, InvocationResult  # noqa: E402
+from goncloud_team.schemas import SUBSCRIPTION_RUN  # noqa: E402
 from workflow import WorkflowError, WorkflowService  # noqa: E402
+from tests.test_subscription_router import cleanup_temp_directory  # noqa: E402
 
 SOURCES = [
     {
@@ -164,7 +169,7 @@ class ScriptedRouter:
 class SubscriptionRunTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
@@ -205,6 +210,172 @@ class SubscriptionRunTests(unittest.TestCase):
             task_id=started["stages"]["scout"],
             **{"repository": str(self.repo), **overrides},
         )
+
+    def test_subscription_schema_matches_execution_step_bounds(self):
+        schema = SUBSCRIPTION_RUN["parameters"]["properties"]["max_steps"]
+        self.assertEqual((schema["minimum"], schema["maximum"]), (1, 200))
+        started = self.start()
+        self.service().subscription_run(
+            **self.assignment(started, max_steps=schema["maximum"])
+        )
+        self.assertEqual(self.router.requests[0][0].max_steps, 200)
+        self.assert_rejected_before_routing(
+            self.service(), self.assignment(started, max_steps=201), "max_steps"
+        )
+
+    def changed_assignment_case(self, phase, change):
+        repository = self.root / f"{phase}-{change}"
+        repository.mkdir()
+        started = self.service("claw").start(
+            request_key=f"{phase}-{change}",
+            repository=str(repository),
+            revision="0123456789abcdef",
+            instruction="Inspect.",
+            sources=SOURCES,
+        )
+        return started, self.assignment(started, repository=str(repository))
+
+    def change_authorization(self, started, change):
+        with connect_closing(self.db_path) as conn:
+            stage_id = started["stages"]["scout"]
+            if change == "blocked":
+                block_task(conn, stage_id, reason="Owner revoked authorization.")
+            elif change == "assignee":
+                conn.execute(
+                    "UPDATE tasks SET assignee = ? WHERE id = ?",
+                    ("implementer", stage_id),
+                ).close()
+            elif change == "repository":
+                conn.execute(
+                    "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                    (str(self.root), stage_id),
+                ).close()
+            else:
+                root = self.workflow_module.get_task(conn, started["workflow_id"])
+                contract = self.service()._contract_of(root)
+                if change == "revision":
+                    contract["revision"] = "new-approved-baseline"
+                else:
+                    contract["sources"] = [
+                        {"reference": "Changed authority.", "observed_at": "2026-09-14"}
+                    ]
+                body = self.workflow_module._CONTRACT_MARKER + json.dumps(contract)
+                conn.execute(
+                    "UPDATE tasks SET body = ? WHERE id = ?", (body, root.id)
+                ).close()
+            conn.commit()
+
+    def test_changes_during_compilation_revoke_before_router_run(self):
+        compile_routes = self.workflow_module.compile_profile_routes
+        for change in ("blocked", "assignee", "repository", "revision", "sources"):
+            with self.subTest(change=change):
+                started, assignment = self.changed_assignment_case("compile", change)
+                self.router.run_count = 0
+
+                def compile_and_change(*args):
+                    routes = compile_routes(*args)
+                    self.change_authorization(started, change)
+                    return routes
+
+                with patch.object(
+                    self.workflow_module, "compile_profile_routes", compile_and_change
+                ):
+                    with self.assertRaises(WorkflowError):
+                        self.service().subscription_run(**assignment)
+                self.assertEqual(self.router.run_count, 0)
+
+    def test_changes_during_probe_leave_terminal_denial_and_release_lease(self):
+        for change in ("blocked", "assignee", "repository", "revision", "sources"):
+            with self.subTest(change=change):
+                started, assignment = self.changed_assignment_case("probe", change)
+                invoked = []
+
+                def probe(route):
+                    self.change_authorization(started, change)
+                    return AdapterHealth(ready=True, account_class="subscription")
+
+                def invoke(request, route):
+                    invoked.append(request)
+                    return replace(
+                        self.result, adapter=route.adapter, model=route.model
+                    )
+
+                router = SubscriptionRouter(
+                    adapters={
+                        "opencode_go": types.SimpleNamespace(probe=probe, invoke=invoke)
+                    },
+                    db_path=self.root / f"router-{change}.db",
+                    routing_source=self.router.routing_source,
+                )
+                with patch.object(
+                    self.workflow_module,
+                    "_build_subscription_router",
+                    return_value=router,
+                ):
+                    try:
+                        result = self.service().subscription_run(**assignment)
+                    except WorkflowError:
+                        result = None  # Reassignment also forbids attaching to the old stage.
+                self.assertEqual(invoked, [])
+                if result is not None:
+                    self.assertFalse(result["success"])
+                    self.assertEqual(result["failure"], "invalid_request")
+                attempts = router.store.stage_attempts(
+                    started["workflow_id"], assignment["task_id"]
+                )
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(attempts[0]["status"], "completed")
+                self.assertEqual(attempts[0]["failure"], "invalid_request")
+                self.assertEqual(
+                    attempts[0]["detail"],
+                    "subscription assignment authorization changed; request refused",
+                )
+                health = router.store.health("opencode_go")
+                self.assertTrue(health["ready"])
+                self.assertEqual(health["detail"], "ready")
+                self.assertEqual(health["account_class"], "subscription")
+                self.assertIsNone(router.store.cooldown_until("opencode_go"))
+                self.assertTrue(
+                    router.store.claim_stage(
+                        started["workflow_id"], assignment["task_id"], "next-owner", 10
+                    )
+                )
+                router.store.release_stage(
+                    started["workflow_id"], assignment["task_id"], "next-owner"
+                )
+
+    def test_unchanged_authorization_releases_kanban_transaction_before_invoke(self):
+        started = self.start()
+        invoked = []
+
+        def invoke(request, route):
+            # This separate writer fails immediately if the authorization read
+            # holds a Kanban transaction across inference.
+            with closing(sqlite3.connect(self.db_path, timeout=0)) as conn:
+                conn.execute("BEGIN IMMEDIATE").close()
+                conn.rollback()
+            self.assertNotIn("pre_invoke", repr(request))
+            invoked.append(request)
+            return replace(self.result, adapter=route.adapter, model=route.model)
+
+        router = SubscriptionRouter(
+            adapters={
+                "opencode_go": types.SimpleNamespace(
+                    probe=lambda route: AdapterHealth(
+                        ready=True, account_class="subscription"
+                    ),
+                    invoke=invoke,
+                )
+            },
+            db_path=self.root / "authorized-router.db",
+            routing_source=self.router.routing_source,
+        )
+        with patch.object(
+            self.workflow_module, "_build_subscription_router", return_value=router
+        ):
+            result = self.service().subscription_run(**self.assignment(started))
+        self.assertTrue(result["success"])
+        self.assertEqual(len(invoked), 1)
 
     def assert_rejected_before_routing(self, service, assignment, message):
         self.router.run_count = 0

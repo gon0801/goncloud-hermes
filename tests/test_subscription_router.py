@@ -157,6 +157,31 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_authorization_guard_errors_are_terminal_and_sanitized(self):
+        router = self.router()
+
+        def guard():
+            raise RuntimeError("fixture-private-authorization-error")
+
+        denied = router.run(
+            replace(request(self.workspace), pre_invoke=guard), routes_for_main()
+        )
+        self.assertFalse(denied.success)
+        self.assertEqual(denied.failure, FailureKind.INVALID_REQUEST)
+        self.assertEqual(router.calls, [])
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["status"], "completed")
+        self.assertEqual(attempts[0]["failure"], "invalid_request")
+        self.assertNotIn("fixture-private", repr(attempts))
+        self.assertNotIn("fixture-private", repr(denied))
+        self.assertEqual(
+            router.store.health("opencode_go")["account_class"], "opencode_go_test"
+        )
+        self.assertIsNone(router.store.cooldown_until("opencode_go"))
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 10))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
+
     def test_concurrent_stage_runs_invoke_vendor_once(self):
         routers = [self.router(), self.router()]
         start = threading.Barrier(2)

@@ -196,7 +196,7 @@ SUBSCRIPTION_RUN = {
             "max_steps": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500,
+                "maximum": 200,
                 "description": "Bounded step ceiling for the subscription worker.",
             },
         },
