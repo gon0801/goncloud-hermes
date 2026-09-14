@@ -1,6 +1,56 @@
 # Estado — 2026-09-14
 
-## Estado actual: recuperacion de Telegram (2026-09-14)
+## Estado actual: aceptacion local parcial, NO-GO (2026-09-14)
+
+- Codigo de runtime aprobado y desplegado: `3797050`. Nueve perfiles verificados;
+  fuente literal byte-identica, sin cadenas nativas administradas y con Copilot
+  excluido. Backup previo de 18 archivos, con hashes comprobados, en
+  `%LOCALAPPDATA%\hermes\recovery-backups\20260914T171500Z-task9`; nada eliminado.
+- Matriz live actual: **4/9 ready**: Go, Muse y Codex por suscripcion; DeepSeek por
+  API. Cinco cuarentenas durables: Zen `timeout`, Claude `auth`, Kimi `auth`,
+  Z.AI `task_failure`, Grok `auth`. Probes individuales secuenciales, sin login
+  interactivo, migracion o limpieza de lanzadores. Zen termino en 301.57 s con
+  cleanup incluido; no se dejaron procesos pendientes. Tabla y slots intactos.
+- Scout `t_ef1a2c9b`: completado por Go slot 0, `deepseek-v4.1-flash`, suscripcion;
+  repositorio limpio y pausa tras scout. Cadena `t_5202e34b`: scout completado,
+  ingenieria bloqueada por Go slot 0, `muse-spark-1.3-contributor`, suscripcion,
+  `task_failure` ejecutado. No se publico terminal valido; no se avanzo de slot.
+  Las cinco etapas restantes siguen `todo`, sin aprobacion ni entrega.
+- Evidencia de propiedad: un propietario por etapa ejecutada, cero intentos
+  activos y cero leases restantes; un workflow ejecutado a la vez. Ambos fixtures
+  siguen limpios y el cambio benigno no ocurrio. NO-GO para afirmar una cadena
+  completa o abrir Telegram. El fallo no se atribuye a una causa de cuenta sin
+  evidencia; no se inspeccionaron logs crudos.
+- Evidencia sanitizada: `.claude/tmp/task9-acceptance-evidence.json`,
+  `.claude/tmp/task9-scout-status.json`, `.claude/tmp/task9-chain-status.json`
+  y los nueve JSON de probes. Estado durable en `%LOCALAPPDATA%\hermes\kanban.db`
+  y `%LOCALAPPDATA%\hermes\subscription-router.db`; fixtures preservados en
+  `%TEMP%\goncloud-router-acceptance-20260914T171500Z\{scout,chain}`.
+- Bateria final: **290 tests, 287 aprobados y 3 skips**, 249.527 s, exit 0.
+  Los skips son dos casos POSIX y uno sin privilegio Windows para symlinks
+  (WinError 1314). Pre-commit completo: 8/8; `git diff --check` limpio.
+  Correccion de discovery exclusivamente de tests: commit `c11a64a`.
+- Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
+  `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
+  `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
+
+Telegram: stopped pending separate transport cutover
+
+### Incidencia del gate de pruebas
+
+La primera bateria completa descubrio 147 entradas: 144 pasaron y tres fueron
+errores de carga, en 131.825 s, exit 1. Tres modulos importaban el helper
+`tests.test_subscription_router`, ocultado por el paquete `tests` del upstream.
+La segunda bateria ya cargo los 289 tests: 281 pasaron, tres se omitieron por
+plataforma/privilegios y cinco tuvieron la misma dependencia en imports diferidos,
+en 202.251 s. Se corrigieron tambien los cinco imports de fixtures y dos cadenas
+de subprocess; la busqueda exhaustiva no encuentra referencias `tests.*`.
+La regresion ahora ejecuta los 144 tests de los tres modulos afectados tras
+discovery en un proceso nuevo, y pasa. Se autorizo una tercera y ultima bateria
+completa por esta misma causa. El arreglo es exclusivamente de tests: no cambia
+produccion, no omite pruebas o candados y no repite inferencias reales.
+
+### Transporte preservado
 
 - El gateway de Telegram del perfil `claw` esta detenido de forma reversible
   hasta un cutover separado. Se preservan el perfil, token, lista de acceso,
@@ -12,11 +62,11 @@
 
 ## Registro historico anterior a la recuperacion
 
-Las afirmaciones de esta seccion son evidencia archivada de una instalacion
-previa. No describen el estado actual del gateway de Telegram, que permanece
-detenido hasta el cutover separado indicado arriba.
+Las afirmaciones siguientes son evidencia archivada de una instalacion previa.
+Sus matrices, cuentas, cadenas nativas, conteos y conexiones no describen la
+aceptacion actual. Rige el estado parcial anterior; Telegram sigue detenido.
 
-## Enrutador de suscripciones (2026-09-14)
+### Enrutador de suscripciones anterior al recovery (historico)
 
 - Nueve adaptadores (OpenCode Go/Zen, Muse, Claude Max, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok, DeepSeek API) con prompts por stdin/archivo temporal privado, `shell=False`, salida redactada y acotada, y sandbox conservado por CLI.
 - Matriz live (inferencia real minima por adaptador, sin identificadores de cuenta): PASS `opencode_go` (READY), `muse` (READY), `claude` (LISTO), `codex` (READY), `zai` (READY), `grok` (READY), `deepseek` (READY, unica ruta `api`). FAIL `kimi`: `provider.connection_error` del endpoint tras 3 reintentos (el coordinador nativo tambien ve 401 en kimi-coding); el router le pasa de largo. CUARENA `opencode_zen`: credencial presente pero el CLI cuelga en silencio >2.5h; el coordinador nativo reporta `FreeUsageLimitError` 429 en opencode-zen — pendiente de saldo/limite de la capa free, no de autenticacion.
@@ -25,7 +75,7 @@ detenido hasta el cutover separado indicado arriba.
 - Bateria final: **96/96 pruebas, exit 0** con el venv de Hermes. Pre-commit completo: 8/8 candados. `git diff --check` limpio.
 - Plugin desplegado a los nueve perfiles (idempotente): 7 herramientas y 1 hook; Plugin Doctor OK. El registro historico anotaba un gateway `running`.
 
-## Instalado y comprobado
+### Instalado y comprobado previamente (historico)
 
 - Hermes oficial v0.21.2 (2026.9.11), commit `3f86ed75dad1933036c52018e991dbd839837126`.
 - Python administrado 3.11.16, Node administrado 22.23.2; CLI responde.
@@ -41,7 +91,7 @@ detenido hasta el cutover separado indicado arriba.
 - Inicio automatico del gateway instalado en la carpeta Startup de Windows; la entrada se conserva, pero el proceso actual esta detenido.
 - Se archivo evidencia de una conexion anterior del bot de Telegram en modo polling, con mensaje entrante y respuesta saliente comprobados; esa conexion no esta activa.
 
-## Operacion real historica anterior al freeze
+### Operacion real historica anterior al freeze
 
 Este bloque conserva evidencia anterior al freeze de Telegram. No implica
 trafico actual: el gateway `claw` permanece detenido hasta un cutover separado.
@@ -53,7 +103,7 @@ trafico actual: el gateway `claw` permanece detenido hasta un cutover separado.
 - Conectar fuentes comerciales bajo una autorizacion futura sigue fuera de este alcance; no se copiaron tareas recurrentes ni operaciones de produccion.
 - Conectar fuentes comerciales bajo autorizacion explicita. No hay tareas recurrentes ni operaciones de produccion activas.
 
-## Limites y reproducibilidad
+### Limites y reproducibilidad registrados previamente
 
 - Se fijo el codigo upstream, pero el instalador oficial recurrio a resolucion de dependencias al fallar su lock; no es un entorno hermetico.
 - El instalador produjo un cambio en `package-lock.json` del runtime. No se modifico su codigo fuente; no se oculta ese cambio generado.

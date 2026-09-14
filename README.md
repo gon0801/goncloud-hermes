@@ -13,21 +13,25 @@ Una ronda de revision; segunda solamente por hallazgos HIGH en la primera. Si qu
 
 ## Uso local
 
-Desde este repositorio, abre el director:
+Desde este repositorio, usa la entrada local de orquestacion:
 
 ```powershell
-.\scripts\hermes.ps1
+$env:HERMES_HOME = Join-Path $env:LOCALAPPDATA 'hermes'
+$python = Join-Path $env:HERMES_HOME 'hermes-agent\venv\Scripts\python.exe'
+& $python scripts/run_local_workflow.py start --repository C:\dev\mi-proyecto --instruction-file C:\ruta\encargo.txt --max-steps 20 --json
 ```
 
-Ejemplo de orden: "En C:\dev\mi-proyecto, implementa X, comprueba Y y entrega una rama local. Consulta entre especialistas; no publiques ni despliegues."
+El archivo contiene un encargo acotado y autorizado. No incluyas secretos en el encargo ni en sus fuentes: el contrato se conserva en el Kanban privado para reanudar. `status --workflow-id ID --json` consulta evidencia y `resume --workflow-id ID --json` continua el mismo workflow. `--stop-after scout` permite una inspeccion inicial.
 
-El director utiliza `goncloud_engineering_start` para crear la cadena, `goncloud_consult` para preguntar a otro rol y `goncloud_engineering_status` para consolidar resultados. El revisor utiliza `goncloud_engineering_review`. Cada etapa ejecuta su trabajo con `goncloud_subscription_run` (perfil ligado por contexto, nunca por argumento) y `goncloud_subscription_status` expone la matriz de rutas sin inferencia. Cualquier rol puede encargar una tarea especializada a la suscripcion autenticada de Muse mediante `goncloud_muse_delegate`, sin pedir al usuario que retransmita mensajes. El tablero nativo conserva dependencias, comentarios e intentos entre reinicios.
+El driver local crea la cadena durable y ejecuta cada rol mediante el router de suscripciones. La aprobacion del revisor se registra mediante `WorkflowService.review`; la entrega exige esa decision. El tablero nativo conserva dependencias, comentarios e intentos entre reinicios. Hermes y su selector nativo de modelos no eligen un coordinador alternativo para esta entrada.
 
 ## Enrutador de suscripciones
 
 La tabla de ocho posiciones por agente se compila por slot, no por prefijo historico: Primary usa OpenCode Go, F1 usa OpenCode Zen y F2-F7 se vinculan a la suscripcion de la familia del modelo (Muse, Claude Max, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok). DeepSeek es la unica ruta facturada por API y queda marcada `billing_mode=api` en toda la evidencia. Los fallos de autenticacion, cuota, modelo o timeout avanzan de posicion; despues de una mutacion del workspace el siguiente intento recibe una continuacion con la revision y los archivos cambiados registrados, nunca una repeticion a ciegas. Las credenciales viven en los almacenes nativos de cada CLI o en el env privado `%LOCALAPPDATA%\hermes\subscription-router.env` (fuera de Git); los prompts viajan por stdin o archivo temporal privado y la salida de cada CLI se redacta y acota antes de convertirse en evidencia.
 
-Verificado con inferencia real por adaptador: siete de nueve PASS (Go, Muse, Claude Max, ChatGPT/Codex, Z.AI, Grok y DeepSeek-api); OpenCode Zen en cuarentena (limite de uso de la capa free) y Kimi con error de conexion del proveedor — en ambos casos el router avanza de slot. La matriz vigente y los pendientes estan en [docs/model-routing.md](docs/model-routing.md) y [docs/status.md](docs/status.md).
+Aceptacion local 2026-09-14: 4/9 pruebas live aprobadas; Zen, Claude, Kimi, Z.AI y Grok en cuarentena. Scout `t_ef1a2c9b` aprobado sin cambios; la cadena `t_5202e34b` quedo bloqueada en ingenieria (`task_failure`), sin revision ni entrega: NO-GO para aceptacion completa.
+
+La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing.md](docs/model-routing.md) y [docs/status.md](docs/status.md). `configure_subscriptions.py --live-probe-all --only ADAPTADOR --json RUTA` verifica una cuenta y persiste su salud sanitizada. Un fallo deja cuarentena durable, incluso al vencer el TTL; solo una nueva inferencia con el marcador exacto puede levantarla. Ejecuta los probes uno por uno en el orden de la tabla.
 
 ## Instalacion reproducible
 
@@ -39,17 +43,21 @@ Despues de instalar ese commit con el instalador oficial de Windows:
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" scripts/configure_team.py
 ```
 
-Reaplicar es idempotente. Se conservan modelo, credenciales y opciones no administradas. Si cambias una opcion o archivo administrado, el script se detiene y pide reconciliar; no lo pisa. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
+Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_providers` que poseia, instala la fuente literal junto al plugin y excluye Copilot. Conserva credenciales y opciones no administradas; ante conflictos se detiene para reconciliarlos. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
 
 ## Modelo y ejecucion continua
 
 La seleccion de proveedor y las pruebas con inferencia real se registran en [estado](docs/status.md). Muse usa el login oficial de su CLI dentro de WSL; sus encargos conservan el sandbox de Muse y un archivo temporal privado, eliminado al terminar, mantiene el prompt fuera de la linea de comandos. No pegues claves en el chat ni en Git. No se copiaron tokens, canales, crons ni conexiones comerciales de OpenClaw.
 
-El despacho automatico necesita el gateway de `claw` ejecutandose. En esta computadora se instalo el inicio automatico de sesion de Windows para el gateway, pero permanece detenido hasta conectar el bot nuevo de Telegram con token y lista de usuarios autorizados.
+Telegram: stopped pending separate transport cutover
+
+El perfil, lista de acceso y entrada de inicio se conservan. Reactivar el gateway requiere primero una cadena local completa aprobada y despues un plan separado que conecte el transporte a esa entrada, con una prueba bidireccional permitida.
 
 ## Calidad
 
 No hay remoto ni CI configurados inicialmente: la bateria completa se ejecuta localmente una vez al cierre; durante desarrollo se ejecuta solamente el archivo de pruebas cambiado.
+
+Gate final 2026-09-14: 290 tests, 287 aprobados y 3 skips de plataforma/privilegios; 8/8 hooks. Hubo dos repeticiones completas autorizadas para corregir imports de discovery; el detalle y los intentos fallidos se conservan en [estado](docs/status.md). Estos gates no sustituyen la cadena live pendiente.
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -m unittest discover -s tests -v
