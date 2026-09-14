@@ -819,35 +819,37 @@ def _run_live_probe_all(json_out, only, *, private_env, state):
         for name in order:
             adapter = adapters[name]
             route = routes[name]
-            print(f"probing {name} ...", flush=True)
-            try:
-                if name in {"zai", "deepseek"}:
-                    evidence = adapter.live_probe(route)
-                else:
-                    evidence = adapter.probe(route)
-                    if evidence.ready:
-                        evidence = adapter.invoke(
-                            InvocationRequest(
-                                workflow_id="live-probe",
-                                stage_id=f"probe-{name}",
-                                role="claw",
-                                prompt=PROBE_PROMPT,
-                                workspace=workspace,
-                                start_revision="",
-                                current_revision="",
-                                max_steps=1,
-                            ),
-                            route,
-                        )
-                entry = sanitize_live_result(name, evidence)
-            except Exception as error:
-                entry = sanitize_live_result(name, error)
-            state.save_live_health(
-                name,
-                ready=entry["status"] == "ready",
-                account_class=entry["billing_mode"],
-                failure=entry["failure"],
-            )
+            # Lock ordering is global live cycle -> adapter effects -> database.
+            # Busy is raised before any probe and cannot become false health proof.
+            with state.dispatch_lock(name) as publish:
+                print(f"probing {name} ...", flush=True)
+                try:
+                    if name in {"zai", "deepseek"}:
+                        evidence = adapter.live_probe(route)
+                    else:
+                        evidence = adapter.probe(route)
+                        if evidence.ready:
+                            evidence = adapter.invoke(
+                                InvocationRequest(
+                                    workflow_id="live-probe",
+                                    stage_id=f"probe-{name}",
+                                    role="claw",
+                                    prompt=PROBE_PROMPT,
+                                    workspace=workspace,
+                                    start_revision="",
+                                    current_revision="",
+                                    max_steps=1,
+                                ),
+                                route,
+                            )
+                    entry = sanitize_live_result(name, evidence)
+                except Exception as error:
+                    entry = sanitize_live_result(name, error)
+                publish(
+                    ready=entry["status"] == "ready",
+                    account_class=entry["billing_mode"],
+                    failure=entry["failure"],
+                )
             results.append(entry)
             print(_format_probe(entry))
     summary = {

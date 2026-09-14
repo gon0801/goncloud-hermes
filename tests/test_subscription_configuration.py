@@ -1429,6 +1429,127 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
         )
         self.assertEqual(recovered.returncode, 0)
 
+    def test_adapter_owner_blocks_live_effects_and_failed_proof_publishes_before_unlock(
+        self,
+    ):
+        import time
+        from subscriptions.router import SubscriptionRouter
+        from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
+        from tests.test_subscription_router import (
+            SOURCE,
+            ScriptedAdapter,
+            completed,
+            failed,
+            request,
+            routes_for_main,
+        )
+
+        root = Path(self.tmp.name)
+        store = SubscriptionStateStore(self.db_path)
+        store.save_health("opencode_go", ready=True, account_class="subscription")
+        before = store.health("opencode_go")
+        code = r"""
+import sys,time,json
+from pathlib import Path
+sys.path.insert(0,str(Path(sys.argv[1])/'plugins/goncloud-team'))
+from subscriptions.state import SubscriptionStateStore,SubscriptionBusy
+fixture,mode=Path(sys.argv[2]),sys.argv[3]
+state=SubscriptionStateStore(fixture/'router.db')
+deadline=time.monotonic()+20
+while True:
+    try:
+        with state.dispatch_lock('opencode_go'):
+            if mode=='hold':
+                (fixture/'owner-entered').touch()
+                while not (fixture/'owner-release').exists():
+                    if time.monotonic()>deadline: raise RuntimeError('fixture deadline')
+                    time.sleep(.01)
+            else:
+                health=state.health('opencode_go')
+                (fixture/'observed.json').write_text(json.dumps({'quarantined':health['quarantined'],'failure':health['failure']}))
+            break
+    except SubscriptionBusy:
+        (fixture/'observer-blocked').touch()
+        if time.monotonic()>deadline: raise RuntimeError('fixture deadline')
+        time.sleep(.01)
+"""
+        command = [sys.executable, "-c", code, str(ROOT), str(root)]
+        env = {**os.environ, "PYTHONUTF8": "1"}
+        processes = []
+
+        def start(mode):
+            process = subprocess.Popen(
+                command + [mode],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            processes.append(process)
+            return process
+
+        def wait_for(name):
+            deadline = time.monotonic() + 10
+            while not (root / name).exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((root / name).exists(), name)
+
+        go, zen = ScriptedAdapter("opencode_go"), ScriptedAdapter("opencode_zen")
+        for adapter in (go, zen):
+            adapter.timeout_seconds, adapter.probe_timeout_seconds = 300, 30
+        go.result = failed(FailureKind.TASK_FAILURE, "opencode_go")
+        zen.result = completed(adapter="opencode_zen")
+        try:
+            owner = start("hold")
+            wait_for("owner-entered")
+            with (
+                patch.object(module, "read_private_env", return_value={}),
+                patch(
+                    "subscriptions.adapters.build_adapter_registry",
+                    return_value={"opencode_go": go},
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaises(SubscriptionBusy):
+                    module.run_live_probe_all(only="opencode_go")
+                self.assertEqual(go.probes, [])
+                self.assertEqual(go.requests, [])
+                self.assertEqual(store.health("opencode_go"), before)
+                (root / "owner-release").touch()
+                owner.communicate(timeout=10)
+                self.assertEqual(owner.returncode, 0)
+
+                def failed_proof(assignment, route):
+                    start("observe")
+                    wait_for("observer-blocked")
+                    return failed(FailureKind.TASK_FAILURE, "opencode_go")
+
+                go.result = failed_proof
+                result = module.run_live_probe_all(only="opencode_go")
+                self.assertEqual(result["passed"], 0)
+            processes[-1].communicate(timeout=10)
+            self.assertEqual(processes[-1].returncode, 0)
+            self.assertEqual(
+                json.loads((root / "observed.json").read_text()),
+                {"quarantined": True, "failure": "task_failure"},
+            )
+            self.assertEqual(len(go.probes), 1)
+            self.assertEqual(len(go.requests), 1)
+            router = SubscriptionRouter(
+                adapters={"opencode_go": go, "opencode_zen": zen},
+                store=store,
+                routing_source=SOURCE,
+            )
+            self.assertTrue(router.run(request(root), routes_for_main()[:2]).success)
+            self.assertEqual(len(go.probes), 1)
+            self.assertEqual(len(go.requests), 1)
+            self.assertEqual(len(zen.requests), 1)
+        finally:
+            (root / "owner-release").touch()
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                process.communicate(timeout=10)
+
     def test_live_probe_lock_also_excludes_threads_until_publication(self):
         from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
         from tests.test_subscription_router import ScriptedAdapter, completed
@@ -1437,7 +1558,7 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
         adapter = ScriptedAdapter("codex")
         adapter.timeout_seconds, adapter.probe_timeout_seconds = 300, 30
         adapter.result = completed("GONCLOUD_PROBE_OK", "codex")
-        original = SubscriptionStateStore.save_live_health
+        original = SubscriptionStateStore._save_live_health_locked
 
         def publish(store, *args, **kwargs):
             entered.set()
@@ -1450,7 +1571,9 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
                 "subscriptions.adapters.build_adapter_registry",
                 return_value={"codex": adapter},
             ),
-            patch.object(SubscriptionStateStore, "save_live_health", new=publish),
+            patch.object(
+                SubscriptionStateStore, "_save_live_health_locked", new=publish
+            ),
             redirect_stdout(io.StringIO()),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
@@ -1463,6 +1586,21 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
             finally:
                 release.set()
             self.assertEqual(first.result(timeout=15)["passed"], 1)
+
+    def test_scoped_publisher_cannot_write_after_release_or_from_another_thread(self):
+        from subscriptions.state import SubscriptionStateStore, SubscriptionBusy
+
+        store = SubscriptionStateStore(self.db_path)
+        health = {"ready": False, "account_class": "subscription", "failure": "auth"}
+        with store.dispatch_lock("opencode_go") as publish:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(publish, **health)
+                with self.assertRaises(SubscriptionBusy):
+                    future.result(timeout=5)
+            self.assertIsNone(store.health("opencode_go"))
+        with self.assertRaises(SubscriptionBusy):
+            publish(**health)
+        self.assertIsNone(store.health("opencode_go"))
 
     def test_live_failure_survives_ttl_and_only_exact_proof_restores_route(self):
         from subscriptions.router import SubscriptionRouter

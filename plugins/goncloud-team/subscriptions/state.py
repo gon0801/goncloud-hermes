@@ -185,11 +185,27 @@ class SubscriptionStateStore:
             self.db_path.with_name(self.db_path.name + ".live-probe.lock")
         )
 
+    @contextlib.contextmanager
     def dispatch_lock(self, adapter: str):
+        """Own adapter effects and expose a publisher bound to this lock scope."""
         tag = hashlib.sha256(adapter.encode("utf-8")).hexdigest()
-        return _process_lock(
+        with _process_lock(
             self.db_path.with_name(self.db_path.name + ".dispatch-" + tag + ".lock")
-        )
+        ):
+            active = True
+            owner_thread = threading.get_ident()
+
+            def publish(**health):
+                if not active or threading.get_ident() != owner_thread:
+                    raise SubscriptionBusy(
+                        "live proof publication requires its active lock"
+                    )
+                self._save_live_health_locked(adapter, **health)
+
+            try:
+                yield publish
+            finally:
+                active = False
 
     @contextlib.contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -521,7 +537,14 @@ class SubscriptionStateStore:
         self, adapter: str, *, ready: bool, account_class: str, failure: Optional[str]
     ) -> None:
         """Publish normalized inference proof; ordinary probes cannot lift quarantine."""
-        with self.dispatch_lock(adapter), self._lock, self._connect() as conn:
+        with self.dispatch_lock(adapter) as publish:
+            publish(ready=ready, account_class=account_class, failure=failure)
+
+    def _save_live_health_locked(
+        self, adapter: str, *, ready: bool, account_class: str, failure: Optional[str]
+    ) -> None:
+        """Only the active scoped publisher calls this; never reacquire its OS lock."""
+        with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
                 "(adapter, ready, account_class, failure, detail, quarantined) "
