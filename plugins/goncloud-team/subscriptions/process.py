@@ -11,6 +11,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -20,6 +21,14 @@ from typing import Literal, Mapping, Sequence
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
 _CLEANUP_GRACE_SECONDS = 4
+_WINDOWS_GATE = "goncloud-subscription-start\n"
+_WINDOWS_GATE_LAUNCHER = (
+    "import subprocess, sys; "
+    "sys.stdin.readline(); "
+    "child = subprocess.Popen(sys.argv[1:], stdin=sys.stdin, "
+    "stdout=sys.stdout, stderr=sys.stderr); "
+    "raise SystemExit(child.wait())"
+)
 
 
 class _WindowsProcessJob:
@@ -206,6 +215,27 @@ def _close_process_streams(process: subprocess.Popen[str]) -> None:
                 pass
 
 
+def _fail_closed_launcher(
+    process: subprocess.Popen[str], job: _WindowsProcessJob
+) -> None:
+    """Stop a suspended-by-gate launcher before it can release a vendor command."""
+    try:
+        job.close()
+    except OSError:
+        pass
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+    finally:
+        _close_process_streams(process)
+    try:
+        process.wait(timeout=0.25)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _run_with_process_tree(
     command: list[str],
     *,
@@ -215,10 +245,27 @@ def _run_with_process_tree(
     timeout: int,
 ) -> tuple[int, str, str]:
     """Run a real CLI in an isolated group so timeout cleanup includes children."""
+    windows = os.name == "nt"
+    job = _create_windows_process_job()
+    if windows and job is None:
+        raise SubscriptionProcessError("vendor process containment unavailable")
+    launched_command = command
+    launched_stdin = stdin_text
+    if windows:
+        # This trusted launcher blocks on its first input line. Its Job Object is
+        # assigned before communicate releases that line, so the vendor never
+        # executes outside the Job even if it immediately creates descendants.
+        launched_command = [
+            sys.executable,
+            "-c",
+            _WINDOWS_GATE_LAUNCHER,
+            *command,
+        ]
+        launched_stdin = _WINDOWS_GATE + (stdin_text or "")
     popen_kwargs = {
         "cwd": cwd,
         "env": env,
-        "stdin": subprocess.PIPE if stdin_text is not None else None,
+        "stdin": subprocess.PIPE if launched_stdin is not None else None,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -226,13 +273,12 @@ def _run_with_process_tree(
         "errors": "replace",
         "shell": False,
     }
-    if os.name == "nt":
+    if windows:
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    job = _create_windows_process_job()
     try:
-        process = subprocess.Popen(command, **popen_kwargs)
+        process = subprocess.Popen(launched_command, **popen_kwargs)
     except BaseException:
         if job is not None:
             try:
@@ -244,13 +290,10 @@ def _run_with_process_tree(
         try:
             job.assign(process)
         except OSError:
-            try:
-                job.close()
-            except OSError:
-                pass
-            job = None
+            _fail_closed_launcher(process, job)
+            raise SubscriptionProcessError("vendor process containment unavailable")
     try:
-        stdout, stderr = process.communicate(input=stdin_text, timeout=timeout)
+        stdout, stderr = process.communicate(input=launched_stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
         _terminate_process_tree(process, job)

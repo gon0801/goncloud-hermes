@@ -247,8 +247,45 @@ class SafeProcessTests(unittest.TestCase):
                 finally:
                     _cleanup_tree_pids(pid_files, marker)
 
+    @unittest.skipUnless(os.name == "nt", "Windows Job Objects are Windows-only")
+    def test_job_creation_failure_does_not_run_the_vendor(self):
+        side_effect = self.workspace / "vendor-ran.txt"
+        started = time.monotonic()
+        with patch(
+            "subscriptions.process._create_windows_process_job", return_value=None
+        ):
+            with self.assertRaisesRegex(
+                SubscriptionProcessError, "containment unavailable"
+            ):
+                run_cli(
+                    _side_effect_command(side_effect), "", self.workspace, timeout=1
+                )
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(side_effect.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Objects are Windows-only")
+    def test_job_assignment_failure_does_not_run_the_vendor(self):
+        side_effect = self.workspace / "vendor-ran.txt"
+        failed_job = _FailingJob()
+        started = time.monotonic()
+        with patch(
+            "subscriptions.process._create_windows_process_job", return_value=failed_job
+        ):
+            with self.assertRaisesRegex(
+                SubscriptionProcessError, "containment unavailable"
+            ):
+                run_cli(
+                    _side_effect_command(side_effect), "", self.workspace, timeout=1
+                )
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertTrue(failed_job.closed)
+        self.assertFalse(side_effect.exists())
+
     def assert_tree_stopped(self, pid_files: tuple[Path, Path]) -> None:
-        for pid in _pids_from_files(pid_files):
+        pids = _required_pids(pid_files)
+        self.assertEqual(len(pids), 2)
+        self.assertEqual(len(set(pids)), 2)
+        for pid in pids:
             self.assertFalse(
                 _pid_is_alive(pid), f"child process {pid} survived timeout"
             )
@@ -312,6 +349,33 @@ def _pids_from_files(pid_files: tuple[Path, Path]) -> tuple[int, ...]:
         except (OSError, ValueError):
             continue
     return tuple(found)
+
+
+def _required_pids(pid_files: tuple[Path, Path]) -> tuple[int, int]:
+    parent_pid, grandchild_pid = (
+        int(pid_file.read_text(encoding="utf-8")) for pid_file in pid_files
+    )
+    return parent_pid, grandchild_pid
+
+
+class _FailingJob:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def assign(self, process) -> None:
+        raise OSError("job assignment failed")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _side_effect_command(path: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')",
+        str(path),
+    ]
 
 
 def _cleanup_tree_pids(pid_files: tuple[Path, Path], marker: str) -> None:
