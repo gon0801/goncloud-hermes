@@ -13,6 +13,7 @@ from .catalog import compile_profile_routes, load_routing_source
 from .process import run_cli
 from .state import SubscriptionStateStore
 from .types import (
+    AdapterHealth,
     FailureKind,
     InvocationRequest,
     InvocationResult,
@@ -87,6 +88,7 @@ class SubscriptionRouter:
         db_path: Optional[Path | str] = None,
         routing_source: Optional[dict] = None,
         git: Optional[GitInspector] = None,
+        health_ttl_seconds: int = 300,
     ) -> None:
         self.adapters = adapters if adapters is not None else build_adapter_registry()
         self.routing_source = (
@@ -99,6 +101,7 @@ class SubscriptionRouter:
             )
         else:
             self.store = store
+        self.health_ttl_seconds = health_ttl_seconds
 
     # -- execution --------------------------------------------------------
 
@@ -112,7 +115,7 @@ class SubscriptionRouter:
 
         request = self._absorb_workspace_state(request)
         last_failure: Optional[InvocationResult] = None
-        invoked_any = False
+        attempted_any = False
 
         for route in routes:
             if self._in_cooldown(route.adapter):
@@ -123,7 +126,39 @@ class SubscriptionRouter:
             attempt_no = self.store.next_attempt(
                 request.workflow_id, request.stage_id, route.slot
             )
-            invoked_any = True
+            availability = self._availability(route)
+            if not availability.ready:
+                failure = availability.failure or FailureKind.TASK_FAILURE
+                skipped = InvocationResult(
+                    success=False,
+                    text=f"{route.adapter} invocation failed ({failure.value})",
+                    adapter=route.adapter,
+                    model=route.model,
+                    billing_mode=route.billing_mode,
+                    failure=failure,
+                )
+                self.store.record_attempt(
+                    workflow_id=request.workflow_id,
+                    stage_id=request.stage_id,
+                    slot=route.slot,
+                    attempt=attempt_no,
+                    adapter=route.adapter,
+                    model=route.model,
+                    billing_mode=route.billing_mode,
+                    mode=request.mode,
+                    success=False,
+                    failure=failure.value,
+                    session_id="",
+                    start_revision=request.start_revision,
+                    end_revision=self.git.current_revision(request.workspace),
+                    changed_files=list(self.git.changed_files(request.workspace)),
+                    detail=skipped.text,
+                )
+                attempted_any = True
+                last_failure = skipped
+                continue
+
+            attempted_any = True
             result = self._invoke_route(request, route)
             changed = self.git.changed_files(request.workspace)
             revision = self.git.current_revision(request.workspace)
@@ -167,7 +202,7 @@ class SubscriptionRouter:
                     changed_files=changed,
                 )
 
-        if not invoked_any:
+        if not attempted_any:
             return InvocationResult(
                 success=False,
                 text="all routes for this stage are cooling down; retry later",
@@ -213,6 +248,28 @@ class SubscriptionRouter:
         if until.tzinfo is None:
             until = until.replace(tzinfo=timezone.utc)
         return until > datetime.now(timezone.utc)
+
+    def _availability(self, route: RouteSpec) -> AdapterHealth:
+        """Use bounded health evidence, probing and normalizing it when stale."""
+        cached = self.store.fresh_health(route.adapter, self.health_ttl_seconds)
+        if cached is not None:
+            failure = cached.get("failure")
+            return AdapterHealth(
+                ready=bool(cached["ready"]),
+                account_class=str(cached["account_class"]),
+                failure=FailureKind(failure) if failure else None,
+                detail=str(cached.get("detail") or ""),
+            )
+
+        health = self.adapters[route.adapter].probe(route)
+        self.store.save_health(
+            route.adapter,
+            ready=health.ready,
+            account_class=health.account_class,
+            failure=health.failure.value if health.failure else None,
+            detail=health.detail,
+        )
+        return health
 
     def _record_health(self, adapter: str, result: InvocationResult) -> None:
         if result.success:

@@ -47,9 +47,12 @@ class ScriptedAdapter:
         self.name = name
         self.result = None
         self.requests = []
+        self.probes = []
+        self.health = AdapterHealth(ready=True, account_class=f"{self.name}_test")
 
     def probe(self, route):
-        return AdapterHealth(ready=True, account_class=f"{self.name}_test")
+        self.probes.append(route)
+        return self.health
 
     def invoke(self, request, route):
         self.requests.append(request)
@@ -135,6 +138,48 @@ class RouterTestCase(unittest.TestCase):
 
 
 class FailoverTests(RouterTestCase):
+    def test_quarantined_route_is_recorded_without_invocation(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        go.health = AdapterHealth(
+            ready=False,
+            account_class="opencode_go",
+            failure=FailureKind.AUTH,
+            detail="login required",
+        )
+        go.result = failed(FailureKind.AUTH, "opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(go.requests, [])
+        self.assertEqual(
+            router.store.stage_attempts("wf-6", "st-6")[0]["failure"], "auth"
+        )
+
+    def test_fresh_unready_health_skips_probe_and_invoke(self):
+        router = self.router()
+        go = self.fake_adapters["opencode_go"]
+        router.store.save_health(
+            "opencode_go",
+            ready=False,
+            account_class="opencode_go",
+            failure="quota",
+            detail="quarantined",
+        )
+        go.result = failed(FailureKind.QUOTA, "opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(go.probes, [])
+        self.assertEqual(go.requests, [])
+        self.assertEqual(
+            router.store.stage_attempts("wf-6", "st-6")[0]["failure"], "quota"
+        )
+
     def test_auth_and_quota_advance_in_order(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.AUTH)

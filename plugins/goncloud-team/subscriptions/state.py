@@ -242,6 +242,16 @@ class SubscriptionStateStore:
             "updated_at": row["updated_at"],
         }
 
+    def fresh_health(
+        self, adapter: str, max_age_seconds: int
+    ) -> Optional[dict[str, Any]]:
+        """Return normalized health only while its bounded lifetime is valid."""
+        row = self.health(adapter)
+        updated = _parse_iso(row.get("updated_at")) if row else None
+        if updated is None or (_utcnow() - updated).total_seconds() > max_age_seconds:
+            return None
+        return row
+
     def set_cooldown(
         self, adapter: str, *, hours: float = 0.0, until: Optional[datetime] = None
     ) -> None:
