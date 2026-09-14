@@ -1,42 +1,81 @@
 # Estado — 2026-09-14
 
-## Estado actual: aceptacion local parcial, NO-GO (2026-09-14)
+## Estado actual: aceptacion local completa (2026-09-14)
 
-- Codigo de runtime aprobado y desplegado: `3797050`. Nueve perfiles verificados;
+- Codigo de runtime aprobado y desplegado: `0f206ca`. Nueve perfiles verificados;
   fuente literal byte-identica, sin cadenas nativas administradas y con Copilot
   excluido. Backup previo de 18 archivos, con hashes comprobados, en
-  `%LOCALAPPDATA%\hermes\recovery-backups\20260914T171500Z-task9`; nada eliminado.
-- Matriz live actual: **4/9 ready**: Go, Muse y Codex por suscripcion; DeepSeek por
-  API. Cinco cuarentenas durables: Zen `timeout`, Claude `auth`, Kimi `auth`,
-  Z.AI `task_failure`, Grok `auth`. Probes individuales secuenciales, sin login
-  interactivo, migracion o limpieza de lanzadores. Zen termino en 301.57 s con
-  cleanup incluido; no se dejaron procesos pendientes. Tabla y slots intactos.
-- Scout `t_ef1a2c9b`: completado por Go slot 0, `deepseek-v4.1-flash`, suscripcion;
-  repositorio limpio y pausa tras scout. Cadena `t_5202e34b`: scout completado,
-  ingenieria bloqueada por Go slot 0, `muse-spark-1.3-contributor`, suscripcion,
-  `task_failure` ejecutado. No se publico terminal valido; no se avanzo de slot.
-  Las cinco etapas restantes siguen `todo`, sin aprobacion ni entrega.
+  `%LOCALAPPDATA%\hermes\recovery-backups\20260914T214024Z-task9b`; nada eliminado.
+- Matriz live actual: **5/9 ready**: Go, Claude Max, Z.AI y Grok por suscripcion;
+  DeepSeek por API. Cuatro cuarentenas durables: Zen `timeout` (301 s, limite de la
+  capa free), Muse `model_unavailable`, Codex `quota`, Kimi `transport`. Las cuatro
+  avanzan de slot; ninguna bloquea una etapa. Probes individuales secuenciales, sin
+  login interactivo, migracion ni limpieza de lanzadores. Tabla y slots intactos.
+- Scout `t_f2e2bb6d`: completado por Go slot 0, `deepseek-v4.1-flash`, suscripcion;
+  repositorio limpio y pausa tras scout, sin entrega.
+- Cadena completa `t_be290d83`: **entregada**. Las siete etapas en orden —scout,
+  ingenieria, implementer, verifier, adversary, reviewer, entrega— con un unico
+  intento ejecutado cada una, todas en Go slot 0 y facturacion `subscription`
+  (`deepseek-v4.1-flash` en scout/adversary/reviewer, `muse-spark-1.3-contributor`
+  en el resto). Revisor aprobo con `{"decision":"approve","severity":null}`;
+  `delivery_blocked=false` y cero rondas correctivas.
+- Cambio autorizado realizado y acotado: `acceptance.txt` del fixture desechable
+  quedo en `status: accepted` y `git status --porcelain` solo lista ese archivo.
+  El fixture de scout sigue limpio.
 - Evidencia de propiedad: un propietario por etapa ejecutada, cero intentos
-  activos y cero leases restantes; un workflow ejecutado a la vez. Ambos fixtures
-  siguen limpios y el cambio benigno no ocurrio. NO-GO para afirmar una cadena
-  completa o abrir Telegram. El fallo no se atribuye a una causa de cuenta sin
-  evidencia; no se inspeccionaron logs crudos.
-- Evidencia sanitizada: `.claude/tmp/task9-acceptance-evidence.json`,
-  `.claude/tmp/task9-scout-status.json`, `.claude/tmp/task9-chain-status.json`
-  y los nueve JSON de probes. Estado durable en `%LOCALAPPDATA%\hermes\kanban.db`
-  y `%LOCALAPPDATA%\hermes\subscription-router.db`; fixtures preservados en
-  `%TEMP%\goncloud-router-acceptance-20260914T171500Z\{scout,chain}`.
-- Bateria final: **290 tests, 287 aprobados y 3 skips**, 249.527 s, exit 0.
-  Los skips son dos casos POSIX y uno sin privilegio Windows para symlinks
-  (WinError 1314). Pre-commit completo: 8/8; `git diff --check` limpio.
-  Correccion de discovery exclusivamente de tests: commit `c11a64a`.
+  activos y cero leases restantes; un workflow ejecutado a la vez.
+- Evidencia sanitizada: `.claude/tmp/task9b-acceptance-evidence.json`,
+  `.claude/tmp/task9b-scout-status.json`, `.claude/tmp/task9b-chain-status.json`
+  y los nueve JSON de probes `task9b-*.json`. Estado durable en
+  `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
+  fixtures preservados en
+  `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
+- Bateria final: **338 tests, 335 aprobados y 3 skips de plataforma/privilegios**,
+  282.318 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
 
 Telegram: stopped pending separate transport cutover
 
-### Incidencia del gate de pruebas
+### Defectos encontrados al cerrar la aceptacion
+
+La cadena completa fallaba antes por defectos propios, no por las cuentas. Cada
+arreglo lleva su regresion observada en rojo primero.
+
+- `8e68f7f` — seis modulos de prueba registraban `TemporaryDirectory.cleanup`
+  crudo; la ventana de borrado pendiente de Windows tumbaba la bateria ~1 de
+  cada 3 corridas. Ahora usan el helper con reintento y un guard falla si alguien
+  reintroduce el patron.
+- `5f24754` — `SubscriptionAdapter.__init__` recortaba a 30 s la ventana de probe
+  de 120 s que Muse declara para el arranque en frio de WSL, y todo error de
+  lanzamiento en un probe se reportaba como `task_failure`, que **bloquea** la
+  etapa en vez de avanzar de slot. `SubscriptionProcessError` ahora lleva su
+  propio tipo de fallo.
+- `575eb9f` — la matriz live volvia a recortar esa ventana declarada.
+- `c259d26` — el probe permitia 32 tokens de salida; un modelo con razonamiento
+  (GLM-5.3) gasta ese presupuesto pensando y termina en `max_tokens`, asi que una
+  cuenta sana se leia como `task_failure`. Z.AI paso de fallo a `ready`.
+- `2152603` — el tope de 20 000 caracteres de evidencia cortaba tambien la
+  entrada del parser: el marcador de truncado no es JSON, de modo que una etapa
+  **completada** se registraba como `task_failure`. La evidencia sigue acotada;
+  el parseo ve el flujo redactado completo.
+- `0f206ca` — el parser del envelope terminal exigia la valla de apertura al
+  inicio de linea. El modelo de `ingenieria` emite ` ```json ` pegado a su prosa,
+  y eso bloqueo la cadena en las dos corridas anteriores. La valla de cierre y la
+  prohibicion de contenido posterior siguen estrictas.
+
+### Pendiente de decision del propietario
+
+El slot F4 de la tabla vincula el adaptador Muse al modelo
+`muse-spark-1.3-contributor-free`. El CLI de Muse responde textualmente que ese
+modelo no existe o no hay acceso: el sufijo `-free` es el nombre de la capa
+gratuita de OpenCode Zen, no un identificador de modelo de Muse. Quitarlo seria
+reinterpretar un slot, lo que el diseño prohibe, asi que no se toco: Muse queda
+`model_unavailable` y el router avanza. Tratar `-free` como el marcador `dup`
+requiere una decision explicita.
+
+### Incidencia previa del gate de pruebas
 
 La primera bateria completa descubrio 147 entradas: 144 pasaron y tres fueron
 errores de carga, en 131.825 s, exit 1. Tres modulos importaban el helper

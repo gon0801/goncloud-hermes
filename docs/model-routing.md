@@ -3,7 +3,7 @@
 Fuente autoritativa: `model-routing.source.json`, intacta desde `f86fc8a`.
 Ocho agentes por ocho posiciones: 64 celdas; `main` corresponde a `claw` y
 `entrega` hereda `main`. Los nueve perfiles tienen la misma fuente literal
-instalada y el plugin aprobado en `3797050`; no tienen cadenas nativas
+instalada y el plugin aprobado en `0f206ca`; no tienen cadenas nativas
 administradas `model`/`fallback_providers`. Copilot y Copilot ACP estan excluidos.
 
 Primary (slot 0) usa OpenCode Go y F1 (slot 1) OpenCode Zen. F2-F7 usan la
@@ -12,7 +12,7 @@ historicos. Los duplicados mantienen posiciones distintas. Solo el adaptador
 DeepSeek factura como API; un modelo DeepSeek servido por Go sigue siendo
 suscripcion. No se movio ninguna posicion para compensar cuentas no disponibles.
 
-## Matriz vigente: 4/9 pruebas live aprobadas
+## Matriz vigente: 5/9 pruebas live aprobadas
 
 Inferencias independientes, estrictamente secuenciales y con marcador exacto
 `GONCLOUD_PROBE_OK`. Cada JSON sanitizado se inspecciono antes del siguiente.
@@ -21,15 +21,20 @@ cuenta ni una inferencia basada en la existencia de credenciales.
 
 | Adaptador | Resultado live | Facturacion | Cuarentena durable | Tiempo |
 |---|---|---|---|---|
-| opencode_go | ready | subscription | no | 5.81 s |
-| opencode_zen | failed / timeout | subscription | si | 301.57 s, incluida limpieza |
-| muse | ready | subscription | no | 34.94 s |
-| claude | quarantined / auth | subscription | si | 1.22 s |
-| codex | ready | subscription | no | 22.43 s |
-| kimi | quarantined / auth | subscription | si | 14.49 s |
-| zai | failed / task_failure | subscription | si | 3.49 s |
-| grok | quarantined / auth | subscription | si | 2.98 s |
-| deepseek | ready | api | no | 1.90 s |
+| opencode_go | ready | subscription | no | 4.4 s |
+| opencode_zen | failed / timeout | subscription | si | 301.67 s, incluida limpieza |
+| muse | failed / model_unavailable | subscription | si | 50.83 s |
+| claude | ready | subscription | no | 14.82 s |
+| codex | quarantined / quota | subscription | si | 18.12 s |
+| kimi | failed / transport | subscription | si | 17.55 s |
+| zai | ready | subscription | no | 4.24 s |
+| grok | ready | subscription | no | 14.88 s |
+| deepseek | ready | api | no | 2.48 s |
+
+Los cuatro fallos son de la clase que avanza de slot (`timeout`,
+`model_unavailable`, `quota`, `transport`); ninguno bloquea una etapa. El fallo
+de `muse` es el sufijo `-free` del slot F4, que el CLI de Muse no reconoce como
+modelo; ver la nota de decision pendiente en [estado](status.md).
 
 El comando oficial `configure_subscriptions.py --live-probe-all --only ADAPTADOR
 --json RUTA` guarda salud normalizada en
@@ -42,35 +47,38 @@ ejecutado, y no invoca adaptadores en cuarentena.
 
 No hubo login interactivo, migracion de lanzadores, limpieza de credenciales ni
 lectura de logs crudos. Los JSON por adaptador estan en `.claude/tmp/` con nombres
-`go`, `zen`, `muse`, `claude`, `codex`, `kimi`, `zai`, `grok`, `deepseek` y extension
-`.json`; no contienen secretos ni identificadores de cuenta.
+`task9b-go`, `task9b-zen`, `task9b-muse`, `task9b-claude`, `task9b-codex`,
+`task9b-kimi`, `task9b-zai`, `task9b-grok`, `task9b-deepseek` y extension `.json`;
+no contienen secretos ni identificadores de cuenta.
 
-## Workflow real: NO-GO para aceptacion completa
+## Workflow real: cadena completa entregada
 
-Scout `t_ef1a2c9b`: completado sin cambios, pausa solicitada tras scout (el
-comando `status` lo muestra `pending`). Un intento Go, slot 0,
-`deepseek-v4.1-flash`, `billing_mode=subscription`.
+Scout `t_f2e2bb6d`: completado sin cambios, pausa solicitada tras scout. Un
+intento Go, slot 0, `deepseek-v4.1-flash`, `billing_mode=subscription`.
 
-Cadena `t_5202e34b`: scout completado; ingenieria bloqueada con un unico intento
-Go, slot 0, `muse-spark-1.3-contributor`, suscripcion, `task_failure`,
-`disposition=executed`. No se publico un envelope terminal valido para esa
-etapa. Ese fallo no autoriza avanzar de slot. Implementer, verifier, adversary,
-reviewer y entrega permanecen `todo`; no existe aprobacion del revisor y
-`delivery_blocked=true`. La cadena completa y su entrega no estan demostradas.
+Cadena `t_be290d83`: **entregada**. Las siete etapas se ejecutaron en el orden
+durable scout, ingenieria, implementer, verifier, adversary, reviewer, entrega,
+con un unico intento cada una, todas en Go slot 0 y `billing_mode=subscription`:
+`deepseek-v4.1-flash` en scout, adversary y reviewer;
+`muse-spark-1.3-contributor` en ingenieria, implementer, verifier y entrega.
+Ningun intento fallo, ninguna etapa avanzo de slot y no hubo ronda correctiva.
+El revisor aprobo con `{"decision":"approve","severity":null}` a traves de
+`WorkflowService.review`, y solo entonces `delivery_blocked` paso a `false`.
 
-Los dos repositorios desechables siguen limpios. En `chain`, `acceptance.txt`
-conserva los bytes `status: pending` mas LF; el cambio autorizado no ocurrio.
-La evidencia durable muestra un propietario por etapa ejecutada y cero intentos
-en curso o leases restantes. Hubo una unica invocacion de workflow a la vez.
+El cambio autorizado se realizo y quedo acotado: `acceptance.txt` del fixture
+desechable contiene `status: accepted` mas LF y `git status --porcelain` no
+lista ningun otro archivo. El fixture de scout sigue limpio. La evidencia
+durable muestra un propietario por etapa ejecutada, cero intentos en curso y
+cero leases restantes. Hubo una unica invocacion de workflow a la vez.
 
-Evidencia: `.claude/tmp/task9-acceptance-evidence.json`,
-`.claude/tmp/task9-scout-status.json` y `.claude/tmp/task9-chain-status.json`.
+Evidencia: `.claude/tmp/task9b-acceptance-evidence.json`,
+`.claude/tmp/task9b-scout-status.json` y `.claude/tmp/task9b-chain-status.json`.
 Kanban nativo: `%LOCALAPPDATA%\hermes\kanban.db`; intentos/salud:
 `%LOCALAPPDATA%\hermes\subscription-router.db`. Fixtures preservados en
-`%TEMP%\goncloud-router-acceptance-20260914T171500Z\{scout,chain}`.
-Gates finales: 290 tests (287 aprobados, 3 skips), 8/8 hooks, Plugin Doctor OK
-(7 herramientas, 1 hook). Incidencias y conteos de las repeticiones autorizadas:
-[estado](status.md). Aprobar estos gates no demuestra la cadena live pendiente.
+`%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
+Gates finales: 338 tests (335 aprobados, 3 skips), 8/8 hooks, `git diff --check` limpio,
+Plugin Doctor OK (7 herramientas, 1 hook) y gateway `stopped`. Los defectos
+corregidos para llegar a esta cadena estan en [estado](status.md).
 
 Telegram: stopped pending separate transport cutover
 
