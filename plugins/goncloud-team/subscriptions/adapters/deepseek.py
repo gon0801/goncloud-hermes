@@ -14,7 +14,7 @@ from ..types import (
 )
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
-from ._live_probe import PROBE_PROMPT, minimal_http_probe
+from ._live_probe import PROBE_MAX_TOKENS, PROBE_PROMPT, minimal_http_probe
 
 _DEFAULT_BASE_URL = "https://api.deepseek.com"
 
@@ -95,7 +95,7 @@ class DeepSeekAdapter(SubscriptionAdapter):
             headers=self._headers(),
             payload={
                 "model": route.model,
-                "max_tokens": 32,
+                "max_tokens": PROBE_MAX_TOKENS,
                 "stream": False,
                 "messages": [{"role": "user", "content": PROBE_PROMPT}],
             },
@@ -153,7 +153,13 @@ def _parse_completion_body(body: str) -> dict:
         return {"text": "", "id": ""}
     choices = document.get("choices") or []
     text = ""
+    finish_reason = ""
     if choices and isinstance(choices[0], dict):
         message = choices[0].get("message") or {}
         text = str(message.get("content") or "")
-    return {"text": text, "id": str(document.get("id") or "")}
+        finish_reason = str(choices[0].get("finish_reason") or "")
+    return {
+        "text": text,
+        "id": str(document.get("id") or ""),
+        "truncated": finish_reason == "length",
+    }

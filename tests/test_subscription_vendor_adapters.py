@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.adapters import build_adapter_registry  # noqa: E402
+from subscriptions.adapters._live_probe import PROBE_MAX_TOKENS  # noqa: E402
 from subscriptions.adapters._http import (  # noqa: E402
     MAX_BODY_CHARS,
     request_json,
@@ -655,7 +656,10 @@ class HttpAdapterTests(unittest.TestCase):
             self.assertEqual(seen["path"], "/v1/messages")
             payload = json.loads(seen["body"])
             self.assertEqual(payload["model"], "glm-5.3")
-            self.assertLessEqual(payload["max_tokens"], 64)
+            # Minimal, but long enough for a reasoning model to finish
+            # thinking and still emit the marker.
+            self.assertLessEqual(payload["max_tokens"], PROBE_MAX_TOKENS)
+            self.assertLessEqual(PROBE_MAX_TOKENS, 2048)
             self.assertIn("GONCLOUD_PROBE_OK", payload["messages"][0]["content"])
             self.assertNotIn("tools", payload)
             self.assertNotIn(ZAI_FIXTURE_TOKEN, repr(health))
@@ -687,7 +691,8 @@ class HttpAdapterTests(unittest.TestCase):
                 )
                 self.assertEqual(len(endpoint.requests), 1)
                 self.assertLessEqual(
-                    json.loads(endpoint.requests[0]["body"])["max_tokens"], 64
+                    json.loads(endpoint.requests[0]["body"])["max_tokens"],
+                    PROBE_MAX_TOKENS,
                 )
                 self.assertNotIn("sk-sensitive", repr(result))
                 self.assertNotIn("owner@example.test", repr(result))
@@ -950,6 +955,79 @@ class HttpAdapterTests(unittest.TestCase):
         )
         self.assertFalse(result.success)
         self.assertIn(result.failure, {FailureKind.TASK_FAILURE, FailureKind.TIMEOUT})
+
+
+class ThinkingEndpoint:
+    """An Anthropic-compatible model that reasons before it answers.
+
+    Below the budget it spends the whole allowance thinking and stops on
+    ``max_tokens``; above it the thinking block is followed by the marker.
+    """
+
+    def __init__(self, *, budget):
+        self.budget = budget
+        self.observed_max_tokens = None
+        endpoint = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                request_body = json.loads(self.rfile.read(length) or b"{}")
+                allowance = int(request_body.get("max_tokens") or 0)
+                endpoint.observed_max_tokens = allowance
+                content = [{"type": "thinking", "thinking": "deciding"}]
+                stop = "max_tokens"
+                if allowance >= endpoint.budget:
+                    content.append({"type": "text", "text": "GONCLOUD_PROBE_OK"})
+                    stop = "end_turn"
+                payload = json.dumps(
+                    {"id": "msg_1", "content": content, "stop_reason": stop}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self._server.server_port}"
+        return self
+
+    def __exit__(self, *exc):
+        self._server.shutdown()
+        self._server.server_close()
+
+
+class ReasoningProbeBudgetTests(unittest.TestCase):
+    """A reasoning model must be able to finish thinking and still answer."""
+
+    def test_zai_probe_allows_a_thinking_block_before_the_marker(self):
+        with ThinkingEndpoint(budget=512) as endpoint:
+            result = ZAIAdapter(
+                auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url
+            ).live_probe(route_for("zai", "glm-5.3", slot=5))
+
+        self.assertGreaterEqual(endpoint.observed_max_tokens, 512)
+        self.assertTrue(result.success)
+        self.assertIsNone(result.failure)
+
+    def test_a_probe_truncated_by_our_own_budget_never_blocks_the_slot(self):
+        from subscriptions.router import _ADVANCING_FAILURES
+
+        with ThinkingEndpoint(budget=10**6) as endpoint:
+            result = ZAIAdapter(
+                auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url
+            ).live_probe(route_for("zai", "glm-5.3", slot=5))
+
+        self.assertFalse(result.success)
+        self.assertIn(result.failure, _ADVANCING_FAILURES)
 
 
 class TimingOutRunner:

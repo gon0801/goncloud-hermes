@@ -14,7 +14,7 @@ from ..types import (
 )
 from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
-from ._live_probe import PROBE_PROMPT, minimal_http_probe
+from ._live_probe import PROBE_MAX_TOKENS, PROBE_PROMPT, minimal_http_probe
 
 _ANTHROPIC_VERSION = "2023-06-01"
 #: Z.AI's documented Anthropic-compatible endpoint for the Coding Plan.
@@ -83,7 +83,7 @@ class ZAIAdapter(SubscriptionAdapter):
             },
             payload={
                 "model": route.model,
-                "max_tokens": 32,
+                "max_tokens": PROBE_MAX_TOKENS,
                 "messages": [{"role": "user", "content": PROBE_PROMPT}],
             },
             parse=_parse_message_body,
@@ -146,4 +146,8 @@ def _parse_message_body(body: str) -> dict:
         for block in document.get("content") or []
         if isinstance(block, dict) and block.get("type") == "text"
     ]
-    return {"text": "".join(texts), "id": str(document.get("id") or "")}
+    return {
+        "text": "".join(texts),
+        "id": str(document.get("id") or ""),
+        "truncated": document.get("stop_reason") == "max_tokens",
+    }
