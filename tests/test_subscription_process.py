@@ -17,6 +17,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.process import (  # noqa: E402
     ProcessEvidence,
@@ -65,7 +68,7 @@ class TimeoutRunner(FakeRunner):
 class SafeProcessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_prompt_and_secret_never_enter_command_or_result(self):

@@ -1349,7 +1349,7 @@ class StateStoreTests(RouterTestCase):
 class GitInspectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir()
 

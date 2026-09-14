@@ -13,6 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.adapters.claude import ClaudeAdapter  # noqa: E402
 from subscriptions.adapters.codex import CodexAdapter  # noqa: E402
@@ -101,7 +104,7 @@ def request(
 class MuseAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def _muse_runner(self):
@@ -197,7 +200,7 @@ class MuseAdapterTests(unittest.TestCase):
 class ClaudeAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_claude_uses_max_session_without_api_budget(self):
@@ -271,7 +274,7 @@ class ClaudeAdapterTests(unittest.TestCase):
 class CodexAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_codex_uses_chatgpt_session_and_sandbox(self):

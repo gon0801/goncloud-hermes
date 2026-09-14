@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.adapters.opencode import (  # noqa: E402
     OpenCodeAdapter,
@@ -74,7 +77,7 @@ def request(workspace, prompt="Do the bounded task.", mode="start", changed=()):
 class OpenCodeAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_go_and_zen_use_exact_subscription_models(self):

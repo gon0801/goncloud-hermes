@@ -13,6 +13,9 @@ PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 HERMES_ROOT = Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent"
 sys.path.insert(0, str(HERMES_ROOT))
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
@@ -41,7 +44,7 @@ SOURCES = [
 class WorkflowTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.root = Path(self.tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()

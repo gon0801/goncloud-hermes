@@ -19,6 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.adapters import build_adapter_registry  # noqa: E402
 from subscriptions.adapters._http import (  # noqa: E402
@@ -272,7 +275,7 @@ class BillingModeTests(unittest.TestCase):
 class KimiGrokTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_kimi_uses_prompt_mode_stream_json_and_stdin(self):
@@ -486,7 +489,7 @@ class KimiGrokTests(unittest.TestCase):
 class HttpAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_known_http_error_keeps_status_when_chunked_body_is_invalid(self):
