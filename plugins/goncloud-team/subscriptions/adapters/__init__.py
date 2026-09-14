@@ -75,6 +75,7 @@ def build_assignment_prompt(request: InvocationRequest) -> str:
     lines = [
         f"Goncloud stage {request.stage_id} of workflow {request.workflow_id}.",
         f"Role: {request.role}.",
+        f"Maximum autonomous steps: {request.max_steps}",
         f"Workspace: {request.workspace} "
         f"(owner-approved baseline revision {request.start_revision}).",
     ]

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -426,11 +427,15 @@ class KimiGrokTests(unittest.TestCase):
         runner = CaptureRunner(stdout=GROK_ACP)
 
         result = GrokAdapter(runner=runner).invoke(
-            request(self.workspace), route_for("grok", "grok-4.6", slot=6)
+            replace(request(self.workspace), max_steps=17),
+            route_for("grok", "grok-4.6", slot=6),
         )
 
         command = runner.command
         self.assertEqual(command[0], "grok")
+        self.assertIn("--max-turns", command)
+        self.assertEqual(command[command.index("--max-turns") + 1], "17")
+        self.assertIn("Maximum autonomous steps: 17", captured["text"])
         self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
         self.assertEqual(

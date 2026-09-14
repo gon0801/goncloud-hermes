@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -133,6 +134,18 @@ class MuseAdapterTests(unittest.TestCase):
         self.assertEqual(result.session_id, "muse_s1")
         self.assertEqual(result.adapter, "muse")
         self.assertEqual(result.billing_mode, "subscription")
+
+    def test_muse_enforces_requested_native_step_limit(self):
+        runner = self._muse_runner()
+        result = MuseAdapter(runner=runner).invoke(
+            replace(request(self.workspace), max_steps=17),
+            route_for("muse", "muse-spark-1.3-contributor-free"),
+        )
+        self.assertTrue(result.success)
+        index = runner.command.index("--max-model-steps")
+        self.assertEqual(runner.command[index + 1], "17")
+        self.assertIn("Maximum autonomous steps: 17", runner.prompt_text)
+        self.assertFalse(runner.kwargs["shell"])
 
     def test_muse_failure_is_classified_from_bridge_detail(self):
         runner = FakeCliRunner(stderr="auth session expired", returncode=1)

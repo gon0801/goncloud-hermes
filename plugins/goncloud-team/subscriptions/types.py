@@ -42,6 +42,11 @@ class InvocationRequest:
     current_revision: str
     mode: Literal["start", "continue"] = "start"
     changed_files: tuple[str, ...] = ()
+    max_steps: int = 40
+
+    def __post_init__(self) -> None:
+        if type(self.max_steps) is not int or not 1 <= self.max_steps <= 200:
+            raise ValueError("max_steps must be an integer between 1 and 200")
 
 
 @dataclass(frozen=True)

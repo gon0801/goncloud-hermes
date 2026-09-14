@@ -19,7 +19,6 @@ _MUSE = "/home/goncloud/.local/bin/muse"
 class MuseAdapter(SubscriptionAdapter):
     """Delegate one bounded stage to the owner's Muse subscription in WSL."""
 
-    max_steps = 80
     # WSL cold starts can exceed the default probe window by a wide margin.
     probe_timeout_seconds = 120
 
@@ -57,7 +56,7 @@ class MuseAdapter(SubscriptionAdapter):
                 prompt=build_assignment_prompt(request),
                 workspace=request.workspace,
                 actor_role=request.role,
-                max_steps=self.max_steps,
+                max_steps=request.max_steps,
                 timeout=self.timeout_seconds,
                 runner=self.runner,
             )

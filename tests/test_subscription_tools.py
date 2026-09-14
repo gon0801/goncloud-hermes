@@ -6,7 +6,9 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,9 +29,10 @@ if "goncloud_team" not in sys.modules:
 
 import yaml  # noqa: E402
 
-from hermes_cli.kanban_db import complete_task, list_comments  # noqa: E402
+from hermes_cli.kanban_db import block_task, complete_task, list_comments  # noqa: E402
 from hermes_cli.kanban_db_connect import connect_closing  # noqa: E402
-from subscriptions.types import InvocationResult  # noqa: E402
+from subscriptions.adapters import build_assignment_prompt  # noqa: E402
+from subscriptions.types import InvocationRequest, InvocationResult  # noqa: E402
 from workflow import WorkflowError, WorkflowService  # noqa: E402
 
 SOURCES = [
@@ -144,11 +147,13 @@ class ScriptedRouter:
     def __init__(self, result):
         self.result = result
         self.requests = []
+        self.run_count = 0
         self.routing_source = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
         )
 
     def run(self, request, routes):
+        self.run_count += 1
         self.requests.append((request, routes))
         return self.result
 
@@ -193,6 +198,192 @@ class SubscriptionRunTests(unittest.TestCase):
 
     def service(self, role="scout"):
         return WorkflowService(db_path=self.db_path, actor_role=role)
+
+    def assignment(self, started, **overrides):
+        return payload(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["scout"],
+            **{"repository": str(self.repo), **overrides},
+        )
+
+    def assert_rejected_before_routing(self, service, assignment, message):
+        self.router.run_count = 0
+        with patch.object(
+            self.workflow_module, "compile_profile_routes"
+        ) as compile_routes:
+            with self.assertRaisesRegex(WorkflowError, message):
+                service.subscription_run(**assignment)
+            compile_routes.assert_not_called()
+        self.assertEqual(self.router.run_count, 0)
+
+    def test_foreign_workflow_stage_is_rejected_before_routes_are_compiled(self):
+        started = self.start()
+        other_repo = self.root / "other"
+        other_repo.mkdir()
+        foreign = self.service("claw").start(
+            request_key="other",
+            repository=str(other_repo),
+            revision="0123456789abcdef",
+            instruction="Other task.",
+            sources=SOURCES,
+        )
+        assignment = self.assignment(started, repository=str(other_repo))
+        assignment["task_id"] = foreign["stages"]["scout"]
+        self.assert_rejected_before_routing(
+            self.service(), assignment, "not a stage of workflow"
+        )
+
+    def test_all_assignment_mismatches_precede_route_compilation(self):
+        started = self.start()
+        cases = [
+            ("unknown", {}, "unknown Goncloud role"),
+            ("implementer", {}, "not assigned"),
+            ("scout", {"workflow_id": started["stages"]["scout"]}, "not a Goncloud"),
+            ("scout", {"repository": str(self.root)}, "workspace"),
+            ("scout", {"revision": "different"}, "revision"),
+            ("scout", {"sources": []}, "sources"),
+            ("scout", {"sources": [{"reference": "x"}]}, "observed_at"),
+        ]
+        for role, overrides, message in cases:
+            with self.subTest(role=role, overrides=overrides):
+                assignment = self.assignment(started)
+                assignment.update(overrides)
+                self.assert_rejected_before_routing(
+                    self.service(role), assignment, message
+                )
+
+    def test_non_executable_stages_are_rejected_before_routing(self):
+        started = self.start()
+        assignment = self.assignment(started)
+        assignment["task_id"] = started["stages"]["ingenieria"]
+        self.assert_rejected_before_routing(
+            self.service("ingenieria"), assignment, "status"
+        )
+        assignment["task_id"] = started["stages"]["scout"]
+        with connect_closing(self.db_path) as conn:
+            block_task(conn, assignment["task_id"], reason="owner paused")
+        self.assert_rejected_before_routing(self.service(), assignment, "status")
+
+    def test_contract_repository_mismatch_is_rejected_before_routing(self):
+        started = self.start()
+        with connect_closing(self.db_path) as conn:
+            root = self.workflow_module.get_task(conn, started["workflow_id"])
+            contract = self.workflow_module._CONTRACT_MARKER + json.dumps(
+                {
+                    **self.service()._contract_of(root),
+                    "repository": str(self.root),
+                }
+            )
+            conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (contract, root.id))
+            conn.commit()
+        self.assert_rejected_before_routing(
+            self.service(), self.assignment(started), "repository"
+        )
+
+    def test_root_workspace_mismatch_is_rejected_before_routing(self):
+        started = self.start()
+        with connect_closing(self.db_path) as conn:
+            conn.execute(
+                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                (str(self.root), started["workflow_id"]),
+            ).close()
+            conn.commit()
+        self.assert_rejected_before_routing(
+            self.service(), self.assignment(started), "workspace"
+        )
+
+    def test_step_limit_endpoints_are_accepted(self):
+        started = self.start()
+        for value in (1, 200):
+            with self.subTest(value=value):
+                self.service().subscription_run(
+                    **self.assignment(started, max_steps=value)
+                )
+                self.assertEqual(self.router.requests[-1][0].max_steps, value)
+
+    def test_completed_stage_is_not_executed_again(self):
+        started = self.start()
+        with connect_closing(self.db_path) as conn:
+            complete_task(conn, started["stages"]["scout"], summary="done")
+        self.assert_rejected_before_routing(
+            self.service(), self.assignment(started), "status"
+        )
+
+    def test_ready_corrective_stage_keeps_membership_and_step_limit(self):
+        started = self.start()
+        with connect_closing(self.db_path) as conn:
+            for role in ("scout", "ingenieria", "implementer", "verifier", "adversary"):
+                complete_task(conn, started["stages"][role], summary="done")
+        correction = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            severity="high",
+            summary="Fix race.",
+        )
+        assignment = self.assignment(started, max_steps=17)
+        assignment["task_id"] = correction["corrective_stages"]["implementer"]
+        result = self.service("implementer").subscription_run(**assignment)
+        self.assertTrue(result["success"])
+        self.assertEqual(self.router.requests[0][0].max_steps, 17)
+
+    def test_max_steps_reaches_request_and_bounded_prompt(self):
+        started = self.start()
+        self.service().subscription_run(**self.assignment(started, max_steps=17))
+        request, _ = self.router.requests[0]
+        self.assertEqual(getattr(request, "max_steps", None), 17)
+        self.assertIn("Maximum autonomous steps: 17", build_assignment_prompt(request))
+        continued = replace(request, mode="continue", current_revision="next")
+        self.assertIn(
+            "Maximum autonomous steps: 17", build_assignment_prompt(continued)
+        )
+
+    def test_invalid_step_limits_are_rejected_before_routing(self):
+        started = self.start()
+        for value in (0, 201, 500, True, False, 1.5, "17", "17; whoami", None):
+            with self.subTest(value=value):
+                self.assert_rejected_before_routing(
+                    self.service(),
+                    self.assignment(started, max_steps=value),
+                    "max_steps",
+                )
+
+    def test_direct_request_rejects_invalid_step_limits(self):
+        for value in (0, 201, True, False, 1.5, "17", "17; whoami", None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "max_steps"):
+                    InvocationRequest(
+                        workflow_id="wf",
+                        stage_id="stage",
+                        role="scout",
+                        prompt="inspect",
+                        workspace=self.repo,
+                        start_revision="rev",
+                        current_revision="rev",
+                        max_steps=value,
+                    )
+
+    def test_attach_remains_defensive_and_idempotent(self):
+        started = self.start()
+        evidence = {
+            "workflow_id": started["workflow_id"],
+            "stage_id": started["stages"]["scout"],
+            "profile": "scout",
+            "success": True,
+        }
+        service = self.service()
+        self.assertTrue(service.attach_subscription_result(evidence)["attached"])
+        self.assertTrue(service.attach_subscription_result(evidence)["duplicate"])
+        with connect_closing(self.db_path) as conn:
+            records = [
+                c
+                for c in list_comments(conn, evidence["stage_id"])
+                if c.body.startswith("GONCLOUD_SUBSCRIPTION")
+            ]
+        self.assertEqual(len(records), 1)
+        evidence["profile"] = "implementer"
+        with self.assertRaisesRegex(WorkflowError, "stage identity"):
+            service.attach_subscription_result(evidence)
 
     def test_run_puts_adapter_slot_model_and_billing_in_handoff(self):
         started = self.start()

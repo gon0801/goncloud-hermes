@@ -428,49 +428,16 @@ class WorkflowService:
         task_id = _required_text(task_id, "task_id")
         instruction = _required_text(instruction, "instruction")
         revision = _required_text(revision, "revision")
-        repo_input = _required_text(repository, "repository")
-        try:
-            max_steps_value = int(max_steps)
-        except (TypeError, ValueError) as exc:
-            raise WorkflowError("max_steps must be an integer") from exc
-        if not 1 <= max_steps_value <= 500:
-            raise WorkflowError("max_steps must be between 1 and 500")
+        if type(max_steps) is not int or not 1 <= max_steps <= 200:
+            raise WorkflowError("max_steps must be an integer between 1 and 200")
         source_rows = self._validate_sources(sources)
         del source_rows  # provenance is validated, not forwarded to vendors
-        repo = Path(repo_input).expanduser()
-        if not repo.is_absolute():
-            raise WorkflowError("repository must be an absolute path")
-        try:
-            repo = repo.resolve(strict=True)
-        except OSError as exc:
-            raise WorkflowError(f"repository is unavailable: {exc}") from exc
-        if not repo.is_dir():
-            raise WorkflowError("repository must be an existing directory")
-
-        with self._connect() as conn:
-            root = self._require_workflow_root(conn, workflow_id)
-            task = self._require_task(conn, task_id)
-            if task.assignee != self.actor_role:
-                raise WorkflowError(
-                    f"task {task_id} is not assigned to role {self.actor_role}"
-                )
-            if task.workspace_kind != "dir" or not task.workspace_path:
-                raise WorkflowError(
-                    f"task {task_id} workspace does not match repository"
-                )
-            try:
-                task_repo = Path(task.workspace_path).expanduser().resolve()
-            except OSError as exc:
-                raise WorkflowError(
-                    f"task {task_id} workspace does not match repository: {exc}"
-                ) from exc
-            if task_repo != repo:
-                raise WorkflowError(
-                    f"task {task_id} workspace does not match repository"
-                )
-            contract = self._contract_of(root)
-            if contract.get("revision") != revision:
-                raise WorkflowError("revision does not match the workflow contract")
+        repo = self.validate_subscription_assignment(
+            workflow_id=workflow_id,
+            task_id=task_id,
+            repository=repository,
+            revision=revision,
+        )
 
         router = _build_subscription_router()
         routes = compile_profile_routes(self.actor_role, router.routing_source)
@@ -482,6 +449,7 @@ class WorkflowService:
             workspace=repo,
             start_revision=revision,
             current_revision=revision,
+            max_steps=max_steps,
         )
         result = router.run(request, routes)
         evidence = {
@@ -518,6 +486,71 @@ class WorkflowService:
         self.attach_subscription_result(evidence)
         return evidence
 
+    def validate_subscription_assignment(
+        self, *, workflow_id: str, task_id: str, repository: str, revision: str
+    ) -> Path:
+        """Authorize an executable stage before constructing any vendor routes."""
+        self._require_known_actor()
+        workflow_id = _required_text(workflow_id, "workflow_id")
+        task_id = _required_text(task_id, "task_id")
+        revision = _required_text(revision, "revision")
+        repo_input = _required_text(repository, "repository")
+        repo = Path(repo_input).expanduser()
+        if not repo.is_absolute():
+            raise WorkflowError("repository must be an absolute path")
+        try:
+            repo = repo.resolve(strict=True)
+        except OSError as exc:
+            raise WorkflowError(f"repository is unavailable: {exc}") from exc
+        if not repo.is_dir():
+            raise WorkflowError("repository must be an existing directory")
+
+        with self._connect() as conn:
+            root = self._require_workflow_root(conn, workflow_id)
+            task = self._require_task(conn, task_id)
+            if task.assignee != self.actor_role:
+                raise WorkflowError(
+                    f"task {task_id} is not assigned to role {self.actor_role}"
+                )
+            self._require_subscription_membership(conn, workflow_id, task_id)
+            if task.status not in {"ready", "running"}:
+                raise WorkflowError(
+                    f"task {task_id} cannot execute from status {task.status}"
+                )
+            for member in (root, task):
+                if member.workspace_kind != "dir" or not member.workspace_path:
+                    raise WorkflowError(
+                        f"task {member.id} workspace does not match repository"
+                    )
+                try:
+                    task_repo = Path(member.workspace_path).expanduser().resolve()
+                except OSError as exc:
+                    raise WorkflowError(
+                        f"task {member.id} workspace does not match repository: {exc}"
+                    ) from exc
+                if task_repo != repo:
+                    raise WorkflowError(
+                        f"task {member.id} workspace does not match repository"
+                    )
+            contract = self._contract_of(root)
+            if (
+                not contract.get("repository")
+                or Path(contract["repository"]).expanduser().resolve() != repo
+            ):
+                raise WorkflowError("repository does not match the workflow contract")
+            if contract.get("revision") != revision:
+                raise WorkflowError("revision does not match the workflow contract")
+        return repo
+
+    def _require_subscription_membership(self, conn, workflow_id, stage_id) -> None:
+        initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
+        corrective = self._correction_ids(conn, workflow_id)
+        if stage_id not in set(initial_ids) | set(corrective.values()):
+            raise WorkflowError(
+                f"stage identity mismatch: task {stage_id} is not a stage "
+                f"of workflow {workflow_id}"
+            )
+
     def subscription_status(
         self,
         *,
@@ -541,18 +574,15 @@ class WorkflowService:
         with self._connect() as conn:
             self._require_workflow_root(conn, workflow_id)
             task = self._require_task(conn, stage_id)
-            if task.assignee != self.actor_role:
+            if (
+                task.assignee != self.actor_role
+                or result.get("profile") != self.actor_role
+            ):
                 raise WorkflowError(
                     f"stage identity mismatch: task {stage_id} belongs to "
                     f"{task.assignee}, not {self.actor_role}"
                 )
-            initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
-            corrective = self._correction_ids(conn, workflow_id)
-            if stage_id not in set(initial_ids) | set(corrective.values()):
-                raise WorkflowError(
-                    f"stage identity mismatch: task {stage_id} is not a stage "
-                    f"of workflow {workflow_id}"
-                )
+            self._require_subscription_membership(conn, workflow_id, stage_id)
             record = {
                 key: result.get(key)
                 for key in _SUBSCRIPTION_EVIDENCE_KEYS

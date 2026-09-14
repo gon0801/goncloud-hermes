@@ -97,6 +97,8 @@ class GrokAdapter(SubscriptionAdapter):
             "workspace",
             "--model",
             route.model,
+            "--max-turns",
+            str(request.max_steps),
             "--prompt-file",
             "{prompt_file}",
         ]
