@@ -10,63 +10,20 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MISSING = object()
 
-MODEL_PROVIDER_ALIASES = {
-    "anthropic": "anthropic",
-    "deepseek": "deepseek",
-    "kimi": "kimi-coding",
-    "opencode": "opencode-zen",
-    "opencode-go": "opencode-go",
-    "opencode-go-resp": "opencode-go",
-    "xai": "xai",
-    "zai": "zai",
-}
+
+def remove_owned_native_routing(existing, previous):
+    cleaned = copy.deepcopy(existing)
+    for key in ("model", "fallback_providers"):
+        if key not in previous:
+            continue
+        if cleaned.get(key, MISSING) != previous[key]:
+            raise ValueError(f"user-managed model conflict: {key}")
+        cleaned.pop(key, None)
+    return cleaned
 
 
-def translate_model_chain(chain):
-    translated = []
-    for route in chain:
-        try:
-            alias, model = route.split("/", 1)
-        except ValueError as error:
-            raise ValueError(f"Invalid model route: {route}") from error
-        provider = MODEL_PROVIDER_ALIASES.get(alias)
-        if provider is None:
-            raise ValueError(f"Unknown model provider alias: {alias}")
-        translated.append({"provider": provider, "model": model.removesuffix(" dup")})
-    return translated
-
-
-def model_config_for_profile(profile, routing):
-    source_name = next(
-        (
-            source
-            for source, mapped_profile in routing.get("profile_names", {}).items()
-            if mapped_profile == profile
-        ),
-        profile,
-    )
-    source_name = routing.get("profile_inheritance", {}).get(profile, source_name)
-    try:
-        chain = translate_model_chain(routing["chains"][source_name])
-    except KeyError as error:
-        raise ValueError(f"No model chain configured for profile: {profile}") from error
-    if not chain:
-        raise ValueError(f"Empty model chain configured for profile: {profile}")
-    primary, *fallbacks = chain
-    return {
-        "model": {"provider": primary["provider"], "default": primary["model"]},
-        "fallback_providers": fallbacks,
-    }
-
-
-def merge_profile_config(
-    existing, desired, previous, *, fresh=False, take_over_model=False
-):
-    merge_source = copy.deepcopy(existing)
-    if take_over_model:
-        merge_source.pop("model", None)
-        merge_source.pop("fallback_providers", None)
-    return merge_owned(merge_source, desired, previous, fresh=fresh)
+def merge_profile_config(existing, desired, previous, *, fresh=False):
+    return merge_owned(existing, desired, previous, fresh=fresh)
 
 
 def merge_owned(existing, desired, previous, fresh=False, prefix=""):
@@ -137,9 +94,6 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
     from hermes_cli.profiles import create_profile, get_profile_dir, seed_profile_skills
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-    routing = json.loads(
-        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-    )
     plugin_root = ROOT / "plugins" / "goncloud-team"
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
@@ -170,6 +124,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
         )
         desired = {
             "plugins": {"enabled": ["goncloud-team"]},
+            "model_catalog": {"excluded_providers": ["copilot", "copilot-acp"]},
             "platform_toolsets": {
                 "cli": ["coding", "kanban", "goncloud_team"],
                 "telegram": ["coding", "kanban", "goncloud_team"],
@@ -181,15 +136,13 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
             },
             "kanban": team["kanban"],
         }
-        if apply_model_routing:
-            desired.update(model_config_for_profile(role, routing))
         previous_config = state.get("config", {})
+        existing = remove_owned_native_routing(existing or {}, previous_config)
         merged = merge_profile_config(
-            existing or {},
+            existing,
             desired,
             previous_config,
             fresh=fresh,
-            take_over_model=apply_model_routing and "model" not in previous_config,
         )
         files = {
             "SOUL.md": "\n\n".join(
@@ -251,7 +204,7 @@ def main():
     parser.add_argument(
         "--apply-model-routing",
         action="store_true",
-        help="Apply the user-approved model and fallback chains",
+        help="Deprecated compatibility flag; installs the authoritative routing source",
     )
     args = parser.parse_args()
     configure(args.home, args.install_dir, args.apply_model_routing)

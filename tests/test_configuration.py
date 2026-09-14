@@ -16,103 +16,29 @@ SPEC.loader.exec_module(module)
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_routing_translation_preserves_order_and_normalizes_aliases(self):
-        chain = [
-            "opencode-go/muse-spark-1.3-contributor",
-            "opencode/muse-spark-1.3-contributor-free",
-            "opencode-go-resp/muse-spark-1.3-contributor",
-            "kimi/k3",
-            "opencode/muse-spark-1.3-contributor-free dup",
-        ]
-
-        translated = module.translate_model_chain(chain)
-
-        self.assertEqual(
-            translated,
-            [
-                {
-                    "provider": "opencode-go",
-                    "model": "muse-spark-1.3-contributor",
-                },
-                {
-                    "provider": "opencode-zen",
-                    "model": "muse-spark-1.3-contributor-free",
-                },
-                {
-                    "provider": "opencode-go",
-                    "model": "muse-spark-1.3-contributor",
-                },
-                {"provider": "kimi-coding", "model": "k3"},
-                {
-                    "provider": "opencode-zen",
-                    "model": "muse-spark-1.3-contributor-free",
-                },
-            ],
-        )
-
-    def test_profile_routing_uses_main_for_claw_and_entrega(self):
-        routing = {
-            "profile_names": {"main": "claw"},
-            "profile_inheritance": {"entrega": "main"},
-            "chains": {
-                "main": ["opencode-go/muse", "opencode/muse-free"],
-                "operaciones": ["zai/glm"],
-            },
-        }
-
-        self.assertEqual(
-            module.model_config_for_profile("claw", routing),
-            {
-                "model": {"provider": "opencode-go", "default": "muse"},
-                "fallback_providers": [
-                    {"provider": "opencode-zen", "model": "muse-free"}
-                ],
-            },
-        )
-        self.assertEqual(
-            module.model_config_for_profile("entrega", routing),
-            module.model_config_for_profile("claw", routing),
-        )
-
-    def test_routing_translation_rejects_unknown_provider_alias(self):
-        with self.assertRaisesRegex(ValueError, "Unknown model provider alias"):
-            module.translate_model_chain(["mystery/model"])
-
-    def test_explicit_first_routing_apply_takes_over_seeded_model(self):
+    def test_routing_source_is_installed_without_native_fallback_chain(self):
         existing = {
-            "model": {"provider": "seeded", "default": "seeded-model"},
-            "unmanaged": "preserved",
-        }
-        desired = {
             "model": {"provider": "opencode-go", "default": "muse"},
             "fallback_providers": [{"provider": "opencode-zen", "model": "muse-free"}],
+            "plugins": {"enabled": ["goncloud-team"]},
+        }
+        previous = {
+            "model": existing["model"],
+            "fallback_providers": existing["fallback_providers"],
         }
 
-        merged = module.merge_profile_config(
-            existing,
-            desired,
-            previous={},
-            fresh=False,
-            take_over_model=True,
-        )
+        cleaned = module.remove_owned_native_routing(existing, previous)
 
-        self.assertEqual(merged["model"], desired["model"])
-        self.assertEqual(merged["fallback_providers"], desired["fallback_providers"])
-        self.assertEqual(merged["unmanaged"], "preserved")
+        self.assertNotIn("model", cleaned)
+        self.assertNotIn("fallback_providers", cleaned)
+        self.assertIn("plugins", cleaned)
 
-    def test_managed_routing_refuses_later_local_model_edit(self):
+    def test_cleanup_refuses_to_delete_user_changed_model(self):
         previous = {"model": {"provider": "opencode-go", "default": "muse"}}
-        existing = {"model": {"provider": "custom", "default": "local-edit"}}
-        desired = {"model": {"provider": "opencode-go", "default": "muse-v2"}}
+        existing = {"model": {"provider": "custom", "default": "user-choice"}}
 
-        with self.assertRaisesRegex(ValueError, "model.provider"):
-            module.merge_profile_config(
-                existing,
-                desired,
-                previous=previous,
-                fresh=False,
-                take_over_model=False,
-            )
+        with self.assertRaisesRegex(ValueError, "user-managed model conflict"):
+            module.remove_owned_native_routing(existing, previous)
 
     def test_failed_verification_routes_report_to_reviewer(self):
         verifier = (ROOT / "roles/verifier.md").read_text(encoding="utf-8")

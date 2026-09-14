@@ -2,6 +2,11 @@
 
 Base local implementada y operativa; enrutador de suscripciones por slot integrado, verificado con inferencia real por adaptador y cadena Telegram en curso.
 
+## Recuperacion en curso (2026-09-14)
+
+- El gateway de Telegram del perfil `claw` queda detenido de forma reversible mientras se recupera el enrutamiento: se preservan el perfil, token, lista de acceso, script de servicio y entrada de inicio.
+- Los perfiles de Hermes dejan de recibir cadenas nativas `model`/`fallback_providers`; la tabla inmutable `model-routing.source.json` se instala junto al plugin y excluye Copilot del catalogo nativo.
+
 ## Enrutador de suscripciones (2026-09-14)
 
 - Nueve adaptadores (OpenCode Go/Zen, Muse, Claude Max, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok, DeepSeek API) con prompts por stdin/archivo temporal privado, `shell=False`, salida redactada y acotada, y sandbox conservado por CLI.
