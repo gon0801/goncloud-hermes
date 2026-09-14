@@ -62,8 +62,17 @@ class GitInspector:
         return evidence.returncode, evidence.stdout or ""
 
     def current_revision(self, workspace: Path) -> str:
-        code, revision = self._git(workspace, "rev-parse", "HEAD")
-        return revision.strip() if code == 0 else ""
+        return self.resolve_revision(workspace, "HEAD")
+
+    def resolve_revision(self, workspace: Path, revision: str) -> str:
+        code, resolved = self._git(
+            workspace,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{revision}^{{commit}}",
+        )
+        return resolved.strip() if code == 0 else ""
 
     def changed_files(self, workspace: Path) -> tuple[str, ...]:
         code, porcelain = self._git(
@@ -87,14 +96,21 @@ class GitInspector:
     ) -> tuple[str, tuple[str, ...], bool]:
         current = self.current_revision(workspace)
         committed = ()
-        if revision and current and revision != current:
+        baseline = self.resolve_revision(workspace, revision) if revision else ""
+        if baseline and current and baseline != current:
             code, names = self._git(
-                workspace, "diff", "--name-only", "-z", f"{revision}..{current}", "--"
+                workspace,
+                "diff",
+                "--name-only",
+                "-z",
+                "--end-of-options",
+                f"{baseline}..{current}",
+                "--",
             )
             if code == 0:
                 committed = tuple(name for name in names.split("\0") if name)
         files = tuple(sorted(set(committed) | set(self.changed_files(workspace))))
-        return current, files, bool(files or current != revision)
+        return current, files, bool(files or current != (baseline or revision))
 
 
 class SubscriptionRouter:
@@ -305,13 +321,15 @@ class SubscriptionRouter:
     def _absorb_workspace_state(self, request: InvocationRequest) -> InvocationRequest:
         """A recorded mutation turns a fresh run into an explicit continuation."""
         evidence = self.store.stage_mutation(request.workflow_id, request.stage_id)
-        baseline = request.start_revision
-        if not baseline:
-            attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
-            baseline = next(
-                (row["start_revision"] for row in attempts if row["start_revision"]), ""
-            )
+        attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
+        # An interrupted attempt may have committed without recording its end
+        # revision. Keep the durable baseline even if the caller supplies HEAD.
+        baseline = next(
+            (row["start_revision"] for row in attempts if row["start_revision"]),
+            request.start_revision,
+        )
         baseline = baseline or self.git.current_revision(request.workspace)
+        baseline = self.git.resolve_revision(request.workspace, baseline) or baseline
         revision, changed, mutated = self.git.mutation_since(
             request.workspace, baseline
         )

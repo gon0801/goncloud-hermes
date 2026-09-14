@@ -498,6 +498,51 @@ class MutationContinuationTests(RouterTestCase):
             absorbed.current_revision, self._run_git("rev-parse", "HEAD").stdout.strip()
         )
 
+    def test_interrupted_clean_commit_recovery_keeps_historical_baseline(self):
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        router = self.router()
+
+        def commit_then_interrupt(request, route):
+            (self.git_repo / "committed.py").write_text("partial\n", encoding="utf-8")
+            self._run_git("add", "committed.py")
+            self._run_git("commit", "-q", "-m", "interrupted mutation")
+            raise KeyboardInterrupt()
+
+        self.fake_adapters["opencode_go"].result = commit_then_interrupt
+        with self.assertRaises(KeyboardInterrupt):
+            router.run(
+                replace(
+                    request(self.git_repo), start_revision=start, current_revision=start
+                ),
+                routes_for_main(),
+            )
+        current = self._run_git("rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(self._run_git("status", "--porcelain").stdout, "")
+        self.fake_adapters["opencode_go"].requests.clear()
+        self.fake_adapters["opencode_go"].result = completed("continued", "opencode_go")
+        self.router().run(
+            replace(
+                request(self.git_repo), start_revision=current, current_revision=current
+            ),
+            routes_for_main(),
+        )
+        resumed = self.fake_adapters["opencode_go"].requests[0]
+        self.assertEqual(resumed.mode, "continue")
+        self.assertEqual(resumed.start_revision, start)
+        self.assertEqual(resumed.current_revision, current)
+        self.assertEqual(resumed.changed_files, ("committed.py",))
+
+    def test_revision_option_cannot_create_output_file(self):
+        # Before --end-of-options, diff interprets the supplied baseline as a flag.
+        inspector = GitInspector()
+        current, files, mutated = inspector.mutation_since(
+            self.git_repo, "--output=owned"
+        )
+        self.assertEqual(list(self.git_repo.glob("owned*")), [])
+        self.assertEqual(files, ())
+        self.assertTrue(mutated)
+        self.assertEqual(current, self._run_git("rev-parse", "HEAD").stdout.strip())
+
     def test_clean_commit_transport_failure_blocks_with_durable_evidence(self):
         router = self.router()
         start = self._run_git("rev-parse", "HEAD").stdout.strip()

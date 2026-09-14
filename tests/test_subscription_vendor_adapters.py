@@ -6,7 +6,10 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -15,6 +18,9 @@ PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
 
 from subscriptions.adapters import build_adapter_registry  # noqa: E402
+from subscriptions.adapters._http import request_json, SubscriptionHttpError  # noqa: E402
+from subscriptions.router import SubscriptionRouter  # noqa: E402
+from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.adapters.deepseek import DeepSeekAdapter  # noqa: E402
 from subscriptions.adapters.grok import GrokAdapter  # noqa: E402
 from subscriptions.adapters.kimi import KimiAdapter, parse_kimi_jsonl  # noqa: E402
@@ -157,6 +163,70 @@ def deepseek_ok_body(text="deepseek answer"):
 
 def zai_ok_body(text="zai answer"):
     return json.dumps({"id": "msg_1", "content": [{"type": "text", "text": text}]})
+
+
+class DripEndpoint:
+    """A real server whose progress is faster than the socket idle timeout."""
+
+    def __init__(self, *, body, status=200, drip_headers=False):
+        self.active = 0
+        self.max_active = 0
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        endpoint = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                with endpoint.lock:
+                    endpoint.active += 1
+                    endpoint.max_active = max(endpoint.max_active, endpoint.active)
+                endpoint.started.set()
+                payload = body.encode("utf-8").ljust(240, b" ")
+                headers = (
+                    f"HTTP/1.0 {status} Response\r\n"
+                    f"Content-Length: {len(payload)}\r\n"
+                    "Content-Type: application/json\r\n\r\n"
+                ).encode("ascii")
+                try:
+                    if not drip_headers:
+                        self.wfile.write(headers)
+                    for byte in headers if drip_headers else payload:
+                        if endpoint.stop_event.wait(0.02):
+                            break
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    if drip_headers and not endpoint.stop_event.is_set():
+                        self.wfile.write(payload)
+                except OSError:
+                    pass  # The bounded client closes its socket at the deadline.
+                finally:
+                    with endpoint.lock:
+                        endpoint.active -= 1
+                        if not endpoint.active:
+                            endpoint.finished.set()
+
+            def log_message(self, *_args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.01)
+        )
+
+    def __enter__(self):
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        return self
+
+    def __exit__(self, *_args):
+        self.stop_event.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.finished.wait(5)
 
 
 class BillingModeTests(unittest.TestCase):
@@ -380,6 +450,73 @@ class HttpAdapterTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.workspace = Path(self.tmp.name).resolve()
+
+    def test_dripping_http_cannot_outlive_stage_lease_or_overlap_another_owner(self):
+        for name, body in (("zai", zai_ok_body()), ("deepseek", deepseek_ok_body())):
+            with (
+                self.subTest(adapter=name),
+                DripEndpoint(body=body.ljust(600)) as endpoint,
+            ):
+                adapter = (
+                    ZAIAdapter(auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url)
+                    if name == "zai"
+                    else DeepSeekAdapter(
+                        api_key=DEEPSEEK_FIXTURE_KEY, base_url=endpoint.url
+                    )
+                )
+                adapter.timeout_seconds = 0.5
+                db_path = self.workspace / f"{name}.db"
+                store = SubscriptionStateStore(db_path)
+                store.save_health(name, ready=True, account_class=name)
+                routers = [
+                    SubscriptionRouter(adapters={name: adapter}, db_path=db_path)
+                    for _ in range(2)
+                ]
+                route = route_for(name, "test-model", billing=adapter.billing_mode)
+
+                def run(router):
+                    started = time.monotonic()
+                    result = router.run(request(self.workspace), [route])
+                    return result, time.monotonic() - started
+
+                # Scale invocation down while retaining the process boundary's
+                # real four-second cleanup allowance and Git inspection time.
+                with (
+                    patch("subscriptions.router._STAGE_LEASE_SECONDS", 6),
+                    ThreadPoolExecutor(max_workers=2) as pool,
+                ):
+                    first = pool.submit(run, routers[0])
+                    self.assertTrue(endpoint.started.wait(5))
+                    time.sleep(6.1)
+                    second = pool.submit(run, routers[1])
+                    first_result, elapsed = first.result(timeout=10)
+                    second.result(timeout=10)
+                self.assertEqual(endpoint.max_active, 1)
+                self.assertFalse(first_result.success)
+                self.assertEqual(
+                    first_result.failure, FailureKind.TIMEOUT, repr(first_result)
+                )
+                self.assertLess(elapsed, 6)
+                self.assertTrue(endpoint.finished.wait(1))
+                self.assertEqual(endpoint.active, 0)
+
+    def test_http_total_deadline_covers_dripping_headers_and_error_body(self):
+        for status, headers in ((200, True), (429, False)):
+            with (
+                self.subTest(status=status),
+                DripEndpoint(
+                    body="{}", status=status, drip_headers=headers
+                ) as endpoint,
+            ):
+                started = time.monotonic()
+                with self.assertRaises(SubscriptionHttpError) as caught:
+                    request_json(
+                        "POST", endpoint.url, headers={}, payload={}, timeout=0.5
+                    )
+                self.assertTrue(caught.exception.timeout)
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertTrue(endpoint.finished.wait(1))
+                self.assertEqual(endpoint.active, 0)
 
     def test_deepseek_calls_api_billed_endpoint_and_parses_choice(self):
         with FakeEndpoint(body=deepseek_ok_body()) as endpoint:

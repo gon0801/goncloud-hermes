@@ -3,13 +3,47 @@
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any, Mapping
 
+from ..process import SubscriptionProcessError, _run_with_process_tree
 from ..types import FailureKind
 
 MAX_BODY_CHARS = 20_000
+
+# The isolated stdlib worker is contained by the same process boundary as CLIs.
+# DNS, TLS, response headers, and the entire body read share one parent deadline;
+# killing the worker closes its sockets before the stage lease can be reclaimed.
+# Credentials and request bodies arrive only through the private stdin pipe.
+_HTTP_WORKER = r"""
+import json
+import sys
+import urllib.error
+import urllib.request
+
+config = json.loads(sys.stdin.read())
+data = json.dumps(config['payload']).encode('utf-8') if config['payload'] is not None else None
+request = urllib.request.Request(config['url'], data=data, headers=config['headers'], method=config['method'])
+try:
+    try:
+        response = urllib.request.urlopen(request, timeout=config['timeout'])
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        status = response.status or response.getcode()
+        body = response.read(config['max_body_chars'] * 4).decode('utf-8', 'replace')
+    result = {'status': status, 'body': body[:config['max_body_chars']]}
+except (TimeoutError, urllib.error.URLError) as error:
+    reason = getattr(error, 'reason', error)
+    result = {'error': 'timeout' if isinstance(reason, TimeoutError) else 'unreachable'}
+except Exception:
+    result = {'error': 'failed'}
+print(json.dumps(result))
+"""
 
 _STATUS_FAILURES = {
     400: FailureKind.INVALID_REQUEST,
@@ -40,29 +74,43 @@ def request_json(
     headers: Mapping[str, str],
     payload: Any = None,
     timeout: float = 120,
-    opener=None,
 ) -> tuple[int, str]:
-    """One JSON request; returns (status, capped body) or raises."""
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request = urllib.request.Request(
-        url, data=data, headers=dict(headers), method=method
+    """One JSON request with a total deadline and bounded process-tree cleanup."""
+    timeout = min(float(timeout), 300)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("HTTP timeout must be a positive finite number")
+    config = json.dumps(
+        {
+            "method": method,
+            "url": url,
+            "headers": dict(headers),
+            "payload": payload,
+            "timeout": timeout,
+            "max_body_chars": MAX_BODY_CHARS,
+        }
     )
-    call = opener or urllib.request.urlopen
     try:
-        with call(request, timeout=timeout) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            body = response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as error:
-        status = error.code
-        try:
-            body = error.read().decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001 - body is diagnostic only
-            body = ""
-    except urllib.error.URLError as error:
-        reason = str(getattr(error, "reason", error))
-        raise SubscriptionHttpError(
-            "endpoint unreachable: " + reason, timeout="timed out" in reason.lower()
-        ) from error
-    except TimeoutError as error:
-        raise SubscriptionHttpError("endpoint timed out", timeout=True) from error
-    return int(status), body[:MAX_BODY_CHARS]
+        returncode, stdout, _stderr = _run_with_process_tree(
+            [sys.executable, "-I", "-S", "-c", _HTTP_WORKER],
+            cwd=Path(sys.executable).resolve().parent,
+            env=os.environ.copy(),
+            stdin_text=config,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise SubscriptionHttpError("endpoint timed out", timeout=True) from None
+    except (OSError, SubscriptionProcessError):
+        raise SubscriptionHttpError("endpoint request failed") from None
+    if returncode:
+        raise SubscriptionHttpError("endpoint request failed")
+    try:
+        result = json.loads(stdout)
+        if "error" in result:
+            timed_out = result["error"] == "timeout"
+            raise SubscriptionHttpError(
+                "endpoint timed out" if timed_out else "endpoint request failed",
+                timeout=timed_out,
+            )
+        return int(result["status"]), result["body"][:MAX_BODY_CHARS]
+    except (ValueError, KeyError, TypeError):
+        raise SubscriptionHttpError("endpoint response unavailable") from None
