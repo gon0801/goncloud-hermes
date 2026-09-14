@@ -35,7 +35,16 @@ try:
         response = error
     with response:
         status = response.status or response.getcode()
-        body = response.read(config['max_body_chars'] * 4).decode('utf-8', 'replace')
+        try:
+            body = response.read(config['max_body_chars'] * 4).decode('utf-8', 'replace')
+        except Exception as error:
+            # A diagnostic body cannot erase a known HTTP failure. Timeouts
+            # still propagate, and malformed success/unknown responses fail.
+            if (isinstance(getattr(error, 'reason', error), TimeoutError)
+                    or not isinstance(response, urllib.error.HTTPError)
+                    or status not in config['known_failure_statuses']):
+                raise
+            body = ''
     result = {'status': status, 'body': body[:config['max_body_chars']]}
 except (TimeoutError, urllib.error.URLError) as error:
     reason = getattr(error, 'reason', error)
@@ -87,6 +96,7 @@ def request_json(
             "payload": payload,
             "timeout": timeout,
             "max_body_chars": MAX_BODY_CHARS,
+            "known_failure_statuses": list(_STATUS_FAILURES),
         }
     )
     try:

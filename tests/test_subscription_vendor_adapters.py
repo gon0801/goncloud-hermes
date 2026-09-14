@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import time
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -98,7 +99,7 @@ def request(
 class FakeEndpoint:
     """Local HTTP stand-in for the DeepSeek and Z.AI endpoints."""
 
-    def __init__(self, status=200, body="{}"):
+    def __init__(self, status=200, body="{}", *, malformed_chunked=False):
         self.status = status
         self.body = body
         self.requests: list[dict] = []
@@ -119,7 +120,10 @@ class FakeEndpoint:
                 payload = endpoint.body.encode("utf-8")
                 self.send_response(endpoint.status)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
+                if malformed_chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                else:
+                    self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
 
@@ -450,6 +454,67 @@ class HttpAdapterTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.workspace = Path(self.tmp.name).resolve()
+
+    def test_known_http_error_keeps_status_when_chunked_body_is_invalid(self):
+        raw = "raw-private-fixture-not-a-chunk-size\r\n"
+        with FakeEndpoint(status=429, body=raw, malformed_chunked=True) as endpoint:
+            status, body = request_json("POST", endpoint.url, headers={}, payload={})
+        self.assertEqual(status, 429)
+        self.assertEqual(body, "")
+        # A malformed success response must still fail, rather than become success.
+        with FakeEndpoint(status=200, body=raw, malformed_chunked=True) as endpoint:
+            with self.assertRaises(SubscriptionHttpError) as caught:
+                request_json("POST", endpoint.url, headers={}, payload={})
+        self.assertFalse(caught.exception.timeout)
+        self.assertNotIn("raw-private-fixture", str(caught.exception))
+
+    def test_invalid_chunked_quota_response_cools_down_and_advances_both_adapters(self):
+        raw = "raw-private-fixture-not-a-chunk-size\r\n"
+        for first_name in ("zai", "deepseek"):
+            next_name = "deepseek" if first_name == "zai" else "zai"
+            next_body = deepseek_ok_body() if next_name == "deepseek" else zai_ok_body()
+            with (
+                self.subTest(adapter=first_name),
+                FakeEndpoint(status=429, body=raw, malformed_chunked=True) as broken,
+                FakeEndpoint(body=next_body) as healthy,
+            ):
+                urls = {first_name: broken.url, next_name: healthy.url}
+                adapters = {
+                    "zai": ZAIAdapter(
+                        auth_token=ZAI_FIXTURE_TOKEN, base_url=urls["zai"]
+                    ),
+                    "deepseek": DeepSeekAdapter(
+                        api_key=DEEPSEEK_FIXTURE_KEY, base_url=urls["deepseek"]
+                    ),
+                }
+                router = SubscriptionRouter(
+                    adapters=adapters, db_path=self.workspace / f"quota-{first_name}.db"
+                )
+                for name in adapters:
+                    router.store.save_health(name, ready=True, account_class=name)
+                routes = [
+                    route_for(
+                        name,
+                        "test-model",
+                        slot=slot,
+                        billing=adapters[name].billing_mode,
+                    )
+                    for slot, name in enumerate((first_name, next_name))
+                ]
+                result = router.run(request(self.workspace), routes)
+                attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+                self.assertTrue(result.success)
+                self.assertEqual(result.adapter, next_name)
+                self.assertEqual(attempts[0]["failure"], "quota")
+                self.assertGreater(
+                    router.store.cooldown_until(first_name), datetime.now(timezone.utc)
+                )
+                self.assertEqual(len(attempts), 2)
+                self.assertEqual(attempts[1]["success"], 1)
+                self.assertEqual(len(broken.requests), 1)
+                self.assertEqual(len(healthy.requests), 1)
+                self.assertNotIn("raw-private-fixture", repr(result))
+                self.assertNotIn("raw-private-fixture", repr(attempts))
 
     def test_dripping_http_cannot_outlive_stage_lease_or_overlap_another_owner(self):
         for name, body in (("zai", zai_ok_body()), ("deepseek", deepseek_ok_body())):
