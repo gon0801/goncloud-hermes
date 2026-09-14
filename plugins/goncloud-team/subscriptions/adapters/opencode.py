@@ -28,6 +28,8 @@ def parse_opencode_jsonl(output: str) -> dict:
     """Accumulate text parts and session identity from raw JSON events."""
     text_parts: list[str] = []
     session_id = None
+    terminal_valid = False
+    saw_error = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
@@ -35,14 +37,32 @@ def parse_opencode_jsonl(output: str) -> dict:
             continue
         if not isinstance(event, dict):
             continue
+        event_type = str(event.get("type") or "").lower()
+        if "error" in event_type or event.get("error"):
+            saw_error = True
         session_id = event.get("sessionID") or event.get("session_id") or session_id
         info = event.get("info")
         if isinstance(info, dict):
             session_id = info.get("id") or session_id
         part = event.get("part")
-        if isinstance(part, dict) and part.get("type") == "text":
-            text_parts.append(str(part.get("text") or ""))
-    return {"session_id": session_id, "text": "".join(text_parts)}
+        if isinstance(part, dict):
+            part_type = str(part.get("type") or "").lower()
+            reason = str(part.get("reason") or "").lower()
+            if (
+                "error" in part_type
+                or part.get("error")
+                or reason in {"error", "failed"}
+            ):
+                saw_error = True
+            if part_type == "text":
+                text_parts.append(str(part.get("text") or ""))
+            if event_type == "step_finish" and part_type == "step-finish":
+                terminal_valid = True
+    return {
+        "session_id": session_id,
+        "text": "".join(text_parts),
+        "terminal_valid": terminal_valid and not saw_error,
+    }
 
 
 class OpenCodeAdapter(SubscriptionAdapter):
@@ -122,11 +142,20 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return self._failed_result(route, failure)
 
         parsed = parse_opencode_jsonl(evidence.stdout)
-        return InvocationResult(
-            success=True,
-            text=parsed["text"],
-            adapter=route.adapter,
-            model=route.model,
-            billing_mode=route.billing_mode,
-            session_id=parsed["session_id"] or "",
+        if (
+            evidence.returncode == 0
+            and parsed["terminal_valid"]
+            and parsed["text"].strip()
+        ):
+            return InvocationResult(
+                success=True,
+                text=parsed["text"],
+                adapter=route.adapter,
+                model=route.model,
+                billing_mode=route.billing_mode,
+                session_id=parsed["session_id"] or "",
+            )
+        return self._failed_result(
+            route,
+            classify_failure(evidence.returncode, evidence.stdout, evidence.stderr),
         )

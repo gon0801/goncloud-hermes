@@ -13,6 +13,7 @@ class FailureKind(StrEnum):
     QUOTA = "quota"
     MODEL_UNAVAILABLE = "model_unavailable"
     TIMEOUT = "timeout"
+    TRANSPORT = "transport"
     INVALID_REQUEST = "invalid_request"
     TASK_FAILURE = "task_failure"
 

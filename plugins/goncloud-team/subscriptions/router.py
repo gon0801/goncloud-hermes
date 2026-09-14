@@ -26,6 +26,7 @@ _ADVANCING_FAILURES = {
     FailureKind.QUOTA,
     FailureKind.MODEL_UNAVAILABLE,
     FailureKind.TIMEOUT,
+    FailureKind.TRANSPORT,
 }
 _QUOTA_COOLDOWN_MINUTES = 15
 
@@ -187,6 +188,8 @@ class SubscriptionRouter:
             if result.failure not in _ADVANCING_FAILURES:
                 # Task/invalid failures never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
+                return result
+            if result.failure is FailureKind.TRANSPORT and mutated:
                 return result
             if result.failure is FailureKind.QUOTA:
                 self.store.set_cooldown(

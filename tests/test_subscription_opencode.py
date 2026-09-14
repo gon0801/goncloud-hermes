@@ -11,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
 
-from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
+from subscriptions.adapters.opencode import (  # noqa: E402
+    OpenCodeAdapter,
+    parse_opencode_jsonl,
+)
 from subscriptions.types import (  # noqa: E402
     FailureKind,
     InvocationRequest,
@@ -23,6 +26,7 @@ SUCCESS_JSONL = "\n".join(
         '{"type":"session","sessionID":"sess_123"}',
         '{"type":"part","part":{"type":"text","text":"step one "}}',
         '{"type":"part","part":{"type":"text","text":"step two"}}',
+        '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
     ]
 )
 
@@ -121,6 +125,49 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(result.billing_mode, "subscription")
         self.assertIsNone(result.failure)
 
+    def test_exit_zero_without_terminal_event_is_failure(self):
+        adapter = OpenCodeAdapter(
+            runner=FakeCliRunner(
+                stdout='{"type":"text","part":{"type":"text","text":"partial"}}'
+            )
+        )
+
+        result = adapter.invoke(
+            request(self.workspace), route(0, "opencode_go", "muse")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+
+    def test_parser_exposes_valid_terminal_only_after_step_finish(self):
+        parsed = parse_opencode_jsonl(SUCCESS_JSONL)
+        partial = parse_opencode_jsonl(
+            '{"type":"text","part":{"type":"text","text":"partial"}}'
+        )
+
+        self.assertTrue(parsed["terminal_valid"])
+        self.assertFalse(partial["terminal_valid"])
+
+    def test_embedded_jsonl_error_cannot_approve_terminal_event(self):
+        adapter = OpenCodeAdapter(
+            runner=FakeCliRunner(
+                stdout="\n".join(
+                    [
+                        '{"type":"text","part":{"type":"text","text":"partial"}}',
+                        '{"type":"error","error":{"message":"worker failed"}}',
+                        '{"type":"step_finish","part":{"type":"step-finish"}}',
+                    ]
+                )
+            )
+        )
+
+        result = adapter.invoke(
+            request(self.workspace), route(0, "opencode_go", "muse")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+
     def test_failures_are_classified_without_leaking_output(self):
         cases = [
             (1, "error: unauthorized subscription", FailureKind.AUTH),
@@ -129,6 +176,11 @@ class OpenCodeAdapterTests(unittest.TestCase):
             (1, "model mystery-x is not available", FailureKind.MODEL_UNAVAILABLE),
             (2, "invalid request payload", FailureKind.INVALID_REQUEST),
             (1, "agent could not finish", FailureKind.TASK_FAILURE),
+            (1, "provider.connection_error", FailureKind.TRANSPORT),
+            (1, "connection reset by peer", FailureKind.TRANSPORT),
+            (1, "disconnected before response", FailureKind.TRANSPORT),
+            (1, "DNS lookup failed", FailureKind.TRANSPORT),
+            (1, "connection refused", FailureKind.TRANSPORT),
             # Tool listings legitimately contain "auth"; that is not an
             # authentication failure (grok streams its available_commands).
             (

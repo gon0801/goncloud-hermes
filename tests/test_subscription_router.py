@@ -281,6 +281,45 @@ class FailoverTests(RouterTestCase):
         self.assertTrue(result.success)
         self.assertEqual(router.calls, ["opencode_go", "opencode_zen"])
 
+    def test_transport_failure_without_mutation_advances(self):
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = failed(FailureKind.TRANSPORT)
+        self.fake_adapters["opencode_zen"].result = completed("zen ok", "opencode_zen")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertEqual(router.calls, ["opencode_go", "opencode_zen"])
+
+    def test_transport_failure_after_mutation_blocks_the_stage(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=self.workspace,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.workspace,
+            check=True,
+        )
+        router = self.router()
+
+        def mutate_then_transport(request, route):
+            (request.workspace / "partial.py").write_text("partial\n", encoding="utf-8")
+            return failed(FailureKind.TRANSPORT, route.adapter)
+
+        self.fake_adapters["opencode_go"].result = mutate_then_transport
+        self.fake_adapters["opencode_zen"].result = completed(
+            "must not run", "opencode_zen"
+        )
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TRANSPORT)
+        self.assertEqual(router.calls, ["opencode_go"])
+
     def test_non_advancing_failure_blocks_the_stage(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TASK_FAILURE)

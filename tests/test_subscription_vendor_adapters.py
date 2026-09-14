@@ -17,7 +17,7 @@ sys.path.insert(0, str(PLUGIN_DIR))
 from subscriptions.adapters import build_adapter_registry  # noqa: E402
 from subscriptions.adapters.deepseek import DeepSeekAdapter  # noqa: E402
 from subscriptions.adapters.grok import GrokAdapter  # noqa: E402
-from subscriptions.adapters.kimi import KimiAdapter  # noqa: E402
+from subscriptions.adapters.kimi import KimiAdapter, parse_kimi_jsonl  # noqa: E402
 from subscriptions.adapters.zai import ZAIAdapter  # noqa: E402
 from subscriptions.types import (  # noqa: E402
     FailureKind,
@@ -219,6 +219,38 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(result.text, "kimi reply")
         self.assertEqual(result.session_id, "kimi_s1")
         self.assertEqual(result.billing_mode, "subscription")
+
+    def test_kimi_connection_error_is_transport_failure(self):
+        result = KimiAdapter(
+            runner=FakeCliRunner(stderr="provider.connection_error", returncode=1)
+        ).invoke(request(self.workspace), route_for("kimi", "k3"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TRANSPORT)
+
+    def test_kimi_parser_exposes_valid_terminal_only_for_success_result(self):
+        parsed = parse_kimi_jsonl(KIMI_STREAM)
+        rejected = parse_kimi_jsonl(
+            '{"type":"result","subtype":"error","result":"failed"}'
+        )
+
+        self.assertTrue(parsed["terminal_valid"])
+        self.assertFalse(rejected["terminal_valid"])
+
+    def test_kimi_error_result_cannot_approve_partial_text(self):
+        result = KimiAdapter(
+            runner=FakeCliRunner(
+                stdout="\n".join(
+                    [
+                        '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}',
+                        '{"type":"result","subtype":"error","result":"failed"}',
+                    ]
+                )
+            )
+        ).invoke(request(self.workspace), route_for("kimi", "k3"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
 
     def test_grok_command_shape_keeps_sandbox_and_private_prompt(self):
         captured: dict = {}

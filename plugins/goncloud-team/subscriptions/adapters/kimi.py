@@ -24,6 +24,7 @@ def parse_kimi_jsonl(output: str) -> dict:
     session_id = None
     result_text = None
     subtype = None
+    saw_error = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
@@ -31,17 +32,25 @@ def parse_kimi_jsonl(output: str) -> dict:
             continue
         if not isinstance(event, dict):
             continue
+        event_type = str(event.get("type") or "").lower()
+        if "error" in event_type or event.get("error"):
+            saw_error = True
         session_id = event.get("session_id") or session_id
-        if event.get("type") == "assistant":
+        if event_type == "assistant":
             message = event.get("message") or {}
             for block in message.get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "text":
                     texts.append(str(block.get("text") or ""))
-        if event.get("type") == "result":
+        if event_type == "result":
             result_text = event.get("result")
             subtype = event.get("subtype")
     text = result_text if result_text is not None else "".join(texts)
-    return {"text": str(text or ""), "session_id": session_id, "subtype": subtype}
+    return {
+        "text": str(text or ""),
+        "session_id": session_id,
+        "subtype": subtype,
+        "terminal_valid": bool(subtype in _SUCCESS_SUBTYPES and not saw_error),
+    }
 
 
 class KimiAdapter(SubscriptionAdapter):
@@ -107,8 +116,10 @@ class KimiAdapter(SubscriptionAdapter):
             return self._failed_result(route, FailureKind.TASK_FAILURE, str(error))
 
         parsed = parse_kimi_jsonl(evidence.stdout)
-        if evidence.returncode == 0 and (
-            parsed["subtype"] in _SUCCESS_SUBTYPES or parsed["text"]
+        if (
+            evidence.returncode == 0
+            and parsed["terminal_valid"]
+            and parsed["text"].strip()
         ):
             return InvocationResult(
                 success=True,

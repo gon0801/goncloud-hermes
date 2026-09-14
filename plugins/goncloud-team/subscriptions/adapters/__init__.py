@@ -33,6 +33,14 @@ _MODEL_PATTERN = re.compile(
 _INVALID_PATTERN = re.compile(
     r"invalid request|bad request|malformed|schema|\b400\b", re.IGNORECASE
 )
+_TRANSPORT_PATTERN = re.compile(
+    r"connection[ _-]?error|connection reset|reset by peer|"
+    r"disconnected(?:[ _-]?before[ _-]?response)?|"
+    r"dns(?: lookup| resolution)? (?:failure|failed|error)|name or service not known|"
+    r"getaddrinfo|connection refused|econnreset|econnrefused|enotfound|"
+    r"network is unreachable|socket hang up",
+    re.IGNORECASE,
+)
 
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
@@ -49,6 +57,8 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
     for code, failure in _STATUS_CODES.items():
         if re.search(rf"\b{code}\b", haystack):
             return failure
+    if _TRANSPORT_PATTERN.search(haystack):
+        return FailureKind.TRANSPORT
     if _AUTH_PATTERN.search(haystack):
         return FailureKind.AUTH
     if _QUOTA_PATTERN.search(haystack):
