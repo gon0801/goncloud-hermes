@@ -98,9 +98,12 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(applied.returncode, 0, applied.stderr)
             migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             managed = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertNotIn("model", migrated)
+            team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+            # The owned native chain is gone; the director keeps exactly the
+            # owner-chosen conversational model and nothing of the old block.
+            self.assertEqual(migrated["model"], team["director_model"])
             self.assertNotIn("fallback_providers", migrated)
-            self.assertNotIn("model", managed["config"])
+            self.assertEqual(managed["config"]["model"], team["director_model"])
             self.assertNotIn("fallback_providers", managed["config"])
             self.assertEqual(
                 (
@@ -132,6 +135,36 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("completa la tarjeta con ese informe", verifier)
         self.assertIn("NO aprobar el artefacto", verifier)
         self.assertNotIn("no completes exitosamente la etapa", verifier)
+
+    def test_gateway_never_dispatches_goncloud_stage_cards_natively(self):
+        # The gateway's own Kanban dispatcher claims any `ready` card with an
+        # assignee and runs it with a native profile agent. Stage cards carry
+        # their role as assignee, so with dispatch on, the gateway would race
+        # the local orchestrator and run stages outside the subscription router.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+
+        self.assertIs(team["kanban"].get("dispatch_in_gateway"), False)
+
+    def test_only_the_director_carries_one_native_model_and_nobody_a_fallback_chain(
+        self,
+    ):
+        # The director must be able to converse on Telegram, so it gets exactly
+        # one owner-chosen native model. Workers get none: their models come
+        # from the slot table through the subscription router, and a native
+        # fallback chain anywhere would be the competing router again.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(team["director_model"]), {"provider", "default"})
+
+        for role in team["profiles"]:
+            with self.subTest(role=role):
+                desired = module.desired_profile_config(
+                    role, team, Path("C:/runtime-home")
+                )
+                self.assertNotIn("fallback_providers", desired)
+                if role == team["director"]:
+                    self.assertEqual(desired["model"], team["director_model"])
+                else:
+                    self.assertNotIn("model", desired)
 
     def test_preserve_user_model_and_credentials(self):
         existing = {
@@ -236,18 +269,34 @@ class ConfigurationTests(unittest.TestCase):
             )
             self.assertEqual(loader.returncode, 0, loader.stderr)
             credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
-            config_path = runtime / "profiles/claw/config.yaml"
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            config["model"] = {"provider": "test-provider", "default": "test-model"}
-            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            # A worker's model is the user's: unmanaged, so it survives reapply.
+            scout_path = runtime / "profiles/scout/config.yaml"
+            scout = yaml.safe_load(scout_path.read_text(encoding="utf-8"))
+            scout["model"] = {"provider": "test-provider", "default": "test-model"}
+            scout_path.write_text(yaml.safe_dump(scout), encoding="utf-8")
             second = subprocess.run(
                 command, capture_output=True, text=True, env=env, timeout=120
             )
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
             self.assertEqual(
-                yaml.safe_load(config_path.read_text())["model"], config["model"]
+                yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
+            # The director's model is owned: a hand edit is a conflict the
+            # configurator refuses to overwrite, leaving the edit in place.
+            claw_path = runtime / "profiles/claw/config.yaml"
+            claw = yaml.safe_load(claw_path.read_text(encoding="utf-8"))
+            claw["model"] = {"provider": "test-provider", "default": "test-model"}
+            claw_path.write_text(yaml.safe_dump(claw), encoding="utf-8")
+            third = subprocess.run(
+                command, capture_output=True, text=True, env=env, timeout=120
+            )
+            self.assertNotEqual(third.returncode, 0)
+            self.assertIn("model", third.stderr)
+            self.assertEqual(
+                yaml.safe_load(claw_path.read_text())["model"], claw["model"]
+            )
+            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
 
 
 if __name__ == "__main__":

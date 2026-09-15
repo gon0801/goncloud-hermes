@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import hermes_cli
 from hermes_cli.kanban_db import block_task, complete_task, list_runs, parent_ids
 from hermes_cli.kanban_db_connect import write_txn
 
@@ -31,6 +34,35 @@ except ImportError:
 
 MAX_TERMINAL_BYTES = 1800
 MAX_INPUT_BYTES = 24000
+#: Same bound the local CLI applies to an assignment read from a file or stdin.
+MAX_INSTRUCTION_CHARS = 32768
+
+#: The detached driver: only paths and identifiers reach it through argv, it
+#: prints nothing (vendor diagnostics are not a public channel) and writes one
+#: bounded JSON result atomically for goncloud_local_status to read.
+_DRIVER_BOOTSTRAP = (
+    "import json, os, sys\n"
+    "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
+    "sys.path.insert(0, hermes)\n"
+    "sys.path.insert(0, plugin)\n"
+    "from local_orchestrator import LocalOrchestrator\n"
+    "try:\n"
+    "    result = LocalOrchestrator().resume(workflow_id)\n"
+    "except Exception:\n"
+    "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
+    "              'error': 'local driver failed; check durable status'}\n"
+    "tmp = out + '.tmp'\n"
+    "with open(tmp, 'w', encoding='utf-8') as handle:\n"
+    "    json.dump(result, handle, ensure_ascii=True)\n"
+    "os.replace(tmp, out)\n"
+)
+
+
+def _default_home():
+    local = os.environ.get("LOCALAPPDATA")
+    return Path(local) / "hermes" if local else Path.home() / ".hermes"
+
+
 # Vendors differ on whether they break the line before the opening fence, so the
 # fence may carry a prose prefix. The closing fence is still checked separately
 # for standing alone, and nothing may follow it.
@@ -216,8 +248,42 @@ class LocalOrchestrator:
         affects_business_rules=False,
     ):
         self._check_stop(stop_after)
+        created = self.create(
+            request_key=request_key,
+            repository=repository,
+            revision=revision,
+            instruction=instruction,
+            sources=sources,
+            max_steps=max_steps,
+            affects_business_rules=affects_business_rules,
+        )
+        return self.resume(created["workflow_id"], stop_after=stop_after)
+
+    def create(
+        self,
+        *,
+        request_key,
+        repository,
+        revision,
+        instruction,
+        sources,
+        max_steps,
+        affects_business_rules=False,
+    ):
+        """Register the durable chain and its step limit without running a stage.
+
+        A messaging transport calls this and then detaches the driver, so the
+        gateway answers with the workflow id at once instead of blocking for
+        the whole chain. The bounds are the same ones the local CLI enforces.
+        """
         if type(max_steps) is not int or not 1 <= max_steps <= 200:
             raise WorkflowError("max_steps must be an integer between 1 and 200")
+        if (
+            type(instruction) is not str
+            or not instruction.strip()
+            or len(instruction) > MAX_INSTRUCTION_CHARS
+        ):
+            raise WorkflowError("instruction is empty or oversized")
         service = self.services("claw")
         original = service.start_contract(request_key=request_key)
         resolved_revision = (
@@ -285,7 +351,63 @@ class LocalOrchestrator:
                 "INSERT OR IGNORE INTO goncloud_local_workflows VALUES (?, ?)",
                 (workflow_id, max_steps),
             ).close()
-        return self.resume(workflow_id, stop_after=stop_after)
+        return {"workflow_id": workflow_id, "stages": dict(started["stages"])}
+
+    def launch_detached(self, workflow_id, *, home=None):
+        """Drive a created workflow in a detached process and return at once.
+
+        Only identifiers travel in argv; the assignment stays in the durable
+        contract. Vendor diagnostics go nowhere (the driver prints nothing);
+        the bounded result lands in a private file under the Hermes home.
+        """
+        home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
+        results = home / "goncloud-local"
+        results.mkdir(mode=0o700, parents=True, exist_ok=True)
+        result_file = results / f"{workflow_id}.json"
+        argv = [
+            sys.executable,
+            "-I",
+            "-c",
+            _DRIVER_BOOTSTRAP,
+            str(Path(__file__).resolve().parent),
+            str(Path(hermes_cli.__file__).resolve().parent.parent),
+            str(workflow_id),
+            str(result_file),
+        ]
+        detach = (
+            {
+                "creationflags": subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+            }
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
+        process = subprocess.Popen(
+            argv,
+            cwd=str(home),
+            env=dict(os.environ),
+            stdin=None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            **detach,
+        )
+        return {
+            "workflow_id": workflow_id,
+            "driver_pid": process.pid,
+            "result_file": str(result_file),
+        }
+
+    def driver_result(self, workflow_id, *, home=None):
+        """The detached driver's bounded outcome, or None while it still runs."""
+        home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
+        result_file = home / "goncloud-local" / f"{workflow_id}.json"
+        if not result_file.is_file():
+            return None
+        try:
+            return json.loads(result_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"workflow_id": workflow_id, "outcome": "error"}
 
     def _context(self, workflow_id):
         service = self.services("claw")

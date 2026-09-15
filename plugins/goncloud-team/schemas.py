@@ -53,6 +53,69 @@ ENGINEERING_START = {
     },
 }
 
+LOCAL_RUN = {
+    "name": "goncloud_local_run",
+    "description": (
+        "Start technical work that arrived over a messaging transport. Only the claw "
+        "profile may call this. Creates the durable Goncloud chain and leaves it running "
+        "in the background through the subscription router; returns at once with the "
+        "workflow_id. Never selects models or workers. Reuse request_key on retries."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "request_key": {
+                "type": "string",
+                "description": "Stable owner-request idempotency key.",
+            },
+            "repository": {
+                "type": "string",
+                "description": "Absolute existing repository path.",
+            },
+            "revision": {
+                "type": "string",
+                "description": "Exact revision every stage must inspect; defaults to HEAD.",
+            },
+            "instruction": {
+                "type": "string",
+                "description": "The owner-approved bounded assignment.",
+            },
+            "sources": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "reference": {"type": "string"},
+                        "observed_at": {"type": "string"},
+                    },
+                    "required": ["reference", "observed_at"],
+                },
+                "description": "Dated provenance records supporting the request.",
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "Autonomous step bound per stage (1-200, default 20).",
+            },
+            "affects_business_rules": {"type": "boolean"},
+        },
+        "required": ["request_key", "repository", "instruction", "sources"],
+    },
+}
+
+LOCAL_STATUS = {
+    "name": "goncloud_local_status",
+    "description": (
+        "Read the bounded durable status of a workflow started by goncloud_local_run, "
+        "including per-stage attempts and, once the background driver finishes, its outcome."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"workflow_id": {"type": "string"}},
+        "required": ["workflow_id"],
+    },
+}
+
 ENGINEERING_STATUS = {
     "name": "goncloud_engineering_status",
     "description": "Read the durable native-Kanban status of one Goncloud engineering workflow.",

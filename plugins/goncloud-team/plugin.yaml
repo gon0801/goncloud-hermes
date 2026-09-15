@@ -13,5 +13,7 @@ provides_tools:
   - goncloud_muse_delegate
   - goncloud_subscription_run
   - goncloud_subscription_status
+  - goncloud_local_run
+  - goncloud_local_status
 provides_hooks:
   - pre_tool_call

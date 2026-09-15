@@ -23,7 +23,28 @@ def remove_owned_native_routing(existing, previous):
 
 
 def merge_profile_config(existing, desired, previous, *, fresh=False):
-    return merge_owned(existing, desired, previous, fresh=fresh)
+    existing = dict(existing)
+    desired = dict(desired)
+    if "model" not in desired:
+        return merge_owned(existing, desired, previous, fresh=fresh)
+    # The director model is owned whole, never deep-merged: a stock or
+    # user-tuned block would otherwise leak its provider/base_url into it and
+    # the next apply would read that mixture as a user conflict.
+    wanted = desired.pop("model")
+    current = existing.pop("model", MISSING)
+    before = previous.get("model", MISSING)
+    if not (
+        fresh
+        or current is MISSING
+        or current == wanted
+        or (before is not MISSING and current == before)
+    ):
+        raise ValueError(
+            "Local configuration conflict: model; preserve and reconcile manually"
+        )
+    merged = merge_owned(existing, desired, previous, fresh=fresh)
+    merged["model"] = copy.deepcopy(wanted)
+    return merged
 
 
 def merge_owned(existing, desired, previous, fresh=False, prefix=""):
@@ -97,6 +118,31 @@ def write_changed(path, content):
     temporary.replace(path)
 
 
+def desired_profile_config(role, team, runtime_home):
+    """The managed keys one profile owns; everything else stays the user's."""
+    desired = {
+        "plugins": {"enabled": ["goncloud-team"]},
+        "model_catalog": {"excluded_providers": ["copilot", "copilot-acp"]},
+        "platform_toolsets": {
+            "cli": ["coding", "kanban", "goncloud_team"],
+            "telegram": ["coding", "kanban", "goncloud_team"],
+        },
+        "terminal": {
+            "backend": "local",
+            "cwd": str(runtime_home / "workspaces" / role),
+            "timeout": 180,
+        },
+        "kanban": team["kanban"],
+    }
+    if role == team["director"]:
+        # The director converses natively and needs exactly one owner-chosen
+        # model for that. It is not a routing slot: workers never get a native
+        # model here, and no profile ever gets a native fallback chain, because
+        # that chain was the competing router the recovery removed.
+        desired["model"] = dict(team["director_model"])
+    return desired
+
+
 def configure(runtime_home, install_dir, apply_model_routing=False):
     import yaml
 
@@ -135,20 +181,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
             if config_path.exists()
             else {}
         )
-        desired = {
-            "plugins": {"enabled": ["goncloud-team"]},
-            "model_catalog": {"excluded_providers": ["copilot", "copilot-acp"]},
-            "platform_toolsets": {
-                "cli": ["coding", "kanban", "goncloud_team"],
-                "telegram": ["coding", "kanban", "goncloud_team"],
-            },
-            "terminal": {
-                "backend": "local",
-                "cwd": str(runtime_home / "workspaces" / role),
-                "timeout": 180,
-            },
-            "kanban": team["kanban"],
-        }
+        desired = desired_profile_config(role, team, runtime_home)
         previous_config = state.get("config", {})
         existing = remove_owned_native_routing(existing or {}, previous_config)
         merged = merge_profile_config(

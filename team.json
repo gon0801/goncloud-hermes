@@ -3,6 +3,7 @@
   "upstream_commit": "3f86ed75dad1933036c52018e991dbd839837126",
   "upstream_version": "0.21.2",
   "director": "claw",
+  "director_model": {"provider": "zai", "default": "glm-5.3"},
   "profiles": {
     "claw": "Director: recibe objetivos, coordina especialistas y entrega resultados consolidados.",
     "operaciones": "Negocio: MercadoLibre, Amazon, inventario, pedidos, reportes y reglas comerciales.",
@@ -21,6 +22,7 @@
     "review_dispatch": true,
     "max_in_progress": 3,
     "max_in_progress_per_profile": 1,
-    "failure_limit": 2
+    "failure_limit": 2,
+    "dispatch_in_gateway": false
   }
 }

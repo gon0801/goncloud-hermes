@@ -180,6 +180,91 @@ class TerminalParserTests(unittest.TestCase):
                         parse_terminal_envelope(result.text, role="scout")
 
 
+class TransportEntryPointTests(unittest.TestCase):
+    """A messaging transport creates the durable chain and detaches the driver.
+
+    The gateway must answer at once with a workflow id, never block for the
+    whole chain, and never put the assignment in a command line.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.db = self.root / "kanban.db"
+        self.stage_calls = []
+        self.orchestrator = LocalOrchestrator(
+            service_factory=lambda role: WorkflowService(
+                actor_role=role, db_path=self.db
+            ),
+            stage_runner=lambda service, **assignment: self.stage_calls.append(
+                assignment
+            ),
+        )
+
+    def assignment(self, **overrides):
+        base = dict(
+            request_key="tg-42",
+            repository=str(self.repo),
+            revision="baseline",
+            instruction="Inspect the repository. Do not modify files.",
+            sources=SOURCES,
+            max_steps=20,
+        )
+        base.update(overrides)
+        return base
+
+    def test_create_registers_the_chain_without_running_a_single_stage(self):
+        created = self.orchestrator.create(**self.assignment())
+        again = self.orchestrator.create(**self.assignment())
+
+        self.assertEqual(created["workflow_id"], again["workflow_id"])
+        self.assertEqual(self.stage_calls, [])
+        status = self.orchestrator.status(created["workflow_id"])
+        self.assertEqual(
+            {stage["status"] for stage in status["stages"].values()} - {"ready"},
+            {"todo"},
+        )
+
+    def test_create_keeps_the_local_entry_point_bounds(self):
+        with self.assertRaises(WorkflowError):
+            self.orchestrator.create(**self.assignment(max_steps=0))
+        with self.assertRaises(WorkflowError):
+            self.orchestrator.create(**self.assignment(instruction="x" * 40000))
+        self.assertEqual(self.stage_calls, [])
+
+    def test_launch_detached_never_exposes_the_assignment_and_detaches(self):
+        created = self.orchestrator.create(**self.assignment())
+        launched = {}
+
+        def fake_popen(argv, **kwargs):
+            launched["argv"] = list(argv)
+            launched["kwargs"] = kwargs
+            return type("P", (), {"pid": 4242})()
+
+        with patch("local_orchestrator.subprocess.Popen", fake_popen):
+            result = self.orchestrator.launch_detached(
+                created["workflow_id"], home=self.root
+            )
+
+        self.assertEqual(result["workflow_id"], created["workflow_id"])
+        self.assertEqual(result["driver_pid"], 4242)
+        argv_text = " ".join(launched["argv"])
+        self.assertNotIn("Inspect the repository", argv_text)
+        self.assertIn(created["workflow_id"], argv_text)
+        kwargs = launched["kwargs"]
+        self.assertIsNone(kwargs.get("stdin"))
+        self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
+        if os.name == "nt":
+            self.assertTrue(kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+        else:
+            self.assertTrue(kwargs["start_new_session"])
+        self.assertTrue(str(result["result_file"]).startswith(str(self.root)))
+
+
 class LocalOrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

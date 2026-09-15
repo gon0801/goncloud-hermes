@@ -97,6 +97,68 @@ class FakeContext:
         return json.loads(self.tools[name].handler(dict(payload_args)))
 
 
+class FakeOrchestrator:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(("create", kwargs))
+        return {"workflow_id": "t_local"}
+
+    def launch_detached(self, workflow_id, **kwargs):
+        self.calls.append(("launch", workflow_id, kwargs))
+        return {"workflow_id": workflow_id, "driver_pid": 7, "result_file": "x"}
+
+    def status(self, workflow_id):
+        self.calls.append(("status", workflow_id))
+        return {"workflow_id": workflow_id, "outcome": "running"}
+
+
+class TransportToolTests(unittest.TestCase):
+    def test_local_run_creates_then_detaches_and_only_claw_may_call(self):
+        ctx = FakeContext(profile_name="claw")
+        orchestrator = FakeOrchestrator()
+        _PLUGIN._build_orchestrator = lambda context: orchestrator
+
+        _PLUGIN.register(ctx)
+        result = ctx.call(
+            "goncloud_local_run",
+            {
+                "request_key": "tg-1",
+                "repository": "C:/repo",
+                "instruction": "Inspect.",
+                "sources": [
+                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
+                ],
+                "max_steps": 20,
+            },
+        )
+
+        self.assertEqual(result["workflow_id"], "t_local")
+        self.assertEqual(result["driver_pid"], 7)
+        self.assertEqual([call[0] for call in orchestrator.calls], ["create", "launch"])
+        self.assertEqual(
+            ctx.tools["goncloud_local_run"].schema["parameters"]["required"],
+            ["request_key", "repository", "instruction", "sources"],
+        )
+
+        worker = FakeContext(profile_name="scout")
+        _PLUGIN.register(worker)
+        refused = worker.call("goncloud_local_run", {"request_key": "tg-2"})
+        self.assertIn("error", refused)
+
+    def test_local_status_reads_the_driver_view(self):
+        ctx = FakeContext(profile_name="claw")
+        orchestrator = FakeOrchestrator()
+        _PLUGIN._build_orchestrator = lambda context: orchestrator
+
+        _PLUGIN.register(ctx)
+        result = ctx.call("goncloud_local_status", {"workflow_id": "t_local"})
+
+        self.assertEqual(result["outcome"], "running")
+        self.assertEqual(orchestrator.calls, [("status", "t_local")])
+
+
 class PluginRegistrationTests(unittest.TestCase):
     def test_tool_binds_profile_from_context(self):
         ctx = FakeContext(profile_name="implementer")
