@@ -85,9 +85,16 @@ Commit `776e871`. Tareas 1 y 2 del plan cerradas y la tarea 3 en curso:
   por API nativa serian otra cuenta: la cadena de clase equivocada que la
   recuperacion quito). El bloque `model` es de propiedad completa y nunca se
   mezcla con el bloque por defecto; un cambio manual es un conflicto que el
-  configurador se niega a pisar. Zen y Kimi siguen con llaves nativas
-  invalidas (401): Hermes las salta y cae a Z.AI hasta que se registren de
-  nuevo. Los trabajadores no llevan modelo ni cadena.
+  configurador se niega a pisar. El propietario registro despues las llaves
+  nativas de Zen y Kimi (`hermes auth add opencode-zen` / `kimi-coding`); las
+  llaves viejas del `.env` del perfil `claw` (`OPENCODE_ZEN_API_KEY`,
+  `KIMI_API_KEY`, ambas 401) las tapaban y se retiraron con
+  `hermes -p claw config unset`. `hermes -p claw auth list` muestra las cuatro
+  posiciones de la cadena de conversacion con credencial manual activa y sin
+  `auth failed`, y cada una respondio el marcador con la configuracion del
+  perfil (cambio temporal de `model` y regreso a la cadena gestionada): Go
+  6.7 s, Zen 17.6 s, Kimi 20.2 s, Z.AI 13.2 s. Los trabajadores no llevan
+  modelo ni cadena.
 - **Python tambien necesitaba la raiz de Kaspersky.** El SDK de Hermes usa
   `httpx` con el paquete `certifi`, no el almacen de Windows, y Kaspersky
   intercepta `api.anthropic.com` y `api.openai.com`. Se creo
