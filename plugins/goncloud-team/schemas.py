@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .workflow import TEAM_ROLES
+from .workflow import INITIAL_STAGES, TEAM_ROLES
 
 
 ENGINEERING_START = {
@@ -96,6 +96,15 @@ LOCAL_RUN = {
             "max_steps": {
                 "type": "integer",
                 "description": "Autonomous step bound per stage (1-200, default 20).",
+            },
+            "stop_after": {
+                "type": "string",
+                "enum": list(INITIAL_STAGES),
+                "description": (
+                    'Stop after this stage. Use "scout" for read-only questions and '
+                    "inspections; omit only for an owner-authorized change that needs "
+                    "the full chain."
+                ),
             },
             "affects_business_rules": {"type": "boolean"},
         },

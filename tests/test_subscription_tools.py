@@ -147,6 +147,30 @@ class TransportToolTests(unittest.TestCase):
         refused = worker.call("goncloud_local_run", {"request_key": "tg-2"})
         self.assertIn("error", refused)
 
+    def test_local_run_forwards_stop_after_for_read_only_requests(self):
+        ctx = FakeContext(profile_name="claw")
+        orchestrator = FakeOrchestrator()
+        _PLUGIN._build_orchestrator = lambda context: orchestrator
+
+        _PLUGIN.register(ctx)
+        ctx.call(
+            "goncloud_local_run",
+            {
+                "request_key": "tg-3",
+                "repository": "C:/repo",
+                "instruction": "Inspect only.",
+                "sources": [
+                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
+                ],
+                "stop_after": "scout",
+            },
+        )
+
+        launch = next(call for call in orchestrator.calls if call[0] == "launch")
+        self.assertEqual(launch[2].get("stop_after"), "scout")
+        schema = ctx.tools["goncloud_local_run"].schema["parameters"]["properties"]
+        self.assertIn("scout", schema["stop_after"]["enum"])
+
     def test_local_status_reads_the_driver_view(self):
         ctx = FakeContext(profile_name="claw")
         orchestrator = FakeOrchestrator()

@@ -43,11 +43,12 @@ MAX_INSTRUCTION_CHARS = 32768
 _DRIVER_BOOTSTRAP = (
     "import json, os, sys\n"
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
+    "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "sys.path.insert(0, hermes)\n"
     "sys.path.insert(0, plugin)\n"
     "from local_orchestrator import LocalOrchestrator\n"
     "try:\n"
-    "    result = LocalOrchestrator().resume(workflow_id)\n"
+    "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after)\n"
     "except Exception:\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
     "              'error': 'local driver failed; check durable status'}\n"
@@ -353,13 +354,15 @@ class LocalOrchestrator:
             ).close()
         return {"workflow_id": workflow_id, "stages": dict(started["stages"])}
 
-    def launch_detached(self, workflow_id, *, home=None):
+    def launch_detached(self, workflow_id, *, home=None, stop_after=None):
         """Drive a created workflow in a detached process and return at once.
 
-        Only identifiers travel in argv; the assignment stays in the durable
-        contract. Vendor diagnostics go nowhere (the driver prints nothing);
-        the bounded result lands in a private file under the Hermes home.
+        Only identifiers travel in argv (the workflow id and, for a read-only
+        inspection, the stage to stop after); the assignment stays in the
+        durable contract. Vendor diagnostics go nowhere (the driver prints
+        nothing); the bounded result lands in a private file under the home.
         """
+        self._check_stop(stop_after)
         home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
         results = home / "goncloud-local"
         results.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -373,6 +376,7 @@ class LocalOrchestrator:
             str(Path(hermes_cli.__file__).resolve().parent.parent),
             str(workflow_id),
             str(result_file),
+            *([str(stop_after)] if stop_after else []),
         ]
         detach = (
             {

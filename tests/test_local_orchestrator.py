@@ -264,6 +264,27 @@ class TransportEntryPointTests(unittest.TestCase):
             self.assertTrue(kwargs["start_new_session"])
         self.assertTrue(str(result["result_file"]).startswith(str(self.root)))
 
+    def test_launch_detached_carries_a_stop_after_stage_to_the_driver(self):
+        # A read-only inspection stops after scout instead of running seven
+        # stages; the stage name is an identifier, so argv may carry it.
+        created = self.orchestrator.create(**self.assignment())
+        launched = {}
+
+        def fake_popen(argv, **kwargs):
+            launched["argv"] = list(argv)
+            return type("P", (), {"pid": 1})()
+
+        with patch("local_orchestrator.subprocess.Popen", fake_popen):
+            self.orchestrator.launch_detached(
+                created["workflow_id"], home=self.root, stop_after="scout"
+            )
+            with self.assertRaises(WorkflowError):
+                self.orchestrator.launch_detached(
+                    created["workflow_id"], home=self.root, stop_after="nope"
+                )
+
+        self.assertEqual(launched["argv"][-1], "scout")
+
 
 class LocalOrchestratorTests(unittest.TestCase):
     def setUp(self):

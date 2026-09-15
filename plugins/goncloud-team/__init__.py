@@ -55,7 +55,9 @@ def _transport_handlers(ctx):
                     arguments.get("affects_business_rules", False)
                 ),
             )
-            launched = orchestrator.launch_detached(created["workflow_id"])
+            launched = orchestrator.launch_detached(
+                created["workflow_id"], stop_after=arguments.get("stop_after") or None
+            )
             return json.dumps(
                 {**created, **launched}, ensure_ascii=False, sort_keys=True, default=str
             )
