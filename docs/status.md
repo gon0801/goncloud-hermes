@@ -220,6 +220,37 @@ etiquetas con `INBOX`. Nada de correo se copio a este repositorio. La skill es
 Python: hereda `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` del gateway por la
 interceptacion de Kaspersky descrita arriba.
 
+### Varias cuentas de correo por himalaya
+
+`google-workspace` atiende una sola cuenta de Google por perfil. Para las demas
+el propietario pidio correo (solo correo) y se instalo `himalaya` v2.1.0
+(`+imap +smtp +rustls-ring`) en `%LOCALAPPDATA%\Programs\himalaya`, en el PATH
+de usuario. La configuracion vive en `%APPDATA%\himalaya\config.toml`, fuera de
+Git, con contrasenas de aplicacion (16 caracteres; Gmail acepta los espacios
+con que las muestra, aqui se guardan sin ellos). Sintaxis verificada para esa
+version, distinta de la que trae la skill empaquetada: `backend = "imap"`,
+`imap.server = "imaps://imap.gmail.com:993"`, `imap.sasl.plain.username`,
+`imap.sasl.plain.password.raw`, y `message.send.backend = "smtp"` con
+`smtp.server = "smtps://smtp.gmail.com:465"`; `imap.port` y `backend.type` no
+parsean. Los comandos tambien cambiaron (`mailbox list`, `envelope list -s N`,
+`message read ID`, `message compose --to --subject --body --send`; no existen
+`folder list` ni `template send`), asi que la copia local de la skill en el
+perfil `claw` lleva al inicio una seccion "En esta maquina" con las cuentas y
+los comandos reales; el archivo versionado de la skill no se toca.
+
+Aceptacion 2026-09-14: cuenta principal de Gmail (`undying`, default) lista
+carpetas y envio un correo de prueba a si misma (`Message successfully sent`);
+la cuenta de iCloud tambien autentico (`imaps://imap.mail.me.com:993`, SMTP
+`smtp://smtp.mail.me.com:587` con `smtp.starttls = true`) pero el propietario
+la dejo fuera y su bloque quedo apartado en `icloud.apartada.toml` junto a la
+configuracion. La segunda cuenta de Gmail (`david`) queda declarada con su
+hueco `PEGAR_AQUI_DAVID`: la contrasena de aplicacion que se pego no
+correspondia a esa cuenta (`NO Invalid credentials` aun sin espacios); se
+activa sola en cuanto el propietario pegue una generada con esa sesion. El
+gateway se reinicio desde una shell con el PATH de usuario fresco y las tres
+variables de certificados, porque el proceso anterior nacio antes de instalar
+himalaya y no lo veia.
+
 ### Zen y Kimi: era el certificado, no las cuentas
 
 Dos diagnosticos anteriores de este documento fueron incorrectos y se corrigen
