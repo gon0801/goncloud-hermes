@@ -228,6 +228,20 @@ class TransportEntryPointTests(unittest.TestCase):
             {"todo"},
         )
 
+    def test_create_names_a_missing_repository_before_anything_else(self):
+        # The director mangled a path once and got "revision is required"
+        # back, because the revision was derived from a directory that does
+        # not exist. The repository is checked first and named in the error.
+        with self.assertRaisesRegex(WorkflowError, "repository") as raised:
+            self.orchestrator.create(
+                **self.assignment(
+                    repository=str(self.root / "missing" / "repo"), revision=None
+                )
+            )
+
+        self.assertNotIn("revision", str(raised.exception))
+        self.assertEqual(self.stage_calls, [])
+
     def test_create_keeps_the_local_entry_point_bounds(self):
         with self.assertRaises(WorkflowError):
             self.orchestrator.create(**self.assignment(max_steps=0))

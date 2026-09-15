@@ -285,6 +285,14 @@ class LocalOrchestrator:
             or len(instruction) > MAX_INSTRUCTION_CHARS
         ):
             raise WorkflowError("instruction is empty or oversized")
+        # Check the repository before deriving anything from it: a mangled
+        # path otherwise surfaces as "revision is required" and misleads.
+        repo = Path(str(repository)).expanduser()
+        if not (repo.is_absolute() and repo.is_dir()):
+            raise WorkflowError(
+                "repository must be an existing absolute directory; pass the path "
+                "exactly as the owner gave it"
+            )
         service = self.services("claw")
         original = service.start_contract(request_key=request_key)
         resolved_revision = (
