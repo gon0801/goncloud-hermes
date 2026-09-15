@@ -43,6 +43,12 @@ def _transport_handlers(ctx):
             if ctx.profile_name != "claw":
                 raise PermissionError("only the claw director may start local work")
             arguments = dict(args or {})
+            stop_after = arguments.get("stop_after") or None
+            # Validate the stop before the chain exists: a bad value would
+            # otherwise leave seven orphan cards and no id to reach them by.
+            from .local_orchestrator import check_stop_after
+
+            check_stop_after(stop_after)
             orchestrator = _build_orchestrator(ctx)
             created = orchestrator.create(
                 request_key=str(arguments.get("request_key", "")),
@@ -56,7 +62,7 @@ def _transport_handlers(ctx):
                 ),
             )
             launched = orchestrator.launch_detached(
-                created["workflow_id"], stop_after=arguments.get("stop_after") or None
+                created["workflow_id"], stop_after=stop_after
             )
             return json.dumps(
                 {**created, **launched}, ensure_ascii=False, sort_keys=True, default=str
@@ -170,7 +176,18 @@ def register(ctx) -> None:
             or ""
         ).strip()
         if not native_task_id:
-            return None
+            if ctx.profile_name != "reviewer":
+                return None
+            # Fail closed: without an id the guard cannot tell a reviewer card
+            # from an ordinary one, and the native tool needs the id anyway.
+            return {
+                "action": "block",
+                "message": (
+                    "Goncloud review guard needs task_id (or HERMES_KANBAN_TASK) "
+                    "before kanban_complete; reviewer cards use "
+                    "goncloud_engineering_review."
+                ),
+            }
         try:
             return WorkflowService(actor_role=ctx.profile_name).guard_native_completion(
                 native_task_id

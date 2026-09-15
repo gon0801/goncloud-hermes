@@ -33,7 +33,8 @@ Durably enforced by the database graph:
 - only a first high/critical rejection can add round two, and no code path adds
   round three.
 - a fail-closed `pre_tool_call` hook always blocks reviewer cards from
-  substituting native `kanban_complete` for the required durable review tool;
+  substituting native `kanban_complete` for the required durable review tool,
+  and blocks a reviewer completion whose task id it cannot resolve at all;
   review comments are audit records, never completion authorization.
 
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers

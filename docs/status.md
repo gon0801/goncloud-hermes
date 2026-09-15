@@ -47,7 +47,8 @@
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
 - Bateria final: **362 tests, 359 aprobados y 3 skips de plataforma/privilegios**,
   288.213 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
-- Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
+- Plugin Doctor: OK, 7 herramientas (entonces; 9 desde el transporte local)
+  y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
 
@@ -203,7 +204,10 @@ correr la matriz live a mano cada vez. La regla ahora es:
 
 Regresiones: cuarentena reciente sigue saltando la ruta; vencida se reintenta
 y el exito real la levanta; vencida y fallida de nuevo se re-arma y la segunda
-corrida ya no reintenta; los cuatro tipos restantes vencen igual.
+corrida ya no reintenta; los cuatro tipos restantes vencen igual; y, desde la
+revision adversarial de cierre (abajo), vencida y fallida con *cualquiera* de
+los siete tipos de fallo se re-arma con reloj nuevo, un solo intento real y sin
+volver a sondear en cada corrida.
 
 ### Gmail y Google Workspace del director
 
@@ -275,6 +279,61 @@ mantiene. El parser acepta el flujo `stream-json` de 0.34 (lineas `role`/
 `content`, cierre por `session.resume_hint`) ademas del esquema anterior. Se
 descarto el modo `kimi acp` (JSON-RPC por stdio, tambien verificado) porque
 requeriria una frontera de proceso bidireccional nueva.
+
+### Revision adversarial de cierre
+
+Antes de cerrar, el propietario pidio una pasada adversarial sobre toda la rama
+(63 commits desde el plan de recuperacion, mas el cutover de Telegram y los
+seguimientos). El agente `adversary` corrio con la bateria completa (362/359/3,
+verde) y sin tocar codigo, secretos ni proveedores. Veredicto inicial: BLOQUEA,
+por 1 HIGH, 4 MEDIUM y 4 LOW. Todos quedaron corregidos en el commit de cierre,
+cada uno con su regresion observada en rojo primero:
+
+- **HIGH. La cuarentena vencida no se re-armaba para tres tipos de fallo.**
+  `_record_health` mantenia la cuenta `ready` tras `invalid_terminal`,
+  `task_failure` o `invalid_request` (el proveedor respondio), y el `CASE` de
+  `save_health` solo reiniciaba `quarantined_at` cuando `ready` era falso. La
+  fila quedaba en "vencida" para siempre: probe e invocacion real en cada
+  corrida, sin techo, mientras el estado seguia diciendo "en cuarentena". El
+  documento afirmaba lo contrario. Ahora `save_health` recibe `attempt_failed`
+  desde cualquier intento real fallido y re-arma el reloj (y registra ese fallo
+  como causa) aunque el router deje la cuenta `ready` para rutas no
+  cuarentenadas. Regresion: `test_an_expired_quarantine_rearms_on_every_failure_kind`
+  (siete tipos, un intento, un probe).
+- **MEDIUM. `goncloud_local_run` creaba la cadena antes de validar
+  `stop_after`.** Un valor fuera del enum dejaba siete tarjetas huerfanas y la
+  respuesta sin `workflow_id`. `check_stop_after` corre antes de `create`.
+- **MEDIUM. La redaccion no tenia piso de longitud ni punto fijo.** Un valor de
+  1-5 caracteres bajo una clave `*_TOKEN`/`*_API_KEY` reescribia las claves del
+  JSON terminal y rompia el envelope; y `[redacted]` alimentaba la siguiente
+  pasada (10k chars -> 370k en cuatro). Ahora se exigen 6 caracteres, nada que
+  sea parte del marcador, y `redact_text` es idempotente.
+- **MEDIUM. El unico hook fallaba abierto.** Sin `task_id` resoluble devolvia
+  `None` (permitir) y ninguna prueba lo ejercitaba. Para el perfil `reviewer`
+  ahora bloquea si no puede resolver el id (`args`, `HERMES_KANBAN_TASK` o el
+  `task_id` del host, en ese orden); otros roles siguen fuera de la politica.
+  Dos pruebas nuevas cubren el hook registrado.
+- **MEDIUM. Patrones de redaccion incompletos y divergentes.** Slack `xox*-`,
+  Google `AIza`, GitLab `glpat-`, AWS `AKIA`, `Authorization: Basic`, tokens
+  en query string; y la copia del orquestador (la que llega a Telegram) era mas
+  debil que la del router (dejaba pasar `ghp_` y `xai-`). Hay una sola fuente
+  (`redaction.SENSITIVE_TEXT`) y una prueba exige que ambas fronteras la
+  compartan. Residual declarado: no se redactan runs hexadecimales (32/64)
+  porque la evidencia lleva revisiones de git; una clave hex desnuda que un
+  worker copie de un archivo del repo no se atrapa por forma.
+- **LOW.** El archivo temporal del prompt (`grok`, `kimi`) se crea con
+  `open_private_file` (DACL solo-propietario / 0600) en vez de `mkstemp`;
+  `_recover_result` convierte una autorizacion revocada en un `invalid_request`
+  sanitizado en vez de una excepcion que bloquea sin evidencia; `create` deriva
+  la revision de la ruta expandida (una ruta `~/...` daba "revision is
+  required"); y `workflow_id` se valida por forma antes de entrar en argv o en
+  la ruta del resultado.
+
+Se corrigieron ademas dos cifras desfasadas (README: 347 tests; arriba: 7
+herramientas). Lo que el adversary ataco y resistio: idempotencia y concurrencia
+del router (dos corridas o dos hilos, una invocacion), la frontera de procesos
+en Windows, prompts fuera de argv, `private_files.py`, `configure_team.py`, el
+parser del envelope y cero secretos en el historial de Git.
 
 ### El sufijo `-free` en la posicion de Muse
 

@@ -533,16 +533,20 @@ class SubscriptionStateStore:
         failure: Optional[str] = None,
         detail: str = "",
         lift_quarantine: bool = False,
+        attempt_failed: bool = False,
     ) -> None:
         """Record probe or attempt health.
 
         A quarantine survives ordinary probes. Only a successful real inference
         may lift it (``lift_quarantine`` with ``ready``): that is the same proof
         the live matrix demands, so quota that came back is trusted again
-        without anyone re-running the matrix by hand.
+        without anyone re-running the matrix by hand. Any failed real attempt
+        (``attempt_failed``) re-arms the clock, even one the router keeps the
+        account ``ready`` for: an expired quarantine buys one retry per hour.
         """
         safe_detail = _health_detail(ready=ready, failure=failure)
         lift = 1 if (lift_quarantine and ready) else 0
+        rearm = 1 if attempt_failed else 0
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
@@ -554,7 +558,7 @@ class SubscriptionStateStore:
                 "THEN 0 ELSE excluded.ready END, "
                 "account_class=excluded.account_class, "
                 "failure=CASE WHEN subscription_health.quarantined AND NOT :lift "
-                "AND excluded.ready THEN subscription_health.failure "
+                "AND excluded.ready AND NOT :rearm THEN subscription_health.failure "
                 "ELSE excluded.failure END, "
                 "detail=excluded.detail, "
                 "quarantined=CASE WHEN :lift THEN 0 "
@@ -562,7 +566,7 @@ class SubscriptionStateStore:
                 # A failure while quarantined re-arms the clock; a passing
                 # probe is not proof and leaves it alone; proof clears it.
                 "quarantined_at=CASE WHEN :lift THEN NULL "
-                "WHEN subscription_health.quarantined AND NOT :ready "
+                "WHEN subscription_health.quarantined AND (NOT :ready OR :rearm) "
                 "THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                 "ELSE subscription_health.quarantined_at END, "
                 "cooldown_until=CASE WHEN :lift THEN NULL "
@@ -575,6 +579,7 @@ class SubscriptionStateStore:
                     "failure": failure,
                     "detail": safe_detail,
                     "lift": lift,
+                    "rearm": rearm,
                 },
             )
             conn.commit()

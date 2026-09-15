@@ -14,21 +14,42 @@ _SENSITIVE_KEY = re.compile(
     r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY)(?:[_-](?:VALUE|JSON))?$",
     re.IGNORECASE,
 )
-_SENSITIVE_TEXT = re.compile(
-    r"\b(?:sk-[\w-]+|xai-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|"
-    r"Bearer\s+[\w.\-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,})",
+# Credential shapes worth catching without knowing the value. Hex runs are
+# deliberately absent: evidence carries git revisions and hashes.
+SENSITIVE_TEXT = re.compile(
+    r"\b(?:sk-[\w-]+|xai-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|glpat-[\w-]+|"
+    r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|AKIA[0-9A-Z]{16}|"
+    r"Bearer\s+[\w.\-]+|Basic\s+[\w+/=]{16,}|eyJ[\w-]+\.[\w-]+\.[\w-]+|"
+    r"[\w.+-]+@[\w.-]+\.[a-z]{2,})"
+    r"|(?<=[?&])(?:access_token|token|api_key|apikey|secret|password|key)="
+    r"[^&\s\"']+",
     re.IGNORECASE,
 )
+_SENSITIVE_TEXT = SENSITIVE_TEXT
+_MARKER = "[redacted]"
+_MIN_SECRET_CHARS = 6
+
+
+def _usable(secret) -> bool:
+    # Under six characters it is a switch or a placeholder, not a credential,
+    # and replacing it would rewrite JSON keys and break the terminal envelope.
+    # A piece of the marker would feed the next redaction pass forever.
+    return (
+        isinstance(secret, str)
+        and len(secret) >= _MIN_SECRET_CHARS
+        and secret not in _MARKER
+    )
 
 
 def sensitive_values(environment: Mapping[str, str] | None = None) -> tuple[str, ...]:
     """Select credential values by key; ordinary inherited settings stay usable."""
     values = []
     for key, value in (os.environ if environment is None else environment).items():
-        if isinstance(value, str) and value and _SENSITIVE_KEY.search(key):
-            values.append(value)
+        if isinstance(value, str) and _SENSITIVE_KEY.search(key):
+            candidates = [value]
             if value.lower().startswith("bearer "):
-                values.append(value[7:])
+                candidates.append(value[7:])
+            values.extend(candidate for candidate in candidates if _usable(candidate))
     return tuple(values)
 
 
@@ -36,9 +57,8 @@ def _replacement(original: str) -> str:
     # Redaction precedes terminal validation. Never shrink original character
     # or UTF-8 byte counts: that could turn an oversized input/field into a
     # valid approval. Padding carries only a size bound, never provider text.
-    marker = "[redacted]"
     width = len(original.encode("utf-8", errors="replace"))
-    return marker + " " * max(0, width - len(marker))
+    return _MARKER + " " * max(0, width - len(_MARKER))
 
 
 def redact_text(text: str, secrets: Sequence[str] = ()) -> str:
@@ -46,13 +66,13 @@ def redact_text(text: str, secrets: Sequence[str] = ()) -> str:
     result = text or ""
     variants = set()
     for secret in (*sensitive_values(), *secrets):
-        if isinstance(secret, str) and secret:
+        if _usable(secret):
             variants.add(secret)
             variants.add(json.dumps(secret, ensure_ascii=True)[1:-1])
             variants.add(json.dumps(secret, ensure_ascii=False)[1:-1])
     for secret in sorted(variants, key=len, reverse=True):
         result = result.replace(secret, _replacement(secret))
-    return _SENSITIVE_TEXT.sub(lambda match: _replacement(match.group()), result)
+    return SENSITIVE_TEXT.sub(lambda match: _replacement(match.group()), result)
 
 
 def redact_data(value, secrets: Sequence[str] = ()):

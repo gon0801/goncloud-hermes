@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import signal
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Mapping, Sequence
 
+from .private_files import open_private_file
 from .redaction import redact_text, sensitive_values
 from .types import FailureKind
 
@@ -259,14 +261,17 @@ def _cap(redacted: str) -> str:
 
 
 def _write_private_prompt(prompt: str) -> Path:
-    handle, name = tempfile.mkstemp(prefix="goncloud-sub-", suffix=".txt")
+    # The assignment is a secret everywhere else; the file that carries it is
+    # owner-only from creation, so a crash before cleanup leaks nothing.
+    path = Path(tempfile.gettempdir()) / f"goncloud-sub-{secrets.token_hex(8)}.txt"
+    handle = open_private_file(path)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as prompt_file:
             prompt_file.write(prompt)
     except BaseException:
-        Path(name).unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         raise
-    return Path(name)
+    return path
 
 
 def _windows_bootstrap_env() -> dict[str, str]:
