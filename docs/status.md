@@ -206,8 +206,8 @@ Regresiones: cuarentena reciente sigue saltando la ruta; vencida se reintenta
 y el exito real la levanta; vencida y fallida de nuevo se re-arma y la segunda
 corrida ya no reintenta; los cuatro tipos restantes vencen igual; y, desde la
 revision adversarial de cierre (abajo), vencida y fallida con *cualquiera* de
-los siete tipos de fallo se re-arma con reloj nuevo, un solo intento real y sin
-volver a sondear en cada corrida.
+los ocho tipos de fallo se re-arma con reloj nuevo, un solo intento real por
+corrida en serie y sin volver a sondear en cada corrida.
 
 ### Gmail y Google Workspace del director
 
@@ -299,7 +299,7 @@ cada uno con su regresion observada en rojo primero:
   desde cualquier intento real fallido y re-arma el reloj (y registra ese fallo
   como causa) aunque el router deje la cuenta `ready` para rutas no
   cuarentenadas. Regresion: `test_an_expired_quarantine_rearms_on_every_failure_kind`
-  (siete tipos, un intento, un probe).
+  (los siete tipos restantes; `quota` ya tenia la suya).
 - **MEDIUM. `goncloud_local_run` creaba la cadena antes de validar
   `stop_after`.** Un valor fuera del enum dejaba siete tarjetas huerfanas y la
   respuesta sin `workflow_id`. `check_stop_after` corre antes de `create`.
@@ -334,6 +334,38 @@ herramientas). Lo que el adversary ataco y resistio: idempotencia y concurrencia
 del router (dos corridas o dos hilos, una invocacion), la frontera de procesos
 en Windows, prompts fuera de argv, `private_files.py`, `configure_team.py`, el
 parser del envelope y cero secretos en el historial de Git.
+
+**Segunda ronda** (permitida solo porque la primera hallo un HIGH; no hay
+tercera): acotada al diff de las correcciones, veredicto NO BLOQUEA. Verifico
+que ninguna correccion regresa nada (una cuenta sana que falla una vez sigue
+`ready` y sin cuarentena; el hook no bloquea ningun flujo legitimo del host,
+que siempre manda `task_id` y cuya herramienta nativa ya fallaba sin el; los
+ids reales `t_`+8 hex pasan la validacion) y revirtio cada fix en memoria para
+confirmar que su regresion se pone en rojo. Encontro 2 MEDIUM y 6 LOW. Se
+corrigieron en el commit siguiente, con su prueba en rojo primero: el piso de
+seis caracteres y la guarda del marcador faltaban en `_sanitize` (la frontera
+que llega al director y a Telegram; una instruccion de dos letras rompia un
+envelope valido), `AKIA` y `Basic` ahora distinguen mayusculas (la prosa
+`basic authentication...` ya no se redacta), y un re-armado sin tipo de fallo
+conserva la causa registrada en vez de dejarla en `NULL`. Residuales
+declarados, sin tercera ronda:
+
+- "Un solo intento real por hora" vale en serie: el re-armado ocurre despues
+  de la invocacion, fuera del bloqueo de despacho, asi que N cadenas que
+  lleguen a la vez a la misma cuenta con cuarentena vencida pueden gastar
+  hasta N intentos reales antes de que la primera la re-arme. El tablero
+  corre una cadena por repositorio, de modo que N es pequeno.
+- Falsos positivos por forma, inofensivos porque el marcador conserva el
+  tamano: `?key=`/`?apikey=` en URLs de documentacion, `glpat-style`,
+  `xoxa-` (que si es un prefijo real de Slack) y `Basic` seguido de una palabra
+  de 16+ caracteres.
+- La redaccion por regex sobre stdout sin tope es cuadratica en el peor caso
+  (200 KB en una sola linea tardan ~38 s); identico al patron anterior, no es
+  regresion, y el tope se aplica despues a proposito para no partir un secreto.
+- `open_private_file` en un `%TEMP%` sobre ruta UNC no esta verificado; el
+  transporte por archivo (`grok`, `kimi`) fallaria ahi de forma explicita.
+- El hook bloquea al reviewer sin id resoluble; el host lo manda siempre, de
+  modo que el caso solo aparece con un host distinto.
 
 ### El sufijo `-free` en la posicion de Muse
 

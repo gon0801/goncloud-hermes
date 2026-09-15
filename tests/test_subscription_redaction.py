@@ -65,22 +65,41 @@ class RedactionTests(unittest.TestCase):
                 with patch.dict(os.environ, {"ADV_API_KEY": value}):
                     self.assertEqual(redact_text(ENVELOPE), ENVELOPE)
                     self.assertEqual(local_orchestrator._sanitize(ENVELOPE), ENVELOPE)
+                # The instruction is a secret too, with the same floor: a
+                # two-letter assignment must not rewrite "status".
+                self.assertEqual(
+                    local_orchestrator._sanitize(ENVELOPE, value), ENVELOPE
+                )
         self.assertEqual(sensitive_values({"ADV_API_KEY": "abcdef"}), ("abcdef",))
         self.assertEqual(
             sensitive_values({"ADV_TOKEN": "Bearer abcdef"}),
             ("Bearer abcdef", "abcdef"),
         )
 
-    def test_redaction_is_a_fixed_point(self):
+    def test_redaction_is_a_fixed_point_at_both_boundaries(self):
         text = ("token=redact secret=s3cr3t-value " * 20) + ENVELOPE
-        with patch.dict(os.environ, {"X_TOKEN": "redact", "Y_SECRET": "s3cr3t-value"}):
-            once = redact_text(text)
-            self.assertNotIn("s3cr3t-value", once)
-            # The pipeline redacts several times on the way to evidence; the
-            # marker must not feed the next pass or the text grows without end.
-            self.assertEqual(redact_text(once), once)
-            self.assertEqual(redact_text(redact_text(once)), once)
-            self.assertLessEqual(len(once), len(text) + 64)
+        for boundary in (redact_text, local_orchestrator._sanitize):
+            with (
+                self.subTest(boundary=boundary.__name__),
+                patch.dict(
+                    os.environ, {"X_TOKEN": "redact", "Y_SECRET": "s3cr3t-value"}
+                ),
+            ):
+                once = boundary(text)
+                self.assertNotIn("s3cr3t-value", once)
+                # Both boundaries redact several times on the way to evidence
+                # and to Telegram; the marker must not feed the next pass.
+                self.assertEqual(boundary(once), once)
+                self.assertEqual(boundary(boundary(once)), once)
+                self.assertLessEqual(len(once), len(text) + 64)
+
+    def test_case_sensitive_prefixes_leave_prose_alone(self):
+        # AWS ids and HTTP Basic are upper-case shapes; lower-case prose that
+        # happens to share the letters is evidence, not a credential.
+        prose = "akiafixture012345678 uses basic authenticationflowcontrol here"
+        for boundary in (redact_text, local_orchestrator._sanitize):
+            with self.subTest(boundary=boundary.__name__):
+                self.assertEqual(boundary(prose), prose)
 
     def test_common_credential_shapes_are_redacted_by_both_boundaries(self):
         for name, (sample, marker) in SHAPED.items():

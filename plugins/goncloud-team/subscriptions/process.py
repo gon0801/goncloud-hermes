@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import signal
 import shutil
 import subprocess
@@ -263,7 +262,7 @@ def _cap(redacted: str) -> str:
 def _write_private_prompt(prompt: str) -> Path:
     # The assignment is a secret everywhere else; the file that carries it is
     # owner-only from creation, so a crash before cleanup leaks nothing.
-    path = Path(tempfile.gettempdir()) / f"goncloud-sub-{secrets.token_hex(8)}.txt"
+    path = Path(tempfile.gettempdir()) / f"goncloud-sub-{os.urandom(8).hex()}.txt"
     handle = open_private_file(path)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as prompt_file:

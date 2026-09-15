@@ -1049,6 +1049,26 @@ class StatusTests(RouterTestCase):
 
 
 class StateStoreTests(RouterTestCase):
+    def test_a_rearming_attempt_without_a_failure_kind_keeps_the_cause(self):
+        store = SubscriptionStateStore(self.db_path)
+        store.save_live_health(
+            "opencode_go", ready=False, account_class="subscription", failure="quota"
+        )
+
+        store.save_health(
+            "opencode_go",
+            ready=False,
+            account_class="opencode_go",
+            failure=None,
+            detail="live attempt failed",
+            attempt_failed=True,
+        )
+
+        health = store.health("opencode_go")
+        self.assertTrue(health["quarantined"])
+        # A re-arm never erases why the account is held.
+        self.assertEqual(health["failure"], "quota")
+
     def test_store_redacts_each_evidence_write_boundary(self):
         sensitive = (
             "opaque-state-fixture",

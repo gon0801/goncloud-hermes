@@ -16,7 +16,7 @@ from hermes_cli.kanban_db import block_task, complete_task, list_runs, parent_id
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
-    from .subscriptions.redaction import SENSITIVE_TEXT
+    from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from .subscriptions.router import GitInspector
     from .workflow import (
         CORRECTIVE_STAGES,
@@ -25,7 +25,7 @@ try:
         WorkflowService,
     )
 except ImportError:
-    from subscriptions.redaction import SENSITIVE_TEXT
+    from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from subscriptions.router import GitInspector
     from workflow import (
         CORRECTIVE_STAGES,
@@ -187,11 +187,13 @@ def parse_terminal_envelope(text: str, *, role: str) -> dict:
 
 
 def _sanitize(text, instruction=""):
-    secrets = [instruction] if instruction else []
+    # Same floor and marker guard as the router: a short value would rewrite
+    # JSON keys, and a piece of the marker would grow on every pass.
+    secrets = [instruction] if usable_secret(instruction) else []
     secrets.extend(
         value
         for key, value in os.environ.items()
-        if len(value) >= 6
+        if usable_secret(value)
         and any(
             word in key.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")
         )

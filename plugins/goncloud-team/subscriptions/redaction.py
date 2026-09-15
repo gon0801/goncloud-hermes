@@ -18,19 +18,19 @@ _SENSITIVE_KEY = re.compile(
 # deliberately absent: evidence carries git revisions and hashes.
 SENSITIVE_TEXT = re.compile(
     r"\b(?:sk-[\w-]+|xai-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|glpat-[\w-]+|"
-    r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|AKIA[0-9A-Z]{16}|"
-    r"Bearer\s+[\w.\-]+|Basic\s+[\w+/=]{16,}|eyJ[\w-]+\.[\w-]+\.[\w-]+|"
+    r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|(?-i:AKIA[0-9A-Z]{16})|"
+    r"Bearer\s+[\w.\-]+|(?-i:Basic)\s+[A-Za-z0-9+/]{16,}={0,2}|"
+    r"eyJ[\w-]+\.[\w-]+\.[\w-]+|"
     r"[\w.+-]+@[\w.-]+\.[a-z]{2,})"
     r"|(?<=[?&])(?:access_token|token|api_key|apikey|secret|password|key)="
     r"[^&\s\"']+",
     re.IGNORECASE,
 )
-_SENSITIVE_TEXT = SENSITIVE_TEXT
 _MARKER = "[redacted]"
 _MIN_SECRET_CHARS = 6
 
 
-def _usable(secret) -> bool:
+def usable_secret(secret) -> bool:
     # Under six characters it is a switch or a placeholder, not a credential,
     # and replacing it would rewrite JSON keys and break the terminal envelope.
     # A piece of the marker would feed the next redaction pass forever.
@@ -49,7 +49,9 @@ def sensitive_values(environment: Mapping[str, str] | None = None) -> tuple[str,
             candidates = [value]
             if value.lower().startswith("bearer "):
                 candidates.append(value[7:])
-            values.extend(candidate for candidate in candidates if _usable(candidate))
+            values.extend(
+                candidate for candidate in candidates if usable_secret(candidate)
+            )
     return tuple(values)
 
 
@@ -66,7 +68,7 @@ def redact_text(text: str, secrets: Sequence[str] = ()) -> str:
     result = text or ""
     variants = set()
     for secret in (*sensitive_values(), *secrets):
-        if _usable(secret):
+        if usable_secret(secret):
             variants.add(secret)
             variants.add(json.dumps(secret, ensure_ascii=True)[1:-1])
             variants.add(json.dumps(secret, ensure_ascii=False)[1:-1])
