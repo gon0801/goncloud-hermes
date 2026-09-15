@@ -245,10 +245,12 @@ carpetas y envio un correo de prueba a si misma (`Message successfully sent`);
 la cuenta de iCloud tambien autentico (`imaps://imap.mail.me.com:993`, SMTP
 `smtp://smtp.mail.me.com:587` con `smtp.starttls = true`) pero el propietario
 la dejo fuera y su bloque quedo apartado en `icloud.apartada.toml` junto a la
-configuracion. La segunda cuenta de Gmail (`david`) queda declarada con su
-hueco `PEGAR_AQUI_DAVID`: la contrasena de aplicacion que se pego no
-correspondia a esa cuenta (`NO Invalid credentials` aun sin espacios); se
-activa sola en cuanto el propietario pegue una generada con esa sesion. El
+configuracion. La segunda cuenta de Gmail (`david`) fallo primero con
+`NO Invalid credentials`: la contrasena de aplicacion se habia generado desde
+otra sesion y esa cuenta no tenia verificacion en dos pasos (Google no ofrece
+contrasenas de aplicacion sin ella). Con la verificacion activada y una
+contrasena generada en su propia sesion, autentico, listo carpetas (nombres en
+espanol: `[Gmail]/Enviados`) y envio su correo de prueba. El
 gateway se reinicio desde una shell con el PATH de usuario fresco y las tres
 variables de certificados, porque el proceso anterior nacio antes de instalar
 himalaya y no lo veia.
