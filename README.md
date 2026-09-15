@@ -49,9 +49,9 @@ Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_
 
 La seleccion de proveedor y las pruebas con inferencia real se registran en [estado](docs/status.md). Muse usa el login oficial de su CLI dentro de WSL; sus encargos conservan el sandbox de Muse y un archivo temporal privado, eliminado al terminar, mantiene el prompt fuera de la linea de comandos. No pegues claves en el chat ni en Git. No se copiaron tokens, canales, crons ni conexiones comerciales de OpenClaw.
 
-Telegram: stopped pending separate transport cutover
+Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el workflow `t_4fe237e6` (ver [estado](docs/status.md)). Tras cada redespliegue del plugin, la sesion de Telegram debe renovarse con `/new`: una sesion restaurada conserva la lista de herramientas con la que nacio.
 
-El perfil, lista de acceso y entrada de inicio se conservan. Reactivar el gateway requiere primero una cadena local completa aprobada y despues un plan separado que conecte el transporte a esa entrada, con una prueba bidireccional permitida.
+Telegram es solo transporte: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva un modelo nativo para conversar (`team.json`, `director_model`); los trabajadores no llevan ninguno.
 
 ## Calidad
 

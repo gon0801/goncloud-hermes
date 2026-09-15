@@ -31,7 +31,11 @@ cuenta ni una inferencia basada en la existencia de credenciales.
 | grok | ready | subscription | no | 14.88 s |
 | deepseek | ready | api | no | 2.48 s |
 
-El unico fallo, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
+Los fallos que avanzan de slot son `auth`, `quota`, `model_unavailable`,
+`timeout`, `transport` e `invalid_terminal` (el proveedor respondio pero fuera
+del contrato terminal); `transport` e `invalid_terminal` bloquean en cuanto el
+workspace cambio. `task_failure` e `invalid_request` bloquean siempre.
+El unico fallo vigente en la matriz, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
 el proveedor declara la fecha de reposicion. Zen y Kimi pasaron a `ready` al
 agregar a Node la raiz TLS de Kaspersky que intercepta esas conexiones, y Kimi
 ademas recibe ahora el encargo por archivo privado; los dos detalles y la

@@ -45,13 +45,94 @@
   `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
   fixtures preservados en
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-- Bateria final: **347 tests, 344 aprobados y 3 skips de plataforma/privilegios**,
-  274.314 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
+- Bateria final: **361 tests, 358 aprobados y 3 skips de plataforma/privilegios**,
+  278.338 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
 
-Telegram: stopped pending separate transport cutover
+Telegram: GO — gateway running (restarted 2026-09-15 with the final plugin); bidirectional acceptance passed with `t_4fe237e6`
+
+### Cutover de Telegram (plan `2026-09-14-telegram-transport-cutover.md`)
+
+Commit `776e871`. Tareas 1 y 2 del plan cerradas y la tarea 3 en curso:
+
+- **Transporte, no enrutador.** El director recibe el mensaje y llama
+  `goncloud_local_run`, que registra la cadena durable con los mismos limites
+  del CLI local (`LocalOrchestrator.create`, sin ejecutar etapas) y la deja
+  corriendo en un proceso desprendido (`launch_detached`: solo identificadores
+  en argv, salida a ninguna parte, resultado acotado en
+  `%HERMES_HOME%\goncloud-local\<workflow_id>.json`). Contesta al momento con el
+  `workflow_id`; `goncloud_local_status` reporta el avance. Solo `claw` puede
+  llamarla. `roles/claw.md` le indica al director ese camino.
+- **Despachador nativo apagado.** `kanban.dispatch_in_gateway: false` en los
+  nueve perfiles (gestionado desde `team.json`). El despachador del gateway
+  toma cualquier tarjeta `ready` con asignado y la corre con un agente nativo:
+  con la cadena en el tablero, eso era el segundo enrutador. Regresion en
+  `test_configuration`.
+- **Modelo del director.** La configuracion global de Hermes manda todo a
+  OpenRouter (`model.base_url`) sin llave: el director no podia ni contestar
+  (`HTTP 401: Missing Authentication header` con cualquier modelo). Ahora `claw`
+  lleva exactamente un modelo nativo elegido por el propietario en `team.json`
+  (`director_model`: `zai/glm-5.3`, la unica credencial nativa valida en esta
+  maquina y posicion F5 de la tabla `main`), de propiedad completa y nunca
+  mezclado con el bloque por defecto. Los trabajadores no llevan modelo y ningun
+  perfil lleva cadena de fallback. Comprobado: `GONCLOUD_DIRECTOR_OK` con el
+  modelo del perfil, sin flags. Un cambio manual de ese bloque es un conflicto
+  que el configurador se niega a pisar.
+- **Python tambien necesitaba la raiz de Kaspersky.** El SDK de Hermes usa
+  `httpx` con el paquete `certifi`, no el almacen de Windows, y Kaspersky
+  intercepta `api.anthropic.com` y `api.openai.com`. Se creo
+  `%USERPROFILE%\.certs\ca-bundle.pem` (certifi + raiz de Kaspersky) y las
+  variables de usuario `SSL_CERT_FILE` y `REQUESTS_CA_BUNDLE`. Junto con
+  `NODE_EXTRA_CA_CERTS`, todo proceso del router o del gateway debe heredar las
+  tres; el gateway se arranco desde una shell que las tenia.
+- Gates de la tarea 3, paso 1: 356 tests (353 aprobados, 3 skips), nueve perfiles
+  verificados, Plugin Doctor 9 herramientas y 1 hook. Paso 2: gateway
+  `running`, seis sondas PASS.
+- **Primer mensaje real del propietario** (`t_9aed7af7`, encargo de solo
+  lectura): el director llamo `goncloud_local_run`; scout, ingenieria,
+  implementer y verifier completaron en slot 0 (`opencode_go`) y el repo
+  desechable quedo intacto. `adversary` termino `blocked` con `task_failure`:
+  al reproducir la etapa con el mismo modelo el envelope salio valido, asi que
+  fue una respuesta mal formada en esa corrida, bloqueada con evidencia y sin
+  falso exito. La leccion real es otra: una inspeccion no debe correr siete
+  etapas. `306bb8a` agrega `stop_after` a `goncloud_local_run` (identificador
+  en argv, mismos limites del CLI) y `roles/claw.md` indica `stop_after="scout"`
+  para preguntas e inspecciones; la cadena completa queda para cambios
+  autorizados.
+- **Segundo mensaje** (`t_1849d088`, `stop_after` aun ausente en la sesion vieja
+  de Telegram; `/new` la renueva): el router rechazo primero la repeticion
+  sobre el mismo repositorio (exclusion por repositorio, por diseno) y, sobre
+  un repo nuevo, scout termino `local terminal validation failed` en slot 0 y la
+  cadena se bloqueo. El director, con terminal, se puso a leer logs y codigo
+  del plugin; se detuvo el gateway, se comprobo que no modifico nada
+  (plugin identico en los nueve perfiles) y `f0ea38e` cierra las dos cosas:
+  - un envelope rechazado es ahora `FailureKind.INVALID_TERMINAL`: avanza de
+    slot mientras el workspace no haya cambiado y bloquea con evidencia si
+    cambio (misma regla que `transport`); la cuenta sigue `ready`, porque el
+    proveedor si respondio. Regresiones para ambos casos.
+  - el director pierde el toolset `coding` sobre Telegram (solo `kanban` y
+    `goncloud_team`) y `roles/claw.md` le ordena, ante un bloqueo, leer
+    `goncloud_local_status`, reportar y parar: no logs, no codigo, no base.
+- **Tercer mensaje**: el director acorto la ruta del repositorio por su cuenta
+  (`C:\dev\...` en lugar de la ruta bajo `%TEMP%`) y recibio `revision is
+  required`, porque la revision se derivaba de un directorio inexistente.
+  `e03fadd` comprueba el repositorio antes que nada y lo nombra en el error;
+  `roles/claw.md` le exige la ruta exacta, una herramienta por llamada, y el
+  repo desechable se movio a una ruta corta (`C:\dev\prueba-telegram`). Tras el
+  reinicio del gateway, Hermes restauro la sesion anterior con su lista de
+  herramientas vieja (terminal incluida): la configuracion nueva aplica a una
+  sesion nueva, que se abre con `/new`.
+- **Cuarto mensaje, aceptacion (`t_4fe237e6`)**: tras `/new`, el director llamo
+  solo `goncloud_local_run` y `goncloud_local_status`; un intento del router en
+  slot 0 `opencode_go`/`deepseek-v4.1-flash` (suscripcion), completado, sin
+  fallo y sin leases; driver `paused` con scout `done` y las demas etapas sin
+  tocar; repositorio limpio en `248aad1`; la respuesta en el chat listo los dos
+  archivos. Pasos 3, 5 y 6 del plan cerrados: **GO**, el gateway queda
+  corriendo. Paso 4 (rechazo de un id no permitido) sigue abierto porque el
+  propietario solo dispone de una identidad de Telegram; la lista de acceso es
+  la nativa del gateway y no se toco.
 
 ### Defectos encontrados al cerrar la aceptacion
 
