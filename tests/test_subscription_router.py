@@ -1395,6 +1395,85 @@ class GitInspectorTests(unittest.TestCase):
         self.assertEqual(inspector.changed_files(self.repo), (" renamed ñ.txt",))
 
 
+class InvalidTerminalTests(RouterTestCase):
+    """A vendor that answers but not in the terminal contract did not do the task.
+
+    That is a route failure, not a task failure: with the workspace untouched the
+    next table position gets its turn. Once the workspace changed, the stage
+    blocks with evidence instead, exactly like a transport failure would.
+    """
+
+    def rejecting_transform(self):
+        def transform(result):
+            if result.adapter == "opencode_go":
+                raise ValueError("invalid or oversized terminal envelope")
+            return result
+
+        return transform
+
+    def test_a_rejected_envelope_advances_to_the_next_slot_when_nothing_changed(self):
+        self.fake_adapters["opencode_go"].result = completed(
+            text="not an envelope", adapter="opencode_go"
+        )
+        self.fake_adapters["opencode_zen"].result = completed(
+            text="```json\n{}\n```", adapter="opencode_zen"
+        )
+        router = self.router()
+
+        result = router.run(
+            replace(
+                request(self.workspace), result_transform=self.rejecting_transform()
+            ),
+            routes_for_main()[:2],
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "opencode_zen")
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(attempts[0]["failure"], "invalid_terminal")
+        self.assertEqual(attempts[0]["disposition"], "executed")
+        self.assertEqual(len(self.fake_adapters["opencode_zen"].requests), 1)
+        # The vendor answered, so the account stays ready for the next stage.
+        self.assertTrue(router.store.health("opencode_go")["ready"])
+
+    def test_a_rejected_envelope_blocks_once_the_workspace_was_mutated(self):
+        self.fake_adapters["opencode_go"].result = completed(
+            text="not an envelope", adapter="opencode_go"
+        )
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        mutated_git = type(
+            "Git",
+            (),
+            {
+                "current_revision": lambda _, workspace: "r1",
+                "resolve_revision": lambda _, workspace, revision: "r0",
+                "changed_files": lambda _, workspace: ("a.txt",),
+                "mutation_since": lambda _, workspace, revision: (
+                    "r1",
+                    ("a.txt",),
+                    True,
+                ),
+            },
+        )()
+        router = SubscriptionRouter(
+            adapters=self.fake_adapters,
+            db_path=self.db_path,
+            routing_source=SOURCE,
+            git=mutated_git,
+        )
+
+        result = router.run(
+            replace(
+                request(self.workspace), result_transform=self.rejecting_transform()
+            ),
+            routes_for_main()[:2],
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+        self.assertEqual(self.fake_adapters["opencode_zen"].requests, [])
+
+
 class QuarantineExpiryTests(RouterTestCase):
     """Quota comes and goes; a quarantine must expire and re-prove itself.
 

@@ -29,7 +29,11 @@ _ADVANCING_FAILURES = {
     FailureKind.MODEL_UNAVAILABLE,
     FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
+    FailureKind.INVALID_TERMINAL,
 }
+#: Advancing failures that must still block once the workspace changed: the
+#: next slot would otherwise redo work on top of an unreported mutation.
+_BLOCK_AFTER_MUTATION = {FailureKind.TRANSPORT, FailureKind.INVALID_TERMINAL}
 _QUOTA_COOLDOWN_MINUTES = 15
 # Quota, connectivity and even credentials come back on their own, so a
 # quarantine is a verdict with a lifetime, not a permanent ban. After this
@@ -217,7 +221,7 @@ class SubscriptionRouter:
                             latest["disposition"] != "skipped"
                             and (
                                 failure not in _ADVANCING_FAILURES
-                                or (failure is FailureKind.TRANSPORT and mutated)
+                                or (failure in _BLOCK_AFTER_MUTATION and mutated)
                             )
                         )
                         or latest["slot"]
@@ -435,7 +439,7 @@ class SubscriptionRouter:
                 # Task/invalid failures never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
                 return result
-            if result.failure is FailureKind.TRANSPORT and mutated:
+            if result.failure in _BLOCK_AFTER_MUTATION and mutated:
                 return result
             if result.failure is FailureKind.QUOTA:
                 self.store.set_cooldown(
@@ -475,22 +479,33 @@ class SubscriptionRouter:
     def _invoke_route(
         self, request: InvocationRequest, route: RouteSpec
     ) -> InvocationResult:
-        try:
-            result = self.adapters[route.adapter].invoke(request, route)
-            if request.result_transform is not None:
-                result = request.result_transform(result)
-            return sanitize_result(result, (request.prompt,))
-        except Exception:
+        def failed(text, failure):
             return InvocationResult(
                 success=False,
-                text="local terminal validation failed"
-                if request.result_transform is not None
-                else "subscription invocation failed",
+                text=text,
                 adapter=route.adapter,
                 model=route.model,
                 billing_mode=route.billing_mode,
-                failure=FailureKind.TASK_FAILURE,
+                failure=failure,
             )
+
+        try:
+            result = self.adapters[route.adapter].invoke(request, route)
+        except Exception:
+            return failed("subscription invocation failed", FailureKind.TASK_FAILURE)
+        if request.result_transform is not None:
+            # The vendor answered; a rejected terminal envelope means this route
+            # produced nothing usable, not that the task failed.
+            try:
+                result = request.result_transform(result)
+            except Exception:
+                return failed(
+                    "local terminal validation failed", FailureKind.INVALID_TERMINAL
+                )
+        try:
+            return sanitize_result(result, (request.prompt,))
+        except Exception:
+            return failed("subscription invocation failed", FailureKind.TASK_FAILURE)
 
     def _recover_result(self, request, recorded, owner):
         result = _result_from_attempt(recorded)
@@ -506,7 +521,7 @@ class SubscriptionRouter:
                 success=False,
                 text="local terminal validation failed",
                 session_id="",
-                failure=FailureKind.TASK_FAILURE,
+                failure=FailureKind.INVALID_TERMINAL,
             )
         if not self.store.normalize_completed_attempt(
             workflow_id=request.workflow_id,
@@ -624,9 +639,16 @@ class SubscriptionRouter:
             )
             return
         failure = result.failure
+        # A rejected envelope advances the slot but says nothing about the
+        # account: the vendor answered. Keeping it ready avoids skipping the
+        # primary position for the whole health window after one bad answer.
+        account_ready = (
+            failure not in _ADVANCING_FAILURES
+            or failure is FailureKind.INVALID_TERMINAL
+        )
         self.store.save_health(
             adapter,
-            ready=failure not in _ADVANCING_FAILURES,
+            ready=account_ready,
             account_class=adapter,
             failure=failure.value if failure else None,
             detail="live attempt failed",

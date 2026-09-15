@@ -140,6 +140,10 @@ def desired_profile_config(role, team, runtime_home):
         # model here, and no profile ever gets a native fallback chain, because
         # that chain was the competing router the recovery removed.
         desired["model"] = dict(team["director_model"])
+        # Over a messaging transport the director creates the chain and
+        # reports; with a terminal it went off reading logs and plugin code
+        # when a stage blocked. Work on files happens inside the chain.
+        desired["platform_toolsets"]["telegram"] = ["kanban", "goncloud_team"]
     return desired
 
 

@@ -166,6 +166,28 @@ class ConfigurationTests(unittest.TestCase):
                 else:
                     self.assertNotIn("model", desired)
 
+    def test_the_director_has_no_terminal_over_messaging_transports(self):
+        # Over Telegram the director is a transport: it creates the chain and
+        # reports. With a terminal it went off reading logs and plugin code
+        # when a stage blocked, which is neither its job nor safe.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        for role in team["profiles"]:
+            desired = module.desired_profile_config(role, team, Path("C:/home"))
+            with self.subTest(role=role):
+                if role == team["director"]:
+                    self.assertEqual(
+                        desired["platform_toolsets"]["telegram"],
+                        ["kanban", "goncloud_team"],
+                    )
+                else:
+                    self.assertIn("coding", desired["platform_toolsets"]["telegram"])
+
+    def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
+        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
+        self.assertIn("goncloud_local_status", claw)
+        self.assertIn("no leas logs", claw)
+        self.assertIn("no revises el codigo del plugin", claw)
+
     def test_preserve_user_model_and_credentials(self):
         existing = {
             "model": {"provider": "custom", "base_url": "https://example.invalid"},

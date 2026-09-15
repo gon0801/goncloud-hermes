@@ -17,6 +17,9 @@ class FailureKind(StrEnum):
     TIMEOUT = "timeout"
     TRANSPORT = "transport"
     INVALID_REQUEST = "invalid_request"
+    #: The vendor answered, but not in the terminal contract. The route did not
+    #: deliver a usable result; the task itself was not shown to have failed.
+    INVALID_TERMINAL = "invalid_terminal"
     TASK_FAILURE = "task_failure"
 
 
