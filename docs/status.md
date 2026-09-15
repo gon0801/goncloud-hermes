@@ -2,30 +2,28 @@
 
 ## Estado actual: aceptacion local completa (2026-09-14)
 
-- Codigo de runtime aprobado y desplegado: `d0cca29`. Nueve perfiles verificados;
+- Codigo de runtime aprobado y desplegado: `5c04159`. Nueve perfiles verificados;
   fuente literal byte-identica, sin cadenas nativas administradas y con Copilot
   excluido. Backup previo de 18 archivos, con hashes comprobados, en
   `%LOCALAPPDATA%\hermes\recovery-backups\20260914T214024Z-task9b`; nada eliminado.
-- Matriz live actual: **6/9 ready**: Go, Muse, Claude Max, Z.AI y Grok por
-  suscripcion; DeepSeek por API. Tres cuarentenas durables: Zen `timeout` (301 s),
-  Codex `quota`, Kimi `transport`. Las tres avanzan de slot; ninguna bloquea una
-  etapa. Probes individuales secuenciales, sin login interactivo, migracion ni
-  limpieza de lanzadores. Tabla y slots intactos.
-- Las tres cuentas restantes dependen del propietario, no del codigo, y cada
-  diagnostico es una observacion directa del CLI o del endpoint, no una hipotesis:
-  - **Codex**: `codex login status` responde `Logged in using ChatGPT` y el
-    modelo `gpt-6-astra` esta vinculado; `codex exec` devuelve
-    `You've hit your usage limit ... try again at Sep 19th, 2026 10:36 AM`.
-    Configuracion completa y comprobada; sirve cuando vuelva la cuota.
-  - **Kimi**: `kimi doctor` valida la configuracion y el DNS/TLS de
-    `api.kimi.com` resuelve, pero la credencial guardada devuelve **401** contra
-    `/coding/v1/models`. El CLI lo reporta como `provider.connection_error`; el
-    hecho observado es credencial rechazada. Requiere `kimi login`.
-  - **Zen**: la credencial esta instalada (`opencode auth list`) y el modelo
-    `opencode/muse-spark-1.3-contributor-free` existe en el catalogo del CLI,
-    pero toda inferencia cuelga en silencio hasta el limite de 300 s. Coincide
-    con el `FreeUsageLimitError` 429 ya registrado: es saldo o limite de la capa
-    gratuita de esa cuenta.
+- Matriz live actual: **8/9 ready**: Go, Zen, Muse, Claude Max, Kimi, Z.AI y
+  Grok por suscripcion; DeepSeek por API. Una cuarentena durable: Codex `quota`,
+  que avanza de slot y no bloquea ninguna etapa. Probes individuales secuenciales,
+  sin migracion ni limpieza de lanzadores. Tabla y slots intactos.
+- **Codex** es la unica cuenta pendiente y no depende del codigo: `codex login
+  status` responde `Logged in using ChatGPT`, el modelo `gpt-6-astra` esta
+  vinculado y `codex exec` devuelve textualmente `You've hit your usage limit ...
+  try again at Sep 19th, 2026 10:36 AM`. Configuracion completa y comprobada;
+  entra sola cuando el proveedor reponga la cuota.
+- **Dependencia del entorno en esta maquina**: Kaspersky intercepta TLS y
+  presenta su propio certificado raiz (`Kaspersky Anti-Virus Personal Root
+  Certificate`) en hosts como `auth.kimi.com`. Windows lo acepta; los CLIs
+  hechos en Node no, porque traen su propia lista de raices. El remedio fue
+  exportar esa raiz a `%USERPROFILE%\.certs\kaspersky-root.pem` y fijar la
+  variable de usuario `NODE_EXTRA_CA_CERTS` a esa ruta. No relaja la
+  verificacion: solo agrega la misma raiz que el sistema ya aprueba. **Todo
+  proceso que ejecute el router (gateway incluido) debe heredar esa variable**;
+  un proceso arrancado antes de fijarla no la tiene.
 - Scout `t_f2e2bb6d`: completado por Go slot 0, `deepseek-v4.1-flash`, suscripcion;
   repositorio limpio y pausa tras scout, sin entrega.
 - Cadena completa `t_be290d83`: **entregada**. Las siete etapas en orden —scout,
@@ -45,8 +43,8 @@
   `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
   fixtures preservados en
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-- Bateria final: **340 tests, 337 aprobados y 3 skips de plataforma/privilegios**,
-  301.682 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
+- Bateria final: **343 tests, 340 aprobados y 3 skips de plataforma/privilegios**,
+  280.258 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
@@ -79,6 +77,27 @@ arreglo lleva su regresion observada en rojo primero.
   inicio de linea. El modelo de `ingenieria` emite ` ```json ` pegado a su prosa,
   y eso bloqueo la cadena en las dos corridas anteriores. La valla de cierre y la
   prohibicion de contenido posterior siguen estrictas.
+
+### Zen y Kimi: era el certificado, no las cuentas
+
+Dos diagnosticos anteriores de este documento fueron incorrectos y se corrigen
+aqui. Zen no estaba limitada por su capa gratuita y la credencial de Kimi no
+estaba muerta: ambas conexiones morian en la interceptacion TLS de Kaspersky
+descrita arriba. Con la raiz agregada a Node, Zen respondio en 6.2 s (antes
+colgaba 300 s en silencio) y `kimi login` renovo su sesion sin pedir codigo. El
+401 observado contra `api.kimi.com` se produjo probando la llave `api_key` del
+`config.toml`, que es un resto de una configuracion anterior; la sesion vigente
+de Kimi es OAuth y el CLI la renueva solo.
+
+Kimi tenia ademas un defecto de adaptador: kimi 0.34 solo acepta el prompt como
+argumento de `-p` y no lee stdin, asi que `-p -` le entregaba un guion literal.
+El encargo viaja ahora en un archivo privado que kimi carga como definicion de
+agente (`--agent-file`, con el frontmatter que exige) y `-p` lleva una sola frase
+fija sin contenido del encargo; la regla de no poner prompts en argumentos se
+mantiene. El parser acepta el flujo `stream-json` de 0.34 (lineas `role`/
+`content`, cierre por `session.resume_hint`) ademas del esquema anterior. Se
+descarto el modo `kimi acp` (JSON-RPC por stdio, tambien verificado) porque
+requeriria una frontera de proceso bidireccional nueva.
 
 ### El sufijo `-free` en la posicion de Muse
 

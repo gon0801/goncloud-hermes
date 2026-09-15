@@ -3,7 +3,7 @@
 Fuente autoritativa: `model-routing.source.json`, intacta desde `f86fc8a`.
 Ocho agentes por ocho posiciones: 64 celdas; `main` corresponde a `claw` y
 `entrega` hereda `main`. Los nueve perfiles tienen la misma fuente literal
-instalada y el plugin aprobado en `d0cca29`; no tienen cadenas nativas
+instalada y el plugin aprobado en `5c04159`; no tienen cadenas nativas
 administradas `model`/`fallback_providers`. Copilot y Copilot ACP estan excluidos.
 
 Primary (slot 0) usa OpenCode Go y F1 (slot 1) OpenCode Zen. F2-F7 usan la
@@ -12,7 +12,7 @@ historicos. Los duplicados mantienen posiciones distintas. Solo el adaptador
 DeepSeek factura como API; un modelo DeepSeek servido por Go sigue siendo
 suscripcion. No se movio ninguna posicion para compensar cuentas no disponibles.
 
-## Matriz vigente: 6/9 pruebas live aprobadas
+## Matriz vigente: 8/9 pruebas live aprobadas
 
 Inferencias independientes, estrictamente secuenciales y con marcador exacto
 `GONCLOUD_PROBE_OK`. Cada JSON sanitizado se inspecciono antes del siguiente.
@@ -22,21 +22,21 @@ cuenta ni una inferencia basada en la existencia de credenciales.
 | Adaptador | Resultado live | Facturacion | Cuarentena durable | Tiempo |
 |---|---|---|---|---|
 | opencode_go | ready | subscription | no | 4.4 s |
-| opencode_zen | failed / timeout | subscription | si | 301.67 s, incluida limpieza |
+| opencode_zen | ready | subscription | no | 6.2 s |
 | muse | ready | subscription | no | 71.94 s |
 | claude | ready | subscription | no | 14.82 s |
 | codex | quarantined / quota | subscription | si | 18.12 s |
-| kimi | failed / transport | subscription | si | 17.55 s |
+| kimi | ready | subscription | no | 14.9 s |
 | zai | ready | subscription | no | 4.24 s |
 | grok | ready | subscription | no | 14.88 s |
 | deepseek | ready | api | no | 2.48 s |
 
-Los tres fallos son de la clase que avanza de slot (`timeout`, `quota`,
-`transport`); ninguno bloquea una etapa. Los tres dependen de la cuenta, no del
-codigo: Codex tiene la cuota agotada con fecha de reposicion declarada por el
-proveedor, Kimi devuelve 401 con la credencial guardada y necesita `kimi login`,
-y Zen cuelga sin responder dentro del limite de su capa gratuita. El detalle
-observado de cada uno esta en [estado](status.md).
+El unico fallo, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
+el proveedor declara la fecha de reposicion. Zen y Kimi pasaron a `ready` al
+agregar a Node la raiz TLS de Kaspersky que intercepta esas conexiones, y Kimi
+ademas recibe ahora el encargo por archivo privado; los dos detalles y la
+variable `NODE_EXTRA_CA_CERTS` que el router necesita en esta maquina estan en
+[estado](status.md).
 
 El comando oficial `configure_subscriptions.py --live-probe-all --only ADAPTADOR
 --json RUTA` guarda salud normalizada en
@@ -78,7 +78,7 @@ Evidencia: `.claude/tmp/task9b-acceptance-evidence.json`,
 Kanban nativo: `%LOCALAPPDATA%\hermes\kanban.db`; intentos/salud:
 `%LOCALAPPDATA%\hermes\subscription-router.db`. Fixtures preservados en
 `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-Gates finales: 340 tests (337 aprobados, 3 skips), 8/8 hooks, `git diff --check` limpio,
+Gates finales: 343 tests (340 aprobados, 3 skips), 8/8 hooks, `git diff --check` limpio,
 Plugin Doctor OK (7 herramientas, 1 hook) y gateway `stopped`. Los defectos
 corregidos para llegar a esta cadena estan en [estado](status.md).
 
