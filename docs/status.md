@@ -359,9 +359,13 @@ declarados, sin tercera ronda:
   tamano: `?key=`/`?apikey=` en URLs de documentacion, `glpat-style`,
   `xoxa-` (que si es un prefijo real de Slack) y `Basic` seguido de una palabra
   de 16+ caracteres.
-- La redaccion por regex sobre stdout sin tope es cuadratica en el peor caso
-  (200 KB en una sola linea tardan ~38 s); identico al patron anterior, no es
-  regresion, y el tope se aplica despues a proposito para no partir un secreto.
+- (Resuelto despues de la ronda: la redaccion por regex era cuadratica en el
+  peor caso por el patron de correos sin tope; 1 MB en una sola linea tardaba
+  ~20 min con el patron viejo y el nuevo por igual, mas que el lease de etapa
+  de 600 s, y perder el lease saltaba el registro de salud que re-arma la
+  cuarentena. Las clases abiertas quedaron acotadas a los maximos del RFC y
+  una regresion en subproceso exige que 200 KB adversarios terminen en menos
+  de 10 s.)
 - `open_private_file` en un `%TEMP%` sobre ruta UNC no esta verificado; el
   transporte por archivo (`grok`, `kimi`) fallaria ahi de forma explicita.
 - El hook bloquea al reviewer sin id resoluble; el host lo manda siempre, de

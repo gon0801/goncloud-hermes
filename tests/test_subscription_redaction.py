@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -114,6 +115,36 @@ class RedactionTests(unittest.TestCase):
         for boundary in (redact_text, local_orchestrator._sanitize):
             with self.subTest(boundary=boundary.__name__):
                 self.assertIn(REVISION, boundary(f"revision {REVISION} verified"))
+
+    def test_an_adversarial_single_line_redacts_in_linear_time(self):
+        # A minified blob with no "@" used to backtrack from every word
+        # boundary (about 20 min per MB), past the 600 s stage lease, which
+        # then skipped the health record that re-arms a quarantine. The regex
+        # holds the GIL, so the bound is enforced on a child process.
+        probe = (
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "import local_orchestrator; from subscriptions.redaction import redact_text; "
+            "blob = 'a.' * 100_000; "
+            "assert redact_text(blob) == blob; "
+            "assert local_orchestrator._sanitize(blob) == blob; print('linear')"
+        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-c", probe, str(ROOT / "plugins/goncloud-team")],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": str(
+                        Path.home() / "AppData/Local/hermes/hermes-agent"
+                    ),
+                },
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("redaction of a 200 KB single line did not finish in 10 s")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "linear")
 
     def test_the_orchestrator_shares_the_router_patterns(self):
         # Two copies drifted once (ghp_/xai- reached Telegram); one source now.

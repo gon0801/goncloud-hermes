@@ -15,13 +15,15 @@ _SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 # Credential shapes worth catching without knowing the value. Hex runs are
-# deliberately absent: evidence carries git revisions and hashes.
+# deliberately absent: evidence carries git revisions and hashes. Every open
+# class is bounded (RFC 5321 lengths for mail): an unbounded run backtracked
+# from every word boundary of a minified blob, minutes per 100 KB.
 SENSITIVE_TEXT = re.compile(
     r"\b(?:sk-[\w-]+|xai-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|glpat-[\w-]+|"
     r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|(?-i:AKIA[0-9A-Z]{16})|"
     r"Bearer\s+[\w.\-]+|(?-i:Basic)\s+[A-Za-z0-9+/]{16,}={0,2}|"
     r"eyJ[\w-]+\.[\w-]+\.[\w-]+|"
-    r"[\w.+-]+@[\w.-]+\.[a-z]{2,})"
+    r"[\w.+-]{1,64}@[\w.-]{1,253}\.[a-z]{2,})"
     r"|(?<=[?&])(?:access_token|token|api_key|apikey|secret|password|key)="
     r"[^&\s\"']+",
     re.IGNORECASE,
