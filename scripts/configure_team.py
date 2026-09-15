@@ -144,10 +144,10 @@ def desired_profile_config(role, team, runtime_home):
         desired["fallback_providers"] = [
             dict(entry) for entry in team["director_fallbacks"]
         ]
-        # Over a messaging transport the director creates the chain and
-        # reports; with a terminal it went off reading logs and plugin code
-        # when a stage blocked. Work on files happens inside the chain.
-        desired["platform_toolsets"]["telegram"] = ["kanban", "goncloud_team"]
+        # The director keeps the full toolset over Telegram by owner decision:
+        # Gmail/Calendar/Drive run through a terminal-driven skill. Its role
+        # text, not the toolset, keeps it from wandering into logs and plugin
+        # code when a stage blocks.
     return desired
 
 

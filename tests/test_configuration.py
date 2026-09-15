@@ -203,21 +203,20 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertEqual(chain[0], allowed_in_order[0])
 
-    def test_the_director_has_no_terminal_over_messaging_transports(self):
-        # Over Telegram the director is a transport: it creates the chain and
-        # reports. With a terminal it went off reading logs and plugin code
-        # when a stage blocked, which is neither its job nor safe.
+    def test_every_profile_keeps_the_full_toolset_over_messaging_transports(self):
+        # Owner decision (2026-09-14): the director keeps the terminal over
+        # Telegram because Gmail/Calendar/Drive run through a terminal-driven
+        # skill and some requests need full access. The guard against it
+        # wandering into logs and plugin code is the role text, not the
+        # toolset (see test_the_director_role_reports_a_blocked_workflow_and_stops).
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         for role in team["profiles"]:
             desired = module.desired_profile_config(role, team, Path("C:/home"))
             with self.subTest(role=role):
-                if role == team["director"]:
-                    self.assertEqual(
-                        desired["platform_toolsets"]["telegram"],
-                        ["kanban", "goncloud_team"],
-                    )
-                else:
-                    self.assertIn("coding", desired["platform_toolsets"]["telegram"])
+                self.assertEqual(
+                    desired["platform_toolsets"]["telegram"],
+                    ["coding", "kanban", "goncloud_team"],
+                )
 
     def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")

@@ -127,9 +127,12 @@ Commit `776e871`. Tareas 1 y 2 del plan cerradas y la tarea 3 en curso:
     slot mientras el workspace no haya cambiado y bloquea con evidencia si
     cambio (misma regla que `transport`); la cuenta sigue `ready`, porque el
     proveedor si respondio. Regresiones para ambos casos.
-  - el director pierde el toolset `coding` sobre Telegram (solo `kanban` y
-    `goncloud_team`) y `roles/claw.md` le ordena, ante un bloqueo, leer
-    `goncloud_local_status`, reportar y parar: no logs, no codigo, no base.
+  - el director perdio el toolset `coding` sobre Telegram y `roles/claw.md`
+    le ordena, ante un bloqueo, leer `goncloud_local_status`, reportar y
+    parar: no logs, no codigo, no base. **Revertido por decision del
+    propietario** al conectar Gmail: la skill `google-workspace` corre por
+    terminal y el director necesita acceso completo desde Telegram para esos
+    casos; queda `coding` de vuelta y la regla del rol como unica guarda.
 - **Tercer mensaje**: el director acorto la ruta del repositorio por su cuenta
   (`C:\dev\...` en lugar de la ruta bajo `%TEMP%`) y recibio `revision is
   required`, porque la revision se derivaba de un directorio inexistente.
@@ -201,6 +204,21 @@ correr la matriz live a mano cada vez. La regla ahora es:
 Regresiones: cuarentena reciente sigue saltando la ruta; vencida se reintenta
 y el exito real la levanta; vencida y fallida de nuevo se re-arma y la segunda
 corrida ya no reintenta; los cuatro tipos restantes vencen igual.
+
+### Gmail y Google Workspace del director
+
+El propietario pidio que Hermes accediera a su Gmail. El director usa la skill
+empaquetada `google-workspace` (Gmail, Calendario, Drive, Contactos, Hojas y
+Docs por OAuth de Google, `scripts/google_api.py` por terminal). El cliente
+OAuth (`google_client_secret.json`) ya existia en el perfil `claw`; faltaba la
+autorizacion: `setup.py --auth-url` genero el enlace, el propietario lo aprobo
+en su navegador y pego la URL de retorno, y `setup.py --auth-code` guardo el
+token en `%LOCALAPPDATA%\hermes\profiles\claw\google_token.json`
+(`--check` = `AUTHENTICATED`). Prueba real desde el perfil: `gmail search
+"newer_than:7d" --max 3` respondio en 2.2 s y `gmail labels` listo 92
+etiquetas con `INBOX`. Nada de correo se copio a este repositorio. La skill es
+Python: hereda `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` del gateway por la
+interceptacion de Kaspersky descrita arriba.
 
 ### Zen y Kimi: era el certificado, no las cuentas
 
