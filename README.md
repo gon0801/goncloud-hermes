@@ -51,7 +51,7 @@ La seleccion de proveedor y las pruebas con inferencia real se registran en [est
 
 Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el workflow `t_4fe237e6` (ver [estado](docs/status.md)). Tras cada redespliegue del plugin, la sesion de Telegram debe renovarse con `/new`: una sesion restaurada conserva la lista de herramientas con la que nacio.
 
-Telegram es solo transporte: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva un modelo nativo para conversar (`team.json`, `director_model`); los trabajadores no llevan ninguno.
+Telegram es solo transporte: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva una cadena nativa para conversar (`team.json`: `director_model` + `director_fallbacks`, restringida a las posiciones de `main` que son la misma suscripcion por API nativa, en el orden de la tabla); los trabajadores no llevan ninguna.
 
 ## Calidad
 

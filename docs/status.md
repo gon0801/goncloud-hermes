@@ -45,8 +45,8 @@
   `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
   fixtures preservados en
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-- Bateria final: **361 tests, 358 aprobados y 3 skips de plataforma/privilegios**,
-  278.338 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
+- Bateria final: **362 tests, 359 aprobados y 3 skips de plataforma/privilegios**,
+  288.213 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
@@ -72,14 +72,22 @@ Commit `776e871`. Tareas 1 y 2 del plan cerradas y la tarea 3 en curso:
   `test_configuration`.
 - **Modelo del director.** La configuracion global de Hermes manda todo a
   OpenRouter (`model.base_url`) sin llave: el director no podia ni contestar
-  (`HTTP 401: Missing Authentication header` con cualquier modelo). Ahora `claw`
-  lleva exactamente un modelo nativo elegido por el propietario en `team.json`
-  (`director_model`: `zai/glm-5.3`, la unica credencial nativa valida en esta
-  maquina y posicion F5 de la tabla `main`), de propiedad completa y nunca
-  mezclado con el bloque por defecto. Los trabajadores no llevan modelo y ningun
-  perfil lleva cadena de fallback. Comprobado: `GONCLOUD_DIRECTOR_OK` con el
-  modelo del perfil, sin flags. Un cambio manual de ese bloque es un conflicto
-  que el configurador se niega a pisar.
+  (`HTTP 401: Missing Authentication header` con cualquier modelo). Primero se
+  le dio un solo modelo nativo (`zai/glm-5.3`, la unica credencial nativa valida
+  entonces). Despues el propietario registro su llave de OpenCode Go en Hermes
+  (`hermes auth add opencode-go`) y `claw` lleva ahora la **cadena de
+  conversacion** de `team.json`: `director_model` = Primary de `main`
+  (`opencode-go/muse-spark-1.3-contributor`) y `director_fallbacks` =
+  `opencode-zen/muse-spark-1.3-contributor-free` -> `kimi-coding/k3` ->
+  `zai/glm-5.3`. Son exactamente las posiciones de `main` que Hermes puede
+  alcanzar por API nativa **con la misma suscripcion**, en el orden de la
+  tabla; una regresion prohibe cualquier otra (Claude Max, ChatGPT, Grok y Muse
+  por API nativa serian otra cuenta: la cadena de clase equivocada que la
+  recuperacion quito). El bloque `model` es de propiedad completa y nunca se
+  mezcla con el bloque por defecto; un cambio manual es un conflicto que el
+  configurador se niega a pisar. Zen y Kimi siguen con llaves nativas
+  invalidas (401): Hermes las salta y cae a Z.AI hasta que se registren de
+  nuevo. Los trabajadores no llevan modelo ni cadena.
 - **Python tambien necesitaba la raiz de Kaspersky.** El SDK de Hermes usa
   `httpx` con el paquete `certifi`, no el almacen de Windows, y Kaspersky
   intercepta `api.anthropic.com` y `api.openai.com`. Se creo
