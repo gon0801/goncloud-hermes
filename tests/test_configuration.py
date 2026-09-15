@@ -224,6 +224,18 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("no leas logs", claw)
         self.assertIn("no revises el codigo del plugin", claw)
 
+    def test_the_director_role_keeps_business_work_off_the_native_board(self):
+        # 2026-09-15: after a gateway restart the director handed an Odoo
+        # lookup to `operaciones` with kanban_create. Nothing executes those
+        # cards (dispatcher off, no worker gateways, the driver only runs the
+        # engineering chain), so the card sat in `ready` forever. Business
+        # work is the director's own job with its browser and vault.
+        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
+        self.assertNotIn("Trabajo de negocio va a operaciones", claw)
+        self.assertIn("kanban_create", claw)
+        self.assertIn("navegador", claw)
+        self.assertIn("kanban dispatch", claw)
+
     def test_preserve_user_model_and_credentials(self):
         existing = {
             "model": {"provider": "custom", "base_url": "https://example.invalid"},
