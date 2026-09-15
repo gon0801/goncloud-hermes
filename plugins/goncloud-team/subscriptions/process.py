@@ -24,6 +24,8 @@ from .types import FailureKind
 
 _MAX_OUTPUT_CHARS = 20_000
 _PROMPT_PLACEHOLDER = "{prompt_file}"
+#: Adapters put this token in argv where the private prompt file path belongs.
+PROMPT_PLACEHOLDER = _PROMPT_PLACEHOLDER
 _CLEANUP_GRACE_SECONDS = 4
 _WINDOWS_GATE = "goncloud-subscription-start!"
 _WINDOWS_GATE_LAUNCHER = (

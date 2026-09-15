@@ -36,7 +36,12 @@ from subscriptions.adapters.claude import ClaudeAdapter  # noqa: E402
 from subscriptions.adapters.codex import CodexAdapter  # noqa: E402
 from subscriptions.adapters.deepseek import DeepSeekAdapter  # noqa: E402
 from subscriptions.adapters.grok import GrokAdapter  # noqa: E402
-from subscriptions.adapters.kimi import KimiAdapter, parse_kimi_jsonl  # noqa: E402
+from subscriptions.adapters.kimi import (  # noqa: E402
+    KIMI_SENTINEL,
+    KimiAdapter,
+    kimi_agent_definition,
+    parse_kimi_jsonl,
+)
 from subscriptions.adapters.muse import MuseAdapter  # noqa: E402
 from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
 from subscriptions.adapters.zai import ZAIAdapter  # noqa: E402
@@ -63,6 +68,16 @@ KIMI_STREAM = "\n".join(
     ]
 )
 
+# What kimi 0.34.0 actually prints in prompt mode.
+KIMI_034_STREAM = "\n".join(
+    [
+        '{"role":"meta","type":"system.version","version":"0.34.0"}',
+        '{"role":"assistant","content":"kimi reply"}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"session_034",'
+        '"command":"kimi -r session_034","content":"To resume this session: kimi -r session_034"}',
+    ]
+)
+
 # Fixture markers used only to prove redaction; they are not real secrets.
 DEEPSEEK_FIXTURE_KEY = "sk-fixture-deepseek-key"
 ZAI_FIXTURE_TOKEN = "fixture-zai-token"
@@ -82,6 +97,19 @@ class FakeCliRunner:
         return subprocess.CompletedProcess(
             self.command, self.returncode, stdout=self.stdout, stderr=self.stderr
         )
+
+
+class AgentFileReadingRunner(FakeCliRunner):
+    """Reads the private agent file while it still exists (run_cli unlinks it)."""
+
+    agent_file = ""
+
+    def __call__(self, command, **kwargs):
+        command = list(command)
+        if "--agent-file" in command:
+            path = Path(command[command.index("--agent-file") + 1])
+            self.agent_file = path.read_text(encoding="utf-8")
+        return super().__call__(command, **kwargs)
 
 
 def route_for(adapter, model, slot=5, billing="subscription"):
@@ -283,16 +311,23 @@ class KimiGrokTests(unittest.TestCase):
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
-    def test_kimi_uses_prompt_mode_stream_json_and_stdin(self):
-        # kimi 0.34.0 rejects --auto combined with -p; prompt mode is already
-        # the autonomous non-interactive mode, so autonomy is preserved.
-        runner = FakeCliRunner(stdout=KIMI_STREAM)
+    def test_kimi_assignment_travels_in_a_private_agent_file_never_in_argv(self):
+        # kimi 0.34 only takes a prompt as an argument and never reads stdin,
+        # and it rejects --auto with -p. The assignment therefore rides in a
+        # private agent file while argv carries one fixed sentence only.
+        runner = AgentFileReadingRunner(stdout=KIMI_STREAM)
 
         result = KimiAdapter(runner=runner).invoke(
             request(self.workspace), route_for("kimi", "k3", slot=3)
         )
 
-        self.assertEqual(runner.command[:3], ["kimi", "-p", "-"])
+        self.assertEqual(runner.command[:2], ["kimi", "--agent-file"])
+        self.assertTrue(runner.command[2].endswith(".txt"))
+        self.assertEqual(runner.command[3:5], ["-p", KIMI_SENTINEL])
+        self.assertNotIn("Summarize the stage evidence.", " ".join(runner.command))
+        self.assertIn("Summarize the stage evidence.", runner.agent_file)
+        self.assertTrue(runner.agent_file.startswith("---\n"))
+        self.assertIsNone(runner.kwargs["input"])
         self.assertEqual(
             runner.command[runner.command.index("--output-format") + 1],
             "stream-json",
@@ -301,12 +336,55 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(
             runner.command[runner.command.index("--model") + 1], "kimi-code/k3"
         )
-        self.assertIn("Summarize the stage evidence.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
         self.assertTrue(result.success)
         self.assertEqual(result.text, "kimi reply")
         self.assertEqual(result.session_id, "kimi_s1")
         self.assertEqual(result.billing_mode, "subscription")
+
+    def test_kimi_agent_definition_carries_the_frontmatter_kimi_requires(self):
+        definition = kimi_agent_definition("Do the bounded task.")
+
+        # kimi refuses an agent file without frontmatter ("Missing frontmatter").
+        self.assertRegex(definition, r"^---\nname: [\w-]+\ndescription: .+\n---\n")
+        self.assertTrue(definition.endswith("Do the bounded task.\n"))
+
+    def test_kimi_034_stream_completes_on_the_resume_hint(self):
+        # kimi 0.34 stream-json: role/content lines, no "result" event; the
+        # session.resume_hint meta line is what closes prompt mode.
+        result = KimiAdapter(runner=FakeCliRunner(stdout=KIMI_034_STREAM)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+
+        self.assertTrue(result.success, result.failure)
+        self.assertEqual(result.text, "kimi reply")
+        self.assertEqual(result.session_id, "session_034")
+
+    def test_kimi_034_retrying_without_resume_hint_is_not_a_completed_turn(self):
+        stream = "\n".join(
+            [
+                '{"role":"meta","type":"system.version","version":"0.34.0"}',
+                '{"role":"meta","type":"turn.step.retrying","failed_attempt":1,'
+                '"error_name":"APIConnectionError","error_message":"Connection error."}',
+                '{"role":"assistant","content":"partial"}',
+            ]
+        )
+
+        exit_zero = KimiAdapter(runner=FakeCliRunner(stdout=stream)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+        exit_one = KimiAdapter(
+            runner=FakeCliRunner(
+                stdout=stream,
+                stderr="error: failed to run prompt: provider.connection_error",
+                returncode=1,
+            )
+        ).invoke(request(self.workspace), route_for("kimi", "k3"))
+
+        self.assertFalse(exit_zero.success)
+        self.assertEqual(exit_zero.failure, FailureKind.TASK_FAILURE)
+        self.assertFalse(exit_one.success)
+        self.assertEqual(exit_one.failure, FailureKind.TRANSPORT)
 
     def test_kimi_connection_error_is_transport_failure(self):
         result = KimiAdapter(

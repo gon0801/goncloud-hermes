@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import PROMPT_PLACEHOLDER, SubscriptionProcessError, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -22,15 +22,41 @@ from . import (
 
 _SUCCESS_SUBTYPES = {"success", "success_streamcomplete", "streamcomplete"}
 
+#: The only prompt text that ever reaches argv. kimi 0.34 takes ``-p`` as an
+#: argument and never reads stdin, so the assignment itself rides in a private
+#: agent file and this fixed sentence just points the model at it.
+KIMI_SENTINEL = "Carry out the assignment defined in your agent profile."
+
+
+def kimi_agent_definition(prompt: str) -> str:
+    """Wrap the assignment as the agent definition kimi loads from a private file.
+
+    kimi refuses an agent file without frontmatter ("Missing frontmatter"); the
+    extension is irrelevant, so run_cli's ``.txt`` prompt transport is fine.
+    """
+    return (
+        "---\n"
+        "name: goncloud-stage\n"
+        "description: One bounded Goncloud stage assignment.\n"
+        "---\n"
+        f"{prompt}\n"
+    )
+
 
 def parse_kimi_jsonl(output: str) -> dict:
-    """Extract text and session identity from kimi stream-json events."""
+    """Extract text and session identity from kimi stream-json events.
+
+    Two schemas are accepted: the ``type``/``subtype`` result stream, and the
+    ``role``-based prompt-mode stream of kimi 0.34, where the
+    ``session.resume_hint`` meta line is what closes a completed turn.
+    """
     texts: list[str] = []
     session_id = None
     result_text = None
     subtype = None
     saw_error = False
     malformed = False
+    resumed = False
     for line in output.splitlines():
         try:
             event = json.loads(line)
@@ -40,6 +66,38 @@ def parse_kimi_jsonl(output: str) -> dict:
             continue
         if not isinstance(event, dict):
             malformed = True
+            continue
+        role = event.get("role")
+        if role is not None:
+            if role == "assistant":
+                content = event.get("content")
+                if not isinstance(content, str):
+                    malformed = True
+                    continue
+                texts.append(content)
+            elif role == "meta":
+                meta_type = event.get("type")
+                if not isinstance(meta_type, str):
+                    malformed = True
+                    continue
+                meta = meta_type.lower()
+                if (
+                    "error" in meta
+                    or event.get("error")
+                    or event.get("error_name")
+                    or event.get("error_message")
+                ):
+                    saw_error = True
+                if meta == "session.resume_hint":
+                    resumed = True
+                    raw_session_id = event.get("session_id")
+                    if raw_session_id is not None:
+                        if not isinstance(raw_session_id, str):
+                            malformed = True
+                        else:
+                            session_id = raw_session_id
+            else:
+                malformed = True
             continue
         raw_event_type = event.get("type")
         if not isinstance(raw_event_type, str):
@@ -86,13 +144,14 @@ def parse_kimi_jsonl(output: str) -> dict:
             result_text = raw_result
             subtype = raw_subtype
     text = result_text if result_text is not None else "".join(texts)
+    completed = subtype in _SUCCESS_SUBTYPES or (
+        subtype is None and resumed and bool(texts)
+    )
     return {
         "text": str(text or ""),
         "session_id": session_id,
         "subtype": subtype,
-        "terminal_valid": bool(
-            subtype in _SUCCESS_SUBTYPES and not saw_error and not malformed
-        ),
+        "terminal_valid": bool(completed and not saw_error and not malformed),
     }
 
 
@@ -134,10 +193,14 @@ class KimiAdapter(SubscriptionAdapter):
         # kimi resolves models through its configured aliases (config.toml
         # defines them as kimi-code/<name>), so qualify bare table models.
         model = route.model if "/" in route.model else f"kimi-code/{route.model}"
+        # The assignment never enters argv: run_cli writes it to a private file
+        # that kimi loads as the agent definition; -p carries only the sentinel.
         command = [
             "kimi",
+            "--agent-file",
+            PROMPT_PLACEHOLDER,
             "-p",
-            "-",
+            KIMI_SENTINEL,
             "--output-format",
             "stream-json",
             "--model",
@@ -146,9 +209,10 @@ class KimiAdapter(SubscriptionAdapter):
         try:
             evidence = run_cli(
                 command,
-                build_assignment_prompt(request),
+                kimi_agent_definition(build_assignment_prompt(request)),
                 request.workspace,
                 self.timeout_seconds,
+                prompt_transport="tempfile",
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
