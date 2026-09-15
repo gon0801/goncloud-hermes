@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS subscription_health (
     detail TEXT NOT NULL DEFAULT '',
     cooldown_until TEXT,
     quarantined INTEGER NOT NULL DEFAULT 0,
+    quarantined_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 """
@@ -86,6 +87,11 @@ _ATTEMPT_COLUMNS = (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def parse_iso(value: Optional[str]) -> Optional[datetime]:
+    """Public reading of the store's own timestamps (aware UTC or None)."""
+    return _parse_iso(value)
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -178,6 +184,11 @@ class SubscriptionStateStore:
             if "quarantined" not in health_columns:
                 conn.execute(
                     "ALTER TABLE subscription_health ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0"
+                )
+            if "quarantined_at" not in health_columns:
+                # The quarantine's own clock; updated_at also moves on probes.
+                conn.execute(
+                    "ALTER TABLE subscription_health ADD COLUMN quarantined_at TEXT"
                 )
             conn.commit()
 
@@ -521,27 +532,50 @@ class SubscriptionStateStore:
         account_class: str,
         failure: Optional[str] = None,
         detail: str = "",
+        lift_quarantine: bool = False,
     ) -> None:
+        """Record probe or attempt health.
+
+        A quarantine survives ordinary probes. Only a successful real inference
+        may lift it (``lift_quarantine`` with ``ready``): that is the same proof
+        the live matrix demands, so quota that came back is trusted again
+        without anyone re-running the matrix by hand.
+        """
         safe_detail = _health_detail(ready=ready, failure=failure)
+        lift = 1 if (lift_quarantine and ready) else 0
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
                 "(adapter, ready, account_class, failure, detail, updated_at) "
-                "VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
+                "VALUES (:adapter,:ready,:account_class,:failure,:detail,"
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now')) "
                 "ON CONFLICT(adapter) DO UPDATE SET "
-                "ready=CASE WHEN subscription_health.quarantined THEN 0 ELSE excluded.ready END, "
+                "ready=CASE WHEN subscription_health.quarantined AND NOT :lift "
+                "THEN 0 ELSE excluded.ready END, "
                 "account_class=excluded.account_class, "
-                "failure=CASE WHEN subscription_health.quarantined AND excluded.ready "
-                "THEN subscription_health.failure ELSE excluded.failure END, "
+                "failure=CASE WHEN subscription_health.quarantined AND NOT :lift "
+                "AND excluded.ready THEN subscription_health.failure "
+                "ELSE excluded.failure END, "
                 "detail=excluded.detail, "
+                "quarantined=CASE WHEN :lift THEN 0 "
+                "ELSE subscription_health.quarantined END, "
+                # A failure while quarantined re-arms the clock; a passing
+                # probe is not proof and leaves it alone; proof clears it.
+                "quarantined_at=CASE WHEN :lift THEN NULL "
+                "WHEN subscription_health.quarantined AND NOT :ready "
+                "THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "ELSE subscription_health.quarantined_at END, "
+                "cooldown_until=CASE WHEN :lift THEN NULL "
+                "ELSE subscription_health.cooldown_until END, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-                (
-                    adapter,
-                    1 if ready else 0,
-                    redact_text(account_class),
-                    failure,
-                    safe_detail,
-                ),
+                {
+                    "adapter": adapter,
+                    "ready": 1 if ready else 0,
+                    "account_class": redact_text(account_class),
+                    "failure": failure,
+                    "detail": safe_detail,
+                    "lift": lift,
+                },
             )
             conn.commit()
 
@@ -559,11 +593,14 @@ class SubscriptionStateStore:
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO subscription_health "
-                "(adapter, ready, account_class, failure, detail, quarantined) "
-                "VALUES (?,?,?,?,?,?) "
+                "(adapter, ready, account_class, failure, detail, quarantined, "
+                "quarantined_at) "
+                "VALUES (?,?,?,?,?,?,"
+                "CASE WHEN ? THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END) "
                 "ON CONFLICT(adapter) DO UPDATE SET ready=excluded.ready, "
                 "account_class=excluded.account_class, failure=excluded.failure, "
                 "detail=excluded.detail, quarantined=excluded.quarantined, "
+                "quarantined_at=excluded.quarantined_at, "
                 "cooldown_until=CASE WHEN excluded.ready THEN NULL "
                 "ELSE subscription_health.cooldown_until END, "
                 "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
@@ -574,6 +611,7 @@ class SubscriptionStateStore:
                     failure,
                     _health_detail(ready=ready, failure=failure),
                     int(not ready),
+                    int(ready),
                 ),
             )
             conn.commit()
@@ -593,6 +631,7 @@ class SubscriptionStateStore:
             "detail": _health_detail(ready=bool(row["ready"]), failure=row["failure"]),
             "cooldown_until": row["cooldown_until"],
             "quarantined": bool(row["quarantined"]),
+            "quarantined_at": row["quarantined_at"],
             "updated_at": row["updated_at"],
         }
 

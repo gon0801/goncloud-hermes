@@ -13,7 +13,7 @@ from .adapters import build_adapter_registry
 from .catalog import compile_profile_routes, load_routing_source
 from .process import run_cli
 from .redaction import sanitize_result
-from .state import SubscriptionBusy, SubscriptionStateStore
+from .state import SubscriptionBusy, SubscriptionStateStore, parse_iso
 from .types import (
     AdapterHealth,
     FailureKind,
@@ -31,6 +31,11 @@ _ADVANCING_FAILURES = {
     FailureKind.TRANSPORT,
 }
 _QUOTA_COOLDOWN_MINUTES = 15
+# Quota, connectivity and even credentials come back on their own, so a
+# quarantine is a verdict with a lifetime, not a permanent ban. After this
+# horizon the router may try the account again; only a successful real
+# inference lifts the quarantine, and a repeated failure re-arms it.
+_QUARANTINE_RETRY_SECONDS = 3600
 # Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
 # cleanup grace, and the bounded Git evidence reads after invocation.
 _STAGE_LEASE_SECONDS = 600
@@ -239,7 +244,7 @@ class SubscriptionRouter:
                 return self._stage_busy()
             stored_health = self.store.health(route.adapter)
             cooling = self._in_cooldown(route.adapter) and not (
-                stored_health and stored_health["quarantined"]
+                self._quarantine_active(stored_health)
             )
             adapter = self.adapters.get(route.adapter)
             if adapter is None:
@@ -383,7 +388,7 @@ class SubscriptionRouter:
                 # publication cannot race the final check and vendor start.
                 with self.store.dispatch_lock(route.adapter):
                     health = self.store.health(route.adapter)
-                    if health and health["quarantined"]:
+                    if self._quarantine_active(health):
                         disposition = "skipped"
                         failure = FailureKind(health["failure"] or "task_failure")
                         result = InvocationResult(
@@ -556,10 +561,24 @@ class SubscriptionRouter:
             until = until.replace(tzinfo=timezone.utc)
         return until > datetime.now(timezone.utc)
 
+    @staticmethod
+    def _quarantine_active(stored) -> bool:
+        """A quarantine binds only within its retry horizon."""
+        if not (stored and stored["quarantined"]):
+            return False
+        published = parse_iso(stored.get("quarantined_at") or stored.get("updated_at"))
+        if published is None:
+            return True
+        age = (datetime.now(timezone.utc) - published).total_seconds()
+        return age <= _QUARANTINE_RETRY_SECONDS
+
     def _cached_health(self, route: RouteSpec):
         cached = self.store.health(route.adapter)
-        if not (cached and cached["quarantined"]):
+        if not self._quarantine_active(cached):
             cached = self.store.fresh_health(route.adapter, self.health_ttl_seconds)
+            if cached is not None and cached["quarantined"]:
+                # An expired quarantine is not a verdict any more; re-probe.
+                cached = None
         return cached
 
     def _availability(self, route: RouteSpec) -> AdapterHealth:
@@ -582,8 +601,11 @@ class SubscriptionRouter:
             failure=health.failure.value if health.failure else None,
             detail=health.detail,
         )
-        # Ordinary probe publication preserves a concurrent live quarantine.
+        # Ordinary probe publication preserves a concurrent live quarantine,
+        # but an expired one no longer outranks the probe just taken.
         stored = self.store.health(route.adapter)
+        if not self._quarantine_active(stored):
+            return health
         return AdapterHealth(
             ready=stored["ready"],
             account_class=stored["account_class"],
@@ -598,6 +620,7 @@ class SubscriptionRouter:
                 ready=True,
                 account_class=adapter,
                 detail="live attempt succeeded",
+                lift_quarantine=True,
             )
             return
         failure = result.failure

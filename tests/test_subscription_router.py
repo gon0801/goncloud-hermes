@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1392,6 +1393,109 @@ class GitInspectorTests(unittest.TestCase):
         self._git("restore", "--", name)
         self._git("mv", "--", name, " renamed ñ.txt")
         self.assertEqual(inspector.changed_files(self.repo), (" renamed ñ.txt",))
+
+
+class QuarantineExpiryTests(RouterTestCase):
+    """Quota comes and goes; a quarantine must expire and re-prove itself.
+
+    The proof standard does not change: only a real successful inference lifts
+    the quarantine. What changes is that the router is allowed to try again
+    after a bounded horizon instead of skipping the account forever.
+    """
+
+    def quarantine(self, adapter, failure, *, age_seconds=0):
+        store = SubscriptionStateStore(self.db_path)
+        store.save_live_health(
+            adapter, ready=False, account_class="subscription", failure=failure
+        )
+        if age_seconds:
+            stamp = (
+                datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            # `with` on a connection commits but never closes it, and an open
+            # handle keeps Windows from deleting the temp directory.
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.execute(
+                    "UPDATE subscription_health SET updated_at=?, quarantined_at=? "
+                    "WHERE adapter=?",
+                    (stamp, stamp, adapter),
+                )
+                conn.commit()
+
+    def test_a_fresh_quota_quarantine_still_skips_the_route(self):
+        self.quarantine("opencode_go", "quota")
+        self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+
+        result = self.router().run(request(self.workspace), routes_for_main()[:2])
+
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
+
+    def test_an_expired_quota_quarantine_is_retried_and_lifted_by_real_success(self):
+        from subscriptions.router import _QUARANTINE_RETRY_SECONDS
+
+        self.quarantine(
+            "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
+        )
+        self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        router = self.router()
+
+        result = router.run(request(self.workspace), routes_for_main()[:2])
+
+        self.assertEqual(result.adapter, "opencode_go")
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+        health = router.store.health("opencode_go")
+        self.assertTrue(health["ready"])
+        self.assertFalse(health["quarantined"])
+        self.assertIsNone(health["failure"])
+
+    def test_an_expired_quarantine_that_fails_again_is_rearmed(self):
+        from subscriptions.router import _QUARANTINE_RETRY_SECONDS
+
+        self.quarantine(
+            "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
+        )
+        go = self.fake_adapters["opencode_go"]
+        go.result = failed(FailureKind.QUOTA, "opencode_go")
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        router = self.router()
+
+        first = router.run(request(self.workspace), routes_for_main()[:2])
+        second = router.run(
+            request(self.workspace, stage_id="st-7"), routes_for_main()[:2]
+        )
+
+        self.assertEqual(first.adapter, "opencode_zen")
+        self.assertEqual(second.adapter, "opencode_zen")
+        # One real retry, then the quarantine is armed again with a fresh clock.
+        self.assertEqual(len(go.requests), 1)
+        health = router.store.health("opencode_go")
+        self.assertFalse(health["ready"])
+        self.assertTrue(health["quarantined"])
+        self.assertEqual(health["failure"], "quota")
+
+    def test_every_quarantine_kind_expires_and_is_reproven(self):
+        from subscriptions.router import _QUARANTINE_RETRY_SECONDS
+
+        for kind in ("auth", "timeout", "transport", "model_unavailable"):
+            with self.subTest(kind=kind):
+                # One store and one fresh adapter per kind; no setUp re-entry.
+                self.db_path = self.workspace / f"router-{kind}.db"
+                self.fake_adapters["opencode_go"] = ScriptedAdapter("opencode_go")
+                self.quarantine(
+                    "opencode_go", kind, age_seconds=_QUARANTINE_RETRY_SECONDS + 60
+                )
+                self.fake_adapters["opencode_go"].result = completed(
+                    adapter="opencode_go"
+                )
+                router = self.router()
+
+                result = router.run(request(self.workspace), routes_for_main()[:1])
+
+                self.assertEqual(result.adapter, "opencode_go")
+                self.assertFalse(router.store.health("opencode_go")["quarantined"])
 
 
 if __name__ == "__main__":
