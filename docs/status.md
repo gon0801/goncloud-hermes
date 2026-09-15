@@ -222,7 +222,8 @@ interceptacion de Kaspersky descrita arriba.
 
 ### Varias cuentas de correo por himalaya
 
-`google-workspace` atiende una sola cuenta de Google por perfil. Para las demas
+`google-workspace` atiende una sola cuenta de Google por perfil: la principal
+del propietario (confirmada con `users.getProfile` de la API). Para las demas
 el propietario pidio correo (solo correo) y se instalo `himalaya` v2.1.0
 (`+imap +smtp +rustls-ring`) en `%LOCALAPPDATA%\Programs\himalaya`, en el PATH
 de usuario. La configuracion vive en `%APPDATA%\himalaya\config.toml`, fuera de
@@ -238,7 +239,8 @@ parsean. Los comandos tambien cambiaron (`mailbox list`, `envelope list -s N`,
 perfil `claw` lleva al inicio una seccion "En esta maquina" con las cuentas y
 los comandos reales; el archivo versionado de la skill no se toca.
 
-Aceptacion 2026-09-14: cuenta principal de Gmail (`undying`, default) lista
+Aceptacion 2026-09-14: la primera cuenta secundaria de Gmail (`undying`, default
+de himalaya) lista
 carpetas y envio un correo de prueba a si misma (`Message successfully sent`);
 la cuenta de iCloud tambien autentico (`imaps://imap.mail.me.com:993`, SMTP
 `smtp://smtp.mail.me.com:587` con `smtp.starttls = true`) pero el propietario
