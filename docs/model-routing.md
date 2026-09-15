@@ -3,7 +3,7 @@
 Fuente autoritativa: `model-routing.source.json`, intacta desde `f86fc8a`.
 Ocho agentes por ocho posiciones: 64 celdas; `main` corresponde a `claw` y
 `entrega` hereda `main`. Los nueve perfiles tienen la misma fuente literal
-instalada y el plugin aprobado en `5c04159`; no tienen cadenas nativas
+instalada y el plugin aprobado en `17ec1e7`; no tienen cadenas nativas
 administradas `model`/`fallback_providers`. Copilot y Copilot ACP estan excluidos.
 
 Primary (slot 0) usa OpenCode Go y F1 (slot 1) OpenCode Zen. F2-F7 usan la
@@ -40,12 +40,16 @@ variable `NODE_EXTRA_CA_CERTS` que el router necesita en esta maquina estan en
 
 El comando oficial `configure_subscriptions.py --live-probe-all --only ADAPTADOR
 --json RUTA` guarda salud normalizada en
-`%LOCALAPPDATA%\hermes\subscription-router.db`. Un fallo mantiene cuarentena mas
-alla del TTL; un probe superficial o una ejecucion normal no la levantan. Solo
-una nueva prueba live exacta puede hacerlo. El bloqueo de probes es global entre
-procesos; el bloqueo por adaptador cubre probe, inferencia y publicacion. El
-router registra omisiones como `disposition=skipped`, distintas de un fallo
-ejecutado, y no invoca adaptadores en cuarentena.
+`%LOCALAPPDATA%\hermes\subscription-router.db`. Un fallo mantiene cuarentena
+durante una hora (`_QUARANTINE_RETRY_SECONDS`), con su propio reloj
+`quarantined_at` que un probe superficial no reinicia. Vencida esa hora el
+router vuelve a intentar la cuenta por si solo cuando un encargo llega a su
+posicion; solo una inferencia real exitosa levanta la cuarentena y un fallo
+repetido la vuelve a armar con reloj nuevo. La cuota que se repone entra sola.
+El bloqueo de probes es global entre procesos; el bloqueo por adaptador cubre
+probe, inferencia y publicacion. El router registra omisiones como
+`disposition=skipped`, distintas de un fallo ejecutado, y no invoca adaptadores
+con cuarentena vigente.
 
 No hubo login interactivo, migracion de lanzadores, limpieza de credenciales ni
 lectura de logs crudos. Los JSON por adaptador estan en `.claude/tmp/` con nombres
@@ -78,7 +82,7 @@ Evidencia: `.claude/tmp/task9b-acceptance-evidence.json`,
 Kanban nativo: `%LOCALAPPDATA%\hermes\kanban.db`; intentos/salud:
 `%LOCALAPPDATA%\hermes\subscription-router.db`. Fixtures preservados en
 `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-Gates finales: 343 tests (340 aprobados, 3 skips), 8/8 hooks, `git diff --check` limpio,
+Gates finales: 347 tests (344 aprobados, 3 skips), 8/8 hooks, `git diff --check` limpio,
 Plugin Doctor OK (7 herramientas, 1 hook) y gateway `stopped`. Los defectos
 corregidos para llegar a esta cadena estan en [estado](status.md).
 

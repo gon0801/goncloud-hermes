@@ -31,7 +31,7 @@ La tabla de ocho posiciones por agente se compila por slot, no por prefijo histo
 
 Aceptacion local 2026-09-14: 8/9 pruebas live aprobadas (Go, Zen, Muse, Claude Max, Kimi, Z.AI y Grok por suscripcion; DeepSeek por API). Solo Codex queda en cuarentena por `quota`, con fecha de reposicion declarada por el proveedor; avanza de slot y no bloquea ninguna etapa. En esta maquina el router necesita la variable de usuario `NODE_EXTRA_CA_CERTS` apuntando a la raiz TLS de Kaspersky (detalle en [docs/status.md](docs/status.md)); un proceso arrancado sin ella vera colgarse a Zen y fallar a Kimi. Scout `t_f2e2bb6d` aprobado sin cambios y la cadena completa `t_be290d83` fue **entregada**: siete etapas en orden, un intento cada una, revisor aprobado y el cambio autorizado acotado a un solo archivo.
 
-La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing.md](docs/model-routing.md) y [docs/status.md](docs/status.md). `configure_subscriptions.py --live-probe-all --only ADAPTADOR --json RUTA` verifica una cuenta y persiste su salud sanitizada. Un fallo deja cuarentena durable, incluso al vencer el TTL; solo una nueva inferencia con el marcador exacto puede levantarla. Ejecuta los probes uno por uno en el orden de la tabla.
+La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing.md](docs/model-routing.md) y [docs/status.md](docs/status.md). `configure_subscriptions.py --live-probe-all --only ADAPTADOR --json RUTA` verifica una cuenta y persiste su salud sanitizada. Un fallo deja cuarentena durable durante una hora; despues el router vuelve a intentar esa cuenta por si solo cuando un encargo llega a su posicion, y solo una inferencia real exitosa la levanta (un fallo repetido la vuelve a armar por otra hora). La cuota que se agota y se repone entra sola sin correr nada a mano. Ejecuta los probes uno por uno en el orden de la tabla.
 
 ## Instalacion reproducible
 
@@ -57,7 +57,7 @@ El perfil, lista de acceso y entrada de inicio se conservan. Reactivar el gatewa
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
 
-Gate final 2026-09-14: 343 tests, 340 aprobados y 3 skips; 8/8 hooks; `git diff --check` limpio; Plugin Doctor OK y gateway `stopped`. Los skips son de plataforma/privilegios. Los defectos que impedian cerrar la cadena, con su regresion, estan en [estado](docs/status.md).
+Gate final 2026-09-14: 347 tests, 344 aprobados y 3 skips; 8/8 hooks; `git diff --check` limpio; Plugin Doctor OK y gateway `stopped`. Los skips son de plataforma/privilegios. Los defectos que impedian cerrar la cadena, con su regresion, estan en [estado](docs/status.md).
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -m unittest discover -s tests -v

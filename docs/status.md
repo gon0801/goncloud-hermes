@@ -2,7 +2,7 @@
 
 ## Estado actual: aceptacion local completa (2026-09-14)
 
-- Codigo de runtime aprobado y desplegado: `5c04159`. Nueve perfiles verificados;
+- Codigo de runtime aprobado y desplegado: `17ec1e7`. Nueve perfiles verificados;
   fuente literal byte-identica, sin cadenas nativas administradas y con Copilot
   excluido. Backup previo de 18 archivos, con hashes comprobados, en
   `%LOCALAPPDATA%\hermes\recovery-backups\20260914T214024Z-task9b`; nada eliminado.
@@ -13,8 +13,10 @@
 - **Codex** es la unica cuenta pendiente y no depende del codigo: `codex login
   status` responde `Logged in using ChatGPT`, el modelo `gpt-6-astra` esta
   vinculado y `codex exec` devuelve textualmente `You've hit your usage limit ...
-  try again at Sep 19th, 2026 10:36 AM`. Configuracion completa y comprobada;
-  entra sola cuando el proveedor reponga la cuota.
+  try again at Sep 19th, 2026 10:36 AM`. Configuracion completa y comprobada.
+  Entra sola: la cuarentena vence a la hora y el router la reintenta al llegar
+  un encargo a su posicion; la primera inferencia real exitosa la levanta, sin
+  correr la matriz a mano (ver "Cuarentena con vencimiento").
 - **Dependencia del entorno en esta maquina**: Kaspersky intercepta TLS y
   presenta su propio certificado raiz (`Kaspersky Anti-Virus Personal Root
   Certificate`) en hosts como `auth.kimi.com`. Windows lo acepta; los CLIs
@@ -43,8 +45,8 @@
   `%LOCALAPPDATA%\hermes\kanban.db` y `%LOCALAPPDATA%\hermes\subscription-router.db`;
   fixtures preservados en
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
-- Bateria final: **343 tests, 340 aprobados y 3 skips de plataforma/privilegios**,
-  280.258 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
+- Bateria final: **347 tests, 344 aprobados y 3 skips de plataforma/privilegios**,
+  274.314 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
 - Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
@@ -77,6 +79,32 @@ arreglo lleva su regresion observada en rojo primero.
   inicio de linea. El modelo de `ingenieria` emite ` ```json ` pegado a su prosa,
   y eso bloqueo la cadena en las dos corridas anteriores. La valla de cierre y la
   prohibicion de contenido posterior siguen estrictas.
+
+### Cuarentena con vencimiento
+
+El propietario pidio que la cuota agotada se recupere sola: las cuentas la
+agotan y la reponen con frecuencia, y una cuarentena permanente obligaba a
+correr la matriz live a mano cada vez. La regla ahora es:
+
+- Toda cuarentena tiene su propio reloj, `quarantined_at` (columna nueva,
+  migracion aditiva; las filas existentes usan `updated_at` como respaldo).
+  Un probe superficial que pasa no lo reinicia; una publicacion live o un
+  fallo real mientras la cuenta esta en cuarentena si lo reinician.
+- Vigencia: `_QUARANTINE_RETRY_SECONDS` = 3600 s. Vencida, el router deja de
+  tratar la cuarentena como veredicto: vuelve a hacer el probe y, si pasa,
+  intenta la cuenta de verdad cuando un encargo llega a esa posicion.
+- Solo una inferencia real exitosa levanta la cuarentena (`save_health` con
+  `lift_quarantine`, que ademas borra el cooldown). Es la misma prueba que
+  exige la matriz live; lo que cambia es que ya no hace falta correrla a mano.
+  Un fallo repetido re-arma la cuarentena con reloj nuevo y avanza de slot.
+- El cooldown de 15 minutos por cuota dentro de una misma corrida se conserva.
+- Aplica a todos los tipos de fallo, no solo a `quota`: el costo de reintentar
+  una credencial muerta es un intento fallido por hora de uso real, y evita
+  que una cuenta arreglada fuera del router siga vetada.
+
+Regresiones: cuarentena reciente sigue saltando la ruta; vencida se reintenta
+y el exito real la levanta; vencida y fallida de nuevo se re-arma y la segunda
+corrida ya no reintenta; los cuatro tipos restantes vencen igual.
 
 ### Zen y Kimi: era el certificado, no las cuentas
 
