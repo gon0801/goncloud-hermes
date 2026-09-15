@@ -135,11 +135,15 @@ def desired_profile_config(role, team, runtime_home):
         "kanban": team["kanban"],
     }
     if role == team["director"]:
-        # The director converses natively and needs exactly one owner-chosen
-        # model for that. It is not a routing slot: workers never get a native
-        # model here, and no profile ever gets a native fallback chain, because
+        # The director converses natively and needs the owner's conversation
+        # chain for that: the `main` positions Hermes can reach with the *same*
+        # subscription, in table order (tests pin that). It is not a routing
+        # slot: workers never get a native model or fallback chain, because
         # that chain was the competing router the recovery removed.
         desired["model"] = dict(team["director_model"])
+        desired["fallback_providers"] = [
+            dict(entry) for entry in team["director_fallbacks"]
+        ]
         # Over a messaging transport the director creates the chain and
         # reports; with a terminal it went off reading logs and plugin code
         # when a stage blocked. Work on files happens inside the chain.

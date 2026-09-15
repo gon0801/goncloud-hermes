@@ -99,12 +99,14 @@ class ConfigurationTests(unittest.TestCase):
             migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             managed = json.loads(state_path.read_text(encoding="utf-8"))
             team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-            # The owned native chain is gone; the director keeps exactly the
-            # owner-chosen conversational model and nothing of the old block.
+            # The old owned chain is gone; the director carries exactly the
+            # owner's conversation chain and nothing of the old block.
             self.assertEqual(migrated["model"], team["director_model"])
-            self.assertNotIn("fallback_providers", migrated)
+            self.assertEqual(migrated["fallback_providers"], team["director_fallbacks"])
             self.assertEqual(managed["config"]["model"], team["director_model"])
-            self.assertNotIn("fallback_providers", managed["config"])
+            self.assertEqual(
+                managed["config"]["fallback_providers"], team["director_fallbacks"]
+            )
             self.assertEqual(
                 (
                     profile / "plugins/goncloud-team/model-routing.source.json"
@@ -145,13 +147,12 @@ class ConfigurationTests(unittest.TestCase):
 
         self.assertIs(team["kanban"].get("dispatch_in_gateway"), False)
 
-    def test_only_the_director_carries_one_native_model_and_nobody_a_fallback_chain(
-        self,
-    ):
-        # The director must be able to converse on Telegram, so it gets exactly
-        # one owner-chosen native model. Workers get none: their models come
-        # from the slot table through the subscription router, and a native
-        # fallback chain anywhere would be the competing router again.
+    def test_only_the_director_converses_natively_and_workers_carry_nothing(self):
+        # The director must be able to converse on Telegram, so it gets the
+        # owner's conversation chain. Workers get no native model and no
+        # fallback chain: their models come from the slot table through the
+        # subscription router, and a native chain there would be the competing
+        # router the recovery removed.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         self.assertEqual(set(team["director_model"]), {"provider", "default"})
 
@@ -160,11 +161,47 @@ class ConfigurationTests(unittest.TestCase):
                 desired = module.desired_profile_config(
                     role, team, Path("C:/runtime-home")
                 )
-                self.assertNotIn("fallback_providers", desired)
                 if role == team["director"]:
                     self.assertEqual(desired["model"], team["director_model"])
+                    self.assertEqual(
+                        desired["fallback_providers"], team["director_fallbacks"]
+                    )
                 else:
                     self.assertNotIn("model", desired)
+                    self.assertNotIn("fallback_providers", desired)
+
+    def test_the_director_chain_uses_only_same_subscription_positions_in_table_order(
+        self,
+    ):
+        # Hermes can only converse through native API providers. Of the
+        # owner's `main` chain, only these reach the *same* subscription that
+        # way; Claude Max, ChatGPT, Grok and Muse would bill another account,
+        # which is exactly the wrong-account-class chain the recovery removed.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        table = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+        native = {
+            "opencode-go": "opencode-go",
+            "opencode": "opencode-zen",
+            "kimi": "kimi-coding",
+            "zai": "zai",
+        }
+        allowed_in_order = []
+        for label in table["chains"]["main"]:
+            prefix, model = label.removesuffix(" dup").split("/", 1)
+            if prefix in native:
+                allowed_in_order.append((native[prefix], model))
+
+        chain = [
+            (team["director_model"]["provider"], team["director_model"]["default"])
+        ]
+        chain += [(f["provider"], f["model"]) for f in team["director_fallbacks"]]
+
+        self.assertTrue(set(chain) <= set(allowed_in_order), chain)
+        order = [allowed_in_order.index(entry) for entry in chain]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(chain[0], allowed_in_order[0])
 
     def test_the_director_has_no_terminal_over_messaging_transports(self):
         # Over Telegram the director is a transport: it creates the chain and
