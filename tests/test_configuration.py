@@ -203,20 +203,32 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertEqual(chain[0], allowed_in_order[0])
 
-    def test_every_profile_keeps_the_full_toolset_over_messaging_transports(self):
-        # Owner decision (2026-09-14): the director keeps the terminal over
-        # Telegram because Gmail/Calendar/Drive run through a terminal-driven
-        # skill and some requests need full access. The guard against it
-        # wandering into logs and plugin code is the role text, not the
-        # toolset (see test_the_director_role_reports_a_blocked_workflow_and_stops).
+    def test_director_gets_the_full_toolset_and_workers_the_baseline(self):
+        # Owner decision (2026-09-15): the director drives Odoo and Edge over
+        # Telegram, so it carries the full toolset (browser, computer_use, …).
+        # Baking it in stops the director from re-editing its own config every
+        # session and keeps a redeploy from fighting that edit. Workers stay
+        # minimal; the guard against the director wandering into logs and
+        # plugin code is its role text, not the toolset.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         for role in team["profiles"]:
             desired = module.desired_profile_config(role, team, Path("C:/home"))
+            expected = (
+                module._DIRECTOR_TOOLSETS
+                if role == team["director"]
+                else module._WORKER_TOOLSETS
+            )
             with self.subTest(role=role):
-                self.assertEqual(
-                    desired["platform_toolsets"]["telegram"],
-                    ["coding", "kanban", "goncloud_team"],
-                )
+                self.assertEqual(desired["platform_toolsets"]["cli"], expected)
+                self.assertEqual(desired["platform_toolsets"]["telegram"], expected)
+
+        worker = module.desired_profile_config("scout", team, Path("C:/home"))
+        director = module.desired_profile_config(
+            team["director"], team, Path("C:/home")
+        )
+        for machine_control in ("browser", "computer_use"):
+            self.assertNotIn(machine_control, worker["platform_toolsets"]["telegram"])
+            self.assertIn(machine_control, director["platform_toolsets"]["telegram"])
 
     def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")

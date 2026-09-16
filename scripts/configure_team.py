@@ -11,6 +11,34 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MISSING = object()
 
+#: Workers route their models through the subscription router and never touch a
+#: browser or the machine; three toolsets cover their work.
+_WORKER_TOOLSETS = ["coding", "kanban", "goncloud_team"]
+
+#: The director drives Odoo and Edge over Telegram (owner decision 2026-09-15),
+#: so it carries the full toolset — browser and computer_use included. Baking it
+#: in stops the director from re-editing its own config every session. Its role
+#: text, not a narrow toolset, keeps it out of logs and plugin code.
+_DIRECTOR_TOOLSETS = [
+    "browser",
+    "clarify",
+    "code_execution",
+    "coding",
+    "computer_use",
+    "connections",
+    "delegation",
+    "file",
+    "goncloud_team",
+    "kanban",
+    "memory",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "vision",
+    "web",
+]
+
 
 def remove_owned_native_routing(existing, previous):
     cleaned = copy.deepcopy(existing)
@@ -165,8 +193,8 @@ def desired_profile_config(role, team, runtime_home):
         "plugins": {"enabled": ["goncloud-team"]},
         "model_catalog": {"excluded_providers": ["copilot", "copilot-acp"]},
         "platform_toolsets": {
-            "cli": ["coding", "kanban", "goncloud_team"],
-            "telegram": ["coding", "kanban", "goncloud_team"],
+            "cli": list(_WORKER_TOOLSETS),
+            "telegram": list(_WORKER_TOOLSETS),
         },
         "terminal": {
             "backend": "local",
@@ -185,10 +213,14 @@ def desired_profile_config(role, team, runtime_home):
         desired["fallback_providers"] = [
             dict(entry) for entry in team["director_fallbacks"]
         ]
-        # The director keeps the full toolset over Telegram by owner decision:
-        # Gmail/Calendar/Drive run through a terminal-driven skill. Its role
-        # text, not the toolset, keeps it from wandering into logs and plugin
-        # code when a stage blocks.
+        # The director carries the full toolset over Telegram by owner decision
+        # (browser, computer_use and the rest): it drives Odoo and Edge and runs
+        # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
+        # not a narrow toolset, keeps it out of logs and plugin code.
+        desired["platform_toolsets"] = {
+            "cli": list(_DIRECTOR_TOOLSETS),
+            "telegram": list(_DIRECTOR_TOOLSETS),
+        }
     return desired
 
 
