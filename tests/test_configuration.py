@@ -224,6 +224,54 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("no leas logs", claw)
         self.assertIn("no revises el codigo del plugin", claw)
 
+    def test_reapply_refuses_a_tree_that_does_not_contain_the_deployed_revision(self):
+        # 2026-09-15 01:08: the profiles carried the plugin from
+        # feat/subscription-router-recovery; a reapply from feat/hermes-team
+        # (a sibling branch without those commits) silently downgraded every
+        # managed file and goncloud_local_run lost check_stop_after. A reapply
+        # must refuse a HEAD that does not contain the deployed revision.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = ["git", "-C", str(repo)]
+            env = dict(
+                os.environ,
+                GIT_AUTHOR_NAME="t",
+                GIT_AUTHOR_EMAIL="t@t",
+                GIT_COMMITTER_NAME="t",
+                GIT_COMMITTER_EMAIL="t@t",
+            )
+
+            def run(*args):
+                return subprocess.run(
+                    git + list(args), check=True, capture_output=True, env=env
+                )
+
+            run("init", "-q", "-b", "base")
+            (repo / "a").write_text("1")
+            run("add", "a")
+            run("commit", "-q", "-m", "base")
+            run("checkout", "-q", "-b", "deployed")
+            (repo / "a").write_text("2")
+            run("commit", "-q", "-am", "deployed")
+            deployed = module.current_revision(repo)
+            run("checkout", "-q", "base")
+            run("checkout", "-q", "-b", "sibling")
+            (repo / "b").write_text("x")
+            run("add", "b")
+            run("commit", "-q", "-m", "sibling")
+
+            self.assertFalse(module.tree_contains(deployed, repo))
+            with self.assertRaisesRegex(ValueError, "does not contain"):
+                module.refuse_regression({"source_revision": deployed}, repo)
+            module.refuse_regression(
+                {"source_revision": deployed}, repo, allow_regression=True
+            )
+
+            run("merge", "-q", "--no-edit", "deployed")
+            self.assertTrue(module.tree_contains(deployed, repo))
+            module.refuse_regression({"source_revision": deployed}, repo)
+            module.refuse_regression({}, repo)
+
     def test_the_director_role_keeps_business_work_off_the_native_board(self):
         # 2026-09-15: after a gateway restart the director handed an Odoo
         # lookup to `operaciones` with kanban_create. Nothing executes those

@@ -5,6 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +98,46 @@ def contained(path, parent):
     return resolved
 
 
+def _git(root, *args):
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True
+        )
+    except OSError:
+        return None
+
+
+def current_revision(root=ROOT):
+    """The commit this tree deploys from, or None outside a Git checkout."""
+    result = _git(root, "rev-parse", "HEAD")
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def tree_contains(revision, root=ROOT):
+    """True when HEAD descends from ``revision`` (an unknown commit counts as no)."""
+    result = _git(root, "merge-base", "--is-ancestor", revision, "HEAD")
+    return result is not None and result.returncode == 0
+
+
+def refuse_regression(state, root=ROOT, *, allow_regression=False):
+    """Refuse to overwrite profiles deployed from a commit this tree lacks.
+
+    2026-09-15: a reapply from a sibling branch replaced every managed file
+    with older content without a conflict (the on-disk files matched the
+    recorded state), so the running gateway lost plugin symbols mid-flight.
+    """
+    deployed = state.get("source_revision")
+    if not deployed or allow_regression or tree_contains(deployed, root):
+        return
+    head = current_revision(root) or "no revision"
+    raise ValueError(
+        f"HEAD {head[:12]} does not contain the deployed revision "
+        f"{deployed[:12]}; merge it first or pass --allow-regression"
+    )
+
+
 def write_changed(path, content):
     if path.exists() and (
         path.read_bytes() == content
@@ -151,7 +192,9 @@ def desired_profile_config(role, team, runtime_home):
     return desired
 
 
-def configure(runtime_home, install_dir, apply_model_routing=False):
+def configure(
+    runtime_home, install_dir, apply_model_routing=False, *, allow_regression=False
+):
     import yaml
 
     runtime_home = runtime_home.resolve()
@@ -171,6 +214,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
         for p in plugin_root.rglob("*")
         if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
     ]
+    revision = current_revision()
     prepared = []
     for role, description in team["profiles"].items():
         profile = contained(get_profile_dir(role), runtime_home)
@@ -183,6 +227,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
             if state_path.exists()
             else {}
         )
+        refuse_regression(state, allow_regression=allow_regression)
         config_path = contained(profile / "config.yaml", runtime_home)
         existing = (
             yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -235,6 +280,7 @@ def configure(runtime_home, install_dir, apply_model_routing=False):
             json.dumps(
                 {
                     "config": desired,
+                    "source_revision": revision,
                     "files": {
                         relative: (
                             content.decode("utf-8")
@@ -272,8 +318,18 @@ def main():
         action="store_true",
         help="Deprecated compatibility flag; installs the authoritative routing source",
     )
+    parser.add_argument(
+        "--allow-regression",
+        action="store_true",
+        help="Overwrite profiles deployed from a commit this checkout does not contain",
+    )
     args = parser.parse_args()
-    configure(args.home, args.install_dir, args.apply_model_routing)
+    configure(
+        args.home,
+        args.install_dir,
+        args.apply_model_routing,
+        allow_regression=args.allow_regression,
+    )
 
 
 if __name__ == "__main__":
