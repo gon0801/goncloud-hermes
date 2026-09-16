@@ -262,6 +262,16 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 classify_failure(1, text, ""), FailureKind.TASK_FAILURE, text
             )
 
+    def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
+        # stderr is the vendor's error channel: a bare code there is real.
+        # stdout is the model's generated text: a bare code there is a width,
+        # a row count or a "404 page", never a vendor failure.
+        self.assertEqual(classify_failure(1, "", "401 blocked"), FailureKind.AUTH)
+        self.assertEqual(
+            classify_failure(1, "wrote 401 rows and a 404 page", ""),
+            FailureKind.TASK_FAILURE,
+        )
+
     def test_status_codes_in_http_context_still_classify(self):
         cases = [
             ("Error: 401 Unauthorized", FailureKind.AUTH),

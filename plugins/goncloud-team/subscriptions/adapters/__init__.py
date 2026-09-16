@@ -73,12 +73,18 @@ _STATUS_CODE_PATTERN = re.compile(
 )
 
 
-def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
-    """Best-effort vendor failure classification from redacted evidence."""
-    haystack = f"{stdout}\n{stderr}".lower()
-    status = _STATUS_CODE_PATTERN.search(haystack)
-    if status:
-        return _STATUS_CODES[status.group(1) or status.group(2)]
+def _classify_channel(haystack: str, *, bare_codes: bool):
+    """Classify one output channel, or None. ``bare_codes`` trusts a status
+    number anywhere (the vendor's stderr); otherwise a number counts only in an
+    HTTP context (the model's stdout, where a width or a count is not a code)."""
+    if bare_codes:
+        for code, failure in _STATUS_CODES.items():
+            if re.search(rf"\b{code}\b", haystack):
+                return failure
+    else:
+        status = _STATUS_CODE_PATTERN.search(haystack)
+        if status:
+            return _STATUS_CODES[status.group(1) or status.group(2)]
     if _TRANSPORT_PATTERN.search(haystack):
         return FailureKind.TRANSPORT
     if _AUTH_PATTERN.search(haystack):
@@ -89,6 +95,21 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
         return FailureKind.MODEL_UNAVAILABLE
     if _INVALID_PATTERN.search(haystack):
         return FailureKind.INVALID_REQUEST
+    return None
+
+
+def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
+    """Best-effort vendor failure classification from redacted evidence.
+
+    stderr is the vendor's own error channel, so a bare status number there is
+    a real signal; stdout carries the model's generated text, where a bare
+    number is a width, a count or a "404 page", never a code. Reading stderr
+    first, then stdout under the stricter rule, stops one normal sentence from
+    faking an auth/quota/model failure (2026-09-15)."""
+    for channel, bare_codes in ((stderr, True), (stdout, False)):
+        kind = _classify_channel(channel.lower(), bare_codes=bare_codes)
+        if kind is not None:
+            return kind
     return FailureKind.TASK_FAILURE
 
 
