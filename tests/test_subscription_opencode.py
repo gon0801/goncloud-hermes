@@ -18,6 +18,7 @@ from subscriptions.process import (  # noqa: E402
     _MAX_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
     run_cli,
 )
+from subscriptions.adapters import classify_failure  # noqa: E402
 from subscriptions.adapters.opencode import (  # noqa: E402
     OpenCodeAdapter,
     parse_opencode_jsonl,
@@ -245,6 +246,46 @@ class OpenCodeAdapterTests(unittest.TestCase):
             self.assertEqual(result.failure, expected, stderr)
             self.assertFalse(result.success)
             self.assertNotIn(stderr, result.text)
+
+    def test_bare_status_numbers_in_model_text_are_not_vendor_failures(self):
+        # 2026-09-15: classify_failure searched the whole stdout+stderr for a
+        # bare "400"/"404"/"429". A model that merely writes such a number — a
+        # CSS width, an item count, a "404 page" — was misclassified as an
+        # auth/quota/model failure, which then poisoned the router health cache
+        # and skipped a healthy account for later stages.
+        for text in (
+            "The mobile nav uses a 400 breakpoint across 429 items.",
+            "Add a friendly 404 page and cap the list at 401 rows.",
+            "There are 403 components and 400 tests in this module.",
+        ):
+            self.assertEqual(
+                classify_failure(1, text, ""), FailureKind.TASK_FAILURE, text
+            )
+
+    def test_status_codes_in_http_context_still_classify(self):
+        cases = [
+            ("Error: 401 Unauthorized", FailureKind.AUTH),
+            ("request failed with status code 429", FailureKind.QUOTA),
+            ("HTTP 403 Forbidden", FailureKind.AUTH),
+            ("server returned 404 not found", FailureKind.MODEL_UNAVAILABLE),
+            ("responded 400 bad request", FailureKind.INVALID_REQUEST),
+            ('{"statusCode":401,"message":"nope"}', FailureKind.AUTH),
+        ]
+        for stderr, expected in cases:
+            self.assertEqual(classify_failure(1, "", stderr), expected, stderr)
+
+    def test_word_signals_still_classify_without_a_status_number(self):
+        self.assertEqual(
+            classify_failure(1, "", "unauthorized: token expired"), FailureKind.AUTH
+        )
+        self.assertEqual(
+            classify_failure(1, "", "quota exceeded for this plan"),
+            FailureKind.QUOTA,
+        )
+        self.assertEqual(
+            classify_failure(1, "", "model mystery-x is not available"),
+            FailureKind.MODEL_UNAVAILABLE,
+        )
 
     def test_timeout_is_returned_as_timeout_failure(self):
         def timeout_runner(command, **kwargs):

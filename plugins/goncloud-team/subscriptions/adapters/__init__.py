@@ -22,16 +22,16 @@ _AUTH_PATTERN = re.compile(
 )
 _QUOTA_PATTERN = re.compile(
     r"\bquota\b|\bbalance\b|insufficient|rate[ _-]?limit|usage[ _-]?limit|"
-    r"\bexceeded\b|\b429\b|out of credit",
+    r"\bexceeded\b|out of credit",
     re.IGNORECASE,
 )
 _MODEL_PATTERN = re.compile(
     r"model (is )?not|unknown model|no such model|not available|"
-    r"does not exist|deprecat|\b404\b",
+    r"does not exist|deprecat",
     re.IGNORECASE,
 )
 _INVALID_PATTERN = re.compile(
-    r"invalid request|bad request|malformed|schema|\b400\b", re.IGNORECASE
+    r"invalid request|bad request|malformed|schema", re.IGNORECASE
 )
 _TRANSPORT_PATTERN = re.compile(
     r"connection[ _-]?error|connection reset|reset by peer|"
@@ -53,13 +53,32 @@ _STATUS_CODES = {
     "400": FailureKind.INVALID_REQUEST,
 }
 
+#: A bare HTTP status number in model output — a CSS width, an item count, a
+#: "404 page" — is not a vendor failure. Trust a status code only next to an
+#: HTTP cue ("status code 401", "http 429", "returned 404") or its canonical
+#: reason phrase ("401 unauthorized"). Matching bare numbers anywhere let one
+#: normal sentence poison the router health cache (2026-09-15).
+_STATUS_CUE = (
+    r"(?:https?|status(?:[ _-]?code)?|code|error|response|responded|"
+    r"returned|failed(?:\s+with)?)"
+)
+_STATUS_REASON = (
+    r"(?:unauthorized|forbidden|payment required|too many requests|"
+    r"not found|bad request)"
+)
+_STATUS_CODE_PATTERN = re.compile(
+    rf"{_STATUS_CUE}[^0-9a-z\n]{{0,16}}(40[0134]|429)\b"
+    rf"|\b(40[0134]|429)\b[^0-9a-z\n]{{0,4}}{_STATUS_REASON}",
+    re.IGNORECASE,
+)
+
 
 def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
     """Best-effort vendor failure classification from redacted evidence."""
     haystack = f"{stdout}\n{stderr}".lower()
-    for code, failure in _STATUS_CODES.items():
-        if re.search(rf"\b{code}\b", haystack):
-            return failure
+    status = _STATUS_CODE_PATTERN.search(haystack)
+    if status:
+        return _STATUS_CODES[status.group(1) or status.group(2)]
     if _TRANSPORT_PATTERN.search(haystack):
         return FailureKind.TRANSPORT
     if _AUTH_PATTERN.search(haystack):
