@@ -404,6 +404,30 @@ class FailoverTests(RouterTestCase):
         self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 10))
         router.store.release_stage("wf-6", "st-6", "next-owner")
 
+    def test_authorization_guard_errors_during_recovery_are_terminal_and_sanitized(
+        self,
+    ):
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = completed("done", "opencode_go")
+        first = router.run(request(self.workspace), routes_for_main())
+        self.assertTrue(first.success)
+
+        def guard():
+            raise RuntimeError("fixture-private-authorization-error")
+
+        # Replaying a recorded success meets the same authorization boundary
+        # as a live dispatch: a refusal, never an exception that blocks.
+        denied = router.run(
+            replace(request(self.workspace), pre_invoke=guard), routes_for_main()
+        )
+        self.assertFalse(denied.success)
+        self.assertEqual(denied.failure, FailureKind.INVALID_REQUEST)
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
+        self.assertNotIn("fixture-private", repr(denied))
+        self.assertIsNotNone(router.store.latest_success("wf-6", "st-6"))
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 10))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
+
     def test_concurrent_stage_runs_invoke_vendor_once(self):
         routers = [self.router(), self.router()]
         start = threading.Barrier(2)
@@ -1025,6 +1049,26 @@ class StatusTests(RouterTestCase):
 
 
 class StateStoreTests(RouterTestCase):
+    def test_a_rearming_attempt_without_a_failure_kind_keeps_the_cause(self):
+        store = SubscriptionStateStore(self.db_path)
+        store.save_live_health(
+            "opencode_go", ready=False, account_class="subscription", failure="quota"
+        )
+
+        store.save_health(
+            "opencode_go",
+            ready=False,
+            account_class="opencode_go",
+            failure=None,
+            detail="live attempt failed",
+            attempt_failed=True,
+        )
+
+        health = store.health("opencode_go")
+        self.assertTrue(health["quarantined"])
+        # A re-arm never erases why the account is held.
+        self.assertEqual(health["failure"], "quota")
+
     def test_store_redacts_each_evidence_write_boundary(self):
         sensitive = (
             "opaque-state-fixture",
@@ -1575,6 +1619,54 @@ class QuarantineExpiryTests(RouterTestCase):
 
                 self.assertEqual(result.adapter, "opencode_go")
                 self.assertFalse(router.store.health("opencode_go")["quarantined"])
+
+    def test_an_expired_quarantine_rearms_on_every_failure_kind(self):
+        from subscriptions.router import _QUARANTINE_RETRY_SECONDS
+
+        kinds = (
+            FailureKind.INVALID_TERMINAL,
+            FailureKind.TASK_FAILURE,
+            FailureKind.INVALID_REQUEST,
+            FailureKind.AUTH,
+            FailureKind.TIMEOUT,
+            FailureKind.TRANSPORT,
+            FailureKind.MODEL_UNAVAILABLE,
+        )
+        for kind in kinds:
+            with self.subTest(kind=kind.value):
+                self.db_path = self.workspace / f"rearm-{kind.value}.db"
+                self.fake_adapters["opencode_go"] = ScriptedAdapter("opencode_go")
+                self.fake_adapters["opencode_zen"] = ScriptedAdapter("opencode_zen")
+                self.quarantine(
+                    "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
+                )
+                go = self.fake_adapters["opencode_go"]
+                go.result = failed(kind, "opencode_go")
+                self.fake_adapters["opencode_zen"].result = completed(
+                    adapter="opencode_zen"
+                )
+                router = self.router()
+
+                for stage_id in ("st-6", "st-7", "st-8"):
+                    router.run(
+                        request(self.workspace, stage_id=stage_id),
+                        routes_for_main()[:2],
+                    )
+
+                # An expired quarantine buys exactly one real retry per hour,
+                # whatever the failure looks like: only success is proof.
+                self.assertEqual(len(go.requests), 1)
+                health = router.store.health("opencode_go")
+                self.assertTrue(health["quarantined"])
+                self.assertFalse(health["ready"])
+                self.assertEqual(health["failure"], kind.value)
+                rearmed_at = datetime.strptime(
+                    health["quarantined_at"], "%Y-%m-%dT%H:%M:%S.%fZ"
+                ).replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - rearmed_at).total_seconds()
+                self.assertLess(age, 60)
+                # The re-armed quarantine is cached again: no probe per run.
+                self.assertEqual(len(go.probes), 1)
 
 
 if __name__ == "__main__":

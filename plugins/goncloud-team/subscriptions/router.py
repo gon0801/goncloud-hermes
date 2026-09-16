@@ -509,8 +509,20 @@ class SubscriptionRouter:
 
     def _recover_result(self, request, recorded, owner):
         result = _result_from_attempt(recorded)
-        if request.pre_invoke is not None:
-            request.pre_invoke()
+        # Same boundary as a live dispatch: a revoked assignment is a sanitized
+        # refusal, never an exception that leaves the stage blocked unexplained.
+        try:
+            if request.pre_invoke is not None:
+                request.pre_invoke()
+        except Exception:
+            return InvocationResult(
+                success=False,
+                text="subscription assignment authorization changed; request refused",
+                adapter=result.adapter,
+                model=result.model,
+                billing_mode=result.billing_mode,
+                failure=FailureKind.INVALID_REQUEST,
+            )
         try:
             if request.result_transform is not None:
                 result = request.result_transform(result)
@@ -652,6 +664,9 @@ class SubscriptionRouter:
             account_class=adapter,
             failure=failure.value if failure else None,
             detail="live attempt failed",
+            # Whatever it looked like, it was not the successful inference an
+            # expired quarantine needs as proof: re-arm the clock.
+            attempt_failed=True,
         )
 
     # -- status -----------------------------------------------------------

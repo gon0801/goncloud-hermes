@@ -16,6 +16,7 @@ from hermes_cli.kanban_db import block_task, complete_task, list_runs, parent_id
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
+    from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from .subscriptions.router import GitInspector
     from .workflow import (
         CORRECTIVE_STAGES,
@@ -24,6 +25,7 @@ try:
         WorkflowService,
     )
 except ImportError:
+    from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from subscriptions.router import GitInspector
     from workflow import (
         CORRECTIVE_STAGES,
@@ -68,10 +70,25 @@ def _default_home():
 # fence may carry a prose prefix. The closing fence is still checked separately
 # for standing alone, and nothing may follow it.
 _FENCE = re.compile(r"```([^\r\n]*)\r?$", re.MULTILINE)
-_SENSITIVE = re.compile(
-    r"\b(?:sk-[\w-]+|Bearer\s+[\w.\-]+|[\w.+-]+@[\w.-]+\.[a-z]{2,})",
-    re.IGNORECASE,
-)
+# One set of credential shapes for both boundaries: this copy once lagged the
+# router's and let ghp_/xai- tokens through to the director and Telegram.
+_SENSITIVE = SENSITIVE_TEXT
+# Identifiers travel in argv and name the result file; never a path fragment.
+_WORKFLOW_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def check_stop_after(stop_after):
+    """Reject an unknown stop before anything durable is created."""
+    if stop_after is not None and stop_after not in INITIAL_STAGES:
+        raise WorkflowError("stop_after must name a workflow stage")
+
+
+def check_workflow_id(workflow_id):
+    if not isinstance(workflow_id, str) or not _WORKFLOW_ID.match(workflow_id):
+        raise WorkflowError("workflow_id is malformed")
+    return workflow_id
+
+
 _ATTEMPT_KEYS = (
     "slot",
     "adapter",
@@ -170,11 +187,13 @@ def parse_terminal_envelope(text: str, *, role: str) -> dict:
 
 
 def _sanitize(text, instruction=""):
-    secrets = [instruction] if instruction else []
+    # Same floor and marker guard as the router: a short value would rewrite
+    # JSON keys, and a piece of the marker would grow on every pass.
+    secrets = [instruction] if usable_secret(instruction) else []
     secrets.extend(
         value
         for key, value in os.environ.items()
-        if len(value) >= 6
+        if usable_secret(value)
         and any(
             word in key.upper() for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")
         )
@@ -233,8 +252,7 @@ class LocalOrchestrator:
 
     @staticmethod
     def _check_stop(stop_after):
-        if stop_after is not None and stop_after not in INITIAL_STAGES:
-            raise WorkflowError("stop_after must name a workflow stage")
+        check_stop_after(stop_after)
 
     def start(
         self,
@@ -301,7 +319,7 @@ class LocalOrchestrator:
             else (
                 original["revision"]
                 if original
-                else GitInspector().current_revision(Path(repository))
+                else GitInspector().current_revision(repo)
             )
         )
         resolved_sources = (
@@ -370,6 +388,7 @@ class LocalOrchestrator:
         durable contract. Vendor diagnostics go nowhere (the driver prints
         nothing); the bounded result lands in a private file under the home.
         """
+        check_workflow_id(workflow_id)
         self._check_stop(stop_after)
         home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
         results = home / "goncloud-local"
@@ -412,6 +431,7 @@ class LocalOrchestrator:
 
     def driver_result(self, workflow_id, *, home=None):
         """The detached driver's bounded outcome, or None while it still runs."""
+        check_workflow_id(workflow_id)
         home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
         result_file = home / "goncloud-local" / f"{workflow_id}.json"
         if not result_file.is_file():

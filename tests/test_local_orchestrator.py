@@ -29,6 +29,7 @@ from workflow import WorkflowError, WorkflowService  # noqa: E402
 from subscriptions.router import SubscriptionRouter  # noqa: E402
 from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from local_orchestrator import LocalOrchestrator, parse_terminal_envelope  # noqa: E402
+import local_orchestrator as local_orchestrator_module  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SOURCES = [{"reference": "owner-approved local test", "observed_at": "2026-09-14"}]
@@ -298,6 +299,58 @@ class TransportEntryPointTests(unittest.TestCase):
                 )
 
         self.assertEqual(launched["argv"][-1], "scout")
+
+    def test_create_derives_the_revision_from_the_expanded_repository_path(self):
+        home = self.root / "home"
+        repo = home / "repo"
+        repo.mkdir(parents=True)
+        for command in (
+            ["git", "init", "-q"],
+            [
+                "git",
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "baseline",
+            ],
+        ):
+            subprocess.run(command, cwd=repo, check=True, capture_output=True)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        # The path the owner typed passes validation once expanded; deriving
+        # the revision from the raw form surfaced as "revision is required".
+        with patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            created = self.orchestrator.create(
+                **self.assignment(repository="~/repo", revision=None)
+            )
+
+        contract = WorkflowService(actor_role="claw", db_path=self.db).start_contract(
+            request_key="tg-42"
+        )
+        self.assertIn("scout", created["stages"])
+        self.assertEqual(contract["revision"], head)
+
+    def test_malformed_workflow_ids_never_reach_the_driver_or_the_result_path(self):
+        with patch.object(local_orchestrator_module.subprocess, "Popen") as popen:
+            for bad in ("../escape", "t_1/../x", "", "t 1", ".hidden", "a" * 200):
+                with self.subTest(workflow_id=bad):
+                    with self.assertRaises(WorkflowError):
+                        self.orchestrator.driver_result(bad, home=self.root)
+                    with self.assertRaises(WorkflowError):
+                        self.orchestrator.launch_detached(bad, home=self.root)
+        popen.assert_not_called()
+        self.assertFalse((self.root / "goncloud-local").exists())
 
 
 class LocalOrchestratorTests(unittest.TestCase):

@@ -171,6 +171,30 @@ class TransportToolTests(unittest.TestCase):
         schema = ctx.tools["goncloud_local_run"].schema["parameters"]["properties"]
         self.assertIn("scout", schema["stop_after"]["enum"])
 
+    def test_local_run_rejects_a_bad_stop_after_before_creating_the_chain(self):
+        ctx = FakeContext(profile_name="claw")
+        orchestrator = FakeOrchestrator()
+        _PLUGIN._build_orchestrator = lambda context: orchestrator
+
+        _PLUGIN.register(ctx)
+        result = ctx.call(
+            "goncloud_local_run",
+            {
+                "request_key": "tg-4",
+                "repository": "C:/repo",
+                "instruction": "Inspect only.",
+                "sources": [
+                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
+                ],
+                "stop_after": "Scout",
+            },
+        )
+
+        self.assertIn("error", result)
+        # Creating first would leave a seven-card chain nobody drives and no
+        # workflow id in the answer to reach it by.
+        self.assertEqual(orchestrator.calls, [])
+
     def test_local_status_reads_the_driver_view(self):
         ctx = FakeContext(profile_name="claw")
         orchestrator = FakeOrchestrator()
@@ -871,6 +895,68 @@ class SubscriptionRunTests(unittest.TestCase):
         self.assertTrue(
             any("GONCLOUD_SUBSCRIPTION" in comment.body for comment in comments)
         )
+
+
+class RecordingContext(FakeContext):
+    def __init__(self, profile_name):
+        super().__init__(profile_name)
+        self.hooks = {}
+
+    def register_hook(self, event, handler):
+        self.hooks[event] = handler
+
+
+class ReviewerCompletionGuardTests(unittest.TestCase):
+    """The only hook the plugin registers must fail closed for reviewer cards."""
+
+    def setUp(self):
+        self.calls = []
+        tests = self
+
+        class FakeWorkflowService:
+            def __init__(self, *, actor_role):
+                self.actor_role = actor_role
+
+            def guard_native_completion(self, task_id):
+                tests.calls.append((self.actor_role, task_id))
+                return {"action": "block", "message": "blocked"}
+
+        self.addCleanup(patch.stopall)
+        patch.object(_PLUGIN, "WorkflowService", FakeWorkflowService).start()
+        patch.dict(os.environ, {}, clear=False).start()
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    def hook(self, profile_name):
+        ctx = RecordingContext(profile_name)
+        _PLUGIN.register(ctx)
+        return ctx.hooks["pre_tool_call"]
+
+    def test_reviewer_completion_without_a_resolvable_id_is_blocked(self):
+        hook = self.hook("reviewer")
+        for args, kwargs in (
+            ({}, {}),
+            ({"task_id": "   "}, {}),
+            ({"card_id": "t_1"}, {"task_id": ""}),
+        ):
+            with self.subTest(args=args, kwargs=kwargs):
+                verdict = hook("kanban_complete", args, **kwargs)
+                self.assertEqual(verdict["action"], "block")
+        self.assertEqual(self.calls, [])
+
+    def test_resolved_ids_reach_the_durable_guard_and_other_roles_stay_outside(
+        self,
+    ):
+        hook = self.hook("reviewer")
+        self.assertEqual(hook("kanban_complete", {"task_id": "t_1"})["action"], "block")
+        self.assertEqual(hook("kanban_complete", {}, task_id="t_2")["action"], "block")
+        with patch.dict(os.environ, {"HERMES_KANBAN_TASK": "t_3"}):
+            self.assertEqual(hook("kanban_complete", {})["action"], "block")
+        self.assertEqual(
+            self.calls, [("reviewer", "t_1"), ("reviewer", "t_2"), ("reviewer", "t_3")]
+        )
+        self.assertIsNone(hook("kanban_list", {}))
+        # Other roles and ordinary cards are deliberately outside the policy.
+        self.assertIsNone(self.hook("implementer")("kanban_complete", {}))
 
 
 if __name__ == "__main__":

@@ -47,7 +47,8 @@
   `%TEMP%\goncloud-router-acceptance-20260914T214024Z\{scout,chain3}`.
 - Bateria final: **362 tests, 359 aprobados y 3 skips de plataforma/privilegios**,
   288.213 s, exit 0. Pre-commit completo: 8/8; `git diff --check` limpio.
-- Plugin Doctor: OK, 7 herramientas y 1 hook. Este runtime ofrece
+- Plugin Doctor: OK, 7 herramientas (entonces; 9 desde el transporte local)
+  y 1 hook. Este runtime ofrece
   `hermes -p claw plugins doctor goncloud-team --ci`; el comando del brief
   `tools plugin doctor` no existe (exit 2). Deep gateway status: exit 0, stopped.
 
@@ -203,7 +204,10 @@ correr la matriz live a mano cada vez. La regla ahora es:
 
 Regresiones: cuarentena reciente sigue saltando la ruta; vencida se reintenta
 y el exito real la levanta; vencida y fallida de nuevo se re-arma y la segunda
-corrida ya no reintenta; los cuatro tipos restantes vencen igual.
+corrida ya no reintenta; los cuatro tipos restantes vencen igual; y, desde la
+revision adversarial de cierre (abajo), vencida y fallida con *cualquiera* de
+los ocho tipos de fallo se re-arma con reloj nuevo, un solo intento real por
+corrida en serie y sin volver a sondear en cada corrida.
 
 ### Gmail y Google Workspace del director
 
@@ -219,6 +223,41 @@ token en `%LOCALAPPDATA%\hermes\profiles\claw\google_token.json`
 etiquetas con `INBOX`. Nada de correo se copio a este repositorio. La skill es
 Python: hereda `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` del gateway por la
 interceptacion de Kaspersky descrita arriba.
+
+### Varias cuentas de correo por himalaya
+
+`google-workspace` atiende una sola cuenta de Google por perfil: la principal
+del propietario (confirmada con `users.getProfile` de la API). Para las demas
+el propietario pidio correo (solo correo) y se instalo `himalaya` v2.1.0
+(`+imap +smtp +rustls-ring`) en `%LOCALAPPDATA%\Programs\himalaya`, en el PATH
+de usuario. La configuracion vive en `%APPDATA%\himalaya\config.toml`, fuera de
+Git, con contrasenas de aplicacion (16 caracteres; Gmail acepta los espacios
+con que las muestra, aqui se guardan sin ellos). Sintaxis verificada para esa
+version, distinta de la que trae la skill empaquetada: `backend = "imap"`,
+`imap.server = "imaps://imap.gmail.com:993"`, `imap.sasl.plain.username`,
+`imap.sasl.plain.password.raw`, y `message.send.backend = "smtp"` con
+`smtp.server = "smtps://smtp.gmail.com:465"`; `imap.port` y `backend.type` no
+parsean. Los comandos tambien cambiaron (`mailbox list`, `envelope list -s N`,
+`message read ID`, `message compose --to --subject --body --send`; no existen
+`folder list` ni `template send`), asi que la copia local de la skill en el
+perfil `claw` lleva al inicio una seccion "En esta maquina" con las cuentas y
+los comandos reales; el archivo versionado de la skill no se toca.
+
+Aceptacion 2026-09-14: la primera cuenta secundaria de Gmail (`undying`, default
+de himalaya) lista
+carpetas y envio un correo de prueba a si misma (`Message successfully sent`);
+la cuenta de iCloud tambien autentico (`imaps://imap.mail.me.com:993`, SMTP
+`smtp://smtp.mail.me.com:587` con `smtp.starttls = true`) pero el propietario
+la dejo fuera y su bloque quedo apartado en `icloud.apartada.toml` junto a la
+configuracion. La segunda cuenta de Gmail (`david`) fallo primero con
+`NO Invalid credentials`: la contrasena de aplicacion se habia generado desde
+otra sesion y esa cuenta no tenia verificacion en dos pasos (Google no ofrece
+contrasenas de aplicacion sin ella). Con la verificacion activada y una
+contrasena generada en su propia sesion, autentico, listo carpetas (nombres en
+espanol: `[Gmail]/Enviados`) y envio su correo de prueba. El
+gateway se reinicio desde una shell con el PATH de usuario fresco y las tres
+variables de certificados, porque el proceso anterior nacio antes de instalar
+himalaya y no lo veia.
 
 ### Zen y Kimi: era el certificado, no las cuentas
 
@@ -240,6 +279,97 @@ mantiene. El parser acepta el flujo `stream-json` de 0.34 (lineas `role`/
 `content`, cierre por `session.resume_hint`) ademas del esquema anterior. Se
 descarto el modo `kimi acp` (JSON-RPC por stdio, tambien verificado) porque
 requeriria una frontera de proceso bidireccional nueva.
+
+### Revision adversarial de cierre
+
+Antes de cerrar, el propietario pidio una pasada adversarial sobre toda la rama
+(63 commits desde el plan de recuperacion, mas el cutover de Telegram y los
+seguimientos). El agente `adversary` corrio con la bateria completa (362/359/3,
+verde) y sin tocar codigo, secretos ni proveedores. Veredicto inicial: BLOQUEA,
+por 1 HIGH, 4 MEDIUM y 4 LOW. Todos quedaron corregidos en el commit de cierre,
+cada uno con su regresion observada en rojo primero:
+
+- **HIGH. La cuarentena vencida no se re-armaba para tres tipos de fallo.**
+  `_record_health` mantenia la cuenta `ready` tras `invalid_terminal`,
+  `task_failure` o `invalid_request` (el proveedor respondio), y el `CASE` de
+  `save_health` solo reiniciaba `quarantined_at` cuando `ready` era falso. La
+  fila quedaba en "vencida" para siempre: probe e invocacion real en cada
+  corrida, sin techo, mientras el estado seguia diciendo "en cuarentena". El
+  documento afirmaba lo contrario. Ahora `save_health` recibe `attempt_failed`
+  desde cualquier intento real fallido y re-arma el reloj (y registra ese fallo
+  como causa) aunque el router deje la cuenta `ready` para rutas no
+  cuarentenadas. Regresion: `test_an_expired_quarantine_rearms_on_every_failure_kind`
+  (los siete tipos restantes; `quota` ya tenia la suya).
+- **MEDIUM. `goncloud_local_run` creaba la cadena antes de validar
+  `stop_after`.** Un valor fuera del enum dejaba siete tarjetas huerfanas y la
+  respuesta sin `workflow_id`. `check_stop_after` corre antes de `create`.
+- **MEDIUM. La redaccion no tenia piso de longitud ni punto fijo.** Un valor de
+  1-5 caracteres bajo una clave `*_TOKEN`/`*_API_KEY` reescribia las claves del
+  JSON terminal y rompia el envelope; y `[redacted]` alimentaba la siguiente
+  pasada (10k chars -> 370k en cuatro). Ahora se exigen 6 caracteres, nada que
+  sea parte del marcador, y `redact_text` es idempotente.
+- **MEDIUM. El unico hook fallaba abierto.** Sin `task_id` resoluble devolvia
+  `None` (permitir) y ninguna prueba lo ejercitaba. Para el perfil `reviewer`
+  ahora bloquea si no puede resolver el id (`args`, `HERMES_KANBAN_TASK` o el
+  `task_id` del host, en ese orden); otros roles siguen fuera de la politica.
+  Dos pruebas nuevas cubren el hook registrado.
+- **MEDIUM. Patrones de redaccion incompletos y divergentes.** Slack `xox*-`,
+  Google `AIza`, GitLab `glpat-`, AWS `AKIA`, `Authorization: Basic`, tokens
+  en query string; y la copia del orquestador (la que llega a Telegram) era mas
+  debil que la del router (dejaba pasar `ghp_` y `xai-`). Hay una sola fuente
+  (`redaction.SENSITIVE_TEXT`) y una prueba exige que ambas fronteras la
+  compartan. Residual declarado: no se redactan runs hexadecimales (32/64)
+  porque la evidencia lleva revisiones de git; una clave hex desnuda que un
+  worker copie de un archivo del repo no se atrapa por forma.
+- **LOW.** El archivo temporal del prompt (`grok`, `kimi`) se crea con
+  `open_private_file` (DACL solo-propietario / 0600) en vez de `mkstemp`;
+  `_recover_result` convierte una autorizacion revocada en un `invalid_request`
+  sanitizado en vez de una excepcion que bloquea sin evidencia; `create` deriva
+  la revision de la ruta expandida (una ruta `~/...` daba "revision is
+  required"); y `workflow_id` se valida por forma antes de entrar en argv o en
+  la ruta del resultado.
+
+Se corrigieron ademas dos cifras desfasadas (README: 347 tests; arriba: 7
+herramientas). Lo que el adversary ataco y resistio: idempotencia y concurrencia
+del router (dos corridas o dos hilos, una invocacion), la frontera de procesos
+en Windows, prompts fuera de argv, `private_files.py`, `configure_team.py`, el
+parser del envelope y cero secretos en el historial de Git.
+
+**Segunda ronda** (permitida solo porque la primera hallo un HIGH; no hay
+tercera): acotada al diff de las correcciones, veredicto NO BLOQUEA. Verifico
+que ninguna correccion regresa nada (una cuenta sana que falla una vez sigue
+`ready` y sin cuarentena; el hook no bloquea ningun flujo legitimo del host,
+que siempre manda `task_id` y cuya herramienta nativa ya fallaba sin el; los
+ids reales `t_`+8 hex pasan la validacion) y revirtio cada fix en memoria para
+confirmar que su regresion se pone en rojo. Encontro 2 MEDIUM y 6 LOW. Se
+corrigieron en el commit siguiente, con su prueba en rojo primero: el piso de
+seis caracteres y la guarda del marcador faltaban en `_sanitize` (la frontera
+que llega al director y a Telegram; una instruccion de dos letras rompia un
+envelope valido), `AKIA` y `Basic` ahora distinguen mayusculas (la prosa
+`basic authentication...` ya no se redacta), y un re-armado sin tipo de fallo
+conserva la causa registrada en vez de dejarla en `NULL`. Residuales
+declarados, sin tercera ronda:
+
+- "Un solo intento real por hora" vale en serie: el re-armado ocurre despues
+  de la invocacion, fuera del bloqueo de despacho, asi que N cadenas que
+  lleguen a la vez a la misma cuenta con cuarentena vencida pueden gastar
+  hasta N intentos reales antes de que la primera la re-arme. El tablero
+  corre una cadena por repositorio, de modo que N es pequeno.
+- Falsos positivos por forma, inofensivos porque el marcador conserva el
+  tamano: `?key=`/`?apikey=` en URLs de documentacion, `glpat-style`,
+  `xoxa-` (que si es un prefijo real de Slack) y `Basic` seguido de una palabra
+  de 16+ caracteres.
+- (Resuelto despues de la ronda: la redaccion por regex era cuadratica en el
+  peor caso por el patron de correos sin tope; 1 MB en una sola linea tardaba
+  ~20 min con el patron viejo y el nuevo por igual, mas que el lease de etapa
+  de 600 s, y perder el lease saltaba el registro de salud que re-arma la
+  cuarentena. Las clases abiertas quedaron acotadas a los maximos del RFC y
+  una regresion en subproceso exige que 200 KB adversarios terminen en menos
+  de 10 s.)
+- `open_private_file` en un `%TEMP%` sobre ruta UNC no esta verificado; el
+  transporte por archivo (`grok`, `kimi`) fallaria ahi de forma explicita.
+- El hook bloquea al reviewer sin id resoluble; el host lo manda siempre, de
+  modo que el caso solo aparece con un host distinto.
 
 ### El sufijo `-free` en la posicion de Muse
 

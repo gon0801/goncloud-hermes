@@ -51,13 +51,13 @@ La seleccion de proveedor y las pruebas con inferencia real se registran en [est
 
 Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el workflow `t_4fe237e6` (ver [estado](docs/status.md)). Tras cada redespliegue del plugin, la sesion de Telegram debe renovarse con `/new`: una sesion restaurada conserva la lista de herramientas con la que nacio.
 
-Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva una cadena nativa para conversar (`team.json`: `director_model` + `director_fallbacks`, restringida a las posiciones de `main` que son la misma suscripcion por API nativa, en el orden de la tabla); los trabajadores no llevan ninguna.
+Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva una cadena nativa para conversar (`team.json`: `director_model` + `director_fallbacks`, restringida a las posiciones de `main` que son la misma suscripcion por API nativa, en el orden de la tabla); los trabajadores no llevan ninguna.
 
 ## Calidad
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
 
-Gate final 2026-09-14: 347 tests, 344 aprobados y 3 skips; 8/8 hooks; `git diff --check` limpio; Plugin Doctor OK y gateway `stopped`. Los skips son de plataforma/privilegios. Los defectos que impedian cerrar la cadena, con su regresion, estan en [estado](docs/status.md).
+Gate final 2026-09-15 (tras la revision adversarial de cierre): 378 tests, 375 aprobados y 3 skips; 8/8 hooks; `git diff --check` limpio; Plugin Doctor OK y gateway `stopped`. Los skips son de plataforma/privilegios. Los defectos que impedian cerrar la cadena, con su regresion, estan en [estado](docs/status.md).
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -m unittest discover -s tests -v

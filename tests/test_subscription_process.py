@@ -100,6 +100,33 @@ class SafeProcessTests(unittest.TestCase):
         self.assertNotIn("super-secret", repr(evidence))
         self.assertIsInstance(evidence, ProcessEvidence)
 
+    def test_temp_prompt_is_owner_only_from_creation(self):
+        from subscriptions import process as process_module
+
+        opened = []
+        real_open = process_module.open_private_file
+
+        def record(path, **kwargs):
+            opened.append(Path(path))
+            return real_open(path, **kwargs)
+
+        runner = FakeRunner(stdout="done")
+        with patch.object(process_module, "open_private_file", record):
+            evidence = run_cli(
+                ["vendor", "--prompt-file", "{prompt_file}"],
+                "task",
+                self.workspace,
+                timeout=5,
+                prompt_transport="tempfile",
+                runner=runner,
+            )
+
+        self.assertEqual(evidence.stdout, "done")
+        # The assignment file comes from the owner-only helper (protected DACL
+        # on Windows, 0600 elsewhere), never an ACL-inheriting mkstemp file.
+        self.assertEqual(opened, [runner.prompt_path])
+        self.assertFalse(runner.prompt_path.exists())
+
     def test_temp_prompt_is_deleted_after_timeout(self):
         runner = TimeoutRunner()
 
