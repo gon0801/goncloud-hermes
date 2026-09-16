@@ -78,6 +78,20 @@ KIMI_034_STREAM = "\n".join(
     ]
 )
 
+# What kimi 0.34.0 prints when the turn uses a tool: an assistant line that
+# carries tool_calls instead of content, then a role:"tool" result line, then
+# the assistant answer and the closing resume_hint. Captured from a live run.
+KIMI_034_TOOL_STREAM = "\n".join(
+    [
+        '{"role":"meta","type":"system.version","version":"0.34.0"}',
+        '{"role":"assistant","tool_calls":[{"type":"function","id":"tool_1",'
+        '"function":{"name":"Read","arguments":"{\\"path\\":\\"sample.txt\\"}"}}]}',
+        '{"role":"tool","tool_call_id":"tool_1","content":"1\\tline one\\n2\\tline two"}',
+        '{"role":"assistant","content":"The file has 3 lines."}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"session_tool",'
+        '"command":"kimi -r session_tool","content":"To resume: kimi -r session_tool"}',
+    ]
+)
 # Fixture markers used only to prove redaction; they are not real secrets.
 DEEPSEEK_FIXTURE_KEY = "sk-fixture-deepseek-key"
 ZAI_FIXTURE_TOKEN = "fixture-zai-token"
@@ -359,6 +373,22 @@ class KimiGrokTests(unittest.TestCase):
         self.assertTrue(result.success, result.failure)
         self.assertEqual(result.text, "kimi reply")
         self.assertEqual(result.session_id, "session_034")
+
+    def test_kimi_034_tool_events_do_not_invalidate_the_turn(self):
+        # 2026-09-15: a real kimi task that uses a tool emits a role:"tool"
+        # result line and an assistant line carrying tool_calls instead of
+        # content. The parser flagged both as malformed, so every tool-using
+        # stage failed as task_failure even though kimi finished the work and
+        # exited zero with a session.resume_hint.
+        parsed = parse_kimi_jsonl(KIMI_034_TOOL_STREAM)
+        self.assertTrue(parsed["terminal_valid"])
+        self.assertIn("3 lines", parsed["text"])
+
+        result = KimiAdapter(runner=FakeCliRunner(stdout=KIMI_034_TOOL_STREAM)).invoke(
+            request(self.workspace), route_for("kimi", "k3")
+        )
+        self.assertTrue(result.success, result.failure)
+        self.assertEqual(result.session_id, "session_tool")
 
     def test_kimi_034_retrying_without_resume_hint_is_not_a_completed_turn(self):
         stream = "\n".join(

@@ -71,6 +71,10 @@ def parse_kimi_jsonl(output: str) -> dict:
         if role is not None:
             if role == "assistant":
                 content = event.get("content")
+                if content is None:
+                    # A tool-call turn carries tool_calls instead of content;
+                    # it is a valid step, not corruption, and adds no text.
+                    continue
                 if not isinstance(content, str):
                     malformed = True
                     continue
@@ -97,7 +101,10 @@ def parse_kimi_jsonl(output: str) -> dict:
                         else:
                             session_id = raw_session_id
             else:
-                malformed = True
+                # Unknown but well-formed roles (e.g. role:"tool" results)
+                # are stream steps we don't consume, not corruption. Ignoring
+                # them keeps a tool-using turn from being flagged malformed.
+                pass
             continue
         raw_event_type = event.get("type")
         if not isinstance(raw_event_type, str):
