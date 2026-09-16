@@ -262,6 +262,24 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 classify_failure(1, text, ""), FailureKind.TASK_FAILURE, text
             )
 
+    def test_a_disabled_model_is_model_unavailable_not_auth(self):
+        # 2026-09-16: opencode returns {"message":"Model is disabled",
+        # "statusCode":401} for a model the plan does not enable. The 401 is
+        # not an account auth failure — the account authenticated and answered.
+        # Reading it as model_unavailable lets the slot advance without marking
+        # the whole account dead and skipping it where it uses a good model.
+        disabled = (
+            '{"type":"error","error":{"message":"Model is disabled",'
+            '"statusCode":401,"isRetryable":false}}'
+        )
+        self.assertEqual(
+            classify_failure(1, disabled, ""), FailureKind.MODEL_UNAVAILABLE
+        )
+        self.assertEqual(
+            classify_failure(1, "", "error: model is disabled"),
+            FailureKind.MODEL_UNAVAILABLE,
+        )
+
     def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
         # stderr is the vendor's error channel: a bare code there is real.
         # stdout is the model's generated text: a bare code there is a width,

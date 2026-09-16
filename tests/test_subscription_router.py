@@ -713,6 +713,40 @@ class FailoverTests(RouterTestCase):
         self.assertTrue(result.success)
         self.assertEqual(router.calls, ["opencode_go", "claude"])
 
+    def test_model_unavailable_keeps_the_account_ready(self):
+        # 2026-09-16: a disabled/unknown model is the vendor answering about
+        # the model, not the account. It must advance the slot without marking
+        # the account unhealthy, or a later stage that uses a good model on the
+        # same account gets skipped for the whole health window (this is why
+        # opencode_zen looked "dead": a disabled deepseek model on one slot
+        # poisoned the account it shares with the working muse model).
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.MODEL_UNAVAILABLE, adapter="opencode_go"
+        )
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        router = self.router()
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertTrue(router.store.health("opencode_go")["ready"])
+
+    def test_timeout_cools_the_account_so_a_hung_endpoint_is_skipped(self):
+        # opencode_go hangs to its 300s deadline at slot 0 of nearly every
+        # chain. A timeout must cool the account down like quota so the next
+        # stage skips it instead of hanging the full deadline again.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TIMEOUT, adapter="opencode_go"
+        )
+        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        router = self.router()
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(router.store.cooldown_until("opencode_go"))
+
     def test_ordinary_cooldown_is_recorded_with_quota_and_exact_duplicate_positions(
         self,
     ):

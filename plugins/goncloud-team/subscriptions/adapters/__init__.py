@@ -30,6 +30,14 @@ _MODEL_PATTERN = re.compile(
     r"does not exist|deprecat",
     re.IGNORECASE,
 )
+#: A model the plan does not enable is the vendor answering about the model,
+#: not the account. opencode reports it as {"message":"Model is disabled",
+#: "statusCode":401}; the 401 must not be read as an account auth failure.
+_MODEL_LEVEL_PATTERN = re.compile(
+    r"model (is )?disabled|model (is )?not enabled|"
+    r"model (is )?not allowed|model not permitted",
+    re.IGNORECASE,
+)
 _INVALID_PATTERN = re.compile(
     r"invalid request|bad request|malformed|schema", re.IGNORECASE
 )
@@ -77,6 +85,10 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
     """Classify one output channel, or None. ``bare_codes`` trusts a status
     number anywhere (the vendor's stderr); otherwise a number counts only in an
     HTTP context (the model's stdout, where a width or a count is not a code)."""
+    # A disabled/unenabled model is a model-level answer; it outranks the
+    # status code so its 401 is not misread as an account auth failure.
+    if _MODEL_LEVEL_PATTERN.search(haystack):
+        return FailureKind.MODEL_UNAVAILABLE
     if bare_codes:
         for code, failure in _STATUS_CODES.items():
             if re.search(rf"\b{code}\b", haystack):

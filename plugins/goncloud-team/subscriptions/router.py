@@ -35,6 +35,11 @@ _ADVANCING_FAILURES = {
 #: next slot would otherwise redo work on top of an unreported mutation.
 _BLOCK_AFTER_MUTATION = {FailureKind.TRANSPORT, FailureKind.INVALID_TERMINAL}
 _QUOTA_COOLDOWN_MINUTES = 15
+# A hung endpoint (no output to its deadline) stays hung a while; cool it down
+# so a multi-stage workflow skips it instead of hanging the full deadline at
+# slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
+# cooldown, not health, is what bridges it.
+_TIMEOUT_COOLDOWN_MINUTES = 15
 # Quota, connectivity and even credentials come back on their own, so a
 # quarantine is a verdict with a lifetime, not a permanent ban. After this
 # horizon the router may try the account again; only a successful real
@@ -447,6 +452,12 @@ class SubscriptionRouter:
                     until=datetime.now(timezone.utc)
                     + timedelta(minutes=_QUOTA_COOLDOWN_MINUTES),
                 )
+            elif result.failure is FailureKind.TIMEOUT:
+                self.store.set_cooldown(
+                    route.adapter,
+                    until=datetime.now(timezone.utc)
+                    + timedelta(minutes=_TIMEOUT_COOLDOWN_MINUTES),
+                )
             if mutated:
                 request = replace(
                     request,
@@ -654,10 +665,14 @@ class SubscriptionRouter:
         # A rejected envelope advances the slot but says nothing about the
         # account: the vendor answered. Keeping it ready avoids skipping the
         # primary position for the whole health window after one bad answer.
-        account_ready = (
-            failure not in _ADVANCING_FAILURES
-            or failure is FailureKind.INVALID_TERMINAL
-        )
+        account_ready = failure not in _ADVANCING_FAILURES or failure in {
+            # The vendor answered, so the account is fine: a rejected envelope
+            # or a disabled/unknown model says nothing about account health.
+            # Marking it unhealthy would skip the account on a later stage that
+            # uses a working model — how opencode_zen looked "dead" (2026-09-16).
+            FailureKind.INVALID_TERMINAL,
+            FailureKind.MODEL_UNAVAILABLE,
+        }
         self.store.save_health(
             adapter,
             ready=account_ready,
