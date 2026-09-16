@@ -18,7 +18,7 @@
     ],
     "operaciones": [
       "opencode-go/deepseek-v4.1-flash",
-      "opencode/deepseek-v4-flash",
+      "opencode/deepseek-v4-flash-vision-exp",
       "anthropic/claude-sonnet-5",
       "opencode/muse-spark-1.3-contributor-free",
       "zai/glm-5.3",
@@ -48,7 +48,7 @@
     ],
     "reviewer": [
       "opencode-go/deepseek-v4.1-flash",
-      "opencode/deepseek-v4-flash",
+      "opencode/deepseek-v4-flash-vision-exp",
       "opencode/claude-fable-5-1",
       "kimi/k3",
       "opencode/muse-spark-1.3-contributor-free",
@@ -58,7 +58,7 @@
     ],
     "adversary": [
       "opencode-go/deepseek-v4.1-flash",
-      "opencode/deepseek-v4-flash",
+      "opencode/deepseek-v4-flash-vision-exp",
       "xai/grok-4.6",
       "kimi/k3",
       "zai/glm-5.3",
@@ -78,7 +78,7 @@
     ],
     "scout": [
       "opencode-go/deepseek-v4.1-flash",
-      "opencode/deepseek-v4-flash",
+      "opencode/deepseek-v4-flash-vision-exp",
       "zai/glm-5.3",
       "opencode/muse-spark-1.3-contributor-free",
       "kimi/k3",

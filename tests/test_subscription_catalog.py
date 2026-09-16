@@ -114,7 +114,11 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(routes[0].model, "deepseek-v4.1-flash")
         self.assertEqual(routes[0].billing_mode, "subscription")
         self.assertEqual(routes[1].adapter, "opencode_zen")
-        self.assertEqual(routes[1].model, "deepseek-v4-flash")
+        # 2026-09-16: opencode/deepseek-v4-flash and -pro are disabled on the
+        # plan; -vision-exp is the only DeepSeek flash enabled on the zen
+        # provider (opencode-go keeps deepseek-v4.1-flash by owner decision,
+        # even while that endpoint is down).
+        self.assertEqual(routes[1].model, "deepseek-v4-flash-vision-exp")
         self.assertEqual(routes[1].billing_mode, "subscription")
         # Historical opencode/ prefix at F2+ binds by family instead.
         self.assertEqual(routes[2].adapter, "claude")
