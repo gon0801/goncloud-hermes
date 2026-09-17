@@ -1496,11 +1496,11 @@ while True:
                 time.sleep(0.01)
             self.assertTrue((root / name).exists(), name)
 
-        go, zen = ScriptedAdapter("opencode_go"), ScriptedAdapter("opencode_zen")
-        for adapter in (go, zen):
+        go, second = ScriptedAdapter("opencode_go"), ScriptedAdapter("claude")
+        for adapter in (go, second):
             adapter.timeout_seconds, adapter.probe_timeout_seconds = 300, 30
         go.result = failed(FailureKind.TASK_FAILURE, "opencode_go")
-        zen.result = completed(adapter="opencode_zen")
+        second.result = completed(adapter="claude")
         try:
             owner = start("hold")
             wait_for("owner-entered")
@@ -1538,14 +1538,14 @@ while True:
             self.assertEqual(len(go.probes), 1)
             self.assertEqual(len(go.requests), 1)
             router = SubscriptionRouter(
-                adapters={"opencode_go": go, "opencode_zen": zen},
+                adapters={"opencode_go": go, "claude": second},
                 store=store,
                 routing_source=SOURCE,
             )
             self.assertTrue(router.run(request(root), routes_for_main()[:2]).success)
             self.assertEqual(len(go.probes), 1)
             self.assertEqual(len(go.requests), 1)
-            self.assertEqual(len(zen.requests), 1)
+            self.assertEqual(len(second.requests), 1)
         finally:
             (root / "owner-release").touch()
             for process in processes:
@@ -1667,17 +1667,15 @@ while True:
             routes_for_main,
         )
 
-        adapters = {
-            name: ScriptedAdapter(name) for name in ("opencode_go", "opencode_zen")
-        }
+        adapters = {name: ScriptedAdapter(name) for name in ("opencode_go", "claude")}
         for adapter in adapters.values():
             adapter.timeout_seconds = 300
             adapter.probe_timeout_seconds = 30
         adapters["opencode_go"].result = failed(FailureKind.TIMEOUT, "opencode_go")
-        adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        adapters["claude"].result = completed(adapter="claude")
         store = SubscriptionStateStore(self.db_path)
-        store.save_health("opencode_zen", ready=True, account_class="subscription")
-        before = store.health("opencode_zen")
+        store.save_health("claude", ready=True, account_class="subscription")
+        before = store.health("claude")
         with (
             patch.object(module, "read_private_env", return_value={}),
             patch(
@@ -1687,7 +1685,7 @@ while True:
         ):
             summary = module.run_live_probe_all(only="opencode_go")
             self.assertEqual(summary["passed"], 0)
-            self.assertEqual(store.health("opencode_zen"), before)
+            self.assertEqual(store.health("claude"), before)
             self.assertIsNotNone(store.health("opencode_go"))
             self.assertTrue(store.health("opencode_go")["quarantined"])
             # Ordinary health updates cannot erase a live-proof quarantine.
@@ -1709,7 +1707,7 @@ while True:
             adapters["opencode_go"].probes.clear()
             result = router.run(request(Path(self.tmp.name)), routes_for_main()[:2])
             self.assertTrue(result.success)
-            self.assertEqual(result.adapter, "opencode_zen")
+            self.assertEqual(result.adapter, "claude")
             self.assertEqual(adapters["opencode_go"].requests, [])
             self.assertEqual(adapters["opencode_go"].probes, [])
             attempts = store.stage_attempts("wf-6", "st-6")
@@ -2030,7 +2028,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertTrue(routing.is_file())
             self.assertEqual(
                 json.loads(routing.read_text(encoding="utf-8"))["columns"],
-                ["Primary", "F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+                ["Primary", "F1", "F2", "F3", "F4", "F5", "F6"],
             )
             secrets = claw / "subscription-router.env"
             second = subprocess.run(

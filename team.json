@@ -5,7 +5,6 @@
   "director": "claw",
   "director_model": {"provider": "opencode-go", "default": "muse-spark-1.3-contributor"},
   "director_fallbacks": [
-    {"provider": "opencode-zen", "model": "muse-spark-1.3-contributor-free"},
     {"provider": "kimi-coding", "model": "k3"},
     {"provider": "zai", "model": "glm-5.3"}
   ],

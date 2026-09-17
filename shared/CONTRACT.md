@@ -12,7 +12,7 @@ Antes de iniciar una tarea Kanban lee kanban_show y los handoffs. El director en
 
 ## Enrutador de suscripciones
 
-Ejecuta el trabajo de tu etapa con goncloud_subscription_run; tu perfil queda ligado por el contexto, nunca por argumento. La evidencia durable registra el adaptador, la posicion (Primary..F7), el modelo y el tipo de facturacion realmente usados; DeepSeek es la unica ruta pagada por API. El coordinador dirige la cadena; el trabajador de suscripcion ejecuta la etapa: identidades distintas, ambas registradas en el handoff. Consulta a pares con goncloud_consult antes de escalar al director. Ante fallo del proveedor, el enrutador avanza de posicion o continua desde el estado registrado; nunca repitas la tarea a ciegas ni publiques por tu cuenta.
+Ejecuta el trabajo de tu etapa con goncloud_subscription_run; tu perfil queda ligado por el contexto, nunca por argumento. La evidencia durable registra el adaptador, la posicion (Primary..F6), el modelo y el tipo de facturacion realmente usados; DeepSeek es la unica ruta pagada por API. El coordinador dirige la cadena; el trabajador de suscripcion ejecuta la etapa: identidades distintas, ambas registradas en el handoff. Consulta a pares con goncloud_consult antes de escalar al director. Ante fallo del proveedor, el enrutador avanza de posicion o continua desde el estado registrado; nunca repitas la tarea a ciegas ni publiques por tu cuenta.
 
 ## Calidad y cierre
 

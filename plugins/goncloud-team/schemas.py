@@ -222,7 +222,7 @@ SUBSCRIPTION_RUN = {
     "name": "goncloud_subscription_run",
     "description": (
         "Execute the current native stage through the owner's subscription router "
-        "(Primary OpenCode Go, F1 OpenCode Zen, F2-F7 by model family; DeepSeek is "
+        "(Primary OpenCode Go, F1-F6 by model family; DeepSeek is "
         "the only API-billed exception). The calling profile is bound from the "
         "Hermes context and can never be supplied as an argument. The handoff "
         "records the adapter, slot, model, and billing mode actually used."

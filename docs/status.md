@@ -1,6 +1,15 @@
-# Estado — 2026-09-14
+# Estado — 2026-09-16
 
-## Estado actual: aceptacion local completa (2026-09-14)
+## Tabla de modelos 2026-09-16
+
+Siete posiciones por agente. La columna vacia que era OpenCode Zen se omitio.
+Fuente: `model-routing.source.json`. Primary sigue siendo OpenCode Go; F1-F6
+se atan por familia. `entrega` hereda `main`. Kimi sigue en la tabla de
+agentes (operaciones, ingenieria, reviewer, adversary, verifier, scout) y en
+la cadena nativa del director: Go, luego Kimi, luego Z.AI. OpenCode Zen sigue
+existiendo como adaptador/probe, pero ya no ocupa un slot.
+
+## Estado anterior: aceptacion local completa (2026-09-14)
 
 - Codigo de runtime aprobado y desplegado: `17ec1e7`. Nueve perfiles verificados;
   fuente literal byte-identica, sin cadenas nativas administradas y con Copilot

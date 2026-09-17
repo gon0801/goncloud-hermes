@@ -25,7 +25,7 @@ class FailureKind(StrEnum):
 
 @dataclass(frozen=True)
 class RouteSpec:
-    """One compiled Primary-to-F7 table position."""
+    """One compiled Primary-to-F6 table position."""
 
     slot: int
     label: str

@@ -478,7 +478,7 @@ class SubscriptionRouter:
         return InvocationResult(
             success=False,
             text=(
-                f"{last_failure.text} — all eight slots Primary..F7 are "
+                f"{last_failure.text} — all seven slots Primary..F6 are "
                 "exhausted for this stage; owner review is required"
             ),
             adapter=last_failure.adapter,

@@ -810,7 +810,7 @@ class SubscriptionRunTests(unittest.TestCase):
         self.assertEqual(request.workflow_id, started["workflow_id"])
         self.assertEqual(request.stage_id, task_id)
         self.assertEqual(request.workspace, self.repo.resolve())
-        self.assertEqual([route.slot for route in routes], list(range(8)))
+        self.assertEqual([route.slot for route in routes], list(range(7)))
         self.assertEqual(routes[0].adapter, "opencode_go")
         with connect_closing(self.db_path) as conn:
             complete_task(conn, task_id, summary="scout done")

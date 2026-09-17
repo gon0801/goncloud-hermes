@@ -38,13 +38,12 @@ SOURCE = {
     "chains": {
         "main": [
             "opencode-go/muse-spark-1.3-contributor",
-            "opencode/muse-spark-1.3-contributor-free",
             "anthropic/claude-sonnet-5",
-            "kimi/k3",
-            "opencode/muse-spark-1.3-contributor-free dup",
-            "zai/glm-5.3",
+            "meta/muse-spark-1.3 (max)",
+            "meta/muse-spark-1.3 (max)",
             "xai/grok-4.6",
-            "opencode/gpt-6-astra",
+            "zai/glm-5.3",
+            "openai/gpt-5.6-terra (xhigh)",
         ]
     },
 }
@@ -119,7 +118,6 @@ class RouterTestCase(unittest.TestCase):
             name: ScriptedAdapter(name)
             for name in (
                 "opencode_go",
-                "opencode_zen",
                 "claude",
                 "kimi",
                 "muse",
@@ -170,7 +168,7 @@ class FailoverTests(RouterTestCase):
         entered, release = threading.Event(), threading.Event()
         other = SubscriptionStateStore(self.db_path)
         self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
 
         def probe(route):
             entered.set()
@@ -194,13 +192,13 @@ class FailoverTests(RouterTestCase):
                 release.set()
             result = future.result(timeout=15)
         self.assertTrue(result.success)
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
 
     def test_live_quarantine_at_authorization_boundary_records_skipped(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
 
         def publish():
             router.store.save_live_health(
@@ -214,7 +212,7 @@ class FailoverTests(RouterTestCase):
             replace(request(self.workspace), pre_invoke=publish), routes_for_main()[:2]
         )
         self.assertTrue(result.success)
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
         self.assertEqual(
             router.store.stage_attempts("wf-6", "st-6")[0].get("disposition"), "skipped"
@@ -261,14 +259,14 @@ class FailoverTests(RouterTestCase):
             account_class="subscription",
             failure="task_failure",
         )
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         assignment = replace(
             request(self.workspace), result_transform=lambda value: value
         )
         availability = router._availability
 
         def crash(route):
-            if route.adapter == "opencode_zen":
+            if route.adapter == "claude":
                 raise KeyboardInterrupt
             return availability(route)
 
@@ -278,8 +276,8 @@ class FailoverTests(RouterTestCase):
         resumed = self.router()
         result = resumed.run(assignment, routes_for_main()[:2])
         self.assertTrue(result.success)
-        self.assertEqual(result.adapter, "opencode_zen")
-        self.assertEqual(len(self.fake_adapters["opencode_zen"].requests), 1)
+        self.assertEqual(result.adapter, "claude")
+        self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
         attempts = resumed.store.stage_attempts("wf-6", "st-6")
         self.assertEqual([row["slot"] for row in attempts], [0, 1])
@@ -498,11 +496,11 @@ class FailoverTests(RouterTestCase):
             detail="token sk-sensitive owner@example.test",
         )
         go.result = failed(FailureKind.AUTH, "opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(go.requests, [])
         health = router.store.health("opencode_go")
         status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
@@ -577,11 +575,11 @@ class FailoverTests(RouterTestCase):
             detail="login required",
         )
         go.result = failed(FailureKind.AUTH, "opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(go.requests, [])
         self.assertEqual(
             router.store.stage_attempts("wf-6", "st-6")[0]["failure"], "auth"
@@ -598,11 +596,11 @@ class FailoverTests(RouterTestCase):
             detail="quarantined",
         )
         go.result = failed(FailureKind.QUOTA, "opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(go.probes, [])
         self.assertEqual(go.requests, [])
         self.assertEqual(
@@ -612,33 +610,33 @@ class FailoverTests(RouterTestCase):
     def test_auth_and_quota_advance_in_order(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.AUTH)
-        self.fake_adapters["opencode_zen"].result = failed(FailureKind.QUOTA)
-        self.fake_adapters["claude"].result = completed("ok")
+        self.fake_adapters["claude"].result = failed(FailureKind.QUOTA)
+        self.fake_adapters["muse"].result = completed("ok", adapter="muse")
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertEqual(result.text, "ok")
-        self.assertEqual(router.calls, ["opencode_go", "opencode_zen", "claude"])
+        self.assertEqual(router.calls, ["opencode_go", "claude", "muse"])
 
     def test_timeout_without_mutation_advances(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
-        self.fake_adapters["opencode_zen"].result = completed("zen ok", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen ok", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertTrue(result.success)
-        self.assertEqual(router.calls, ["opencode_go", "opencode_zen"])
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
 
     def test_transport_failure_without_mutation_advances(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TRANSPORT)
-        self.fake_adapters["opencode_zen"].result = completed("zen ok", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen ok", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertTrue(result.success)
-        self.assertEqual(router.calls, ["opencode_go", "opencode_zen"])
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
 
     def test_transport_failure_after_mutation_blocks_the_stage(self):
         subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
@@ -659,9 +657,7 @@ class FailoverTests(RouterTestCase):
             return failed(FailureKind.TRANSPORT, route.adapter)
 
         self.fake_adapters["opencode_go"].result = mutate_then_transport
-        self.fake_adapters["opencode_zen"].result = completed(
-            "must not run", "opencode_zen"
-        )
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
@@ -683,12 +679,10 @@ class FailoverTests(RouterTestCase):
         router = self.router()
         for name in (
             "opencode_go",
-            "opencode_zen",
             "claude",
-            "kimi",
             "muse",
-            "zai",
             "grok",
+            "zai",
             "codex",
         ):
             self.fake_adapters[name].result = failed(FailureKind.AUTH, name)
@@ -696,22 +690,39 @@ class FailoverTests(RouterTestCase):
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertFalse(result.success)
-        self.assertEqual(len(router.calls), 8)
-        self.assertIn("all eight", result.text.lower())
+        # Slots 2 and 3 share Muse; AUTH on the first quarantines the account
+        # so the repeated position is recorded without a second invocation.
+        self.assertEqual(
+            router.calls,
+            ["opencode_go", "claude", "muse", "grok", "zai", "codex"],
+        )
+        self.assertIn("all seven", result.text.lower())
         attempts = router.store.stage_attempts("wf-6", "st-6")
-        self.assertEqual(len(attempts), 8)
+        self.assertEqual(len(attempts), 7)
+        self.assertEqual(
+            [row.get("disposition") for row in attempts],
+            [
+                "executed",
+                "executed",
+                "executed",
+                "skipped",
+                "executed",
+                "executed",
+                "executed",
+            ],
+        )
 
     def test_quota_cooldown_skips_adapter(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.AUTH)
-        self.fake_adapters["opencode_zen"].result = failed(FailureKind.QUOTA)
-        self.fake_adapters["claude"].result = completed("claude ok")
-        router.store.set_cooldown("opencode_zen", hours=1)
+        self.fake_adapters["claude"].result = failed(FailureKind.QUOTA)
+        self.fake_adapters["muse"].result = completed("muse ok", adapter="muse")
+        router.store.set_cooldown("claude", hours=1)
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertTrue(result.success)
-        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        self.assertEqual(router.calls, ["opencode_go", "muse"])
 
     def test_model_unavailable_keeps_the_account_ready(self):
         # 2026-09-16: a disabled/unknown model is the vendor answering about
@@ -723,13 +734,13 @@ class FailoverTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.MODEL_UNAVAILABLE, adapter="opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertTrue(result.success)
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertTrue(router.store.health("opencode_go")["ready"])
 
     def test_timeout_cools_the_account_so_a_hung_endpoint_is_skipped(self):
@@ -739,7 +750,7 @@ class FailoverTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.TIMEOUT, adapter="opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
         result = router.run(request(self.workspace), routes_for_main())
@@ -752,7 +763,7 @@ class FailoverTests(RouterTestCase):
     ):
         router = self.router()
         router.store.set_cooldown("opencode_go", hours=1)
-        self.fake_adapters["opencode_zen"].result = completed("zen", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("zen", "claude")
         first, second = routes_for_main()[:2]
         routes = [
             first,
@@ -781,9 +792,7 @@ class FailoverTests(RouterTestCase):
                 self.db_path = self.workspace / f"cooldown-{transformed}.db"
                 router = self.router()
                 router.store.set_cooldown("opencode_go", hours=1)
-                self.fake_adapters["opencode_zen"].result = completed(
-                    "zen", "opencode_zen"
-                )
+                self.fake_adapters["claude"].result = completed("zen", "claude")
                 assignment = replace(
                     request(self.workspace),
                     result_transform=(lambda result: result) if transformed else None,
@@ -918,7 +927,7 @@ class MutationContinuationTests(RouterTestCase):
             return failed(FailureKind.TRANSPORT, route.adapter)
 
         self.fake_adapters["opencode_go"].result = commit_then_fail
-        self.fake_adapters["opencode_zen"].result = completed("must not run")
+        self.fake_adapters["claude"].result = completed("must not run")
         result = router.run(
             replace(
                 request(self.git_repo), start_revision=start, current_revision=start
@@ -943,13 +952,13 @@ class MutationContinuationTests(RouterTestCase):
             return failed(FailureKind.AUTH, route.adapter)
 
         self.fake_adapters["opencode_go"].result = commit_then_fail
-        self.fake_adapters["opencode_zen"].result = failed(FailureKind.TASK_FAILURE)
+        self.fake_adapters["claude"].result = failed(FailureKind.TASK_FAILURE)
         initial = replace(
             request(self.git_repo), start_revision=start, current_revision=start
         )
         router.run(initial, routes_for_main())
 
-        continuation = self.fake_adapters["opencode_zen"].requests[0]
+        continuation = self.fake_adapters["claude"].requests[0]
         self.assertEqual(continuation.mode, "continue")
         self.assertEqual(continuation.changed_files, ())
         self.assertNotEqual(continuation.current_revision, start)
@@ -976,16 +985,14 @@ class MutationContinuationTests(RouterTestCase):
             return failed(FailureKind.AUTH, route.adapter)
 
         self.fake_adapters["opencode_go"].result = fail_after_edit
-        self.fake_adapters["opencode_zen"].result = completed(
-            "continued", "opencode_zen"
-        )
+        self.fake_adapters["claude"].result = completed("continued", "claude")
 
         router.run(
             request(self.git_repo, workflow_id="wf-mut", stage_id="st-mut"),
             routes_for_main(),
         )
 
-        second = self.fake_adapters["opencode_zen"].requests[0]
+        second = self.fake_adapters["claude"].requests[0]
         self.assertEqual(second.mode, "continue")
         self.assertEqual(second.changed_files, ("changed.py",))
         attempt = router.store.stage_attempts("wf-mut", "st-mut")[0]
@@ -1015,16 +1022,14 @@ class MutationContinuationTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.AUTH, "opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed(
-            "recovered", "opencode_zen"
-        )
+        self.fake_adapters["claude"].result = completed("recovered", "claude")
         second = fresh.run(
             request(self.git_repo, workflow_id="wf-r", stage_id="st-r"),
             routes_for_main(),
         )
 
         self.assertEqual(second.text, "recovered")
-        zen_request = self.fake_adapters["opencode_zen"].requests[0]
+        zen_request = self.fake_adapters["claude"].requests[0]
         self.assertEqual(zen_request.mode, "continue")
         self.assertIn("half-done.txt", zen_request.changed_files)
 
@@ -1035,9 +1040,9 @@ class StatusTests(RouterTestCase):
 
         status = router.status("claw")
 
-        self.assertEqual(len(status["routes"]), 8)
+        self.assertEqual(len(status["routes"]), 7)
         deepseekless = [r for r in status["routes"] if r["adapter"] == "codex"]
-        self.assertEqual(deepseekless[0]["slot"], 7)
+        self.assertEqual(deepseekless[0]["slot"], 6)
         self.assertTrue(
             all(r["billing_mode"] == "subscription" for r in status["routes"])
         )
@@ -1053,7 +1058,6 @@ class StatusTests(RouterTestCase):
                     "anthropic/claude-sonnet-5",
                     "opencode/gpt-6-astra",
                     "opencode/muse-spark-1.3-contributor-free",
-                    "opencode/claude-fable-5-1",
                     "deepseek/deepseek-flash",
                 ]
             }
@@ -1062,15 +1066,15 @@ class StatusTests(RouterTestCase):
 
         status = router.status("scout")
 
-        self.assertEqual(status["routes"][7]["billing_mode"], "api")
-        self.assertEqual(status["routes"][7]["adapter"], "deepseek")
+        self.assertEqual(status["routes"][6]["billing_mode"], "api")
+        self.assertEqual(status["routes"][6]["adapter"], "deepseek")
 
     def test_status_reports_stage_evidence(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.QUOTA, "opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed("done", "opencode_zen")
+        self.fake_adapters["claude"].result = completed("done", "claude")
         router.run(request(self.workspace), routes_for_main())
 
         status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
@@ -1493,8 +1497,8 @@ class InvalidTerminalTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = completed(
             text="not an envelope", adapter="opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed(
-            text="```json\n{}\n```", adapter="opencode_zen"
+        self.fake_adapters["claude"].result = completed(
+            text="```json\n{}\n```", adapter="claude"
         )
         router = self.router()
 
@@ -1506,11 +1510,11 @@ class InvalidTerminalTests(RouterTestCase):
         )
 
         self.assertTrue(result.success)
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         attempts = router.store.stage_attempts("wf-6", "st-6")
         self.assertEqual(attempts[0]["failure"], "invalid_terminal")
         self.assertEqual(attempts[0]["disposition"], "executed")
-        self.assertEqual(len(self.fake_adapters["opencode_zen"].requests), 1)
+        self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
         # The vendor answered, so the account stays ready for the next stage.
         self.assertTrue(router.store.health("opencode_go")["ready"])
 
@@ -1518,7 +1522,7 @@ class InvalidTerminalTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = completed(
             text="not an envelope", adapter="opencode_go"
         )
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         mutated_git = type(
             "Git",
             (),
@@ -1549,7 +1553,7 @@ class InvalidTerminalTests(RouterTestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
-        self.assertEqual(self.fake_adapters["opencode_zen"].requests, [])
+        self.assertEqual(self.fake_adapters["claude"].requests, [])
 
 
 class QuarantineExpiryTests(RouterTestCase):
@@ -1582,11 +1586,11 @@ class QuarantineExpiryTests(RouterTestCase):
     def test_a_fresh_quota_quarantine_still_skips_the_route(self):
         self.quarantine("opencode_go", "quota")
         self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
 
         result = self.router().run(request(self.workspace), routes_for_main()[:2])
 
-        self.assertEqual(result.adapter, "opencode_zen")
+        self.assertEqual(result.adapter, "claude")
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
 
     def test_an_expired_quota_quarantine_is_retried_and_lifted_by_real_success(self):
@@ -1596,7 +1600,7 @@ class QuarantineExpiryTests(RouterTestCase):
             "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
         )
         self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
         result = router.run(request(self.workspace), routes_for_main()[:2])
@@ -1616,7 +1620,7 @@ class QuarantineExpiryTests(RouterTestCase):
         )
         go = self.fake_adapters["opencode_go"]
         go.result = failed(FailureKind.QUOTA, "opencode_go")
-        self.fake_adapters["opencode_zen"].result = completed(adapter="opencode_zen")
+        self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
         first = router.run(request(self.workspace), routes_for_main()[:2])
@@ -1624,8 +1628,8 @@ class QuarantineExpiryTests(RouterTestCase):
             request(self.workspace, stage_id="st-7"), routes_for_main()[:2]
         )
 
-        self.assertEqual(first.adapter, "opencode_zen")
-        self.assertEqual(second.adapter, "opencode_zen")
+        self.assertEqual(first.adapter, "claude")
+        self.assertEqual(second.adapter, "claude")
         # One real retry, then the quarantine is armed again with a fresh clock.
         self.assertEqual(len(go.requests), 1)
         health = router.store.health("opencode_go")
@@ -1670,15 +1674,13 @@ class QuarantineExpiryTests(RouterTestCase):
             with self.subTest(kind=kind.value):
                 self.db_path = self.workspace / f"rearm-{kind.value}.db"
                 self.fake_adapters["opencode_go"] = ScriptedAdapter("opencode_go")
-                self.fake_adapters["opencode_zen"] = ScriptedAdapter("opencode_zen")
+                self.fake_adapters["claude"] = ScriptedAdapter("claude")
                 self.quarantine(
                     "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
                 )
                 go = self.fake_adapters["opencode_go"]
                 go.result = failed(kind, "opencode_go")
-                self.fake_adapters["opencode_zen"].result = completed(
-                    adapter="opencode_zen"
-                )
+                self.fake_adapters["claude"].result = completed(adapter="claude")
                 router = self.router()
 
                 for stage_id in ("st-6", "st-7", "st-8"):

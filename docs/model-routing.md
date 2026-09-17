@@ -1,16 +1,19 @@
 # Enrutador de suscripciones: aceptacion local 2026-09-14
 
-Fuente autoritativa: `model-routing.source.json`, intacta desde `f86fc8a`.
-Ocho agentes por ocho posiciones: 64 celdas; `main` corresponde a `claw` y
-`entrega` hereda `main`. Los nueve perfiles tienen la misma fuente literal
-instalada y el plugin aprobado en `17ec1e7`; no tienen cadenas nativas
-administradas `model`/`fallback_providers`. Copilot y Copilot ACP estan excluidos.
+Fuente autoritativa: `model-routing.source.json` (tabla del propietario,
+2026-09-16). Ocho agentes por siete posiciones: 56 celdas; `main` corresponde
+a `claw` y `entrega` hereda `main`. La columna vacia que era OpenCode Zen se
+omitio; no hay octavo slot. Los nueve perfiles instalan esa fuente literal y
+no tienen cadenas nativas administradas `model`/`fallback_providers`. Copilot
+y Copilot ACP estan excluidos.
 
-Primary (slot 0) usa OpenCode Go y F1 (slot 1) OpenCode Zen. F2-F7 usan la
-suscripcion de la familia correspondiente, sin reinterpretar los prefijos
-historicos. Los duplicados mantienen posiciones distintas. Solo el adaptador
-DeepSeek factura como API; un modelo DeepSeek servido por Go sigue siendo
-suscripcion. No se movio ninguna posicion para compensar cuentas no disponibles.
+Primary (slot 0) usa OpenCode Go. F1-F6 usan la suscripcion de la familia
+correspondiente, sin reinterpretar los prefijos. Las etiquetas repetidas son
+intentos distintos. Los marcadores `(max)` y `(xhigh)` se conservan en la
+etiqueta y no forman parte del identificador que se envia al proveedor. Solo
+el adaptador DeepSeek factura como API; un modelo DeepSeek servido por Go
+sigue siendo suscripcion. Adversary y verifier tienen esa ruta API en F6;
+scout ya no.
 
 ## Matriz vigente: 8/9 pruebas live aprobadas
 

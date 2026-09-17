@@ -170,13 +170,14 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertNotIn("model", desired)
                     self.assertNotIn("fallback_providers", desired)
 
-    def test_the_director_chain_uses_only_same_subscription_positions_in_table_order(
+    def test_the_director_chain_uses_only_same_subscription_positions_in_the_table(
         self,
     ):
-        # Hermes can only converse through native API providers. Of the
-        # owner's `main` chain, only these reach the *same* subscription that
-        # way; Claude Max, ChatGPT, Grok and Muse would bill another account,
-        # which is exactly the wrong-account-class chain the recovery removed.
+        # Hermes can only converse through native API providers. The director
+        # uses table positions (any agent, not only `main`) that reach the
+        # *same* subscription that way. Claude Max, ChatGPT, Grok and Muse
+        # would bill another account. OpenCode Zen left the table, so it is
+        # not a conversation fallback; Kimi stayed on other agents.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         table = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
@@ -187,21 +188,34 @@ class ConfigurationTests(unittest.TestCase):
             "kimi": "kimi-coding",
             "zai": "zai",
         }
-        allowed_in_order = []
-        for label in table["chains"]["main"]:
+
+        def native_entry(label):
             prefix, model = label.removesuffix(" dup").split("/", 1)
-            if prefix in native:
-                allowed_in_order.append((native[prefix], model))
+            if " (" in model:
+                model = model[: model.index(" (")]
+            if prefix not in native:
+                return None
+            return (native[prefix], model)
+
+        allowed = []
+        seen = set()
+        for chain_labels in table["chains"].values():
+            for label in chain_labels:
+                entry = native_entry(label)
+                if entry and entry not in seen:
+                    seen.add(entry)
+                    allowed.append(entry)
 
         chain = [
             (team["director_model"]["provider"], team["director_model"]["default"])
         ]
         chain += [(f["provider"], f["model"]) for f in team["director_fallbacks"]]
 
-        self.assertTrue(set(chain) <= set(allowed_in_order), chain)
-        order = [allowed_in_order.index(entry) for entry in chain]
-        self.assertEqual(order, sorted(order))
-        self.assertEqual(chain[0], allowed_in_order[0])
+        self.assertTrue(set(chain) <= set(allowed), chain)
+        self.assertEqual(chain[0], native_entry(table["chains"]["main"][0]))
+        self.assertIn(("kimi-coding", "k3"), chain)
+        self.assertIn(("zai", "glm-5.3"), chain)
+        self.assertNotIn("opencode-zen", {provider for provider, _ in chain})
 
     def test_director_gets_the_full_toolset_and_workers_the_baseline(self):
         # Owner decision (2026-09-15): the director drives Odoo and Edge over

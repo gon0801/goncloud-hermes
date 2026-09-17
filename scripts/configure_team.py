@@ -205,10 +205,10 @@ def desired_profile_config(role, team, runtime_home):
     }
     if role == team["director"]:
         # The director converses natively and needs the owner's conversation
-        # chain for that: the `main` positions Hermes can reach with the *same*
-        # subscription, in table order (tests pin that). It is not a routing
-        # slot: workers never get a native model or fallback chain, because
-        # that chain was the competing router the recovery removed.
+        # chain for that: table positions (any agent) Hermes can reach with
+        # the *same* subscription (tests pin that). It is not a routing slot:
+        # workers never get a native model or fallback chain, because that
+        # chain was the competing router the recovery removed.
         desired["model"] = dict(team["director_model"])
         desired["fallback_providers"] = [
             dict(entry) for entry in team["director_fallbacks"]
