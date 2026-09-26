@@ -89,6 +89,10 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
     # status code so its 401 is not misread as an account auth failure.
     if _MODEL_LEVEL_PATTERN.search(haystack):
         return FailureKind.MODEL_UNAVAILABLE
+    # A plan usage limit wrapped as HTTP 403 / provider.auth_error is quota,
+    # not a dead credential. kimi 0.34 reports weekly limits that way.
+    if _QUOTA_PATTERN.search(haystack):
+        return FailureKind.QUOTA
     if bare_codes:
         for code, failure in _STATUS_CODES.items():
             if re.search(rf"\b{code}\b", haystack):

@@ -184,6 +184,7 @@ class ConfigurationTests(unittest.TestCase):
         )
         native = {
             "opencode-go": "opencode-go",
+            "opencode-go-resp": "opencode-go",
             "opencode": "opencode-zen",
             "kimi": "kimi-coding",
             "zai": "zai",

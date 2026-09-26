@@ -335,6 +335,42 @@ class CodexAdapterTests(unittest.TestCase):
                 self.assertFalse(result.success)
                 self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
 
+    def test_codex_skills_budget_warning_does_not_fail_a_completed_turn(self):
+        # 2026-09-20: Codex emits item.type=error when skill descriptions are
+        # shortened to fit the context budget, then completes the turn with
+        # the real answer. Treating that warning as a failed terminal
+        # quarantined a healthy ChatGPT session as task_failure.
+        warning = (
+            '{"type":"item.completed","item":{"id":"item_0","type":"error",'
+            '"message":"Skill descriptions were shortened to fit the skills '
+            "context budget. Codex can still see every skill, but some "
+            'descriptions are shorter."}}'
+        )
+        stream = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thr_9"}',
+                warning,
+                '{"type":"item.completed","item":{"type":"agent_message","text":"GONCLOUD_PROBE_OK"}}',
+                '{"type":"turn.completed"}',
+            ]
+        )
+        result = CodexAdapter(runner=FakeCliRunner(stdout=stream)).invoke(
+            request(self.workspace), route_for("codex", "gpt-5.6-sol")
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "GONCLOUD_PROBE_OK")
+
+        fatal = stream.replace(
+            "Skill descriptions were shortened to fit the skills context budget. "
+            "Codex can still see every skill, but some descriptions are shorter.",
+            "turn exploded",
+        )
+        blocked = CodexAdapter(runner=FakeCliRunner(stdout=fatal)).invoke(
+            request(self.workspace), route_for("codex", "gpt-5.6-sol")
+        )
+        self.assertFalse(blocked.success)
+        self.assertEqual(blocked.failure, FailureKind.TASK_FAILURE)
+
     def test_codex_probe_requires_chatgpt_login(self):
         chatgpt = FakeCliRunner(stdout="Logged in using ChatGPT\n")
         api_key = FakeCliRunner(stdout="Logged in using an OpenAI API key\n")

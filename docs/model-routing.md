@@ -1,21 +1,31 @@
 # Enrutador de suscripciones: aceptacion local 2026-09-14
 
 Fuente autoritativa: `model-routing.source.json` (tabla del propietario,
-2026-09-16). Ocho agentes por siete posiciones: 56 celdas; `main` corresponde
+2026-09-19). Ocho agentes por siete posiciones: 56 celdas; `main` corresponde
 a `claw` y `entrega` hereda `main`. La columna vacia que era OpenCode Zen se
 omitio; no hay octavo slot. Los nueve perfiles instalan esa fuente literal y
 no tienen cadenas nativas administradas `model`/`fallback_providers`. Copilot
 y Copilot ACP estan excluidos.
 
-Primary (slot 0) usa OpenCode Go. F1-F6 usan la suscripcion de la familia
-correspondiente, sin reinterpretar los prefijos. Las etiquetas repetidas son
-intentos distintos. Los marcadores `(max)` y `(xhigh)` se conservan en la
-etiqueta y no forman parte del identificador que se envia al proveedor. Solo
-el adaptador DeepSeek factura como API; un modelo DeepSeek servido por Go
-sigue siendo suscripcion. Adversary y verifier tienen esa ruta API en F6;
-scout ya no.
+Primary (slot 0) usa OpenCode Go (el prefijo `opencode-go-resp` se ata igual).
+F1-F6 usan la suscripcion de la familia correspondiente, sin reinterpretar
+los prefijos; `kimi-for-coding` entra por familia Kimi y `glm-5.3-flash` por
+Z.AI. Las etiquetas repetidas son intentos distintos. Los marcadores `(max)`,
+`(xhigh)` y `(high)` se conservan en la etiqueta y no forman parte del
+identificador que se envia al proveedor. Solo el adaptador DeepSeek factura
+como API; un modelo DeepSeek servido por Go sigue siendo suscripcion. Verifier
+tiene esa ruta API en F6 y scout en F4; adversary ya no.
 
-## Matriz vigente: 8/9 pruebas live aprobadas
+## Matriz vigente: 6/8 cuentas en uso (2026-09-20)
+
+OpenCode Zen no ocupa slot y no se sondea. Probes oficiales uno por uno con
+marcador exacto `GONCLOUD_PROBE_OK`. Listas: Go, Muse, Z.AI, Grok, DeepSeek y
+Codex.
+Claude Max respondio `quota`; Kimi `quota` (cupo semanal, sesion vigente).
+Codex paso a `ready` tras no tratar el aviso de skills como fallo. Un live listo levanta cuarentena; un fallo la arma una hora
+y el router avanza de posicion.
+
+## Matriz anterior: 8/9 pruebas live aprobadas (2026-09-14)
 
 Inferencias independientes, estrictamente secuenciales y con marcador exacto
 `GONCLOUD_PROBE_OK`. Cada JSON sanitizado se inspecciono antes del siguiente.

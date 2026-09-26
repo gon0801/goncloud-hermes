@@ -19,6 +19,7 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("claude-", "claude"),
     ("gpt-", "codex"),
     ("k3", "kimi"),
+    ("kimi-", "kimi"),
     ("glm-", "zai"),
     ("grok-", "grok"),
     ("deepseek-", "deepseek"),

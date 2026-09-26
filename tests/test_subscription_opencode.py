@@ -280,6 +280,21 @@ class OpenCodeAdapterTests(unittest.TestCase):
             FailureKind.MODEL_UNAVAILABLE,
         )
 
+    def test_kimi_weekly_usage_limit_is_quota_not_auth(self):
+        # 2026-09-20: kimi wraps a weekly plan limit as provider.auth_error
+        # with HTTP 403. A bare 403 in stderr was AUTH and marked the whole
+        # account disconnected. The vendor answered about quota; the slot
+        # should advance as quota, same as a 429.
+        stderr = (
+            "error: failed to run prompt: provider.auth_error: 403 "
+            "You've reached your weekly (7-day) usage limit. "
+            "Your quota will reset when the current 7-day window ends."
+        )
+        self.assertEqual(classify_failure(1, "", stderr), FailureKind.QUOTA)
+        self.assertEqual(
+            classify_failure(1, "", "HTTP 403 Forbidden"), FailureKind.AUTH
+        )
+
     def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
         # stderr is the vendor's error channel: a bare code there is real.
         # stdout is the model's generated text: a bare code there is a width,

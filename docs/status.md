@@ -1,13 +1,46 @@
-# Estado — 2026-09-16
+# Estado — 2026-09-20
 
-## Tabla de modelos 2026-09-16
+## Matriz live 2026-09-20 (sin OpenCode Zen)
+
+Zen no esta en la tabla y no se sondeo. Probes oficiales uno por uno, marcador
+`GONCLOUD_PROBE_OK`. 6/8 cuentas en uso listas. La cuarentena no se borra a
+mano: un live listo la levanta; un fallo la arma una hora y el router avanza
+de slot.
+
+| Cuenta | Resultado | Motivo | Cuarentena |
+|---|---|---|---|
+| OpenCode Go | ready | — | no (se levanto) |
+| Muse | ready | — | no |
+| Z.AI | ready | — | no |
+| Grok | ready | — | no |
+| DeepSeek API | ready | — | no |
+| Claude Max | quota | cupo de la suscripcion | si, 1 h |
+| Kimi | quota | cupo semanal 7 dias; sesion OAuth vigente | si, 1 h |
+| Codex | ready | aviso de skills ya no se lee como fallo | no |
+
+OpenCode Zen queda fuera de la tabla; su salud vieja (`auth`) no se usa.
+
+# Estado anterior — 2026-09-19
+
+## Tabla de modelos 2026-09-19
+
+Siete posiciones por agente. Fuente: `model-routing.source.json` (tabla del
+propietario, 2026-09-19). Primary sigue siendo OpenCode Go; el prefijo
+`opencode-go-resp` se ata a esa misma cuenta. F1-F6 se atan por familia,
+incluyendo `kimi-for-coding` y `glm-5.3-flash`. `entrega` hereda `main`.
+DeepSeek API queda en verifier F6 y scout F4; adversary ya no la tiene. Kimi
+sigue en la tabla y en la cadena nativa del director: Go, luego Kimi, luego
+Z.AI. OpenCode Zen sigue existiendo como adaptador/probe, pero no ocupa un
+slot. La tabla y el catalogo quedaron copiados en los nueve perfiles; el
+configurador no reescribio `claw` porque su cadena nativa de conversacion
+esta personalizada (conflicto `model` / `fallback_providers`).
+
+## Tabla anterior 2026-09-16
 
 Siete posiciones por agente. La columna vacia que era OpenCode Zen se omitio.
-Fuente: `model-routing.source.json`. Primary sigue siendo OpenCode Go; F1-F6
-se atan por familia. `entrega` hereda `main`. Kimi sigue en la tabla de
-agentes (operaciones, ingenieria, reviewer, adversary, verifier, scout) y en
-la cadena nativa del director: Go, luego Kimi, luego Z.AI. OpenCode Zen sigue
-existiendo como adaptador/probe, pero ya no ocupa un slot.
+Primary OpenCode Go; F1-F6 por familia. `entrega` hereda `main`. Kimi en la
+tabla de agentes y en la cadena nativa del director. OpenCode Zen como
+adaptador/probe, sin slot.
 
 ## Estado anterior: aceptacion local completa (2026-09-14)
 

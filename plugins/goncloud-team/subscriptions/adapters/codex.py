@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
@@ -18,6 +19,13 @@ from . import (
     build_assignment_prompt,
     classify_failure,
     health_for_process_error,
+)
+
+#: Codex reports this as item.type=error, then completes the turn. It is a
+#: context-budget warning, not a failed terminal.
+_SKILLS_BUDGET_WARNING = re.compile(
+    r"skill descriptions were shortened|skills context budget",
+    re.IGNORECASE,
 )
 
 
@@ -58,7 +66,11 @@ def parse_codex_jsonl(output: str) -> dict:
                 invalid = True
                 continue
             if kind == "error" or item.get("error"):
-                invalid = True
+                message = (
+                    item.get("message") if isinstance(item.get("message"), str) else ""
+                )
+                if not _SKILLS_BUDGET_WARNING.search(message):
+                    invalid = True
             if kind in {"agent_message", "message"}:
                 text = item.get("text") or item.get("message") or ""
                 if not isinstance(text, str) or completed:
