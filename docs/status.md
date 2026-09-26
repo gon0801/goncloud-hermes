@@ -268,6 +268,43 @@ en cuanto cualquier etapa lo esta, sin llegar al router, y el router reproduce
 el intento registrado en vez de crear uno nuevo. Para reintentar hace falta un
 `request_key` nuevo.
 
+### Revision cruzada del arreglo anterior (codex gpt-5.6-sol, 2026-09-26)
+
+El propio arreglo del arbol sucio introdujo dos defectos. Los encontro una
+revision cruzada externa sobre el rango completo, uno de severidad alta, y los
+dos estaban justo en los puntos que el brief pidio mirar con lupa:
+
+- **ALTA. La mutacion se medía por nombres.** `mutated` comparaba el conjunto de
+  nombres sucios contra el de arranque. Si el worker reescribia un archivo que ya
+  estaba sucio, el conjunto no cambiaba, `mutated` quedaba falso y un
+  `invalid_terminal` avanzaba de slot, de modo que el siguiente modelo pisaba
+  trabajo real. Ahora `GitInspector.dirty_digest` guarda un hash de contenido por
+  ruta y la comparacion es por contenido, no por nombre. El hash es de solo
+  lectura y no escribe ningun objeto de Git. Regresion:
+  `test_a_worker_rewriting_an_already_dirty_file_counts_as_mutation`.
+- **MEDIA. La fila durable se quedaba con la suciedad del propietario.** Cada
+  intento registraba tambien los archivos que el propietario ya tenia sucios.
+  `stage_mutation` los leia como mutacion del worker, y un reinicio entre slots
+  reconstruia la continuacion falsa y volvia a bloquear la etapa. Ahora la fila
+  nombra solo lo que el intento toco: lo que commiteo, mas las rutas sucias cuyo
+  contenido difiere del de arranque. Y la existencia de una fila de intento dejo
+  de contar por si sola como evidencia de mutacion. Regresiones:
+  `test_owner_dirt_is_not_recorded_as_the_attempts_own_change` y
+  `test_a_restart_after_an_attempt_that_changed_nothing_is_not_a_continuation`.
+
+Un tercer defecto salio al correr la bateria, no de la revision: al derivar los
+cambios del digest se perdian los archivos que el worker **commitea**, porque un
+commit deja el arbol limpio y el digest vacio. La atribucion ahora suma las dos
+mitades por separado. Lo atrapo
+`test_clean_commit_transport_failure_blocks_with_durable_evidence`, que ya
+existia.
+
+Nota de proceso: el `cross-review.ps1` del kit no pudo correr este diff. Le pasa
+el prompt a la CLI como argumento de linea de comandos y Windows corta en 32 767
+caracteres; el prompt medía 51 370, asi que codex se colgo hasta el tope y murio
+con exit 124 sin emitir veredicto. La revision se corrio con el mismo prompt por
+stdin, que `codex exec` acepta, y con `-m gpt-5.6-sol` explicito.
+
 ### Cuarentena con vencimiento
 
 El propietario pidio que la cuota agotada se recupere sola: las cuentas la

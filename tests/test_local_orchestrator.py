@@ -371,6 +371,7 @@ class LocalOrchestratorTests(unittest.TestCase):
                 "current_revision": lambda _, workspace: "baseline",
                 "resolve_revision": lambda _, workspace, revision: "baseline",
                 "changed_files": lambda _, workspace: (),
+                "dirty_digest": lambda _, workspace: {},
                 "mutation_since": lambda _, workspace, revision: (
                     "baseline",
                     (),

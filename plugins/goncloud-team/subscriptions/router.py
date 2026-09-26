@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -105,6 +106,27 @@ class GitInspector:
                 # In -z format the destination precedes the original path.
                 next(entries, None)
         return tuple(dict.fromkeys(names))
+
+    def dirty_digest(self, workspace: Path) -> dict[str, str]:
+        """Content hash per uncommitted path, so a rewrite is visible.
+
+        Comparing names cannot show that a worker rewrote a file the owner had
+        already dirtied: the name set is identical before and after. Hashing is
+        read-only and writes no Git object. A path that cannot be read gets a
+        sentinel, so a deletion still reads as a change.
+        """
+        digest: dict[str, str] = {}
+        for name in self.changed_files(workspace):
+            try:
+                with (workspace / name).open("rb") as handle:
+                    sha = hashlib.sha256()
+                    for block in iter(lambda: handle.read(1 << 20), b""):
+                        sha.update(block)
+                digest[name] = sha.hexdigest()
+            except OSError:
+                # Gone or unreadable; either way it is not what the baseline saw.
+                digest[name] = "<unreadable>"
+        return digest
 
     def mutation_since(
         self, workspace: Path, revision: str
@@ -243,10 +265,10 @@ class SubscriptionRouter:
                     )
 
         request = self._absorb_workspace_state(request)
-        # The dirt already present before this stage ran, and the revision it
-        # started from. Only changes past these two mean an attempt mutated the
-        # workspace; the owner's own edits must not count as a worker's work.
-        baseline_changed = frozenset(request.changed_files)
+        # What the workspace held before this stage ran, by content, plus the
+        # revision it started from. Only a difference from these two means an
+        # attempt mutated anything; the owner's own edits are not a worker's.
+        baseline_digest = self.git.dirty_digest(request.workspace)
         baseline_revision = request.start_revision
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
@@ -420,10 +442,24 @@ class SubscriptionRouter:
             revision, changed, _git_mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
             )
-            changed = tuple(sorted(set(changed) | set(request.changed_files)))
+            current_digest = self.git.dirty_digest(request.workspace)
+            # ``changed`` mixes what landed in commits with what is merely dirty.
+            # The dirty half is exactly the digest's keys, so the remainder is
+            # what this attempt committed, and that is always its own work.
+            committed = set(changed) - set(current_digest)
+            # For the dirty half, content decides: a path is this attempt's work
+            # only where it differs from what the owner left behind. That covers
+            # a creation, a deletion, a rewrite of a file the owner had already
+            # dirtied, and a revert back to the committed content.
+            touched = committed | {
+                name
+                for name in set(baseline_digest) | set(current_digest)
+                if baseline_digest.get(name) != current_digest.get(name)
+            }
+            changed = tuple(sorted(touched | set(request.changed_files)))
             mutated = (
                 request.mode == "continue"
-                or bool(set(changed) - baseline_changed)
+                or bool(touched)
                 or bool(revision and revision != baseline_revision)
             )
             recorded = self.store.finish_attempt(
@@ -591,15 +627,20 @@ class SubscriptionRouter:
         )
         # A commit past the baseline is a worker mutation even with nothing
         # recorded: an interrupted attempt may have committed and then crashed.
+        # The mere existence of an attempt row is NOT such evidence: an attempt
+        # that failed without touching anything would otherwise put the stage
+        # back where it started, mutated and unable to advance.
         continuation = bool(
             (revision and baseline and revision != baseline)
             or evidence
-            or attempts
             or request.mode == "continue"
         )
+        # Outside a continuation the dirty tree is the owner's own work. Naming
+        # it here would report it to the next worker, and record it as this
+        # attempt's mutation for every later resume to trip over.
         changed = tuple(
             sorted(
-                set(changed)
+                (set(changed) if continuation else set())
                 | set(request.changed_files)
                 | set(evidence["changed_files"] if evidence else ())
             )

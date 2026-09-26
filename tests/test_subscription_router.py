@@ -1061,6 +1061,111 @@ class MutationContinuationTests(RouterTestCase):
         self.assertEqual(attempts[0]["failure"], "invalid_terminal")
         self.assertEqual(attempts[0]["mode"], "start")
 
+    def test_a_worker_rewriting_an_already_dirty_file_counts_as_mutation(self):
+        """Names alone cannot show a rewrite.
+
+        The owner left README.md dirty. Slot 0 edits that same file and then
+        returns a rejected envelope. The set of changed NAMES is identical
+        before and after, so a name-only comparison reads "nothing changed" and
+        hands the next slot a workspace it would redo work on top of.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        owned = self.git_repo / "README.md"
+        owned.write_text("owner edit", encoding="utf-8")
+
+        def rewrite_then_reject(request, route):
+            owned.write_text("worker edit", encoding="utf-8")
+            return completed(text="not an envelope", adapter="opencode_go")
+
+        self.fake_adapters["opencode_go"].result = rewrite_then_reject
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
+
+        def transform(result):
+            if result.adapter == "opencode_go":
+                raise ValueError("invalid or oversized terminal envelope")
+            return result
+
+        router = self.router()
+        result = router.run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+                result_transform=transform,
+            ),
+            routes_for_main()[:2],
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+        self.assertEqual(self.fake_adapters["claude"].requests, [])
+        attempt = router.store.stage_attempts("wf-6", "st-6")[0]
+        self.assertIn("README.md", attempt["changed_files"])
+
+    def test_owner_dirt_is_not_recorded_as_the_attempts_own_change(self):
+        """The durable row must name only what this attempt touched.
+
+        Recording the owner's files makes a later resume read them back as a
+        worker mutation, which blocks the very failure kinds that should
+        advance, and tells the next slot it is continuing work nobody did.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "owner-wip.txt").write_text("mine", encoding="utf-8")
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.AUTH, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed("recovered", "claude")
+
+        router = self.router()
+        result = router.run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+            ),
+            routes_for_main()[:2],
+        )
+
+        self.assertTrue(result.success)
+        attempt = router.store.stage_attempts("wf-6", "st-6")[0]
+        self.assertEqual(attempt["changed_files"], [])
+        second = self.fake_adapters["claude"].requests[0]
+        self.assertEqual(second.mode, "start")
+        self.assertEqual(second.changed_files, ())
+
+    def test_a_restart_after_an_attempt_that_changed_nothing_is_not_a_continuation(
+        self,
+    ):
+        """A recorded attempt is not by itself evidence of a mutation.
+
+        The owner's tree is dirty and slot 0 failed without touching anything.
+        Treating the mere existence of that attempt as a continuation puts the
+        stage back where the fix found it: mutated, so nothing advances.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "owner-wip.txt").write_text("mine", encoding="utf-8")
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.AUTH, "opencode_go"
+        )
+        self.router().run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+            ),
+            routes_for_main()[:1],
+        )
+
+        absorbed = self.router()._absorb_workspace_state(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+            )
+        )
+
+        self.assertEqual(absorbed.mode, "start")
+
     def test_restart_continues_from_recorded_state_not_blind_replay(self):
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(
@@ -1593,6 +1698,7 @@ class InvalidTerminalTests(RouterTestCase):
                 "current_revision": lambda _, workspace: "r1",
                 "resolve_revision": lambda _, workspace, revision: "r0",
                 "changed_files": lambda _, workspace: ("a.txt",),
+                "dirty_digest": lambda _, workspace: {"a.txt": "same-before-and-after"},
                 "mutation_since": lambda _, workspace, revision: (
                     "r1",
                     ("a.txt",),
