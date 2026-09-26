@@ -119,6 +119,7 @@ class RouterTestCase(unittest.TestCase):
             name: ScriptedAdapter(name)
             for name in (
                 "opencode_go",
+                "opencode_zai",
                 "claude",
                 "kimi",
                 "muse",
@@ -683,7 +684,7 @@ class FailoverTests(RouterTestCase):
             "claude",
             "muse",
             "grok",
-            "zai",
+            "opencode_zai",
             "codex",
         ):
             self.fake_adapters[name].result = failed(FailureKind.AUTH, name)
@@ -695,7 +696,7 @@ class FailoverTests(RouterTestCase):
         # so the repeated position is recorded without a second invocation.
         self.assertEqual(
             router.calls,
-            ["opencode_go", "claude", "muse", "grok", "zai", "codex"],
+            ["opencode_go", "claude", "muse", "grok", "opencode_zai", "codex"],
         )
         self.assertIn("all seven", result.text.lower())
         attempts = router.store.stage_attempts("wf-6", "st-6")

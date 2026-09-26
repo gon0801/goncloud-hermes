@@ -16,6 +16,31 @@ identificador que se envia al proveedor. Solo el adaptador DeepSeek factura
 como API; un modelo DeepSeek servido por Go sigue siendo suscripcion. Verifier
 tiene esa ruta API en F6 y scout en F4; adversary ya no.
 
+## Toda etapa necesita manos: los slots se atan a un CLI
+
+Cada etapa trabaja sobre un repositorio, asi que su modelo necesita herramientas
+de leer archivo, grep y shell apuntadas al workspace. Seis adaptadores lanzan un
+CLI que las trae (`opencode`, `grok`, `kimi`, `claude`, `codex`, `muse`). Dos
+hablan por HTTP plano contra una API y no tienen bucle de herramientas: `zai` y
+`deepseek`. Por ese camino el modelo no puede mirar nada, y lo mas honesto que
+puede hacer es declararse bloqueado, que es exactamente lo que ocurrio en un
+scout real el 2026-09-26 cuando el failover llego por primera vez a F1.
+
+La carencia era nuestra, no del modelo. La familia `glm-` se ata ahora al
+adaptador `opencode_zai`, que es el CLI de OpenCode con el prefijo de proveedor
+`zai-coding-plan`, la misma credencial del Coding Plan que `opencode auth list`
+ya tenia instalada. Verificado en vivo: `zai-coding-plan/glm-5.3-flash` leyo un
+archivo con la herramienta `read`, cerro con `reason: stop` (que es lo que el
+parser exige para aceptar el terminal) y reporto `cost: 0`, o sea lo sirve la
+suscripcion y no una API medida. La tabla del propietario no cambio: `glm-5.3` y
+`glm-5.3-flash` siguen en los slots donde estan, solo que ahora llegan con manos.
+
+`deepseek` se dejo como esta a proposito. Ese modelo ya tiene camino con
+herramientas y el slot 0 lo usa (`opencode-go/deepseek-v4.1-flash`, suscripcion),
+mientras que el adaptador HTTP homonimo es la unica ruta que factura como API,
+declarada asi para verifier F6 y scout F4. Migrarlo al CLI cambiaria esa
+decision de facturacion, asi que queda pendiente de una orden explicita.
+
 ## Matriz vigente: 6/8 cuentas en uso (2026-09-20)
 
 OpenCode Zen no ocupa slot y no se sondea. Probes oficiales uno por uno con

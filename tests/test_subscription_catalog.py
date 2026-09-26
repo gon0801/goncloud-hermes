@@ -23,13 +23,13 @@ EXPECTED_ADAPTERS = {
         "claude",
         "muse",
         "grok",
-        "zai",
+        "opencode_zai",
         "codex",
         "kimi",
     ],
     "operaciones": [
         "opencode_go",
-        "zai",
+        "opencode_zai",
         "codex",
         "claude",
         "grok",
@@ -40,7 +40,7 @@ EXPECTED_ADAPTERS = {
         "opencode_go",
         "codex",
         "kimi",
-        "zai",
+        "opencode_zai",
         "muse",
         "claude",
         "grok",
@@ -48,7 +48,7 @@ EXPECTED_ADAPTERS = {
     "implementer": [
         "opencode_go",
         "muse",
-        "zai",
+        "opencode_zai",
         "grok",
         "claude",
         "codex",
@@ -61,20 +61,20 @@ EXPECTED_ADAPTERS = {
         "codex",
         "muse",
         "grok",
-        "zai",
+        "opencode_zai",
     ],
     "adversary": [
         "opencode_go",
         "grok",
         "kimi",
-        "zai",
+        "opencode_zai",
         "muse",
         "claude",
         "codex",
     ],
     "verifier": [
         "opencode_go",
-        "zai",
+        "opencode_zai",
         "muse",
         "kimi",
         "claude",
@@ -83,7 +83,7 @@ EXPECTED_ADAPTERS = {
     ],
     "scout": [
         "opencode_go",
-        "zai",
+        "opencode_zai",
         "muse",
         "kimi",
         "deepseek",
@@ -205,7 +205,7 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(len(routes), SLOT_COUNT)
         self.assertEqual(
             [route.adapter for route in routes[2:5]],
-            ["zai", "zai", "zai"],
+            ["opencode_zai", "opencode_zai", "opencode_zai"],
         )
         self.assertEqual({route.model for route in routes[2:5]}, {"glm-5.3"})
         self.assertEqual([route.slot for route in routes[2:5]], [2, 3, 4])
@@ -233,7 +233,7 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(routes[2].adapter, "kimi")
         self.assertEqual(routes[2].model, "kimi-for-coding")
         self.assertEqual(routes[2].label, "kimi/kimi-for-coding")
-        self.assertEqual(routes[3].adapter, "zai")
+        self.assertEqual(routes[3].adapter, "opencode_zai")
         self.assertEqual(routes[3].model, "glm-5.3-flash")
 
     def test_parenthetical_annotations_stay_on_the_label_not_the_model_id(self):
@@ -324,6 +324,27 @@ class SlotSemanticsTests(unittest.TestCase):
                     1 if profile in API_PROFILES else 0,
                     profile,
                 )
+
+    def test_glm_routes_bind_to_a_tool_capable_adapter(self):
+        """Every stage works on a repository, so its model needs hands.
+
+        The Z.AI Coding Plan reached over plain HTTP gives the model no file or
+        shell tools, so the most it can honestly do is report that it could not
+        look, which is exactly what happened on a real scout stage. The same
+        subscription reached through the OpenCode CLI gets the same toolset as
+        every other slot, and still bills as a subscription rather than an API.
+        """
+        source = load_source()
+        seen = 0
+        for profile in EXPECTED_ADAPTERS:
+            for route in compile_profile_routes(profile, source):
+                if route.model.startswith("glm-"):
+                    seen += 1
+                    self.assertEqual(
+                        route.adapter, "opencode_zai", f"{profile} {route}"
+                    )
+                    self.assertEqual(route.billing_mode, "subscription", profile)
+        self.assertGreater(seen, 0, "the owner table should route some glm slot")
 
     def test_only_deepseek_family_slots_are_api_billed(self):
         routes = compile_profile_routes("reviewer", load_source())

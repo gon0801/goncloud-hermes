@@ -20,7 +20,9 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("gpt-", "codex"),
     ("k3", "kimi"),
     ("kimi-", "kimi"),
-    ("glm-", "zai"),
+    # Served through the OpenCode CLI so GLM gets workspace tools; the plain
+    # HTTP zai adapter has none. Same Coding Plan subscription either way.
+    ("glm-", "opencode_zai"),
     ("grok-", "grok"),
     ("deepseek-", "deepseek"),
 )

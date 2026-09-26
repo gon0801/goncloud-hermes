@@ -711,7 +711,8 @@ class LocalOrchestratorTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
 
     def test_crash_between_advancing_slots_resumes_at_next_slot(self):
-        self.router.adapters["zai"] = self
+        # Scout F1 is the Z.AI Coding Plan served through the OpenCode CLI.
+        self.router.adapters["opencode_zai"] = self
         original, availability = self.invoke, self.router._availability
         called = []
 
@@ -725,7 +726,7 @@ class LocalOrchestratorTests(unittest.TestCase):
             )
 
         def interrupt(route):
-            if route.adapter == "zai":
+            if route.adapter == "opencode_zai":
                 raise KeyboardInterrupt
             return availability(route)
 
@@ -740,7 +741,7 @@ class LocalOrchestratorTests(unittest.TestCase):
                 self.requests[0].workflow_id, stop_after="scout"
             )
         self.assertEqual(result["outcome"], "paused")
-        self.assertEqual(called, ["opencode_go", "zai"])
+        self.assertEqual(called, ["opencode_go", "opencode_zai"])
 
     def test_interrupted_attempt_can_resume_with_a_new_attempt(self):
         original = self.invoke

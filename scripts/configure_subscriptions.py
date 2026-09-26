@@ -740,6 +740,17 @@ def _migrate_locked(entries, private_env: Path, probe) -> MigrationResult:
 
 
 def _probe_routes():
+    """Adapter name -> a route that can probe it.
+
+    The HTTP adapters are probed by credential, and the owner's table may bind
+    their model family to a CLI slot instead: ``glm-`` now runs through OpenCode
+    so the model gets workspace tools. Keep an entry for them anyway, built from
+    the table's first model of that family, so a stored key can still be
+    verified. Without this the live matrix died with ``KeyError: 'zai'`` the
+    moment no slot named the HTTP adapter.
+    """
+    from dataclasses import replace
+
     from subscriptions.catalog import compile_profile_routes, load_routing_source
 
     routing = load_routing_source()
@@ -747,6 +758,13 @@ def _probe_routes():
     for profile in routing.get("chains", {}):
         for route in compile_profile_routes(profile, routing):
             routes.setdefault(route.adapter, route)
+    bound = list(routes.values())
+    for http_adapter, family in (("zai", "glm-"), ("deepseek", "deepseek-")):
+        if http_adapter in routes:
+            continue
+        source = next((r for r in bound if r.model.startswith(family)), None)
+        if source is not None:
+            routes[http_adapter] = replace(source, adapter=http_adapter)
     return routes
 
 

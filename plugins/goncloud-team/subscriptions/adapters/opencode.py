@@ -25,8 +25,23 @@ from . import (
 )
 
 #: Slot identity, not the historical label prefix, selects the subscription.
-_PROVIDER_PREFIXES = {"opencode_go": "opencode-go", "opencode_zen": "opencode"}
-_CREDENTIAL_NAMES = {"opencode_go": "opencode go", "opencode_zen": "opencode zen"}
+#: Provider prefixes exactly as ``opencode models`` lists them. The Z.AI entry
+#: is what gives GLM the same read/grep/shell toolset as every other CLI-backed
+#: slot: reached over its plain HTTP API instead, the model has no way to touch
+#: the workspace and can only report that it could not look (real scout stage,
+#: 2026-09-26). Verified live: ``zai-coding-plan/glm-5.3-flash`` read a file
+#: through the ``read`` tool, closed with ``reason: stop``, and cost 0, so the
+#: Coding Plan subscription serves it rather than a metered API.
+_PROVIDER_PREFIXES = {
+    "opencode_go": "opencode-go",
+    "opencode_zen": "opencode",
+    "opencode_zai": "zai-coding-plan",
+}
+_CREDENTIAL_NAMES = {
+    "opencode_go": "opencode go",
+    "opencode_zen": "opencode zen",
+    "opencode_zai": "z.ai coding plan",
+}
 
 
 def parse_opencode_jsonl(output: str) -> dict:

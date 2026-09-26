@@ -255,6 +255,7 @@ def build_adapter_registry(
     opencode = OpenCodeAdapter(runner=runner)
     return {
         "opencode_go": opencode,
+        "opencode_zai": opencode,
         "opencode_zen": opencode,
         "muse": MuseAdapter(runner=runner),
         "claude": ClaudeAdapter(runner=runner),

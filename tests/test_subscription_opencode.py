@@ -117,6 +117,24 @@ class OpenCodeAdapterTests(unittest.TestCase):
             ["--model", "opencode/muse-spark-1.3-contributor-free"],
         )
 
+    def test_the_zai_coding_plan_slot_is_served_through_the_cli(self):
+        """The subscription the HTTP adapter reached without tools, now with them.
+
+        The provider prefix is what OpenCode lists for that credential, so the
+        model arrives with its read, grep and shell tools bound to the
+        workspace, like every other CLI-backed slot.
+        """
+        runner = FakeCliRunner(stdout=SUCCESS_JSONL)
+        adapter = OpenCodeAdapter(runner=runner)
+
+        result = adapter.invoke(
+            request(self.workspace), route(1, "opencode_zai", "glm-5.3-flash")
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("zai-coding-plan/glm-5.3-flash", runner.command)
+        self.assertEqual(result.billing_mode, "subscription")
+
     def test_invoke_parses_text_session_and_reports_subscription(self):
         adapter = OpenCodeAdapter(runner=FakeCliRunner(stdout=SUCCESS_JSONL))
 

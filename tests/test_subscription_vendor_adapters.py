@@ -300,6 +300,7 @@ class BillingModeTests(unittest.TestCase):
         self.assertEqual(adapters["deepseek"].billing_mode, "api")
         self.assertEqual(adapters["opencode_go"].billing_mode, "subscription")
         self.assertEqual(adapters["opencode_zen"].billing_mode, "subscription")
+        self.assertEqual(adapters["opencode_zai"].billing_mode, "subscription")
         self.assertEqual(adapters["claude"].billing_mode, "subscription")
         self.assertEqual(adapters["codex"].billing_mode, "subscription")
         self.assertEqual(adapters["muse"].billing_mode, "subscription")
@@ -308,6 +309,10 @@ class BillingModeTests(unittest.TestCase):
             {
                 "opencode_go",
                 "opencode_zen",
+                # The Z.AI Coding Plan served through the OpenCode CLI, so GLM
+                # gets workspace tools; the bare "zai" entry is the HTTP path,
+                # still registered but no longer bound by any slot.
+                "opencode_zai",
                 "muse",
                 "claude",
                 "codex",

@@ -320,6 +320,21 @@ caracteres de diff que el script esta dispuesto a mandar. Medido: 32 caracteres
 tardan 35 s, y 48 981 no alcanzaron ni con 1200 s. Arreglado en el kit
 (`88997fe`): el tope ahora escala con el tamano del diff y se anuncia.
 
+### El primer failover real descubrio dos adaptadores sin manos (2026-09-26)
+
+Con el arreglo del arbol sucio desplegado, la cadena `t_a1b513bd` hizo por fin lo
+que debia: slot 0 (`opencode_go`/`deepseek-v4.1-flash`) contesto fuera del
+contrato, se clasifico `invalid_terminal`, el arbol estaba limpio asi que no habia
+mutacion, y el router **avanzo al slot 1**. Ahi `zai`/`glm-5.3-flash` respondio con
+un envelope valido cuyo contenido era: no tengo acceso a archivos ni shell, no
+puedo inspeccionar el repo, y por la regla de no invencion no reporto hallazgos.
+
+El modelo se porto bien; el adaptador no le daba con que. `zai` y `deepseek` son
+HTTP plano sin bucle de herramientas, y `zai` ocupaba el primer failover de scout,
+verifier y operaciones. Antes del arreglo esto era invisible porque la cadena
+nunca avanzaba de slot. La familia `glm-` se ato al CLI de OpenCode; el detalle y
+la verificacion en vivo estan en [enrutador](model-routing.md).
+
 ### Cuarentena con vencimiento
 
 El propietario pidio que la cuota agotada se recupere sola: las cuentas la
