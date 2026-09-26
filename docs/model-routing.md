@@ -55,10 +55,18 @@ Dos reglas hacen que ese reparto funcione y las dos se violaron en `t_f1c90a69`:
   `invalid_terminal`, no `task_failure`. El proveedor respondio y la ruta no
   entrego nada usable; no se demostro que la tarea fallara. Un error de
   lanzamiento, que nunca llego al proveedor, si sigue siendo `task_failure`.
-- "El workspace cambio" significa que **este** intento lo cambio. Los archivos
-  sin commitear que el propietario ya tenia no cuentan: no son continuacion de
-  un worker anterior y no deben bloquear un fallo que avanza. El router compara
-  contra la suciedad presente al arrancar la etapa y contra su revision base.
+- Un arbol de trabajo sucio, por si solo, no es una continuacion. Sin ningun
+  intento previo ni commit sobre la base, la etapa arranca en `mode="start"` y
+  el modelo NO recibe los archivos del propietario listados como trabajo de un
+  worker anterior. Esa historia falsa es la que rompio la cadena real.
+- Pero para decidir si un fallo avanza o bloquea, "el workspace cambio" sigue
+  siendo conservador: **cualquier** archivo sucio cuenta. Distinguir quien
+  ensucio que requiere una linea base de contenido, y dos rondas de revision
+  externa encontraron formas de que esa distincion leyera una mutacion real como
+  "sin cambios". Bloquear una etapa se recupera; pisar el trabajo de un worker
+  no. Consecuencia practica: **con el arbol sucio no hay failover automatico**,
+  asi que commitea o stashea antes de lanzar una cadena. El detalle de las dos
+  rondas esta en [estado](status.md).
 El unico fallo vigente en la matriz, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
 el proveedor declara la fecha de reposicion. Zen y Kimi pasaron a `ready` al
 agregar a Node la raiz TLS de Kaspersky que intercepta esas conexiones, y Kimi

@@ -268,42 +268,57 @@ en cuanto cualquier etapa lo esta, sin llegar al router, y el router reproduce
 el intento registrado en vez de crear uno nuevo. Para reintentar hace falta un
 `request_key` nuevo.
 
-### Revision cruzada del arreglo anterior (codex gpt-5.6-sol, 2026-09-26)
+### Revision cruzada y por que el detector de mutacion quedo conservador
 
-El propio arreglo del arbol sucio introdujo dos defectos. Los encontro una
-revision cruzada externa sobre el rango completo, uno de severidad alta, y los
-dos estaban justo en los puntos que el brief pidio mirar con lupa:
+Dos rondas de revision externa (codex `gpt-5.6-sol`) sobre el arreglo del arbol
+sucio. La primera hallo 2 defectos, uno alto. La segunda, sobre el arreglo de
+esos dos, devolvio REQUEST_CHANGES con 5 mas, dos altos. El peor:
 
-- **ALTA. La mutacion se medía por nombres.** `mutated` comparaba el conjunto de
-  nombres sucios contra el de arranque. Si el worker reescribia un archivo que ya
-  estaba sucio, el conjunto no cambiaba, `mutated` quedaba falso y un
-  `invalid_terminal` avanzaba de slot, de modo que el siguiente modelo pisaba
-  trabajo real. Ahora `GitInspector.dirty_digest` guarda un hash de contenido por
-  ruta y la comparacion es por contenido, no por nombre. El hash es de solo
-  lectura y no escribe ningun objeto de Git. Regresion:
-  `test_a_worker_rewriting_an_already_dirty_file_counts_as_mutation`.
-- **MEDIA. La fila durable se quedaba con la suciedad del propietario.** Cada
-  intento registraba tambien los archivos que el propietario ya tenia sucios.
-  `stage_mutation` los leia como mutacion del worker, y un reinicio entre slots
-  reconstruia la continuacion falsa y volvia a bloquear la etapa. Ahora la fila
-  nombra solo lo que el intento toco: lo que commiteo, mas las rutas sucias cuyo
-  contenido difiere del de arranque. Y la existencia de una fila de intento dejo
-  de contar por si sola como evidencia de mutacion. Regresiones:
-  `test_owner_dirt_is_not_recorded_as_the_attempts_own_change` y
-  `test_a_restart_after_an_attempt_that_changed_nothing_is_not_a_continuation`.
+- **ALTA. Quitar el guard de historial reabrio el pisado de trabajo.** La puerta
+  de continuacion dejo de contar la existencia de un intento previo. Un intento
+  **interrumpido** que escribio archivos sin commitear y murio antes de
+  registrarlos volvia entonces como `mode="start"` y `changed_files=()`, de modo
+  que el siguiente modelo podia pisar trabajo real. Ese `or attempts` estaba ahi
+  justo para eso. El revisor lo confirmo ejecutando ese camino.
 
-Un tercer defecto salio al correr la bateria, no de la revision: al derivar los
-cambios del digest se perdian los archivos que el worker **commitea**, porque un
-commit deja el arbol limpio y el digest vacio. La atribucion ahora suma las dos
-mitades por separado. Lo atrapo
-`test_clean_commit_transport_failure_blocks_with_durable_evidence`, que ya
-existia.
+Los otros cuatro apuntaban todos al mismo sitio: el digest de contenido que se
+habia introducido para distinguir la suciedad del propietario de la del worker
+seguia enlaces simbolicos, no veia cambios de permisos ni de submodulos, perdia
+la atribucion de un archivo commiteado y vuelto a ensuciar, y releia todos los
+archivos sucios sin tope de tamano ni de tiempo.
 
-Nota de proceso: el `cross-review.ps1` del kit no pudo correr este diff. Le pasa
-el prompt a la CLI como argumento de linea de comandos y Windows corta en 32 767
-caracteres; el prompt medía 51 370, asi que codex se colgo hasta el tope y murio
-con exit 124 sin emitir veredicto. La revision se corrio con el mismo prompt por
-stdin, que `codex exec` acepta, y con `-m gpt-5.6-sol` explicito.
+**Decision del propietario: borrar el digest en lugar de endurecerlo.** La regla
+volvio a ser conservadora: cualquier archivo sucio cuenta como mutacion. Tres de
+los cinco hallazgos desaparecieron porque el codigo que los causaba dejo de
+existir, y el guard de intentos interrumpidos volvio a su lugar.
+
+De todo el episodio sobrevive exactamente lo que rompio la cadena real:
+
+- El intento 0 ya no recibe la historia falsa. Con el arbol sucio y sin ningun
+  intento previo ni commit sobre la base, la etapa arranca en `mode="start"` y
+  no se le listan al modelo los archivos del propietario como trabajo de otro.
+- Salir con codigo 0 sin envelope terminal valido es `invalid_terminal`, no
+  `task_failure`.
+- El texto de fallo del adaptador se conserva en la fila durable.
+
+**Consecuencia, dicha sin adornos: con el arbol sucio no hay failover
+automatico.** La etapa bloquea con evidencia en el slot 0 y las cuentas sanas no
+se prueban. Commitea o stashea antes de lanzar una cadena. Es la eleccion
+deliberada: bloquear una etapa se recupera, pisar el trabajo de un worker no.
+
+Residual declarado, no vuelto a revisar: para los slots 1 en adelante la regla
+conservadora puede afirmar una continuacion que no ocurrio, porque una vez que un
+intento se ejecuto el router no intenta distinguir quien ensucio que. Es el lado
+seguro del error.
+
+Nota de proceso, con dos hipotesis mias caidas antes de dar con la buena. El
+`cross-review.ps1` del kit no pudo con el diff completo: **no** era el limite de
+linea de comandos de Windows (el comando mide ~1400 caracteres, porque el prompt
+referencia un archivo temporal) ni el sandbox de codex (lee ese archivo sin
+problema, verificado). Era el tope de tiempo: 300 s por default contra los 60 000
+caracteres de diff que el script esta dispuesto a mandar. Medido: 32 caracteres
+tardan 35 s, y 48 981 no alcanzaron ni con 1200 s. Arreglado en el kit
+(`88997fe`): el tope ahora escala con el tamano del diff y se anuncia.
 
 ### Cuarentena con vencimiento
 

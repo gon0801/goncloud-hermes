@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -106,27 +105,6 @@ class GitInspector:
                 # In -z format the destination precedes the original path.
                 next(entries, None)
         return tuple(dict.fromkeys(names))
-
-    def dirty_digest(self, workspace: Path) -> dict[str, str]:
-        """Content hash per uncommitted path, so a rewrite is visible.
-
-        Comparing names cannot show that a worker rewrote a file the owner had
-        already dirtied: the name set is identical before and after. Hashing is
-        read-only and writes no Git object. A path that cannot be read gets a
-        sentinel, so a deletion still reads as a change.
-        """
-        digest: dict[str, str] = {}
-        for name in self.changed_files(workspace):
-            try:
-                with (workspace / name).open("rb") as handle:
-                    sha = hashlib.sha256()
-                    for block in iter(lambda: handle.read(1 << 20), b""):
-                        sha.update(block)
-                digest[name] = sha.hexdigest()
-            except OSError:
-                # Gone or unreadable; either way it is not what the baseline saw.
-                digest[name] = "<unreadable>"
-        return digest
 
     def mutation_since(
         self, workspace: Path, revision: str
@@ -265,11 +243,6 @@ class SubscriptionRouter:
                     )
 
         request = self._absorb_workspace_state(request)
-        # What the workspace held before this stage ran, by content, plus the
-        # revision it started from. Only a difference from these two means an
-        # attempt mutated anything; the owner's own edits are not a worker's.
-        baseline_digest = self.git.dirty_digest(request.workspace)
-        baseline_revision = request.start_revision
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
 
@@ -439,29 +412,18 @@ class SubscriptionRouter:
                         result = self._invoke_route(request, route)
             except SubscriptionBusy:
                 return self._stage_busy()
-            revision, changed, _git_mutated = self.git.mutation_since(
+            revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
             )
-            current_digest = self.git.dirty_digest(request.workspace)
-            # ``changed`` mixes what landed in commits with what is merely dirty.
-            # The dirty half is exactly the digest's keys, so the remainder is
-            # what this attempt committed, and that is always its own work.
-            committed = set(changed) - set(current_digest)
-            # For the dirty half, content decides: a path is this attempt's work
-            # only where it differs from what the owner left behind. That covers
-            # a creation, a deletion, a rewrite of a file the owner had already
-            # dirtied, and a revert back to the committed content.
-            touched = committed | {
-                name
-                for name in set(baseline_digest) | set(current_digest)
-                if baseline_digest.get(name) != current_digest.get(name)
-            }
-            changed = tuple(sorted(touched | set(request.changed_files)))
-            mutated = (
-                request.mode == "continue"
-                or bool(touched)
-                or bool(revision and revision != baseline_revision)
-            )
+            changed = tuple(sorted(set(changed) | set(request.changed_files)))
+            # Deliberately conservative once an attempt has executed: any dirt
+            # counts. Telling the two apart needs a content baseline, and the
+            # attempts at that kept finding new ways to read a real mutation as
+            # "nothing changed" (two review rounds, 2026-09-26). Blocking a
+            # stage is recoverable; overwriting a worker's edits is not. The one
+            # case that does not need the distinction is attempt 0, where no
+            # worker has run yet, and _absorb_workspace_state handles it.
+            mutated = mutated or request.mode == "continue"
             recorded = self.store.finish_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -625,14 +587,16 @@ class SubscriptionRouter:
         revision, changed, _git_mutated = self.git.mutation_since(
             request.workspace, baseline
         )
-        # A commit past the baseline is a worker mutation even with nothing
-        # recorded: an interrupted attempt may have committed and then crashed.
-        # The mere existence of an attempt row is NOT such evidence: an attempt
-        # that failed without touching anything would otherwise put the stage
-        # back where it started, mutated and unable to advance.
+        # Only ONE thing changed here against the original rule: uncommitted
+        # dirt, on its own, no longer makes this a continuation. Everything else
+        # still does, on purpose. An attempt row counts even with no recorded
+        # mutation, because an interrupted attempt may have written files and
+        # died before recording them; dropping that guard let a later slot
+        # overwrite real work (review round 2, 2026-09-26).
         continuation = bool(
             (revision and baseline and revision != baseline)
             or evidence
+            or attempts
             or request.mode == "continue"
         )
         # Outside a continuation the dirty tree is the owner's own work. Naming
