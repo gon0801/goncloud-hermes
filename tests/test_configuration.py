@@ -36,6 +36,31 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("fallback_providers", cleaned)
         self.assertIn("plugins", cleaned)
 
+    def test_api_billed_providers_stay_out_of_the_native_catalog(self):
+        """deepseek is the only adapter that bills as API, not subscription.
+
+        The subscription router reaches it deliberately, at two slots, through
+        its own adapter. Leaving it in a profile's native model catalog lets an
+        agent pick it directly and spend real money outside that decision.
+        opencode-free is excluded for the same reason in reverse: it is not one
+        of the owner's accounts.
+        """
+        import sys
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import configure_team
+
+        excluded = configure_team.desired_profile_config(
+            "claw",
+            json.loads((ROOT / "team.json").read_text(encoding="utf-8")),
+            ROOT,
+        )["model_catalog"]["excluded_providers"]
+
+        self.assertIn("deepseek", excluded)
+        self.assertIn("opencode-free", excluded)
+        self.assertIn("copilot", excluded)
+        self.assertIn("copilot-acp", excluded)
+
     def test_cleanup_refuses_to_delete_user_changed_model(self):
         previous = {"model": {"provider": "opencode-go", "default": "muse"}}
         existing = {"model": {"provider": "custom", "default": "user-choice"}}
@@ -115,7 +140,7 @@ class ConfigurationTests(unittest.TestCase):
             )
             self.assertEqual(
                 migrated["model_catalog"]["excluded_providers"],
-                ["copilot", "copilot-acp"],
+                ["copilot", "copilot-acp", "deepseek", "opencode-free"],
             )
 
             first_config = config_path.read_bytes()

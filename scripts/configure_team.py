@@ -191,7 +191,19 @@ def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
     desired = {
         "plugins": {"enabled": ["goncloud-team"]},
-        "model_catalog": {"excluded_providers": ["copilot", "copilot-acp"]},
+        # Copilot and Copilot ACP are out of scope for this team. deepseek is
+        # the one adapter that bills as API: the subscription router reaches
+        # it deliberately at two slots through its own adapter, so leaving it
+        # in a native catalog would let an agent spend outside that decision.
+        # opencode-free is not one of the owner's accounts.
+        "model_catalog": {
+            "excluded_providers": [
+                "copilot",
+                "copilot-acp",
+                "deepseek",
+                "opencode-free",
+            ]
+        },
         "platform_toolsets": {
             "cli": list(_WORKER_TOOLSETS),
             "telegram": list(_WORKER_TOOLSETS),
