@@ -222,6 +222,52 @@ arreglo lleva su regresion observada en rojo primero.
   y eso bloqueo la cadena en las dos corridas anteriores. La valla de cierre y la
   prohibicion de contenido posterior siguen estrictas.
 
+### Cadena bloqueada en slot 0 por el arbol sucio (`t_f1c90a69`, 2026-09-26)
+
+La etapa `scout` quedo `blocked` con un solo intento, `opencode_go` slot 0,
+`deepseek-v4.1-flash`, `task_failure`, y las cuatro cuentas sanas de su cadena
+nunca se probaron. La cuenta no tuvo nada que ver: quedo `ready`, sin cuarentena
+y sin cooldown. El disparador fue el arbol de trabajo con diez archivos sin
+commitear. Tres defectos encadenados, cada uno con su regresion en rojo primero:
+
+- **El arbol sucio se leia como continuacion.** `_absorb_workspace_state` ponia
+  `mode="continue"` en el intento 0 porque `git status` no estaba limpio, y
+  entonces `build_assignment_prompt` le decia al modelo que "un worker anterior
+  ya muto este workspace antes de fallar" y le listaba los diez archivos del
+  propietario como suyos. No hubo intento previo. Ahora solo un commit mas alla
+  de la base, evidencia registrada o un intento previo hacen una continuacion.
+  Regresion: `test_owner_uncommitted_edits_are_not_a_continuation`.
+- **Esa suciedad previa contaba como mutacion del intento.** Con `mutated` en
+  verdadero, `transport` e `invalid_terminal` bloquean por diseno, asi que de
+  los ocho tipos de fallo solo cuatro podian avanzar antes de que corriera el
+  primer modelo. El router ahora compara contra la suciedad presente al arrancar
+  la etapa y contra su revision base, no contra el arbol limpio.
+- **Salir con codigo 0 sin envelope valido se clasificaba `task_failure`.** Ese
+  tipo nunca avanza de slot, de modo que un envelope mal formado fijaba la etapa
+  al slot 0. `types.py` ya define `invalid_terminal` para exactamente ese caso y
+  `test_a_rejected_envelope_advances_to_the_next_slot_when_nothing_changed` ya
+  fijaba la conducta esperada. Regresion conjunta de los tres:
+  `test_bad_envelope_at_slot_zero_advances_although_the_tree_started_dirty`.
+
+Ademas, `_terminal_transform` reemplazaba el texto del adaptador por
+`subscription stage failed`, y la fila durable quedaba sin poder distinguir un
+envelope rechazado de una cuenta muerta. El texto del adaptador es sintetico,
+se arma con la ruta y el tipo de fallo, y no lleva salida del proveedor, asi que
+ahora se conserva. Regresion:
+`test_a_failed_stage_keeps_the_adapter_failure_kind_as_evidence`.
+
+No se cambio el flag `terminal` de un intento fallido. Marcarlo es deliberado y
+`test_terminal_task_failure_survives_crash_without_reinvocation` lo fija: evita
+re-invocar al modelo tras un fallo real de tarea, donde el trabajo pudo haberse
+hecho. Con los arreglos de arriba la cadena agota sus slots dentro de la misma
+corrida, asi que ese flag ya no sella una etapa que nunca hizo failover.
+
+Queda un residual declarado: una etapa ya bloqueada no se puede reintentar
+reusando el mismo `request_key`. `LocalOrchestrator.resume` devuelve `blocked`
+en cuanto cualquier etapa lo esta, sin llegar al router, y el router reproduce
+el intento registrado en vez de crear uno nuevo. Para reintentar hace falta un
+`request_key` nuevo.
+
 ### Cuarentena con vencimiento
 
 El propietario pidio que la cuota agotada se recupere sola: las cuentas la

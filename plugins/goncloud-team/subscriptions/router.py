@@ -243,6 +243,11 @@ class SubscriptionRouter:
                     )
 
         request = self._absorb_workspace_state(request)
+        # The dirt already present before this stage ran, and the revision it
+        # started from. Only changes past these two mean an attempt mutated the
+        # workspace; the owner's own edits must not count as a worker's work.
+        baseline_changed = frozenset(request.changed_files)
+        baseline_revision = request.start_revision
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
 
@@ -412,11 +417,15 @@ class SubscriptionRouter:
                         result = self._invoke_route(request, route)
             except SubscriptionBusy:
                 return self._stage_busy()
-            revision, changed, mutated = self.git.mutation_since(
+            revision, changed, _git_mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
             )
             changed = tuple(sorted(set(changed) | set(request.changed_files)))
-            mutated = mutated or request.mode == "continue"
+            mutated = (
+                request.mode == "continue"
+                or bool(set(changed) - baseline_changed)
+                or bool(revision and revision != baseline_revision)
+            )
             recorded = self.store.finish_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -560,7 +569,13 @@ class SubscriptionRouter:
         return result
 
     def _absorb_workspace_state(self, request: InvocationRequest) -> InvocationRequest:
-        """A recorded mutation turns a fresh run into an explicit continuation."""
+        """A recorded mutation turns a fresh run into an explicit continuation.
+
+        Uncommitted files the owner left in the tree are not such a mutation.
+        Calling them one tells the next worker that a previous attempt already
+        changed them, on attempt 0 where none ever ran, and forces every
+        mutation-sensitive failure to block at slot 0 instead of advancing.
+        """
         evidence = self.store.stage_mutation(request.workflow_id, request.stage_id)
         attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
         # An interrupted attempt may have committed without recording its end
@@ -571,8 +586,16 @@ class SubscriptionRouter:
         )
         baseline = baseline or self.git.current_revision(request.workspace)
         baseline = self.git.resolve_revision(request.workspace, baseline) or baseline
-        revision, changed, mutated = self.git.mutation_since(
+        revision, changed, _git_mutated = self.git.mutation_since(
             request.workspace, baseline
+        )
+        # A commit past the baseline is a worker mutation even with nothing
+        # recorded: an interrupted attempt may have committed and then crashed.
+        continuation = bool(
+            (revision and baseline and revision != baseline)
+            or evidence
+            or attempts
+            or request.mode == "continue"
         )
         changed = tuple(
             sorted(
@@ -583,9 +606,7 @@ class SubscriptionRouter:
         )
         return replace(
             request,
-            mode="continue"
-            if mutated or evidence or request.mode == "continue"
-            else "start",
+            mode="continue" if continuation else "start",
             start_revision=baseline,
             current_revision=revision or request.current_revision,
             changed_files=changed,

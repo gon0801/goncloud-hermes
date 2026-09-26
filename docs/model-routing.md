@@ -48,6 +48,17 @@ Los fallos que avanzan de slot son `auth`, `quota`, `model_unavailable`,
 `timeout`, `transport` e `invalid_terminal` (el proveedor respondio pero fuera
 del contrato terminal); `transport` e `invalid_terminal` bloquean en cuanto el
 workspace cambio. `task_failure` e `invalid_request` bloquean siempre.
+
+Dos reglas hacen que ese reparto funcione y las dos se violaron en `t_f1c90a69`:
+
+- Un CLI que sale con codigo 0 y sin envelope terminal valido es
+  `invalid_terminal`, no `task_failure`. El proveedor respondio y la ruta no
+  entrego nada usable; no se demostro que la tarea fallara. Un error de
+  lanzamiento, que nunca llego al proveedor, si sigue siendo `task_failure`.
+- "El workspace cambio" significa que **este** intento lo cambio. Los archivos
+  sin commitear que el propietario ya tenia no cuentan: no son continuacion de
+  un worker anterior y no deben bloquear un fallo que avanza. El router compara
+  contra la suciedad presente al arrancar la etapa y contra su revision base.
 El unico fallo vigente en la matriz, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
 el proveedor declara la fecha de reposicion. Zen y Kimi pasaron a `ready` al
 agregar a Node la raiz TLS de Kaspersky que intercepta esas conexiones, y Kimi

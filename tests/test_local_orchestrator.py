@@ -638,6 +638,33 @@ class LocalOrchestratorTests(unittest.TestCase):
         self.assertFalse(attempts[0]["success"])
         self.assertNotIn("sk-cached-private", repr(attempts))
 
+    def test_a_failed_stage_keeps_the_adapter_failure_kind_as_evidence(self):
+        """Overwriting the adapter text erases which route failed and why.
+
+        The adapter's own failure text is synthetic, built from the route and
+        the failure kind, so it carries no vendor output to leak. Replacing it
+        with a fixed string left the durable row unable to tell a bad terminal
+        envelope apart from a dead account.
+        """
+        transform = local_orchestrator_module._terminal_transform(
+            "scout", "the instruction"
+        )
+        rejected = InvocationResult(
+            success=False,
+            text="opencode_go invocation failed (invalid_terminal)",
+            adapter="opencode_go",
+            model="deepseek-v4.1-flash",
+            billing_mode="subscription",
+            session_id="sess_private",
+            failure=FailureKind.INVALID_TERMINAL,
+        )
+
+        kept = transform(rejected)
+
+        self.assertIn("invalid_terminal", kept.text)
+        self.assertIn("opencode_go", kept.text)
+        self.assertEqual(kept.session_id, "")
+
     def test_terminal_task_failure_survives_crash_without_reinvocation(self):
         self.responses["scout"] = "malformed"
         with patch.object(

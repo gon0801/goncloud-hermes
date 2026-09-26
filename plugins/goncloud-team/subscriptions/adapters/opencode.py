@@ -158,7 +158,12 @@ class OpenCodeAdapter(SubscriptionAdapter):
                     billing_mode=route.billing_mode,
                     session_id=parsed["session_id"] or "",
                 )
-            return self._failed_result(route, FailureKind.TASK_FAILURE)
+            # The CLI answered, it just did not answer in the terminal
+            # contract. task_failure is never auto-advanced, so classifying
+            # a rejected envelope that way pins the stage to this slot with
+            # every healthy account untried. Nothing here shows the task
+            # itself failed, which is exactly invalid_terminal.
+            return self._failed_result(route, FailureKind.INVALID_TERMINAL)
         return self._failed_result(
             route,
             classify_failure(evidence.returncode, evidence.stream, evidence.stderr),

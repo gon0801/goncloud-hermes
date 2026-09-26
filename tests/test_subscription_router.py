@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.catalog import compile_profile_routes  # noqa: E402
+from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
 from subscriptions.router import GitInspector, SubscriptionRouter  # noqa: E402
 from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.types import (  # noqa: E402
@@ -997,6 +998,68 @@ class MutationContinuationTests(RouterTestCase):
         self.assertEqual(second.changed_files, ("changed.py",))
         attempt = router.store.stage_attempts("wf-mut", "st-mut")[0]
         self.assertEqual(attempt["changed_files"], ["changed.py"])
+
+    def test_owner_uncommitted_edits_are_not_a_continuation(self):
+        """An owner's dirty tree is not evidence that a worker mutated anything.
+
+        Reporting it as a continuation tells the next model a previous attempt
+        already changed these files, on attempt 0, when none ever ran.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "owner-wip.py").write_text("my own edit", encoding="utf-8")
+
+        absorbed = self.router()._absorb_workspace_state(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+            )
+        )
+
+        self.assertEqual(absorbed.mode, "start")
+
+    def test_bad_envelope_at_slot_zero_advances_although_the_tree_started_dirty(self):
+        """The owner's own uncommitted files must not pin the stage to slot 0.
+
+        Two defects combined here. The CLI exits 0 with no terminal event, which
+        was classified ``task_failure`` and never advances; and the dirty tree
+        made attempt 0 a continuation, which forced ``mutated`` true and blocked
+        the advancing kinds too. Either one alone leaves every healthy account
+        untried.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "owner-wip.py").write_text("my own edit", encoding="utf-8")
+        partial = '{"type":"part","part":{"type":"text","text":"partial"}}'
+
+        def exits_zero_without_terminal(command, **kwargs):
+            return subprocess.CompletedProcess(
+                list(command), 0, stdout=partial, stderr=""
+            )
+
+        self.fake_adapters["opencode_go"] = OpenCodeAdapter(
+            runner=exits_zero_without_terminal
+        )
+        self.fake_adapters["claude"].result = completed("recovered", "claude")
+        SubscriptionStateStore(self.db_path).save_health(
+            "opencode_go", ready=True, account_class="subscription"
+        )
+
+        router = self.router()
+        result = router.run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+                result_transform=lambda value: value,
+            ),
+            routes_for_main()[:2],
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "recovered")
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(attempts[0]["failure"], "invalid_terminal")
+        self.assertEqual(attempts[0]["mode"], "start")
 
     def test_restart_continues_from_recorded_state_not_blind_replay(self):
         router = self.router()

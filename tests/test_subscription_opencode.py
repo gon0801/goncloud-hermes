@@ -133,10 +133,17 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(result.billing_mode, "subscription")
         self.assertIsNone(result.failure)
 
-    def test_exit_zero_without_terminal_event_is_failure(self):
+    def test_exit_zero_without_a_valid_envelope_is_invalid_terminal(self):
+        """The vendor answered, just not in the terminal contract.
+
+        ``task_failure`` is never auto-advanced, so classifying a rejected
+        envelope that way blocks the stage at slot 0 with every healthy account
+        untried. ``invalid_terminal`` is the kind that says the route produced
+        nothing usable without claiming the task itself failed.
+        """
         adapter = OpenCodeAdapter(
             runner=FakeCliRunner(
-                stdout='{"type":"text","part":{"type":"text","text":"partial"}}'
+                stdout='{"type":"part","part":{"type":"text","text":"partial"}}'
             )
         )
 
@@ -145,7 +152,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
-        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
 
     def test_parser_exposes_valid_terminal_only_after_step_finish(self):
         parsed = parse_opencode_jsonl(SUCCESS_JSONL)
@@ -165,7 +172,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         self.assertFalse(parsed["terminal_valid"])
         self.assertFalse(result.success)
-        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
         self.assertNotIn("not-json-secret", result.text)
 
     def test_step_finish_requires_stop_reason_for_terminal_evidence(self):
@@ -181,7 +188,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertTrue(stopped["terminal_valid"])
         self.assertFalse(parse_opencode_jsonl(truncated)["terminal_valid"])
         self.assertFalse(result.success)
-        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
 
     def test_malformed_exit_zero_cannot_be_reclassified_as_transport(self):
         output = f"{SUCCESS_JSONL}\nprovider.connection_error raw-secret"
@@ -191,7 +198,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
-        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
         self.assertNotIn("raw-secret", repr(result))
 
     def test_embedded_jsonl_error_cannot_approve_terminal_event(self):
@@ -212,7 +219,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
-        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
 
     def test_failures_are_classified_without_leaking_output(self):
         cases = [

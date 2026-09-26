@@ -232,7 +232,11 @@ def _safe_handoff(value, role, instruction):
 def _terminal_transform(role, instruction):
     def transform(result):
         if not result.success:
-            return replace(result, text="subscription stage failed", session_id="")
+            # The adapter's failure text is synthetic, built from the route and
+            # the failure kind, so it names which route failed and why without
+            # carrying vendor output. Replacing it left the durable row unable
+            # to tell a rejected envelope apart from a dead account.
+            return replace(result, session_id="")
         _, text = _normalized_terminal(result.text, role, instruction)
         return replace(result, text=text, session_id="")
 
