@@ -1,6 +1,6 @@
 # Estado — 2026-09-27
 
-## Enrutamiento conversacional exacto, antes del despliegue
+## Enrutamiento conversacional exacto, desplegado
 
 Se elimino de `team.json` la excepcion `director_model`/`director_fallbacks`
 que reducia `main` a OpenCode Go, Kimi y Z.AI. `claw` selecciona ahora un unico
@@ -12,8 +12,20 @@ la secuencia exacta `opencode_go -> claude`, terminal `claude-opus-5`, esfuerzo
 Verificacion previa al despliegue: **414 tests aprobados, 3 skips de plataforma
 y 8/8 hooks de pre-commit**. Las pruebas temporales despliegan los nueve
 perfiles, comparan byte por byte la tabla y el proveedor, y prueban que `claw`
-y `scout` cargan solamente su propia copia. El despliegue y la prueba live se
-registran por separado despues de ejecutarse; esta seccion no los presupone.
+y `scout` cargan solamente su propia copia.
+
+Despliegue 2026-09-27: los nueve perfiles recibieron la misma tabla
+(`SHA-256 f7ca3b8f715c3137104bdb98f97f5c7b4264f8650c0fd0f67dfff6cc3dad11d6`)
+y una copia byte-identica del proveedor. Las modificaciones locales de
+`SOUL.md` se preservaron. `claw/config.yaml` quedo en
+`goncloud-subscriptions/main`, sin `fallback_providers`, y el gateway se detuvo
+con drenado limpio y arranco de nuevo correctamente.
+
+Prueba live controlada: se inyecto solamente `model_unavailable` en el limite
+del adaptador Primary y se dejo F1 real. La secuencia observada fue slot 0
+`opencode_go` -> slot 1 `claude`; termino en `claude-opus-5`, esfuerzo `xhigh`,
+facturacion `subscription` y marcador exacto `GONCLOUD_FALLBACK_OK`. Kimi no
+se intento.
 
 ## Tabla del propietario y verificacion live completa (2026-09-26)
 

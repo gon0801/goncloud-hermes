@@ -61,7 +61,7 @@ Telegram es solo transporte para el trabajo tecnico: el director recibe el mensa
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
 
-Gate previo al despliegue 2026-09-27: 414 tests aprobados y 3 skips de plataforma; 8/8 hooks; `git diff --check` limpio. La regresion prueba que `main` avanza OpenCode Go -> Claude Opus 5 `xhigh` sin tocar Kimi. La evidencia posterior al despliegue queda en [estado](docs/status.md).
+Gate y despliegue 2026-09-27: 414 tests aprobados y 3 skips de plataforma; 8/8 hooks; `git diff --check` limpio. La regresion y una inferencia controlada prueban que `main` avanza OpenCode Go -> Claude Opus 5 `xhigh` sin tocar Kimi. Los nueve perfiles y el reinicio del gateway estan documentados en [estado](docs/status.md).
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -m unittest discover -s tests -v
