@@ -438,6 +438,34 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
+            # Runtime-only role instructions may evolve independently. An
+            # explicit preserve flag must still deploy routing artifacts and
+            # the owned director model without overwriting those instructions.
+            claw_soul = runtime / "profiles/claw/SOUL.md"
+            local_soul = claw_soul.read_text(encoding="utf-8") + "\nLOCAL RULE\n"
+            claw_soul.write_text(local_soul, encoding="utf-8")
+            preserved = subprocess.run(
+                [*command, "--preserve-local-soul"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(preserved.returncode, 0, preserved.stderr)
+            self.assertEqual(claw_soul.read_text(encoding="utf-8"), local_soul)
+            self.assertEqual(
+                yaml.safe_load(
+                    (runtime / "profiles/claw/config.yaml").read_text(encoding="utf-8")
+                )["model"],
+                {"provider": "goncloud-subscriptions", "default": "main"},
+            )
+            self.assertEqual(
+                (
+                    runtime
+                    / "profiles/claw/plugins/goncloud-team/model-routing.source.json"
+                ).read_bytes(),
+                (ROOT / "model-routing.source.json").read_bytes(),
+            )
             # The director's model is owned: a hand edit is a conflict the
             # configurator refuses to overwrite, leaving the edit in place.
             claw_path = runtime / "profiles/claw/config.yaml"

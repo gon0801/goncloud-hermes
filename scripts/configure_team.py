@@ -234,7 +234,12 @@ def desired_profile_config(role, team, runtime_home):
 
 
 def configure(
-    runtime_home, install_dir, apply_model_routing=False, *, allow_regression=False
+    runtime_home,
+    install_dir,
+    apply_model_routing=False,
+    *,
+    allow_regression=False,
+    preserve_local_soul=False,
 ):
     import yaml
 
@@ -317,15 +322,28 @@ def configure(
                 "plugins/model-providers/goncloud-subscriptions/"
                 + source.relative_to(provider_root).as_posix()
             ] = source.read_text(encoding="utf-8")
+        if preserve_local_soul and (profile / "SOUL.md").exists():
+            files.pop("SOUL.md")
         for relative, content in files.items():
             target = contained(profile / relative, runtime_home)
             old = state.get("files", {}).get(relative)
             if fresh and relative == "SOUL.md" and target.exists():
                 old = target.read_text(encoding="utf-8")
             check_file(target, content, old)
-        prepared.append((profile, config_path, merged, files, state_path, desired))
+        prepared.append(
+            (profile, config_path, merged, files, state_path, desired, state)
+        )
     # Validate every existing profile before changing any managed content.
-    for profile, config_path, merged, files, state_path, desired in prepared:
+    for profile, config_path, merged, files, state_path, desired, state in prepared:
+        recorded_files = {
+            **state.get("files", {}),
+            **{
+                relative: (
+                    content.decode("utf-8") if isinstance(content, bytes) else content
+                )
+                for relative, content in files.items()
+            },
+        }
         write_changed(
             config_path, yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
         )
@@ -337,14 +355,7 @@ def configure(
                 {
                     "config": desired,
                     "source_revision": revision,
-                    "files": {
-                        relative: (
-                            content.decode("utf-8")
-                            if isinstance(content, bytes)
-                            else content
-                        )
-                        for relative, content in files.items()
-                    },
+                    "files": recorded_files,
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -379,12 +390,21 @@ def main():
         action="store_true",
         help="Overwrite profiles deployed from a commit this checkout does not contain",
     )
+    parser.add_argument(
+        "--preserve-local-soul",
+        action="store_true",
+        help=(
+            "Keep existing profile SOUL.md files while updating managed routing, "
+            "plugins, and configuration"
+        ),
+    )
     args = parser.parse_args()
     configure(
         args.home,
         args.install_dir,
         args.apply_model_routing,
         allow_regression=args.allow_regression,
+        preserve_local_soul=args.preserve_local_soul,
     )
 
 
