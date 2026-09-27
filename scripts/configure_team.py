@@ -216,15 +216,12 @@ def desired_profile_config(role, team, runtime_home):
         "kanban": team["kanban"],
     }
     if role == team["director"]:
-        # The director converses natively and needs the owner's conversation
-        # chain for that: table positions (any agent) Hermes can reach with
-        # the *same* subscription (tests pin that). It is not a routing slot:
-        # workers never get a native model or fallback chain, because that
-        # chain was the competing router the recovery removed.
-        desired["model"] = dict(team["director_model"])
-        desired["fallback_providers"] = [
-            dict(entry) for entry in team["director_fallbacks"]
-        ]
+        # The local provider compiles the same authoritative main row used by
+        # workflows. A second native fallback list would compete with it.
+        desired["model"] = {
+            "provider": "goncloud-subscriptions",
+            "default": "main",
+        }
         # The director carries the full toolset over Telegram by owner decision
         # (browser, computer_use and the rest): it drives Odoo and Edge and runs
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
@@ -249,6 +246,7 @@ def configure(
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
     plugin_root = ROOT / "plugins" / "goncloud-team"
+    provider_root = ROOT / "plugins" / "model-providers" / "goncloud-subscriptions"
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
             "Workflow plugin is missing; finish the build before applying profiles"
@@ -257,6 +255,15 @@ def configure(
         p
         for p in plugin_root.rglob("*")
         if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
+    ]
+    if not (provider_root / "plugin.yaml").is_file():
+        raise ValueError(
+            "Subscription model provider is missing; finish the build before applying profiles"
+        )
+    provider_files = [
+        path
+        for path in provider_root.rglob("*")
+        if path.is_file() and path.suffix in {".py", ".yaml", ".md"}
     ]
     revision = current_revision()
     prepared = []
@@ -304,6 +311,11 @@ def configure(
         for source in plugin_files:
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
+            ] = source.read_text(encoding="utf-8")
+        for source in provider_files:
+            files[
+                "plugins/model-providers/goncloud-subscriptions/"
+                + source.relative_to(provider_root).as_posix()
             ] = source.read_text(encoding="utf-8")
         for relative, content in files.items():
             target = contained(profile / relative, runtime_home)

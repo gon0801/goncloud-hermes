@@ -123,15 +123,15 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(applied.returncode, 0, applied.stderr)
             migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             managed = json.loads(state_path.read_text(encoding="utf-8"))
-            team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
             # The old owned chain is gone; the director carries exactly the
-            # owner's conversation chain and nothing of the old block.
-            self.assertEqual(migrated["model"], team["director_model"])
-            self.assertEqual(migrated["fallback_providers"], team["director_fallbacks"])
-            self.assertEqual(managed["config"]["model"], team["director_model"])
+            # one provider that compiles the authoritative table.
             self.assertEqual(
-                managed["config"]["fallback_providers"], team["director_fallbacks"]
+                migrated["model"],
+                {"provider": "goncloud-subscriptions", "default": "main"},
             )
+            self.assertNotIn("fallback_providers", migrated)
+            self.assertEqual(managed["config"]["model"], migrated["model"])
+            self.assertNotIn("fallback_providers", managed["config"])
             self.assertEqual(
                 (
                     profile / "plugins/goncloud-team/model-routing.source.json"
@@ -179,7 +179,8 @@ class ConfigurationTests(unittest.TestCase):
         # subscription router, and a native chain there would be the competing
         # router the recovery removed.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(team["director_model"]), {"provider", "default"})
+        self.assertNotIn("director_model", team)
+        self.assertNotIn("director_fallbacks", team)
 
         for role in team["profiles"]:
             with self.subTest(role=role):
@@ -187,61 +188,40 @@ class ConfigurationTests(unittest.TestCase):
                     role, team, Path("C:/runtime-home")
                 )
                 if role == team["director"]:
-                    self.assertEqual(desired["model"], team["director_model"])
                     self.assertEqual(
-                        desired["fallback_providers"], team["director_fallbacks"]
+                        desired["model"],
+                        {
+                            "provider": "goncloud-subscriptions",
+                            "default": "main",
+                        },
                     )
+                    self.assertNotIn("fallback_providers", desired)
                 else:
                     self.assertNotIn("model", desired)
                     self.assertNotIn("fallback_providers", desired)
 
-    def test_the_director_chain_uses_only_same_subscription_positions_in_the_table(
-        self,
-    ):
-        # Hermes can only converse through native API providers. The director
-        # uses table positions (any agent, not only `main`) that reach the
-        # *same* subscription that way. Claude Max, ChatGPT, Grok and Muse
-        # would bill another account. OpenCode Zen left the table, so it is
-        # not a conversation fallback; Kimi stayed on other agents.
+    def test_the_director_provider_compiles_the_exact_main_row(self):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         table = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
         )
-        native = {
-            "opencode-go": "opencode-go",
-            "opencode-go-resp": "opencode-go",
-            "opencode": "opencode-zen",
-            "kimi": "kimi-coding",
-            "zai": "zai",
-        }
+        sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
+        from subscriptions.catalog import compile_profile_routes
 
-        def native_entry(label):
-            prefix, model = label.removesuffix(" dup").split("/", 1)
-            if " (" in model:
-                model = model[: model.index(" (")]
-            if prefix not in native:
-                return None
-            return (native[prefix], model)
+        claw = compile_profile_routes("claw", table)
+        entrega = compile_profile_routes("entrega", table)
+        desired = module.desired_profile_config(
+            team["director"], team, Path("C:/runtime-home")
+        )
 
-        allowed = []
-        seen = set()
-        for chain_labels in table["chains"].values():
-            for label in chain_labels:
-                entry = native_entry(label)
-                if entry and entry not in seen:
-                    seen.add(entry)
-                    allowed.append(entry)
-
-        chain = [
-            (team["director_model"]["provider"], team["director_model"]["default"])
-        ]
-        chain += [(f["provider"], f["model"]) for f in team["director_fallbacks"]]
-
-        self.assertTrue(set(chain) <= set(allowed), chain)
-        self.assertEqual(chain[0], native_entry(table["chains"]["main"][0]))
-        self.assertIn(("kimi-coding", "k3"), chain)
-        self.assertIn(("zai", "glm-5.3"), chain)
-        self.assertNotIn("opencode-zen", {provider for provider, _ in chain})
+        self.assertEqual(
+            desired["model"],
+            {"provider": "goncloud-subscriptions", "default": "main"},
+        )
+        self.assertNotIn("fallback_providers", desired)
+        self.assertEqual(claw, entrega)
+        self.assertEqual([route.label for route in claw], table["chains"]["main"])
+        self.assertEqual(claw[1].reasoning_effort, "xhigh")
 
     def test_director_gets_the_full_toolset_and_workers_the_baseline(self):
         # Owner decision (2026-09-15): the director drives Odoo and Edge over
@@ -422,6 +402,12 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertIn("goncloud_team", config["platform_toolsets"]["cli"])
                 self.assertTrue(
                     (profile / "plugins/goncloud-team/__init__.py").is_file()
+                )
+                self.assertTrue(
+                    (
+                        profile
+                        / "plugins/model-providers/goncloud-subscriptions/client.py"
+                    ).is_file()
                 )
                 self.assertTrue((profile / "memories").is_dir())
             credentials = runtime / "profiles/claw/.env"
