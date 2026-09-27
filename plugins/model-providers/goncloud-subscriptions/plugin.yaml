@@ -1,0 +1,5 @@
+name: goncloud-subscriptions-provider
+kind: model-provider
+version: 1.0.0
+description: Exact local subscription-chain provider for Goncloud profiles
+author: Goncloud
