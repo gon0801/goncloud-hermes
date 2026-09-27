@@ -64,6 +64,18 @@ class InvocationRequest:
 
 
 @dataclass(frozen=True)
+class SkippedRoute:
+    """Sanitized evidence for one position advanced past by the router."""
+
+    slot: int
+    adapter: str
+    failure: FailureKind
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "adapter", redact_text(self.adapter))
+
+
+@dataclass(frozen=True)
 class InvocationResult:
     """Normalized vendor evidence; never carries credentials."""
 
@@ -74,9 +86,19 @@ class InvocationResult:
     billing_mode: Literal["subscription", "api"]
     session_id: str = ""
     failure: FailureKind | None = None
+    slot: int | None = None
+    route_label: str = ""
+    reasoning_effort: Literal["high", "xhigh", "max"] | None = None
+    skipped_routes: tuple[SkippedRoute, ...] = ()
 
     def __post_init__(self) -> None:
-        for field_name in ("text", "session_id", "adapter", "model"):
+        for field_name in (
+            "text",
+            "session_id",
+            "adapter",
+            "model",
+            "route_label",
+        ):
             object.__setattr__(self, field_name, redact_text(getattr(self, field_name)))
 
 

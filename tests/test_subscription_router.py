@@ -31,6 +31,7 @@ from subscriptions.types import (  # noqa: E402
     FailureKind,
     InvocationRequest,
     InvocationResult,
+    SkippedRoute,
 )
 
 SOURCE = {
@@ -743,6 +744,12 @@ class FailoverTests(RouterTestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
+        self.assertEqual(result.slot, 1)
+        self.assertEqual(result.route_label, "anthropic/claude-sonnet-5")
+        self.assertEqual(
+            result.skipped_routes,
+            (SkippedRoute(0, "opencode_go", FailureKind.MODEL_UNAVAILABLE),),
+        )
         self.assertTrue(router.store.health("opencode_go")["ready"])
 
     def test_timeout_cools_the_account_so_a_hung_endpoint_is_skipped(self):

@@ -20,6 +20,7 @@ from .types import (
     InvocationRequest,
     InvocationResult,
     RouteSpec,
+    SkippedRoute,
 )
 
 #: Failures that may advance to the next slot automatically.
@@ -193,6 +194,7 @@ class SubscriptionRouter:
     def _run_owned(
         self, request: InvocationRequest, routes: Iterable[RouteSpec], owner: str
     ) -> InvocationResult:
+        routes = tuple(routes)
         if request.result_transform is None:
             recorded = self.store.latest_success(request.workflow_id, request.stage_id)
             if recorded is not None:
@@ -207,7 +209,6 @@ class SubscriptionRouter:
                     route for route in routes if route.slot > attempts[-1]["slot"]
                 )
         else:
-            routes = tuple(routes)
             attempts = self.store.stage_attempts(request.workflow_id, request.stage_id)
             if attempts:
                 latest = attempts[-1]
@@ -245,6 +246,7 @@ class SubscriptionRouter:
         request = self._absorb_workspace_state(request)
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
+        skipped_routes: list[SkippedRoute] = []
 
         for route in routes:
             if not self.store.renew_stage(
@@ -324,9 +326,10 @@ class SubscriptionRouter:
                     disposition="denied" if denied else "skipped",
                 )
                 if denied:
-                    return skipped
+                    return self._route_evidence(skipped, route, skipped_routes)
                 attempted_any = True
-                last_failure = skipped
+                skipped_routes.append(SkippedRoute(route.slot, route.adapter, failure))
+                last_failure = self._route_evidence(skipped, route, skipped_routes)
                 continue
 
             attempted_any = True
@@ -383,7 +386,11 @@ class SubscriptionRouter:
                     disposition="denied",
                 )
                 # Authorization says nothing about vendor health or quota.
-                return denied if recorded else self._stage_busy()
+                return (
+                    self._route_evidence(denied, route, skipped_routes)
+                    if recorded
+                    else self._stage_busy()
+                )
             # Authorization may block longer than the lease. Fence a stale
             # owner and restore the full invocation/cleanup budget at dispatch.
             if not self.store.renew_stage(
@@ -412,6 +419,7 @@ class SubscriptionRouter:
                         result = self._invoke_route(request, route)
             except SubscriptionBusy:
                 return self._stage_busy()
+            result = self._route_evidence(result, route, skipped_routes)
             revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
             )
@@ -441,7 +449,14 @@ class SubscriptionRouter:
             if not recorded:
                 return self._stage_busy()
             if disposition == "skipped":
-                last_failure = result
+                skipped_routes.append(
+                    SkippedRoute(
+                        route.slot,
+                        route.adapter,
+                        result.failure or FailureKind.TASK_FAILURE,
+                    )
+                )
+                last_failure = self._route_evidence(result, route, skipped_routes)
                 continue
             self._record_health(route.adapter, result)
             if result.success:
@@ -465,6 +480,13 @@ class SubscriptionRouter:
                     until=datetime.now(timezone.utc)
                     + timedelta(minutes=_TIMEOUT_COOLDOWN_MINUTES),
                 )
+            skipped_routes.append(
+                SkippedRoute(
+                    route.slot,
+                    route.adapter,
+                    result.failure or FailureKind.TASK_FAILURE,
+                )
+            )
             if mutated:
                 request = replace(
                     request,
@@ -492,6 +514,24 @@ class SubscriptionRouter:
             model=last_failure.model,
             billing_mode=last_failure.billing_mode,
             failure=last_failure.failure,
+            slot=last_failure.slot,
+            route_label=last_failure.route_label,
+            reasoning_effort=last_failure.reasoning_effort,
+            skipped_routes=tuple(skipped_routes),
+        )
+
+    @staticmethod
+    def _route_evidence(
+        result: InvocationResult,
+        route: RouteSpec,
+        skipped_routes: Iterable[SkippedRoute],
+    ) -> InvocationResult:
+        return replace(
+            result,
+            slot=route.slot,
+            route_label=route.label,
+            reasoning_effort=route.reasoning_effort,
+            skipped_routes=tuple(skipped_routes),
         )
 
     def _invoke_route(
