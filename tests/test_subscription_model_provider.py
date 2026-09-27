@@ -10,6 +10,10 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 PROVIDER_DIR = ROOT / "plugins" / "model-providers" / "goncloud-subscriptions"
 
 
@@ -63,7 +67,7 @@ class SubscriptionProviderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_provider_module()
         self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
     def test_profile_is_local_subscription_provider_without_api_credentials(self):
