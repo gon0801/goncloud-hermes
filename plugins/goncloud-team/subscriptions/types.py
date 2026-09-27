@@ -49,6 +49,9 @@ class InvocationRequest:
     mode: Literal["start", "continue"] = "start"
     changed_files: tuple[str, ...] = ()
     max_steps: int = 40
+    # A Hermes conversation turn: tools travel as text in the <tool_call>
+    # contract and Hermes executes them, so the CLI must not offer its own.
+    tool_bridge: bool = False
     # In-process authorization capability, never included in evidence or repr.
     # Raise to revoke; legacy direct router callers need no workflow callback.
     pre_invoke: Callable[[], None] | None = field(

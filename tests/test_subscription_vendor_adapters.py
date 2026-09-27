@@ -1223,5 +1223,34 @@ class ProbeFailureClassificationTests(unittest.TestCase):
                 self.assertIn(adapter.probe(route).failure, _ADVANCING_FAILURES)
 
 
+class ClaudeToolBridgeTests(unittest.TestCase):
+    """A Hermes conversation reaches Claude as text with its tools in the
+    <tool_call> contract. If the CLI keeps its own built-in and MCP tools,
+    Claude calls those natively ("No such tool available: skill_view", Bash
+    denied under dontAsk) and the turn loses browser, vault and skills."""
+
+    STREAM = json.dumps({"type": "result", "subtype": "success", "result": "ok"})
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.workspace = Path(self.tmp.name).resolve()
+
+    def command_for(self, req):
+        runner = FakeCliRunner(stdout=self.STREAM)
+        ClaudeAdapter(runner=runner).invoke(req, route_for("claude", "claude-opus-5"))
+        return runner.command
+
+    def test_conversation_turn_strips_native_and_mcp_tools(self):
+        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertIn("--strict-mcp-config", command)
+
+    def test_workspace_stage_keeps_native_tools(self):
+        command = self.command_for(request(self.workspace))
+        self.assertNotIn("--tools", command)
+        self.assertNotIn("--strict-mcp-config", command)
+
+
 if __name__ == "__main__":
     unittest.main()

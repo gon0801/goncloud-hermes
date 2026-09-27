@@ -246,6 +246,17 @@ class ConversationRouterTests(unittest.TestCase):
         self.assertTrue(second.success)
         self.assertEqual(self.calls, ["opencode_go", "opencode_go"])
 
+    def test_conversation_requests_travel_as_tool_bridge(self):
+        seen = []
+
+        def capture(request, route):
+            seen.append(request.tool_bridge)
+            return success(request, route)
+
+        self.adapters["opencode_go"].result = capture
+        self.assertTrue(self.complete().success)
+        self.assertEqual(seen, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

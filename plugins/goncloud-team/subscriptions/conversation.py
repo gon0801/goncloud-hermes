@@ -126,5 +126,6 @@ class ConversationRouter:
             workspace=workspace,
             start_revision=revision,
             current_revision=revision,
+            tool_bridge=True,
         )
         return self.subscription_router.run(request, routes)

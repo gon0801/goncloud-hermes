@@ -110,6 +110,10 @@ class ClaudeAdapter(SubscriptionAdapter):
             _PERMISSION_MODE,
             "--model",
             route.model,
+            # Conversation turns: Hermes owns the tools. Native/MCP tools make
+            # Claude call them directly ("No such tool", Bash denied) instead
+            # of emitting <tool_call> for Hermes to run.
+            *(["--tools", "", "--strict-mcp-config"] if request.tool_bridge else []),
             *(
                 ["--effort", route.reasoning_effort]
                 if route.reasoning_effort is not None
