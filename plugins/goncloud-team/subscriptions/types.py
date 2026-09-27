@@ -32,6 +32,7 @@ class RouteSpec:
     adapter: str
     model: str
     billing_mode: Literal["subscription", "api"]
+    reasoning_effort: Literal["high", "xhigh", "max"] | None = None
 
 
 @dataclass(frozen=True)

@@ -126,13 +126,14 @@ class AgentFileReadingRunner(FakeCliRunner):
         return super().__call__(command, **kwargs)
 
 
-def route_for(adapter, model, slot=5, billing="subscription"):
+def route_for(adapter, model, slot=5, billing="subscription", reasoning_effort=None):
     return RouteSpec(
         slot=slot,
         label=f"vendor/{model}",
         adapter=adapter,
         model=model,
         billing_mode=billing,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -361,6 +362,37 @@ class KimiGrokTests(unittest.TestCase):
         self.assertEqual(result.session_id, "kimi_s1")
         self.assertEqual(result.billing_mode, "subscription")
 
+    def test_kimi_high_effort_is_read_only_validated_before_invocation(self):
+        config = self.workspace / "config.toml"
+        original = b'effort = "high"\n'
+        config.write_bytes(original)
+        runner = AgentFileReadingRunner(stdout=KIMI_STREAM)
+
+        result = KimiAdapter(runner=runner, config_path=config).invoke(
+            request(self.workspace),
+            route_for("kimi", "kimi-for-coding", reasoning_effort="high"),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(runner.command)
+        self.assertEqual(config.read_bytes(), original)
+
+    def test_kimi_effort_mismatch_fails_closed_without_invoking_or_rewriting(self):
+        config = self.workspace / "config.toml"
+        original = b'effort = "xhigh"\n'
+        config.write_bytes(original)
+        runner = AgentFileReadingRunner(stdout=KIMI_STREAM)
+
+        result = KimiAdapter(runner=runner, config_path=config).invoke(
+            request(self.workspace),
+            route_for("kimi", "kimi-for-coding", reasoning_effort="high"),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_REQUEST)
+        self.assertIsNone(runner.command)
+        self.assertEqual(config.read_bytes(), original)
+
     def test_kimi_agent_definition_carries_the_frontmatter_kimi_requires(self):
         definition = kimi_agent_definition("Do the bounded task.")
 
@@ -554,7 +586,7 @@ class KimiGrokTests(unittest.TestCase):
 
         result = GrokAdapter(runner=runner).invoke(
             replace(request(self.workspace), max_steps=17),
-            route_for("grok", "grok-4.6", slot=6),
+            route_for("grok", "grok-4.6", slot=6, reasoning_effort="xhigh"),
         )
 
         command = runner.command
@@ -568,6 +600,7 @@ class KimiGrokTests(unittest.TestCase):
             command[command.index("--output-format") + 1], "streaming-json"
         )
         self.assertEqual(command[command.index("--model") + 1], "grok-4.6")
+        self.assertEqual(command[command.index("--reasoning-effort") + 1], "xhigh")
         self.assertIn("--prompt-file", command)
         self.assertNotIn("Summarize", " ".join(command))
         self.assertIsNone(runner.kwargs.get("input"))

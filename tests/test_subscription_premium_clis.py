@@ -75,13 +75,14 @@ class FakeCliRunner:
         return set(self.kwargs["env"]) - set(os.environ)
 
 
-def route_for(adapter, model, slot=4, billing="subscription"):
+def route_for(adapter, model, slot=4, billing="subscription", reasoning_effort=None):
     return RouteSpec(
         slot=slot,
         label=f"opencode/{model}",
         adapter=adapter,
         model=model,
         billing_mode=billing,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -171,6 +172,20 @@ class MuseAdapterTests(unittest.TestCase):
         self.assertIn("--model", runner.command)
         self.assertEqual(runner.command[runner.command.index("--model") + 1], model)
 
+    def test_muse_receives_the_exact_max_reasoning_effort(self):
+        runner = self._muse_runner()
+
+        result = MuseAdapter(runner=runner).invoke(
+            request(self.workspace),
+            route_for(
+                "muse", "muse-spark-1.3-contributor-free", reasoning_effort="max"
+            ),
+        )
+
+        self.assertTrue(result.success)
+        effort_at = runner.command.index("--reasoning-effort")
+        self.assertEqual(runner.command[effort_at + 1], "max")
+
     def test_muse_missing_or_different_observed_model_cannot_report_success(self):
         for output in (
             MUSE_JSONL.replace("muse-spark-1.3-contributor-free", "different-model"),
@@ -203,11 +218,12 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
 
-    def test_claude_uses_max_session_without_api_budget(self):
+    def test_claude_uses_subscription_session_without_api_budget(self):
         runner = FakeCliRunner(stdout=CLAUDE_STREAM)
 
         ClaudeAdapter(runner=runner).invoke(
-            request(self.workspace), route_for("claude", "claude-sonnet-5", slot=2)
+            request(self.workspace),
+            route_for("claude", "claude-sonnet-5", slot=2, reasoning_effort="xhigh"),
         )
 
         self.assertEqual(runner.command[:2], ["claude", "--print"])
@@ -220,6 +236,8 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(runner.command[index + 1], "stream-json")
         index = runner.command.index("--model")
         self.assertEqual(runner.command[index + 1], "claude-sonnet-5")
+        effort_at = runner.command.index("--effort")
+        self.assertEqual(runner.command[effort_at + 1], "xhigh")
         self.assertIn("Produce the stage deliverable.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
 
@@ -281,7 +299,8 @@ class CodexAdapterTests(unittest.TestCase):
         runner = FakeCliRunner(stdout=CODEX_JSONL)
 
         CodexAdapter(runner=runner).invoke(
-            request(self.workspace), route_for("codex", "gpt-6-astra", slot=7)
+            request(self.workspace),
+            route_for("codex", "gpt-6-astra", slot=7, reasoning_effort="xhigh"),
         )
 
         self.assertEqual(runner.command[:2], ["codex", "exec"])
@@ -296,6 +315,10 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(runner.command[cd_at + 1], str(self.workspace))
         model_at = runner.command.index("--model")
         self.assertEqual(runner.command[model_at + 1], "gpt-6-astra")
+        effort_at = runner.command.index("-c")
+        self.assertEqual(
+            runner.command[effort_at + 1], 'model_reasoning_effort="xhigh"'
+        )
         self.assertIn("Produce the stage deliverable.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
         self.assertEqual(runner.command[2], "-")

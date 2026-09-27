@@ -68,6 +68,7 @@ class MuseAdapter(SubscriptionAdapter):
                 timeout=self.timeout_seconds,
                 runner=self.runner,
                 model=route.model,
+                reasoning_effort=route.reasoning_effort,
             )
         except MuseBridgeError as error:
             return self._failed_result(route, error.failure)

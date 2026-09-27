@@ -39,7 +39,11 @@ def windows_path_to_wsl(path: Path) -> str:
 
 
 def build_muse_command(
-    workspace: Path, prompt_file: Path, max_steps: int = 80, model: str | None = None
+    workspace: Path,
+    prompt_file: Path,
+    max_steps: int = 80,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
     if not 1 <= max_steps <= 500:
         raise MuseBridgeError("max_steps must be between 1 and 500")
@@ -60,6 +64,11 @@ def build_muse_command(
         "never",
         "--user-input-auto-resolve",
         *(["--model", model] if model is not None else []),
+        *(
+            ["--reasoning-effort", reasoning_effort]
+            if reasoning_effort is not None
+            else []
+        ),
         "--max-model-steps",
         str(max_steps),
     ]
@@ -108,6 +117,7 @@ def delegate_to_muse(
     timeout: int = 900,
     runner: Callable[..., Any] = subprocess.run,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:
     """Delegate one task to Muse without interpolating user input into a shell."""
     if not prompt.strip():
@@ -126,7 +136,11 @@ def delegate_to_muse(
             prompt_path = Path(prompt_handle.name)
 
         command = build_muse_command(
-            workspace, prompt_path, max_steps=max_steps, model=model
+            workspace,
+            prompt_path,
+            max_steps=max_steps,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
         try:
             completed = run_cli(

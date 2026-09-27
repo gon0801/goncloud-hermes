@@ -93,6 +93,18 @@ EXPECTED_ADAPTERS = {
 }
 EXPECTED_ADAPTERS["entrega"] = EXPECTED_ADAPTERS["claw"]
 
+EXPECTED_EFFORTS = {
+    "claw": [None, "xhigh", "max", None, None, "xhigh", None],
+    "operaciones": [None, None, "xhigh", "xhigh", None, "high", "max"],
+    "ingenieria": [None, "xhigh", None, None, "max", "xhigh", None],
+    "implementer": [None, "max", None, None, "xhigh", "xhigh", "high"],
+    "reviewer": [None, None, None, None, "max", None, None],
+    "adversary": [None, None, None, None, "max", "xhigh", "xhigh"],
+    "verifier": [None, None, "max", "high", "xhigh", "xhigh", None],
+    "scout": [None, None, "max", None, None, "xhigh", "xhigh"],
+}
+EXPECTED_EFFORTS["entrega"] = EXPECTED_EFFORTS["claw"]
+
 EXPECTED_MODELS = {
     "claw": [
         "muse-spark-1.3-contributor",
@@ -260,6 +272,50 @@ class SlotSemanticsTests(unittest.TestCase):
         operaciones = compile_profile_routes("operaciones", source)
         self.assertEqual(operaciones[5].model, "kimi-for-coding")
         self.assertEqual(operaciones[5].label, "kimi/kimi-for-coding (high)")
+
+    def test_every_table_cell_preserves_its_literal_reasoning_effort(self):
+        source = load_source()
+
+        for profile, efforts in EXPECTED_EFFORTS.items():
+            with self.subTest(profile=profile):
+                routes = compile_profile_routes(profile, source)
+                self.assertEqual(
+                    [
+                        (route.adapter, route.model, route.reasoning_effort)
+                        for route in routes
+                    ],
+                    list(
+                        zip(
+                            EXPECTED_ADAPTERS[profile],
+                            EXPECTED_MODELS[
+                                "claw" if profile == "entrega" else profile
+                            ],
+                            efforts,
+                            strict=True,
+                        )
+                    ),
+                )
+
+        main = compile_profile_routes("claw", source)
+        self.assertEqual(
+            (main[1].adapter, main[1].model, main[1].reasoning_effort),
+            ("claude", "claude-opus-5", "xhigh"),
+        )
+        self.assertEqual(
+            (main[2].adapter, main[2].model, main[2].reasoning_effort),
+            ("muse", "muse-spark-1.3", "max"),
+        )
+        self.assertEqual(
+            (main[6].adapter, main[6].model, main[6].reasoning_effort),
+            ("kimi", "k3", None),
+        )
+
+    def test_unknown_parenthetical_annotation_is_rejected(self):
+        source = load_source()
+        source["chains"]["main"][1] = "anthropic/claude-opus-5 (maximum)"
+
+        with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
+            compile_profile_routes("claw", source)
 
     def test_the_zen_free_tier_name_is_not_sent_to_the_muse_cli(self):
         # "-free" names OpenCode Zen's free tier, where it is a real model id.

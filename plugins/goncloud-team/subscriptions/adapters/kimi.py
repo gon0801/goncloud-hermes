@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 from ..process import PROMPT_PLACEHOLDER, SubscriptionProcessError, run_cli
@@ -172,6 +173,23 @@ class KimiAdapter(SubscriptionAdapter):
 
     account_class = "kimi_coding"
 
+    def __init__(self, runner=None, config_path: Path | None = None) -> None:
+        super().__init__(runner=runner)
+        self.config_path = (
+            config_path
+            if config_path is not None
+            else Path.home() / ".kimi-code" / "config.toml"
+        )
+
+    def _configured_effort(self) -> str | None:
+        """Read Kimi's effective global effort without mutating owner config."""
+        try:
+            configuration = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+        effort = configuration.get("effort")
+        return effort if isinstance(effort, str) else None
+
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """``kimi doctor`` is non-generative; auth needs live inference."""
         try:
@@ -197,6 +215,11 @@ class KimiAdapter(SubscriptionAdapter):
         )
 
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
+        if (
+            route.reasoning_effort is not None
+            and self._configured_effort() != route.reasoning_effort
+        ):
+            return self._failed_result(route, FailureKind.INVALID_REQUEST)
         # kimi resolves models through its configured aliases (config.toml
         # defines them as kimi-code/<name>), so qualify bare table models.
         model = route.model if "/" in route.model else f"kimi-code/{route.model}"

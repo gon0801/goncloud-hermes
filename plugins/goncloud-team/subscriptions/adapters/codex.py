@@ -147,6 +147,11 @@ class CodexAdapter(SubscriptionAdapter):
             str(request.workspace),
             "--model",
             route.model,
+            *(
+                ["-c", f'model_reasoning_effort="{route.reasoning_effort}"']
+                if route.reasoning_effort is not None
+                else []
+            ),
         ]
         try:
             evidence = run_cli(

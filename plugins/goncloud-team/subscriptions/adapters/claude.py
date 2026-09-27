@@ -110,6 +110,11 @@ class ClaudeAdapter(SubscriptionAdapter):
             _PERMISSION_MODE,
             "--model",
             route.model,
+            *(
+                ["--effort", route.reasoning_effort]
+                if route.reasoning_effort is not None
+                else []
+            ),
         ]
         try:
             evidence = run_cli(

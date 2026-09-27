@@ -30,8 +30,9 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
 SLOT_COUNT = 7
 SLOT_RANGE_LABEL = "Primary..F6"
 
-#: Effort or plan markers on the source label, never part of the vendor model id.
-_TRAILING_ANNOTATION = re.compile(r"\s+\([^)]+\)\s*$")
+#: Effort markers on the source label, never part of the vendor model id.
+_TRAILING_ANNOTATION = re.compile(r"\s+\(([^)]+)\)\s*$")
+_REASONING_EFFORTS = frozenset({"high", "xhigh", "max"})
 
 
 def _family_adapter(model: str) -> str:
@@ -41,9 +42,15 @@ def _family_adapter(model: str) -> str:
     raise ValueError(f"unknown model family: {model}")
 
 
-def _runtime_model(raw_model: str) -> str:
+def _runtime_model_and_effort(raw_model: str) -> tuple[str, str | None]:
     model = raw_model.removesuffix(" dup")
-    return _TRAILING_ANNOTATION.sub("", model)
+    annotation = _TRAILING_ANNOTATION.search(model)
+    if annotation is None:
+        return model, None
+    effort = annotation.group(1)
+    if effort not in _REASONING_EFFORTS:
+        raise ValueError(f"unknown reasoning effort: {effort}")
+    return model[: annotation.start()], effort
 
 
 def _compile_route(slot: int, label: str) -> RouteSpec:
@@ -51,8 +58,8 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
         _prefix, raw_model = label.split("/", 1)
     except ValueError as error:
         raise ValueError(f"route label must be provider/model: {label}") from error
-    # ``dup`` and trailing ``(max)`` / ``(xhigh)`` are provenance on the label.
-    model = _runtime_model(raw_model)
+    # ``dup`` is provenance; effort is both provenance and runtime policy.
+    model, reasoning_effort = _runtime_model_and_effort(raw_model)
     adapter = _SLOT_FORCED_ADAPTERS.get(slot) or _family_adapter(model)
     if adapter == "muse":
         # ``-free`` names OpenCode Zen's free tier, where it is a real model id.
@@ -67,6 +74,7 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
         adapter=adapter,
         model=model,
         billing_mode=billing_mode,
+        reasoning_effort=reasoning_effort,
     )
 
 

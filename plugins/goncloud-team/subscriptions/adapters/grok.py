@@ -130,6 +130,11 @@ class GrokAdapter(SubscriptionAdapter):
             "workspace",
             "--model",
             route.model,
+            *(
+                ["--reasoning-effort", route.reasoning_effort]
+                if route.reasoning_effort is not None
+                else []
+            ),
             "--max-turns",
             str(request.max_steps),
             "--prompt-file",
