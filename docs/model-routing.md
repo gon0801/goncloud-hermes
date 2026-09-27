@@ -41,14 +41,31 @@ mientras que el adaptador HTTP homonimo es la unica ruta que factura como API,
 declarada asi para verifier F6 y scout F4. Migrarlo al CLI cambiaria esa
 decision de facturacion, asi que queda pendiente de una orden explicita.
 
-## Matriz vigente: 6/8 cuentas en uso (2026-09-20)
+## Cadena conversacional unica de `main` (2026-09-27)
+
+`claw` ya no mantiene una lista nativa paralela. Hermes selecciona
+`goncloud-subscriptions/main`, y ese proveedor compila directamente la fila
+`main` de la misma fuente que usan los workflows: OpenCode Go, Claude Opus 5
+`xhigh`, Muse Spark `max`, Grok, GLM, Codex `xhigh` y Kimi. Si Primary no esta
+disponible, la posicion inmediata es Claude; no existe un salto especial a
+Kimi.
+
+Los marcadores son politica de ejecucion, no texto decorativo. Claude recibe
+`--effort xhigh`, Muse y Grok `--reasoning-effort`, Codex su
+`model_reasoning_effort`, y Kimi `(high)` se valida contra su `config.toml` sin
+reescribirlo. Cualquier marcador desconocido bloquea la compilacion de la tabla.
+
+## Matriz vigente: 8/8 rutas y 15/15 modelos listos (2026-09-26)
 
 OpenCode Zen no ocupa slot y no se sondea. Probes oficiales uno por uno con
-marcador exacto `GONCLOUD_PROBE_OK`. Listas: Go, Muse, Z.AI, Grok, DeepSeek y
-Codex.
-Claude Max respondio `quota`; Kimi `quota` (cupo semanal, sesion vigente).
-Codex paso a `ready` tras no tratar el aviso de skills como fallo. Un live listo levanta cuarentena; un fallo la arma una hora
-y el router avanza de posicion.
+marcador exacto `GONCLOUD_PROBE_OK`. Las ocho rutas activas quedaron listas:
+OpenCode Go, Muse, Claude Max, Codex, Kimi, Z.AI Coding Plan por OpenCode,
+Grok y DeepSeek API. Una segunda ronda exhaustiva comprobo las 15 combinaciones
+unicas adaptador/modelo que cubren las 56 celdas de la tabla; todas respondieron
+el marcador exacto. El primer ciclo marco Grok como `auth`, pero `grok models`
+confirmo inmediatamente sesion y `grok-4.6`; el probe aislado y la inferencia
+exhaustiva posterior pasaron. Un live listo levanta cuarentena; un fallo la
+arma una hora y el router avanza de posicion.
 
 ## Matriz anterior: 8/9 pruebas live aprobadas (2026-09-14)
 

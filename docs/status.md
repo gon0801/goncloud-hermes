@@ -1,4 +1,42 @@
-# Estado — 2026-09-20
+# Estado — 2026-09-27
+
+## Enrutamiento conversacional exacto, antes del despliegue
+
+Se elimino de `team.json` la excepcion `director_model`/`director_fallbacks`
+que reducia `main` a OpenCode Go, Kimi y Z.AI. `claw` selecciona ahora un unico
+proveedor local, `goncloud-subscriptions/main`, que compila las siete posiciones
+de la fila `main`. La regresion fuerza Primary a `model_unavailable` y comprueba
+la secuencia exacta `opencode_go -> claude`, terminal `claude-opus-5`, esfuerzo
+`xhigh`, facturacion `subscription` y cero intentos de Kimi.
+
+Verificacion previa al despliegue: **414 tests aprobados, 3 skips de plataforma
+y 8/8 hooks de pre-commit**. Las pruebas temporales despliegan los nueve
+perfiles, comparan byte por byte la tabla y el proveedor, y prueban que `claw`
+y `scout` cargan solamente su propia copia. El despliegue y la prueba live se
+registran por separado despues de ejecutarse; esta seccion no los presupone.
+
+## Tabla del propietario y verificacion live completa (2026-09-26)
+
+La fuente `model-routing.source.json` coincide con la tabla del propietario:
+ocho agentes, siete posiciones y 56 celdas. Las nueve copias desplegadas
+(`claw`, los siete trabajadores y `entrega`) tienen el mismo SHA-256 que la
+fuente; `entrega` hereda `main`.
+
+El comando live predeterminado conservaba dos adaptadores historicos que ya no
+ocupan slots (`opencode_zen` y `zai` HTTP) y no incluia `opencode_zai`, que es
+la ruta real de GLM con herramientas. Se separo la matriz activa de los
+adaptadores admitidos expresamente por `--only`: el default prueba ahora las
+ocho rutas en uso, mientras los probes de migracion historicos siguen
+disponibles de forma explicita.
+
+Resultado live secuencial: **8/8 adaptadores activos listos y 15/15
+combinaciones unicas adaptador/modelo listas**. Esto cubre las 56 celdas sin
+repetir modelos identicos. El primer ciclo marco Grok como `auth`; `grok
+models` devolvio inmediatamente exit 0, sesion y `grok-4.6`, y tanto el probe
+aislado como la inferencia exhaustiva posterior pasaron. No se imprimieron
+credenciales ni identidad de cuenta.
+
+# Estado anterior — 2026-09-20
 
 ## Matriz live 2026-09-20 (sin OpenCode Zen)
 

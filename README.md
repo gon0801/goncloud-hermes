@@ -27,7 +27,9 @@ El driver local crea la cadena durable y ejecuta cada rol mediante el router de 
 
 ## Enrutador de suscripciones
 
-La tabla de siete posiciones por agente se compila por slot, no por prefijo historico: Primary usa OpenCode Go y F1-F6 se vinculan a la suscripcion de la familia del modelo (Muse, Claude Max, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok). DeepSeek es la unica ruta facturada por API y queda marcada `billing_mode=api` en toda la evidencia. Los fallos de autenticacion, cuota, modelo o timeout avanzan de posicion; despues de una mutacion del workspace el siguiente intento recibe una continuacion con la revision y los archivos cambiados registrados, nunca una repeticion a ciegas. Las credenciales viven en los almacenes nativos de cada CLI o en el env privado `%LOCALAPPDATA%\hermes\subscription-router.env` (fuera de Git); los prompts viajan por stdin o archivo temporal privado y la salida de cada CLI se redacta y acota antes de convertirse en evidencia.
+La tabla de siete posiciones por agente se compila por slot, no por prefijo historico: Primary usa OpenCode Go y F1-F6 se vinculan a la suscripcion de la familia del modelo (Muse, Claude, ChatGPT/Codex, Kimi, Z.AI Coding Plan, Grok). Los marcadores de la tabla son ejecutables: en `main`, Claude Opus 5 usa `xhigh` y Muse Spark usa `max`. DeepSeek es la unica ruta facturada por API y queda marcada `billing_mode=api` en toda la evidencia. Los fallos de autenticacion, cuota, modelo o timeout avanzan de posicion; despues de una mutacion del workspace el siguiente intento recibe una continuacion con la revision y los archivos cambiados registrados, nunca una repeticion a ciegas. Las credenciales viven en los almacenes nativos de cada CLI o en el env privado `%LOCALAPPDATA%\hermes\subscription-router.env` (fuera de Git); los prompts viajan por stdin o archivo temporal privado y la salida de cada CLI se redacta y acota antes de convertirse en evidencia.
+
+Las conversaciones de `claw` usan `goncloud-subscriptions/main`, un proveedor local que compila esa misma fila completa y conserva los tool calls de Hermes. No hay una lista `fallback_providers` paralela: si Primary falla, el siguiente intento es F1 Claude Opus 5 `xhigh`, no Kimi.
 
 Aceptacion local 2026-09-14: 8/9 pruebas live aprobadas (Go, Zen, Muse, Claude Max, Kimi, Z.AI y Grok por suscripcion; DeepSeek por API). Solo Codex queda en cuarentena por `quota`, con fecha de reposicion declarada por el proveedor; avanza de slot y no bloquea ninguna etapa. En esta maquina el router necesita la variable de usuario `NODE_EXTRA_CA_CERTS` apuntando a la raiz TLS de Kaspersky (detalle en [docs/status.md](docs/status.md)); un proceso arrancado sin ella vera colgarse a Zen y fallar a Kimi. Scout `t_f2e2bb6d` aprobado sin cambios y la cadena completa `t_be290d83` fue **entregada**: siete etapas en orden, un intento cada una, revisor aprobado y el cambio autorizado acotado a un solo archivo.
 
@@ -43,7 +45,9 @@ Despues de instalar ese commit con el instalador oficial de Windows:
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" scripts/configure_team.py
 ```
 
-Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_providers` que poseia, instala la fuente literal junto al plugin y excluye Copilot. Conserva credenciales y opciones no administradas; ante conflictos se detiene para reconciliarlos. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
+Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_providers` que poseia, instala la fuente literal y el proveedor local en los nueve perfiles, y excluye Copilot. Conserva credenciales y opciones no administradas; ante conflictos se detiene para reconciliarlos. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
+
+Rollback: vuelve a una revision anterior del repo y reaplica `configure_team.py --allow-regression`; despues reinicia el gateway y abre una sesion nueva con `/new`. El proveedor que quede copiado pero ya no seleccionado es inerte. Para una recuperacion manual, conserva los archivos `.goncloud-backup` antes de tocar la configuracion.
 
 ## Modelo y ejecucion continua
 
@@ -51,13 +55,13 @@ La seleccion de proveedor y las pruebas con inferencia real se registran en [est
 
 Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el workflow `t_4fe237e6` (ver [estado](docs/status.md)). Tras cada redespliegue del plugin, la sesion de Telegram debe renovarse con `/new`: una sesion restaurada conserva la lista de herramientas con la que nacio.
 
-Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router, y solo el director lleva una cadena nativa para conversar (`team.json`: `director_model` + `director_fallbacks`, restringida a las posiciones de la tabla que son la misma suscripcion por API nativa; OpenCode Zen salio de la tabla, Kimi no); los trabajadores no llevan ninguna.
+Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway esta apagado (`kanban.dispatch_in_gateway: false`) para que ninguna etapa corra fuera del router. `claw` conversa por el proveedor local de la tabla; los trabajadores no llevan una cadena nativa competidora.
 
 ## Calidad
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
 
-Gate final 2026-09-15 (tras la revision adversarial de cierre): 378 tests, 375 aprobados y 3 skips; 8/8 hooks; `git diff --check` limpio; Plugin Doctor OK y gateway `stopped`. Los skips son de plataforma/privilegios. Los defectos que impedian cerrar la cadena, con su regresion, estan en [estado](docs/status.md).
+Gate previo al despliegue 2026-09-27: 414 tests aprobados y 3 skips de plataforma; 8/8 hooks; `git diff --check` limpio. La regresion prueba que `main` avanza OpenCode Go -> Claude Opus 5 `xhigh` sin tocar Kimi. La evidencia posterior al despliegue queda en [estado](docs/status.md).
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" -m unittest discover -s tests -v
