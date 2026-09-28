@@ -46,6 +46,7 @@ from subscriptions.types import (  # noqa: E402
 
 ADAPTER_ORDER = (
     "opencode_go",
+    "opencode_go_2",
     "opencode_zen",
     "muse",
     "claude",

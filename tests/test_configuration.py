@@ -221,7 +221,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("fallback_providers", desired)
         self.assertEqual(claw, entrega)
         self.assertEqual([route.label for route in claw], table["chains"]["main"])
-        self.assertEqual(claw[1].reasoning_effort, "xhigh")
+        self.assertEqual(claw[1].adapter, "opencode_go_2")
+        self.assertEqual(claw[2].reasoning_effort, "xhigh")
 
     def test_director_gets_the_full_toolset_and_workers_the_baseline(self):
         # Owner decision (2026-09-15): the director drives Odoo and Edge over

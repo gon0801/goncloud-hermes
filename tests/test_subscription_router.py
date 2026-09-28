@@ -40,6 +40,7 @@ SOURCE = {
     "chains": {
         "main": [
             "opencode-go/muse-spark-1.3-contributor",
+            "opencode-go/muse-spark-1.3-contributor",
             "anthropic/claude-sonnet-5",
             "meta/muse-spark-1.3 (max)",
             "meta/muse-spark-1.3 (max)",
@@ -96,6 +97,13 @@ def failed(kind, adapter="adapter", text=""):
 
 def routes_for_main():
     return compile_profile_routes("claw", SOURCE)
+
+
+def primary_and_next():
+    """Primary and the next distinct subscription; slot 1 is Primary's copy on
+    the second Go account (owner table, 2026-09-27)."""
+    routes = routes_for_main()
+    return [routes[0], routes[2]]
 
 
 def request(workspace, workflow_id="wf-6", stage_id="st-6", prompt="Do it once."):
@@ -181,7 +189,7 @@ class FailoverTests(RouterTestCase):
         self.fake_adapters["opencode_go"].probe = probe
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
-                router.run, request(self.workspace), routes_for_main()[:2]
+                router.run, request(self.workspace), primary_and_next()
             )
             try:
                 self.assertTrue(entered.wait(10))
@@ -212,7 +220,7 @@ class FailoverTests(RouterTestCase):
             )
 
         result = router.run(
-            replace(request(self.workspace), pre_invoke=publish), routes_for_main()[:2]
+            replace(request(self.workspace), pre_invoke=publish), primary_and_next()
         )
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
@@ -275,15 +283,15 @@ class FailoverTests(RouterTestCase):
 
         with patch.object(router, "_availability", side_effect=crash):
             with self.assertRaises(KeyboardInterrupt):
-                router.run(assignment, routes_for_main()[:2])
+                router.run(assignment, primary_and_next())
         resumed = self.router()
-        result = resumed.run(assignment, routes_for_main()[:2])
+        result = resumed.run(assignment, primary_and_next())
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
         self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
         attempts = resumed.store.stage_attempts("wf-6", "st-6")
-        self.assertEqual([row["slot"] for row in attempts], [0, 1])
+        self.assertEqual([row["slot"] for row in attempts], [0, 2])
         self.assertEqual(
             [row.get("disposition") for row in attempts], ["skipped", "executed"]
         )
@@ -691,13 +699,13 @@ class FailoverTests(RouterTestCase):
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertFalse(result.success)
-        # Slots 2 and 3 share Muse; AUTH on the first quarantines the account
+        # Slots 3 and 4 share Muse; AUTH on the first quarantines the account
         # so the repeated position is recorded without a second invocation.
         self.assertEqual(
             router.calls,
             ["opencode_go", "claude", "muse", "grok", "opencode_zai", "codex"],
         )
-        self.assertIn("all seven", result.text.lower())
+        self.assertIn("all 8 slots primary..f7", result.text.lower())
         attempts = router.store.stage_attempts("wf-6", "st-6")
         self.assertEqual(len(attempts), 7)
         self.assertEqual(
@@ -742,7 +750,7 @@ class FailoverTests(RouterTestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
-        self.assertEqual(result.slot, 1)
+        self.assertEqual(result.slot, 2)
         self.assertEqual(result.route_label, "anthropic/claude-sonnet-5")
         self.assertEqual(
             result.skipped_routes,
@@ -863,7 +871,7 @@ class FailoverTests(RouterTestCase):
         router = self.router()
         router.store.set_cooldown("opencode_go", hours=1)
         self.fake_adapters["claude"].result = completed("zen", "claude")
-        first, second = routes_for_main()[:2]
+        first, second = primary_and_next()
         routes = [
             first,
             replace(first, slot=1, label=first.label + " dup"),
@@ -899,17 +907,17 @@ class FailoverTests(RouterTestCase):
                 availability = router._availability
 
                 def crash(route):
-                    if route.slot == 1:
+                    if route.slot == 2:
                         raise KeyboardInterrupt
                     return availability(route)
 
                 with patch.object(router, "_availability", side_effect=crash):
                     with self.assertRaises(KeyboardInterrupt):
-                        router.run(assignment, routes_for_main()[:2])
+                        router.run(assignment, primary_and_next())
                 resumed = self.router()
-                self.assertTrue(resumed.run(assignment, routes_for_main()[:2]).success)
+                self.assertTrue(resumed.run(assignment, primary_and_next()).success)
                 attempts = resumed.store.stage_attempts("wf-6", "st-6")
-                self.assertEqual([row["slot"] for row in attempts], [0, 1])
+                self.assertEqual([row["slot"] for row in attempts], [0, 2])
                 self.assertEqual(
                     [row["disposition"] for row in attempts], ["skipped", "executed"]
                 )
@@ -1150,7 +1158,7 @@ class MutationContinuationTests(RouterTestCase):
                 current_revision=start,
                 result_transform=lambda value: value,
             ),
-            routes_for_main()[:2],
+            primary_and_next(),
         )
 
         self.assertFalse(result.success)
@@ -1194,7 +1202,7 @@ class MutationContinuationTests(RouterTestCase):
                 current_revision=start,
                 result_transform=transform,
             ),
-            routes_for_main()[:2],
+            primary_and_next(),
         )
 
         self.assertFalse(result.success)
@@ -1245,9 +1253,9 @@ class StatusTests(RouterTestCase):
 
         status = router.status("claw")
 
-        self.assertEqual(len(status["routes"]), 7)
+        self.assertEqual(len(status["routes"]), 8)
         deepseekless = [r for r in status["routes"] if r["adapter"] == "codex"]
-        self.assertEqual(deepseekless[0]["slot"], 6)
+        self.assertEqual(deepseekless[0]["slot"], 7)
         self.assertTrue(
             all(r["billing_mode"] == "subscription" for r in status["routes"])
         )
@@ -1257,6 +1265,7 @@ class StatusTests(RouterTestCase):
         source = {
             "chains": {
                 "scout": [
+                    "zai/glm-5.3",
                     "zai/glm-5.3",
                     "kimi/k3",
                     "xai/grok-4.6",
@@ -1271,8 +1280,8 @@ class StatusTests(RouterTestCase):
 
         status = router.status("scout")
 
-        self.assertEqual(status["routes"][6]["billing_mode"], "api")
-        self.assertEqual(status["routes"][6]["adapter"], "deepseek")
+        self.assertEqual(status["routes"][7]["billing_mode"], "api")
+        self.assertEqual(status["routes"][7]["adapter"], "deepseek")
 
     def test_status_reports_stage_evidence(self):
         router = self.router()
@@ -1711,7 +1720,7 @@ class InvalidTerminalTests(RouterTestCase):
             replace(
                 request(self.workspace), result_transform=self.rejecting_transform()
             ),
-            routes_for_main()[:2],
+            primary_and_next(),
         )
 
         self.assertTrue(result.success)
@@ -1753,7 +1762,7 @@ class InvalidTerminalTests(RouterTestCase):
             replace(
                 request(self.workspace), result_transform=self.rejecting_transform()
             ),
-            routes_for_main()[:2],
+            primary_and_next(),
         )
 
         self.assertFalse(result.success)
@@ -1793,7 +1802,7 @@ class QuarantineExpiryTests(RouterTestCase):
         self.fake_adapters["opencode_go"].result = completed(adapter="opencode_go")
         self.fake_adapters["claude"].result = completed(adapter="claude")
 
-        result = self.router().run(request(self.workspace), routes_for_main()[:2])
+        result = self.router().run(request(self.workspace), primary_and_next())
 
         self.assertEqual(result.adapter, "claude")
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
@@ -1808,7 +1817,7 @@ class QuarantineExpiryTests(RouterTestCase):
         self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
-        result = router.run(request(self.workspace), routes_for_main()[:2])
+        result = router.run(request(self.workspace), primary_and_next())
 
         self.assertEqual(result.adapter, "opencode_go")
         self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 1)
@@ -1828,9 +1837,9 @@ class QuarantineExpiryTests(RouterTestCase):
         self.fake_adapters["claude"].result = completed(adapter="claude")
         router = self.router()
 
-        first = router.run(request(self.workspace), routes_for_main()[:2])
+        first = router.run(request(self.workspace), primary_and_next())
         second = router.run(
-            request(self.workspace, stage_id="st-7"), routes_for_main()[:2]
+            request(self.workspace, stage_id="st-7"), primary_and_next()
         )
 
         self.assertEqual(first.adapter, "claude")
@@ -1891,7 +1900,7 @@ class QuarantineExpiryTests(RouterTestCase):
                 for stage_id in ("st-6", "st-7", "st-8"):
                     router.run(
                         request(self.workspace, stage_id=stage_id),
-                        routes_for_main()[:2],
+                        primary_and_next(),
                     )
 
                 # An expired quarantine buys exactly one real retry per hour,

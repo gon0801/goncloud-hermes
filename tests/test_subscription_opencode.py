@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 import json
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -147,6 +149,55 @@ class OpenCodeAdapterTests(unittest.TestCase):
         config = json.loads(runner.kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
         self.assertEqual(config["tools"], {"*": False})
         self.assertNotIn("--auto", runner.command)
+
+    def test_the_second_go_account_runs_the_same_model_on_its_own_key(self):
+        # Owner, 2026-09-27: a second OpenCode Go account, an exact copy of
+        # Primary, for the agents and for main. The saved CLI login stays the
+        # first account; the second key reaches opencode by env reference.
+        for bridge in (False, True):
+            with self.subTest(tool_bridge=bridge):
+                runner = FakeCliRunner(stdout=SUCCESS_JSONL)
+                with patch.dict(
+                    os.environ, {"OPENCODE_GO_2_API_KEY": "sk-go2-fixture"}
+                ):
+                    result = OpenCodeAdapter(runner=runner).invoke(
+                        replace(request(self.workspace), tool_bridge=bridge),
+                        route(1, "opencode_go_2", "muse-spark-1.3-contributor"),
+                    )
+
+                self.assertTrue(result.success)
+                self.assertEqual(result.adapter, "opencode_go_2")
+                self.assertEqual(
+                    runner.command[4:6],
+                    ["--model", "opencode-go/muse-spark-1.3-contributor"],
+                )
+                self.assertNotIn("sk-go2-fixture", " ".join(runner.command))
+                config = json.loads(runner.kwargs["env"]["OPENCODE_CONFIG_CONTENT"])
+                self.assertEqual(
+                    config["provider"]["opencode-go"]["options"]["apiKey"],
+                    "{env:OPENCODE_GO_2_API_KEY}",
+                )
+                self.assertEqual("tools" in config, bridge)
+
+    def test_the_first_go_account_keeps_the_saved_login(self):
+        runner = FakeCliRunner(stdout=SUCCESS_JSONL)
+        OpenCodeAdapter(runner=runner).invoke(
+            request(self.workspace),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+        self.assertNotIn("OPENCODE_CONFIG_CONTENT", runner.kwargs.get("env") or {})
+
+    def test_the_second_go_account_probe_checks_its_key_without_the_cli(self):
+        runner = FakeCliRunner(stdout="")
+        adapter = OpenCodeAdapter(runner=runner)
+        go2 = route(1, "opencode_go_2", "muse-spark-1.3-contributor")
+        with patch.dict(os.environ, {"OPENCODE_GO_2_API_KEY": "sk-go2-fixture"}):
+            self.assertTrue(adapter.probe(go2).ready)
+        with patch.dict(os.environ, {"OPENCODE_GO_2_API_KEY": ""}):
+            health = adapter.probe(go2)
+        self.assertFalse(health.ready)
+        self.assertEqual(health.failure, FailureKind.AUTH)
+        self.assertIsNone(runner.command)
 
     def test_a_native_call_opencode_rejected_is_reissued_as_a_text_tool_call(self):
         """Live 2026-09-27: muse-spark called browser_exec natively, opencode

@@ -1447,7 +1447,7 @@ with patch.object(module,'read_private_env',return_value={}),patch('subscription
             completed,
             failed,
             request,
-            routes_for_main,
+            primary_and_next,
         )
 
         root = Path(self.tmp.name)
@@ -1545,7 +1545,7 @@ while True:
                 store=store,
                 routing_source=SOURCE,
             )
-            self.assertTrue(router.run(request(root), routes_for_main()[:2]).success)
+            self.assertTrue(router.run(request(root), primary_and_next()).success)
             self.assertEqual(len(go.probes), 1)
             self.assertEqual(len(go.requests), 1)
             self.assertEqual(len(second.requests), 1)
@@ -1667,7 +1667,7 @@ while True:
             completed,
             failed,
             request,
-            routes_for_main,
+            primary_and_next,
         )
 
         adapters = {name: ScriptedAdapter(name) for name in ("opencode_go", "claude")}
@@ -1708,23 +1708,23 @@ while True:
             )
             adapters["opencode_go"].requests.clear()
             adapters["opencode_go"].probes.clear()
-            result = router.run(request(Path(self.tmp.name)), routes_for_main()[:2])
+            result = router.run(request(Path(self.tmp.name)), primary_and_next())
             self.assertTrue(result.success)
             self.assertEqual(result.adapter, "claude")
             self.assertEqual(adapters["opencode_go"].requests, [])
             self.assertEqual(adapters["opencode_go"].probes, [])
             attempts = store.stage_attempts("wf-6", "st-6")
-            self.assertEqual([item["slot"] for item in attempts], [0, 1])
+            self.assertEqual([item["slot"] for item in attempts], [0, 2])
             self.assertNotIn("sk-private", repr(store.health("opencode_go")))
             self.assertNotIn("owner@", repr(store.health("opencode_go")))
             store.set_cooldown("opencode_go", hours=1)
             result = router.run(
-                request(Path(self.tmp.name), stage_id="cooldown"), routes_for_main()[:2]
+                request(Path(self.tmp.name), stage_id="cooldown"), primary_and_next()
             )
             self.assertTrue(result.success)
             self.assertEqual(
                 [item["slot"] for item in store.stage_attempts("wf-6", "cooldown")],
-                [0, 1],
+                [0, 2],
             )
             adapters["opencode_go"].result = completed(
                 "GONCLOUD_PROBE_OK extra", adapter="opencode_go"
@@ -1738,7 +1738,7 @@ while True:
             self.assertFalse(store.health("opencode_go")["quarantined"])
             self.assertIsNone(store.cooldown_until("opencode_go"))
             result = router.run(
-                request(Path(self.tmp.name), stage_id="restored"), routes_for_main()[:2]
+                request(Path(self.tmp.name), stage_id="restored"), primary_and_next()
             )
             self.assertTrue(result.success)
             self.assertEqual(result.adapter, "opencode_go")
@@ -2060,7 +2060,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertTrue(routing.is_file())
             self.assertEqual(
                 json.loads(routing.read_text(encoding="utf-8"))["columns"],
-                ["Primary", "F1", "F2", "F3", "F4", "F5", "F6"],
+                ["Primary", "Primary Go 2", "F1", "F2", "F3", "F4", "F5", "F6"],
             )
             claw_config = yaml.safe_load(
                 (claw / "config.yaml").read_text(encoding="utf-8")

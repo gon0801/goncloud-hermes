@@ -20,6 +20,7 @@ def load_source() -> dict:
 EXPECTED_ADAPTERS = {
     "claw": [
         "opencode_go",
+        "opencode_go_2",
         "claude",
         "muse",
         "grok",
@@ -29,6 +30,7 @@ EXPECTED_ADAPTERS = {
     ],
     "operaciones": [
         "opencode_go",
+        "opencode_go_2",
         "opencode_zai",
         "codex",
         "claude",
@@ -38,6 +40,7 @@ EXPECTED_ADAPTERS = {
     ],
     "ingenieria": [
         "opencode_go",
+        "opencode_go_2",
         "codex",
         "kimi",
         "opencode_zai",
@@ -47,6 +50,7 @@ EXPECTED_ADAPTERS = {
     ],
     "implementer": [
         "opencode_go",
+        "opencode_go_2",
         "muse",
         "opencode_zai",
         "grok",
@@ -56,6 +60,7 @@ EXPECTED_ADAPTERS = {
     ],
     "reviewer": [
         "opencode_go",
+        "opencode_go_2",
         "claude",
         "kimi",
         "codex",
@@ -65,6 +70,7 @@ EXPECTED_ADAPTERS = {
     ],
     "adversary": [
         "opencode_go",
+        "opencode_go_2",
         "grok",
         "kimi",
         "opencode_zai",
@@ -74,6 +80,7 @@ EXPECTED_ADAPTERS = {
     ],
     "verifier": [
         "opencode_go",
+        "opencode_go_2",
         "opencode_zai",
         "muse",
         "kimi",
@@ -83,6 +90,7 @@ EXPECTED_ADAPTERS = {
     ],
     "scout": [
         "opencode_go",
+        "opencode_go_2",
         "opencode_zai",
         "muse",
         "kimi",
@@ -94,19 +102,20 @@ EXPECTED_ADAPTERS = {
 EXPECTED_ADAPTERS["entrega"] = EXPECTED_ADAPTERS["claw"]
 
 EXPECTED_EFFORTS = {
-    "claw": [None, "xhigh", "max", None, None, "xhigh", None],
-    "operaciones": [None, None, "xhigh", "xhigh", None, "high", "max"],
-    "ingenieria": [None, "xhigh", None, None, "max", "xhigh", None],
-    "implementer": [None, "max", None, None, "xhigh", "xhigh", "high"],
-    "reviewer": [None, None, None, None, "max", None, None],
-    "adversary": [None, None, None, None, "max", "xhigh", "xhigh"],
-    "verifier": [None, None, "max", "high", "xhigh", "xhigh", None],
-    "scout": [None, None, "max", None, None, "xhigh", "xhigh"],
+    "claw": [None, None, "xhigh", "max", None, None, "xhigh", None],
+    "operaciones": [None, None, None, "xhigh", "xhigh", None, "high", "max"],
+    "ingenieria": [None, None, "xhigh", None, None, "max", "xhigh", None],
+    "implementer": [None, None, "max", None, None, "xhigh", "xhigh", "high"],
+    "reviewer": [None, None, None, None, None, "max", None, None],
+    "adversary": [None, None, None, None, None, "max", "xhigh", "xhigh"],
+    "verifier": [None, None, None, "max", "high", "xhigh", "xhigh", None],
+    "scout": [None, None, None, "max", None, None, "xhigh", "xhigh"],
 }
 EXPECTED_EFFORTS["entrega"] = EXPECTED_EFFORTS["claw"]
 
 EXPECTED_MODELS = {
     "claw": [
+        "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
         "claude-opus-5",
         "muse-spark-1.3",
@@ -117,6 +126,7 @@ EXPECTED_MODELS = {
     ],
     "operaciones": [
         "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash",
         "glm-5.3-flash",
         "gpt-5.6-terra",
         "claude-sonnet-5",
@@ -125,6 +135,7 @@ EXPECTED_MODELS = {
         "muse-spark-1.3",
     ],
     "ingenieria": [
+        "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
         "gpt-5.6-sol",
         "k3",
@@ -135,6 +146,7 @@ EXPECTED_MODELS = {
     ],
     "implementer": [
         "muse-spark-1.3-contributor",
+        "muse-spark-1.3-contributor",
         "muse-spark-1.3",
         "glm-5.3-flash",
         "grok-4.6",
@@ -143,6 +155,7 @@ EXPECTED_MODELS = {
         "kimi-for-coding",
     ],
     "reviewer": [
+        "deepseek-v4.1-flash",
         "deepseek-v4.1-flash",
         "claude-fable-5-1",
         "k3",
@@ -153,6 +166,7 @@ EXPECTED_MODELS = {
     ],
     "adversary": [
         "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash",
         "grok-4.6",
         "k3",
         "glm-5.3",
@@ -162,6 +176,7 @@ EXPECTED_MODELS = {
     ],
     "verifier": [
         "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash",
         "glm-5.3-flash",
         "muse-spark-1.3",
         "kimi-for-coding",
@@ -170,6 +185,7 @@ EXPECTED_MODELS = {
         "deepseek-flash",
     ],
     "scout": [
+        "deepseek-v4.1-flash",
         "deepseek-v4.1-flash",
         "glm-5.3-flash",
         "muse-spark-1.3",
@@ -190,6 +206,23 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual([route.adapter for route in routes], EXPECTED_ADAPTERS["claw"])
         self.assertEqual([route.model for route in routes], EXPECTED_MODELS["claw"])
 
+    def test_the_second_go_account_copies_primary_in_every_chain(self):
+        # Owner, 2026-09-27: position 2 is an exact copy of Primary on the
+        # second OpenCode Go account, for main and for every agent.
+        source = load_source()
+        for chain_name, chain in source["chains"].items():
+            with self.subTest(chain=chain_name):
+                self.assertEqual(chain[1], chain[0])
+        for profile in EXPECTED_ADAPTERS:
+            with self.subTest(profile=profile):
+                routes = compile_profile_routes(profile, source)
+                self.assertEqual(routes[0].adapter, "opencode_go")
+                self.assertEqual(routes[1].adapter, "opencode_go_2")
+                self.assertEqual(
+                    (routes[1].model, routes[1].label, routes[1].reasoning_effort),
+                    (routes[0].model, routes[0].label, routes[0].reasoning_effort),
+                )
+
     def test_entrega_inherits_main(self):
         source = load_source()
 
@@ -202,6 +235,7 @@ class SlotSemanticsTests(unittest.TestCase):
         source = {
             "chains": {
                 "implementer": [
+                    "opencode-go/muse-spark-1.3-contributor",
                     "opencode-go/muse-spark-1.3-contributor",
                     "meta/muse-spark-1.3 (max)",
                     "zai/glm-5.3",
@@ -216,17 +250,18 @@ class SlotSemanticsTests(unittest.TestCase):
 
         self.assertEqual(len(routes), SLOT_COUNT)
         self.assertEqual(
-            [route.adapter for route in routes[2:5]],
+            [route.adapter for route in routes[3:6]],
             ["opencode_zai", "opencode_zai", "opencode_zai"],
         )
-        self.assertEqual({route.model for route in routes[2:5]}, {"glm-5.3"})
-        self.assertEqual([route.slot for route in routes[2:5]], [2, 3, 4])
+        self.assertEqual({route.model for route in routes[3:6]}, {"glm-5.3"})
+        self.assertEqual([route.slot for route in routes[3:6]], [3, 4, 5])
 
     def test_kimi_for_coding_binds_to_kimi_and_high_stays_on_the_label(self):
         # kimi-for-coding is a Kimi family id, not k3; (high) is provenance.
         source = {
             "chains": {
                 "scout": [
+                    "opencode-go/deepseek-v4.1-flash",
                     "opencode-go/deepseek-v4.1-flash",
                     "kimi/kimi-for-coding (high)",
                     "kimi/kimi-for-coding",
@@ -239,21 +274,21 @@ class SlotSemanticsTests(unittest.TestCase):
         }
         routes = compile_profile_routes("scout", source)
 
-        self.assertEqual(routes[1].adapter, "kimi")
-        self.assertEqual(routes[1].model, "kimi-for-coding")
-        self.assertEqual(routes[1].label, "kimi/kimi-for-coding (high)")
         self.assertEqual(routes[2].adapter, "kimi")
         self.assertEqual(routes[2].model, "kimi-for-coding")
-        self.assertEqual(routes[2].label, "kimi/kimi-for-coding")
-        self.assertEqual(routes[3].adapter, "opencode_zai")
-        self.assertEqual(routes[3].model, "glm-5.3-flash")
+        self.assertEqual(routes[2].label, "kimi/kimi-for-coding (high)")
+        self.assertEqual(routes[3].adapter, "kimi")
+        self.assertEqual(routes[3].model, "kimi-for-coding")
+        self.assertEqual(routes[3].label, "kimi/kimi-for-coding")
+        self.assertEqual(routes[4].adapter, "opencode_zai")
+        self.assertEqual(routes[4].model, "glm-5.3-flash")
 
     def test_parenthetical_annotations_stay_on_the_label_not_the_model_id(self):
         source = load_source()
         claw = compile_profile_routes("claw", source)
-        muse = claw[2]
-        opus = claw[1]
-        sol = claw[5]
+        muse = claw[3]
+        opus = claw[2]
+        sol = claw[6]
 
         self.assertEqual(muse.adapter, "muse")
         self.assertEqual(muse.model, "muse-spark-1.3")
@@ -266,12 +301,12 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(sol.label, "openai/gpt-5.6-sol (xhigh)")
 
         scout = compile_profile_routes("scout", source)
-        self.assertEqual(scout[5].model, "claude-sonnet-5")
-        self.assertEqual(scout[5].label, "anthropic/claude-sonnet-5 (xhigh)")
+        self.assertEqual(scout[6].model, "claude-sonnet-5")
+        self.assertEqual(scout[6].label, "anthropic/claude-sonnet-5 (xhigh)")
 
         operaciones = compile_profile_routes("operaciones", source)
-        self.assertEqual(operaciones[5].model, "kimi-for-coding")
-        self.assertEqual(operaciones[5].label, "kimi/kimi-for-coding (high)")
+        self.assertEqual(operaciones[6].model, "kimi-for-coding")
+        self.assertEqual(operaciones[6].label, "kimi/kimi-for-coding (high)")
 
     def test_every_table_cell_preserves_its_literal_reasoning_effort(self):
         source = load_source()
@@ -298,21 +333,21 @@ class SlotSemanticsTests(unittest.TestCase):
 
         main = compile_profile_routes("claw", source)
         self.assertEqual(
-            (main[1].adapter, main[1].model, main[1].reasoning_effort),
+            (main[2].adapter, main[2].model, main[2].reasoning_effort),
             ("claude", "claude-opus-5", "xhigh"),
         )
         self.assertEqual(
-            (main[2].adapter, main[2].model, main[2].reasoning_effort),
+            (main[3].adapter, main[3].model, main[3].reasoning_effort),
             ("muse", "muse-spark-1.3", "max"),
         )
         self.assertEqual(
-            (main[6].adapter, main[6].model, main[6].reasoning_effort),
+            (main[7].adapter, main[7].model, main[7].reasoning_effort),
             ("kimi", "k3", None),
         )
 
     def test_unknown_parenthetical_annotation_is_rejected(self):
         source = load_source()
-        source["chains"]["main"][1] = "anthropic/claude-opus-5 (maximum)"
+        source["chains"]["main"][2] = "anthropic/claude-opus-5 (maximum)"
 
         with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
             compile_profile_routes("claw", source)
@@ -326,6 +361,7 @@ class SlotSemanticsTests(unittest.TestCase):
             "chains": {
                 "scout": [
                     "opencode-go/deepseek-v4.1-flash",
+                    "opencode-go/deepseek-v4.1-flash",
                     "meta/muse-spark-1.3-contributor-free",
                     "kimi/k3",
                     "zai/glm-5.3",
@@ -336,7 +372,7 @@ class SlotSemanticsTests(unittest.TestCase):
             }
         }
 
-        muse = compile_profile_routes("scout", source)[1]
+        muse = compile_profile_routes("scout", source)[2]
         self.assertEqual(muse.adapter, "muse")
         self.assertEqual(muse.model, "muse-spark-1.3-contributor")
         self.assertEqual(muse.label, "meta/muse-spark-1.3-contributor-free")
@@ -348,17 +384,18 @@ class SlotSemanticsTests(unittest.TestCase):
         compile_profile_routes("ingenieria", source)
 
         self.assertEqual(
-            source["columns"], ["Primary", "F1", "F2", "F3", "F4", "F5", "F6"]
+            source["columns"],
+            ["Primary", "Primary Go 2", "F1", "F2", "F3", "F4", "F5", "F6"],
         )
         self.assertEqual(
             source["chains"]["main"][0],
             "opencode-go-resp/muse-spark-1.3-contributor",
         )
-        self.assertEqual(source["chains"]["main"][2], "meta/muse-spark-1.3 (max)")
+        self.assertEqual(source["chains"]["main"][3], "meta/muse-spark-1.3 (max)")
         self.assertEqual(
-            source["chains"]["ingenieria"][1], "openai/gpt-5.6-sol (xhigh)"
+            source["chains"]["ingenieria"][2], "openai/gpt-5.6-sol (xhigh)"
         )
-        self.assertEqual(source["chains"]["main"][1], "anthropic/claude-opus-5 (xhigh)")
+        self.assertEqual(source["chains"]["main"][2], "anthropic/claude-opus-5 (xhigh)")
 
     def test_every_profile_compiles_the_owner_table(self):
         source = load_source()
@@ -408,27 +445,27 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(routes[0].adapter, "opencode_go")
         self.assertEqual(routes[0].model, "deepseek-v4.1-flash")
         self.assertEqual(routes[0].billing_mode, "subscription")
-        self.assertEqual(routes[1].adapter, "claude")
-        self.assertEqual(routes[1].model, "claude-fable-5-1")
-        self.assertEqual(routes[3].adapter, "codex")
-        self.assertEqual(routes[3].model, "gpt-6-astra")
+        self.assertEqual(routes[2].adapter, "claude")
+        self.assertEqual(routes[2].model, "claude-fable-5-1")
+        self.assertEqual(routes[4].adapter, "codex")
+        self.assertEqual(routes[4].model, "gpt-6-astra")
 
         scout = compile_profile_routes("scout", load_source())
-        self.assertEqual(scout[4].adapter, "deepseek")
-        self.assertEqual(scout[4].model, "deepseek-flash")
-        self.assertEqual(scout[4].billing_mode, "api")
-        self.assertEqual(scout[6].adapter, "codex")
-        self.assertEqual(scout[6].billing_mode, "subscription")
+        self.assertEqual(scout[5].adapter, "deepseek")
+        self.assertEqual(scout[5].model, "deepseek-flash")
+        self.assertEqual(scout[5].billing_mode, "api")
+        self.assertEqual(scout[7].adapter, "codex")
+        self.assertEqual(scout[7].billing_mode, "subscription")
 
         adversary = compile_profile_routes("adversary", load_source())
-        self.assertEqual(adversary[6].adapter, "codex")
-        self.assertEqual(adversary[6].model, "gpt-5.6-sol")
-        self.assertEqual(adversary[6].billing_mode, "subscription")
+        self.assertEqual(adversary[7].adapter, "codex")
+        self.assertEqual(adversary[7].model, "gpt-5.6-sol")
+        self.assertEqual(adversary[7].billing_mode, "subscription")
 
         verifier = compile_profile_routes("verifier", load_source())
-        self.assertEqual(verifier[6].adapter, "deepseek")
-        self.assertEqual(verifier[6].model, "deepseek-flash")
-        self.assertEqual(verifier[6].billing_mode, "api")
+        self.assertEqual(verifier[7].adapter, "deepseek")
+        self.assertEqual(verifier[7].model, "deepseek-flash")
+        self.assertEqual(verifier[7].billing_mode, "api")
 
     def test_unknown_family_and_profile_are_rejected(self):
         source = load_source()
@@ -440,13 +477,13 @@ class SlotSemanticsTests(unittest.TestCase):
                     **source,
                     "chains": {
                         **source["chains"],
-                        "scout": ["zai/glm-5.3"] + ["mystery/model"] * 6,
+                        "scout": ["zai/glm-5.3"] + ["mystery/model"] * 7,
                     },
                 },
             )
         with self.assertRaisesRegex(ValueError, "No model chain"):
             compile_profile_routes("pirate", source)
-        with self.assertRaisesRegex(ValueError, "seven"):
+        with self.assertRaisesRegex(ValueError, "exactly 8 slots"):
             compile_profile_routes(
                 "scout",
                 {

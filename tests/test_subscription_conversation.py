@@ -106,17 +106,21 @@ class ConversationRouterTests(unittest.TestCase):
         )
 
     def test_main_advances_from_opencode_go_to_claude_xhigh_not_kimi(self):
+        # Owner, 2026-09-27: main tries the second Go account right after the
+        # first, before Claude.
+        self.adapters["opencode_go_2"] = ScriptedAdapter("opencode_go_2", self.calls)
         self.adapters["opencode_go"].result = failure(FailureKind.MODEL_UNAVAILABLE)
+        self.adapters["opencode_go_2"].result = failure(FailureKind.QUOTA)
         self.adapters["claude"].result = success
         self.adapters["kimi"].result = success
 
         result = self.complete()
 
         self.assertTrue(result.success)
-        self.assertEqual(self.calls, ["opencode_go", "claude"])
+        self.assertEqual(self.calls, ["opencode_go", "opencode_go_2", "claude"])
         self.assertEqual(result.adapter, "claude")
         self.assertEqual(result.model, "claude-opus-5")
-        self.assertEqual(result.slot, 1)
+        self.assertEqual(result.slot, 2)
         self.assertEqual(result.route_label, "anthropic/claude-opus-5 (xhigh)")
         self.assertEqual(result.reasoning_effort, "xhigh")
         self.assertEqual(
@@ -126,6 +130,11 @@ class ConversationRouterTests(unittest.TestCase):
                     slot=0,
                     adapter="opencode_go",
                     failure=FailureKind.MODEL_UNAVAILABLE,
+                ),
+                SkippedRoute(
+                    slot=1,
+                    adapter="opencode_go_2",
+                    failure=FailureKind.QUOTA,
                 ),
             ),
         )

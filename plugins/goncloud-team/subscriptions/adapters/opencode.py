@@ -7,6 +7,7 @@ credential store. ``auth.json`` is never read or copied by this module.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -35,13 +36,18 @@ from . import (
 #: Coding Plan subscription serves it rather than a metered API.
 _PROVIDER_PREFIXES = {
     "opencode_go": "opencode-go",
+    "opencode_go_2": "opencode-go",
     "opencode_zen": "opencode",
     "opencode_zai": "zai-coding-plan",
 }
 #: Conversation turns: Hermes owns the tools (see claude.py). With its
 #: built-ins on, glm-5.3 answered "no such skill" instead of <tool_call>
-#: (measured, opencode 1.18.30); inline config disables every tool.
-_TOOL_BRIDGE_ENV = {"OPENCODE_CONFIG_CONTENT": json.dumps({"tools": {"*": False}})}
+#: (measured, opencode 1.18.30); inline config disables every tool (see
+#: ``_env_overlay``).
+#: The owner's second OpenCode Go account (2026-09-27). The saved CLI login is
+#: the first account, so the second key reaches opencode as an env reference in
+#: inline config: the value never enters argv, and redaction keys on the name.
+_ACCOUNT_KEY_ENVS = {"opencode_go_2": "OPENCODE_GO_2_API_KEY"}
 
 _CREDENTIAL_NAMES = {
     "opencode_go": "opencode go",
@@ -166,8 +172,29 @@ class OpenCodeAdapter(SubscriptionAdapter):
             raise ValueError(f"unsupported OpenCode slot adapter: {route.adapter}")
         return provider
 
+    def _env_overlay(self, request: InvocationRequest, route: RouteSpec):
+        config: dict = {}
+        if request.tool_bridge:
+            config["tools"] = {"*": False}
+        key_env = _ACCOUNT_KEY_ENVS.get(route.adapter)
+        if key_env:
+            config["provider"] = {
+                self._provider(route): {"options": {"apiKey": f"{{env:{key_env}}}"}}
+            }
+        return {"OPENCODE_CONFIG_CONTENT": json.dumps(config)} if config else None
+
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Non-generative check that the slot's credential class is installed."""
+        key_env = _ACCOUNT_KEY_ENVS.get(route.adapter)
+        if key_env:
+            if os.environ.get(key_env, "").strip():
+                return AdapterHealth(ready=True, account_class=route.adapter)
+            return AdapterHealth(
+                ready=False,
+                account_class=route.adapter,
+                failure=FailureKind.AUTH,
+                detail=f"{key_env} is not set",
+            )
         expected = _CREDENTIAL_NAMES.get(route.adapter, route.adapter)
         try:
             evidence = run_cli(
@@ -218,7 +245,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
             prompt,
             request.workspace,
             self.timeout_seconds,
-            env_overlay=_TOOL_BRIDGE_ENV if request.tool_bridge else None,
+            env_overlay=self._env_overlay(request, route),
             runner=self.runner,
         )
 

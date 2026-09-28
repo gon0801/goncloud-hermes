@@ -1,12 +1,26 @@
 {
   "schema_version": 1,
-  "source": "User-provided routing table, 2026-09-19; seven slots (former OpenCode Zen column dropped)",
+  "source": "User-provided routing table, 2026-09-19; seven slots (former OpenCode Zen column dropped). 2026-09-27: owner added a second OpenCode Go account as an exact copy of Primary right after it, eight slots",
   "status": "applied_with_native_provider_aliases",
-  "columns": ["Primary", "F1", "F2", "F3", "F4", "F5", "F6"],
-  "profile_names": {"main": "claw"},
-  "profile_inheritance": {"entrega": "main"},
+  "columns": [
+    "Primary",
+    "Primary Go 2",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6"
+  ],
+  "profile_names": {
+    "main": "claw"
+  },
+  "profile_inheritance": {
+    "entrega": "main"
+  },
   "chains": {
     "main": [
+      "opencode-go-resp/muse-spark-1.3-contributor",
       "opencode-go-resp/muse-spark-1.3-contributor",
       "anthropic/claude-opus-5 (xhigh)",
       "meta/muse-spark-1.3 (max)",
@@ -17,6 +31,7 @@
     ],
     "operaciones": [
       "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/deepseek-v4.1-flash",
       "zai/glm-5.3-flash",
       "openai/gpt-5.6-terra (xhigh)",
       "anthropic/claude-sonnet-5 (xhigh)",
@@ -25,6 +40,7 @@
       "meta/muse-spark-1.3 (max)"
     ],
     "ingenieria": [
+      "opencode-go-resp/muse-spark-1.3-contributor",
       "opencode-go-resp/muse-spark-1.3-contributor",
       "openai/gpt-5.6-sol (xhigh)",
       "kimi/k3",
@@ -35,6 +51,7 @@
     ],
     "implementer": [
       "opencode-go-resp/muse-spark-1.3-contributor",
+      "opencode-go-resp/muse-spark-1.3-contributor",
       "meta/muse-spark-1.3 (max)",
       "zai/glm-5.3-flash",
       "xai/grok-4.6",
@@ -43,6 +60,7 @@
       "kimi/kimi-for-coding (high)"
     ],
     "reviewer": [
+      "opencode-go/deepseek-v4.1-flash",
       "opencode-go/deepseek-v4.1-flash",
       "anthropic/claude-fable-5-1",
       "kimi/k3",
@@ -53,6 +71,7 @@
     ],
     "adversary": [
       "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/deepseek-v4.1-flash",
       "xai/grok-4.6",
       "kimi/k3",
       "zai/glm-5.3",
@@ -62,6 +81,7 @@
     ],
     "verifier": [
       "opencode-go/deepseek-v4.1-flash",
+      "opencode-go/deepseek-v4.1-flash",
       "zai/glm-5.3-flash",
       "meta/muse-spark-1.3 (max)",
       "kimi/kimi-for-coding (high)",
@@ -70,6 +90,7 @@
       "deepseek/deepseek-flash"
     ],
     "scout": [
+      "opencode-go/deepseek-v4.1-flash",
       "opencode-go/deepseek-v4.1-flash",
       "zai/glm-5.3-flash",
       "meta/muse-spark-1.3 (max)",
@@ -82,6 +103,7 @@
   "bindings": {
     "trailing_annotation": "Parenthetical markers such as (max), (xhigh) and (high) are preserved on the label and stripped from the runtime model ID",
     "duplicate_positions": "Repeated labels are distinct attempts; they do not need a dup suffix",
-    "entrega": "Confirmed by the user to inherit main"
+    "entrega": "Confirmed by the user to inherit main",
+    "go_2": "Position 2 copies Primary exactly and runs on the second OpenCode Go account (OPENCODE_GO_2_API_KEY)"
   }
 }

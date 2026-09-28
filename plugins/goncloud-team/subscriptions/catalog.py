@@ -10,8 +10,9 @@ from typing import Any, Mapping
 
 from .types import RouteSpec
 
-#: Only the primary position is bound by slot. Later positions bind by family.
-_SLOT_FORCED_ADAPTERS = {0: "opencode_go"}
+#: The primary position and its copy on the owner's second OpenCode Go account
+#: (added 2026-09-27) are bound by slot. Later positions bind by family.
+_SLOT_FORCED_ADAPTERS = {0: "opencode_go", 1: "opencode_go_2"}
 
 #: Later slots bind by model family regardless of the recorded prefix.
 _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
@@ -27,8 +28,8 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("deepseek-", "deepseek"),
 )
 
-SLOT_COUNT = 7
-SLOT_RANGE_LABEL = "Primary..F6"
+SLOT_COUNT = 8
+SLOT_RANGE_LABEL = "Primary..F7"
 
 #: Effort markers on the source label, never part of the vendor model id.
 _TRAILING_ANNOTATION = re.compile(r"\s+\(([^)]+)\)\s*$")
@@ -81,14 +82,14 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
 def compile_profile_routes(
     profile: str, source: Mapping[str, Any]
 ) -> tuple[RouteSpec, ...]:
-    """Compile one agent's exact seven-position chain from the source table."""
+    """Compile one agent's exact eight-position chain from the source table."""
     source_role = "main" if profile in {"claw", "entrega"} else profile
     chain = source.get("chains", {}).get(source_role)
     if chain is None:
         raise ValueError(f"No model chain configured for profile: {profile}")
     if len(chain) != SLOT_COUNT:
         raise ValueError(
-            f"profile {profile} must define exactly seven slots "
+            f"profile {profile} must define exactly {SLOT_COUNT} slots "
             f"({SLOT_RANGE_LABEL}); found {len(chain)}"
         )
     return tuple(_compile_route(slot, label) for slot, label in enumerate(chain))

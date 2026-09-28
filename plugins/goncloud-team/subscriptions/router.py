@@ -10,7 +10,12 @@ from typing import Iterable, Optional
 from uuid import uuid4
 
 from .adapters import build_adapter_registry
-from .catalog import compile_profile_routes, load_routing_source
+from .catalog import (
+    SLOT_COUNT,
+    SLOT_RANGE_LABEL,
+    compile_profile_routes,
+    load_routing_source,
+)
 from .process import run_cli
 from .redaction import sanitize_result
 from .state import SubscriptionBusy, SubscriptionStateStore, parse_iso
@@ -533,7 +538,7 @@ class SubscriptionRouter:
         return InvocationResult(
             success=False,
             text=(
-                f"{last_failure.text} — all seven slots Primary..F6 are "
+                f"{last_failure.text} — all {SLOT_COUNT} slots {SLOT_RANGE_LABEL} are "
                 "exhausted for this stage; owner review is required"
             ),
             adapter=last_failure.adapter,
