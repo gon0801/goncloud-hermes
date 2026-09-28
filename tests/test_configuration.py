@@ -249,6 +249,12 @@ class ConfigurationTests(unittest.TestCase):
         for machine_control in ("browser", "computer_use"):
             self.assertNotIn(machine_control, worker["platform_toolsets"]["telegram"])
             self.assertIn(machine_control, director["platform_toolsets"]["telegram"])
+        # The director may not create or dispatch cards (goncloud_local_run
+        # does), yet the 14 kanban schemas cost 23.5 KB of every call
+        # (hermes prompt-size, 2026-09-27). Workers keep them.
+        self.assertNotIn("kanban", director["platform_toolsets"]["telegram"])
+        self.assertIn("goncloud_team", director["platform_toolsets"]["telegram"])
+        self.assertIn("kanban", worker["platform_toolsets"]["telegram"])
 
     def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")

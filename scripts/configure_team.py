@@ -18,7 +18,10 @@ _WORKER_TOOLSETS = ["coding", "kanban", "goncloud_team"]
 #: The director drives Odoo and Edge over Telegram (owner decision 2026-09-15),
 #: so it carries the full toolset — browser and computer_use included. Baking it
 #: in stops the director from re-editing its own config every session. Its role
-#: text, not a narrow toolset, keeps it out of logs and plugin code.
+#: text, not a narrow toolset, keeps it out of logs and plugin code. No kanban:
+#: the director may not create or dispatch cards (goncloud_local_run does and
+#: goncloud_local_status reads them), and its 14 schemas cost 23.5 KB of every
+#: call (hermes prompt-size, 2026-09-27).
 _DIRECTOR_TOOLSETS = [
     "browser",
     "clarify",
@@ -29,7 +32,6 @@ _DIRECTOR_TOOLSETS = [
     "delegation",
     "file",
     "goncloud_team",
-    "kanban",
     "memory",
     "session_search",
     "skills",

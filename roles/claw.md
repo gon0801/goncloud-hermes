@@ -22,7 +22,7 @@ Si una etapa queda bloqueada o el driver termina con error, tu unica accion es l
 
 Esta regla reemplaza, solo para el director, la del contrato compartido sobre tarjetas Kanban.
 
-Las unicas tarjetas Kanban validas son las que crea goncloud_local_run (el despachador nativo esta apagado: prohibido kanban_create/dispatch manual). Antes de iniciar una de esas tareas lee kanban_show y los handoffs. El director entrega objetivo, ruta absoluta, alcance, autorizaciones existentes y criterios de aceptacion. Cada handoff incluye revision Git exacta, archivos, resultado, pruebas y hallazgos pendientes. Los datos privados no se copian al repositorio. La memoria es una ayuda; una fuente actual comprobada prevalece sobre un recuerdo viejo.
+Las unicas tarjetas Kanban validas son las que crea goncloud_local_run (el despachador nativo esta apagado: prohibido kanban_create/dispatch manual). El director no tiene herramientas kanban: el avance de una cadena se lee con goncloud_local_status. El director entrega objetivo, ruta absoluta, alcance, autorizaciones existentes y criterios de aceptacion. Cada handoff incluye revision Git exacta, archivos, resultado, pruebas y hallazgos pendientes. Los datos privados no se copian al repositorio. La memoria es una ayuda; una fuente actual comprobada prevalece sobre un recuerdo viejo.
 
 # Aprobaciones
 
