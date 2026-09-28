@@ -11,6 +11,9 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
 )
@@ -483,12 +486,7 @@ class DirectorNativeChainTests(unittest.TestCase):
                 self.assertTrue(
                     (profile / "plugins/goncloud-team/__init__.py").is_file()
                 )
-                self.assertTrue(
-                    (
-                        profile
-                        / "plugins/model-providers/goncloud-subscriptions/client.py"
-                    ).is_file()
-                )
+                self.assertFalse((profile / "plugins/model-providers").exists())
                 self.assertTrue((profile / "memories").is_dir())
             credentials = runtime / "profiles/claw/.env"
             loader = subprocess.run(
@@ -567,6 +565,79 @@ class DirectorNativeChainTests(unittest.TestCase):
                 yaml.safe_load(claw_path.read_text())["model"], claw["model"]
             )
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+
+
+class ManagedFileRetirementTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.temporary = Path(self.tmp.name)
+
+    def deploy(self, runtime=None):
+        upstream = Path(
+            os.environ.get(
+                "HERMES_INSTALL_DIR",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
+            )
+        )
+        runtime = runtime or self.temporary / "runtime"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(upstream),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "HOME": str(self.temporary / "home"),
+                "LOCALAPPDATA": str(self.temporary / "local-app-data"),
+                "PYTHONUTF8": "1",
+            },
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return runtime
+
+    def test_a_managed_file_no_longer_shipped_is_removed(self):
+        # Deploy once, then plant a managed file as if an earlier revision had
+        # shipped it (the goncloud-subscriptions provider did).
+        runtime = self.deploy()
+        profile = runtime / "profiles/claw"
+        stale = "plugins/model-providers/goncloud-subscriptions/client.py"
+        (profile / stale).parent.mkdir(parents=True, exist_ok=True)
+        (profile / stale).write_text("old\n", encoding="utf-8")
+        state_path = profile / "goncloud-managed.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][stale] = "old\n"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        self.deploy(runtime)
+
+        self.assertFalse((profile / stale).exists())
+        self.assertFalse((profile / "plugins/model-providers").exists())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotIn(stale, state["files"])
+
+    def test_a_dropped_managed_file_the_user_edited_is_a_conflict(self):
+        runtime = self.deploy()
+        profile = runtime / "profiles/claw"
+        stale = "plugins/model-providers/goncloud-subscriptions/client.py"
+        (profile / stale).parent.mkdir(parents=True, exist_ok=True)
+        (profile / stale).write_text("edited\n", encoding="utf-8")
+        state_path = profile / "goncloud-managed.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][stale] = "old\n"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaisesRegex(AssertionError, "managed-file conflict"):
+            self.deploy(runtime)
+        self.assertEqual((profile / stale).read_text(encoding="utf-8"), "edited\n")
 
 
 if __name__ == "__main__":

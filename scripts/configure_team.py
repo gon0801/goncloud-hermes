@@ -182,6 +182,17 @@ def check_file(target, desired, previous=None):
             raise ValueError(f"Local managed-file conflict: {target}")
 
 
+def _prune_empty_dirs(directory, stop):
+    """Remove directories a retired file left empty (``__pycache__`` aside)."""
+    import shutil
+
+    while directory != stop and directory.is_dir():
+        if any(child.name != "__pycache__" for child in directory.iterdir()):
+            return
+        shutil.rmtree(directory)
+        directory = directory.parent
+
+
 def contained(path, parent):
     resolved = path.resolve()
     if not resolved.is_relative_to(parent.resolve()):
@@ -318,7 +329,6 @@ def configure(
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
     plugin_root = ROOT / "plugins" / "goncloud-team"
-    provider_root = ROOT / "plugins" / "model-providers" / "goncloud-subscriptions"
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
             "Workflow plugin is missing; finish the build before applying profiles"
@@ -327,15 +337,6 @@ def configure(
         p
         for p in plugin_root.rglob("*")
         if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
-    ]
-    if not (provider_root / "plugin.yaml").is_file():
-        raise ValueError(
-            "Subscription model provider is missing; finish the build before applying profiles"
-        )
-    provider_files = [
-        path
-        for path in provider_root.rglob("*")
-        if path.is_file() and path.suffix in {".py", ".yaml", ".md"}
     ]
     revision = current_revision()
     prepared = []
@@ -384,11 +385,7 @@ def configure(
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
             ] = source.read_text(encoding="utf-8")
-        for source in provider_files:
-            files[
-                "plugins/model-providers/goncloud-subscriptions/"
-                + source.relative_to(provider_root).as_posix()
-            ] = source.read_text(encoding="utf-8")
+        shipped = set(files)
         if preserve_local_soul and (profile / "SOUL.md").exists():
             files.pop("SOUL.md")
         for relative, content in files.items():
@@ -397,13 +394,44 @@ def configure(
             if fresh and relative == "SOUL.md" and target.exists():
                 old = target.read_text(encoding="utf-8")
             check_file(target, content, old)
+        retired = [rel for rel in state.get("files", {}) if rel not in shipped]
+        for relative in retired:
+            # Deleting is safe only for the exact content this script wrote.
+            check_file(
+                contained(profile / relative, runtime_home),
+                state["files"][relative],
+            )
         prepared.append(
-            (profile, config_path, merged, files, state_path, desired, state)
+            (
+                profile,
+                config_path,
+                merged,
+                files,
+                state_path,
+                desired,
+                state,
+                retired,
+                shipped,
+            )
         )
     # Validate every existing profile before changing any managed content.
-    for profile, config_path, merged, files, state_path, desired, state in prepared:
+    for (
+        profile,
+        config_path,
+        merged,
+        files,
+        state_path,
+        desired,
+        state,
+        retired,
+        shipped,
+    ) in prepared:
         recorded_files = {
-            **state.get("files", {}),
+            **{
+                rel: content
+                for rel, content in state.get("files", {}).items()
+                if rel in shipped
+            },
             **{
                 relative: (
                     content.decode("utf-8") if isinstance(content, bytes) else content
@@ -416,6 +444,11 @@ def configure(
         )
         for relative, content in files.items():
             write_changed(profile / relative, content)
+        for relative in retired:
+            target = profile / relative
+            if target.exists():
+                target.unlink()
+            _prune_empty_dirs(target.parent, profile)
         write_changed(
             state_path,
             json.dumps(

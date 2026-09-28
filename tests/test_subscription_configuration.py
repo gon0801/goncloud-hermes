@@ -2067,12 +2067,6 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
             roles = json.loads((ROOT / "team.json").read_text())["profiles"]
             routing_source = (ROOT / "model-routing.source.json").read_bytes()
-            provider_root = ROOT / "plugins/model-providers/goncloud-subscriptions"
-            provider_files = {
-                path.relative_to(provider_root): path.read_bytes()
-                for path in provider_root.rglob("*")
-                if path.is_file() and path.suffix in {".py", ".yaml", ".md"}
-            }
             for role in roles:
                 profile = runtime / "profiles" / role
                 deployed_routing = (
@@ -2083,18 +2077,9 @@ class DeploymentTests(unittest.TestCase):
                     hashlib.sha256(routing_source).digest(),
                     role,
                 )
-                for relative, expected in provider_files.items():
-                    self.assertEqual(
-                        (
-                            profile
-                            / "plugins/model-providers/goncloud-subscriptions"
-                            / relative
-                        ).read_bytes(),
-                        expected,
-                        f"{role}: {relative}",
-                    )
 
             claw = runtime / "profiles" / "claw"
+            self.assertFalse((claw / "plugins/model-providers").exists())
             self.assertTrue(
                 (claw / "plugins/goncloud-team/subscriptions/router.py").is_file()
             )
@@ -2112,44 +2097,8 @@ class DeploymentTests(unittest.TestCase):
             claw_config = yaml.safe_load(
                 (claw / "config.yaml").read_text(encoding="utf-8")
             )
-            self.assertEqual(
-                claw_config["model"],
-                {"provider": "goncloud-subscriptions", "default": "main"},
-            )
-            self.assertNotIn("fallback_providers", claw_config)
+            self.assertEqual(claw_config["model"]["provider"], "opencode-go")
 
-            discovery = """
-from pathlib import Path
-import sys
-from providers import get_provider_profile
-profile = get_provider_profile('goncloud-subscriptions')
-assert profile is not None
-client = profile.create_client()
-module = sys.modules[client._conversation_router.__class__.__module__]
-print(Path(module.__file__).resolve())
-"""
-            discovered = {}
-            for role in ("claw", "scout"):
-                probe = subprocess.run(
-                    [sys.executable, "-c", discovery],
-                    cwd=upstream,
-                    env={
-                        **env,
-                        "HERMES_HOME": str(runtime / "profiles" / role),
-                    },
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                self.assertEqual(probe.returncode, 0, probe.stderr)
-                discovered[role] = Path(probe.stdout.strip()).resolve()
-                self.assertTrue(
-                    discovered[role].is_relative_to(
-                        (runtime / "profiles" / role).resolve()
-                    ),
-                    discovered[role],
-                )
-            self.assertNotEqual(discovered["claw"], discovered["scout"])
             secrets = claw / "subscription-router.env"
             second = subprocess.run(
                 command, capture_output=True, text=True, env=env, timeout=180
