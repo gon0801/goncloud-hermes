@@ -74,6 +74,32 @@ class StageInstructionTests(unittest.TestCase):
                 self.assertIn("blocked only when you cannot do your own stage", text)
 
 
+class TerminalFieldTrimTests(unittest.TestCase):
+    def test_a_slightly_long_field_is_trimmed_not_rejected(self):
+        # Live 2026-09-28 (t_e02d3646): Go 2's correct scout report had a
+        # 454-char summary against the 400 cap and was thrown away, sending the
+        # stage to a model that implemented instead of investigating.
+        long_report = envelope(
+            summary="s" * 454,
+            evidence=["e" * 130] + [f"item {n}" for n in range(9)],
+        )
+        parsed, _ = local_orchestrator_module._normalized_terminal(
+            fenced(long_report), "scout", ""
+        )
+
+        self.assertEqual(parsed["status"], "completed")
+        self.assertLessEqual(len(parsed["summary"]), 400)
+        self.assertTrue(parsed["summary"].startswith("s" * 390))
+        self.assertEqual(len(parsed["evidence"]), 8)
+        self.assertLessEqual(len(parsed["evidence"][0]), 120)
+
+    def test_the_total_size_cap_still_rejects(self):
+        with self.assertRaises(Exception):
+            local_orchestrator_module._normalized_terminal(
+                fenced(envelope(summary="x" * 5000)), "scout", ""
+            )
+
+
 class TerminalParserTests(unittest.TestCase):
     def test_only_last_complete_json_fence_has_authority(self):
         approved = envelope(review={"decision": "approve", "severity": None})
@@ -170,7 +196,6 @@ class TerminalParserTests(unittest.TestCase):
         for text in (
             "x" * 100000 + fenced(envelope()),
             fenced(envelope(summary="secret-marker" * 1000)),
-            fenced(envelope(evidence=["x"] * 100)),
         ):
             with self.assertRaises(WorkflowError) as error:
                 parse_terminal_envelope(text, role="scout")
@@ -181,8 +206,6 @@ class TerminalParserTests(unittest.TestCase):
         cases = (
             ("input", "sk-fixture" * 3000 + "\n" + fenced(envelope())),
             ("envelope", fenced(envelope(evidence=[credential] * 8))),
-            ("summary", fenced(envelope(summary="sk-fixture" * 50))),
-            ("evidence", fenced(envelope(evidence=["sk-fixture" * 13]))),
         )
         with patch.dict(os.environ, {"SERVICE_PASSWORD": credential}):
             for name, text in cases:
@@ -194,6 +217,25 @@ class TerminalParserTests(unittest.TestCase):
                     )
                     with self.assertRaises(WorkflowError):
                         parse_terminal_envelope(result.text, role="scout")
+
+    def test_over_long_fields_are_redacted_before_they_are_trimmed(self):
+        # Trimming first could cut a credential mid-token, and the fragment
+        # would no longer match the exact-value redaction pass.
+        credential = "opaque-credential-fixture-value"
+        text = fenced(
+            envelope(
+                summary="x" * 380 + credential + "y" * 40,
+                evidence=["z" * 100 + credential],
+            )
+        )
+        with patch.dict(os.environ, {"SERVICE_PASSWORD": credential}):
+            parsed, _ = local_orchestrator_module._normalized_terminal(
+                text, "scout", ""
+            )
+        joined = parsed["summary"] + "".join(parsed["evidence"])
+        self.assertNotIn("opaque-cred", joined)
+        self.assertLessEqual(len(parsed["summary"]), 400)
+        self.assertLessEqual(len(parsed["evidence"][0]), 120)
 
 
 class TransportEntryPointTests(unittest.TestCase):

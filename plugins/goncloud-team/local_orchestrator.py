@@ -158,13 +158,10 @@ def parse_terminal_envelope(text: str, *, role: str) -> dict:
     }:
         raise _invalid_terminal()
     summary, evidence, review = result["summary"], result["evidence"], result["review"]
-    if type(summary) is not str or not summary.strip() or len(summary) > 400:
+    if type(summary) is not str or not summary.strip():
         raise _invalid_terminal()
-    if type(evidence) is not list or len(evidence) > 8:
-        raise _invalid_terminal()
-    if any(
-        type(item) is not str or not item.strip() or len(item) > 120
-        for item in evidence
+    if type(evidence) is not list or any(
+        type(item) is not str or not item.strip() for item in evidence
     ):
         raise _invalid_terminal()
     if role == "reviewer" and result["status"] == "completed":
@@ -203,10 +200,19 @@ def _sanitize(text, instruction=""):
     return _SENSITIVE.sub("[redacted]", text)
 
 
+def _trimmed(text, limit):
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _normalized_terminal(text, role, instruction):
     parsed = parse_terminal_envelope(text, role=role)
-    parsed["summary"] = _sanitize(parsed["summary"], instruction)
-    parsed["evidence"] = [_sanitize(item, instruction) for item in parsed["evidence"]]
+    # Over-long fields are trimmed, not rejected: a correct 454-char scout
+    # summary was thrown away live (2026-09-28). Trim only after redaction, so
+    # a cut never leaves a credential fragment the exact-value pass cannot see.
+    parsed["summary"] = _trimmed(_sanitize(parsed["summary"], instruction), 400)
+    parsed["evidence"] = [
+        _trimmed(_sanitize(item, instruction), 120) for item in parsed["evidence"][:8]
+    ]
     text = (
         "```json\n"
         + json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
