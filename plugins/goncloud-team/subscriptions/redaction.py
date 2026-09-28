@@ -24,6 +24,8 @@ SENSITIVE_TEXT = re.compile(
     r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|(?-i:AKIA[0-9A-Z]{16})|"
     r"Bearer\s+[\w.\-]+|(?-i:Basic)\s+[A-Za-z0-9+/]{16,}={0,2}|"
     r"eyJ[\w-]+\.[\w-]+\.[\w-]+)"
+    # The password of a URL's user info (scheme://user:password@host).
+    r"|(?<=://)[^/\s:@]{1,64}:[^/\s@]{1,256}(?=@)"
     r"|(?<=[?&])(?:access_token|token|api_key|apikey|secret|password|key)="
     r"[^&\s\"']+",
     re.IGNORECASE,

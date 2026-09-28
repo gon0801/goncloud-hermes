@@ -119,6 +119,15 @@ class RedactionTests(unittest.TestCase):
             with self.subTest(boundary=boundary.__name__):
                 self.assertEqual(boundary(call), call)
 
+    def test_a_password_inside_a_url_is_still_redacted(self):
+        # Grok review 2026-09-27: the email shape used to catch this by luck.
+        url = "https://admin:S3cretPass@odoo.example.com/web"
+        for boundary in (redact_text, local_orchestrator._sanitize):
+            with self.subTest(boundary=boundary.__name__):
+                cleaned = boundary(url)
+                self.assertNotIn("S3cretPass", cleaned)
+                self.assertIn("odoo.example.com/web", cleaned)
+
     def test_git_revisions_survive_redaction(self):
         # Evidence carries commit hashes; hex heuristics would erase them.
         for boundary in (redact_text, local_orchestrator._sanitize):

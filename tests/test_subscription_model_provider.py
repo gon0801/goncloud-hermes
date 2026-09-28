@@ -191,6 +191,52 @@ class SubscriptionProviderTests(unittest.TestCase):
         self.assertIsNone(call["tools"])
         self.assertIsNone(call["tool_choice"])
 
+    def test_claude_invoke_markup_becomes_a_tool_call(self):
+        """Live 2026-09-27: Claude answered with <invoke name=...> markup,
+        Hermes parsed no call and the turn stopped at "Reviso..."."""
+        text = (
+            "Reviso el campo.\n\n<function_calls>\n"
+            '<invoke name="browser_exec">\n'
+            '<parameter name="code">print(js("1 < 2"))</parameter>\n'
+            '<parameter name="timeout_s">120</parameter>\n'
+            "</invoke>\n</function_calls>"
+        )
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_exec",
+                    "description": "Run browser code",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                            "timeout_s": {"type": "integer"},
+                        },
+                    },
+                },
+            }
+        ]
+        client = self.module.goncloud_subscriptions.create_client(
+            conversation_router=FakeConversationRouter(text),
+            workspace=self.workspace,
+        )
+
+        completion = client.chat.completions.create(
+            model="main",
+            messages=[{"role": "user", "content": "entra"}],
+            tools=tools,
+        )
+
+        message = completion.choices[0].message
+        self.assertEqual(completion.choices[0].finish_reason, "tool_calls")
+        self.assertEqual(message.content, "Reviso el campo.")
+        self.assertEqual(message.tool_calls[0].function.name, "browser_exec")
+        self.assertEqual(
+            json.loads(message.tool_calls[0].function.arguments),
+            {"code": 'print(js("1 < 2"))', "timeout_s": 120},
+        )
+
     def test_history_tool_calls_are_shown_in_the_text_contract(self):
         """A history of native tool_calls taught the model to call natively,
         which the tool-less CLI rejects (live 2026-09-27)."""

@@ -7,6 +7,7 @@ credential store. ``auth.json`` is never read or copied by this module.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
@@ -52,13 +53,28 @@ _CREDENTIAL_NAMES = {
 #: With its tools off, OpenCode rejects a native function call and the model
 #: closes with a promise ("dame un momento"); Hermes saw only that text and
 #: ended the turn with nothing done (live, 2026-09-27). The call's arguments
-#: are lost in the rejection, so the same session is asked to reissue it.
+#: are lost in the rejection, so the same session is asked to reissue it; it
+#: may also decline, so a refusal or an approval request is never dropped.
 _REISSUE_PROMPT = (
     "Native function calling is not available in this channel, so your last "
-    "tool call was never executed. Reissue it now as text, exactly as "
-    '<tool_call>{"id":"...","type":"function","function":{"name":"...",'
-    '"arguments":"<JSON string>"}}</tool_call>, and write nothing else.'
+    "tool call was never executed. If you still want to call it, reissue it "
+    'as text, exactly as <tool_call>{"id":"...","type":"function","function":'
+    '{"name":"...","arguments":"<JSON string>"}}</tool_call>. If you decided '
+    "not to call a tool, repeat your answer to the user instead."
 )
+_TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def _has_tool_call(text: str) -> bool:
+    """A parseable call, not a mere mention of the tag."""
+    for body in _TOOL_CALL_BLOCK.findall(text):
+        try:
+            call = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(call, dict) and isinstance(call.get("function"), dict):
+            return True
+    return False
 
 
 def _as_text_tool_calls(text: str) -> str:
@@ -67,13 +83,17 @@ def _as_text_tool_calls(text: str) -> str:
     The history shows earlier turns as ``{"role":"assistant","tool_calls":...}``
     lines and the model sometimes answers in that shape (reproduced live).
     """
+    start = text.find("{")
+    if start < 0:
+        return text
     try:
-        message = json.loads(text.strip())
+        message = json.loads(text[start:].strip())
     except json.JSONDecodeError:
         return text
     if not isinstance(message, dict) or not isinstance(message.get("tool_calls"), list):
         return text
-    blocks = [str(message.get("content") or "").strip()]
+    # A preamble before the echoed object is kept as prose.
+    blocks = [text[:start].strip(), str(message.get("content") or "").strip()]
     for call in message["tool_calls"]:
         blocks.append(f"<tool_call>{json.dumps(call, ensure_ascii=False)}</tool_call>")
     return "\n".join(block for block in blocks if block)
@@ -98,16 +118,16 @@ def parse_opencode_jsonl(output: str) -> dict:
             malformed = True
             continue
         event_type = str(event.get("type") or "").lower()
+        session_id = event.get("sessionID") or event.get("session_id") or session_id
         if event_type == "tool_use":
             # A failed tool is a rejected call, not a failed invocation.
-            state = (event.get("part") or {}).get("state") or {}
-            rejected_native_call = (
-                rejected_native_call or state.get("status") == "error"
-            )
+            part = event.get("part")
+            state = part.get("state") if isinstance(part, dict) else None
+            if isinstance(state, dict) and state.get("status") == "error":
+                rejected_native_call = True
             continue
         if "error" in event_type or event.get("error"):
             saw_error = True
-        session_id = event.get("sessionID") or event.get("session_id") or session_id
         info = event.get("info")
         if isinstance(info, dict):
             session_id = info.get("id") or session_id
@@ -210,7 +230,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 if (
                     parsed["rejected_native_call"]
                     and parsed["session_id"]
-                    and "<tool_call>" not in parsed["text"]
+                    and not _has_tool_call(_as_text_tool_calls(parsed["text"]))
                 ):
                     evidence = self._run(
                         request, route, _REISSUE_PROMPT, parsed["session_id"]

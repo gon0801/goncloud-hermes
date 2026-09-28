@@ -191,6 +191,117 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(resumed[resumed.index("--session") + 1], "ses_a")
         self.assertIn("<tool_call>", kwargs["input"])
 
+    def test_a_mere_mention_of_the_tag_does_not_skip_the_reissue(self):
+        """Codex review 2026-09-27: "No pude emitir <tool_call>" skipped it."""
+        rejected = "\n".join(
+            [
+                '{"type":"tool_use","sessionID":"ses_a","part":{"type":"tool",'
+                '"tool":"browser_exec","state":{"status":"error","error":"x"}}}',
+                '{"type":"text","sessionID":"ses_a","part":{"type":"text",'
+                '"text":"No pude emitir <tool_call>"}}',
+                '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+            ]
+        )
+        runner = SequencedCliRunner([rejected, rejected])
+
+        OpenCodeAdapter(runner=runner).invoke(
+            replace(request(self.workspace), tool_bridge=True),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_the_reissue_lets_the_model_keep_a_refusal(self):
+        """Grok review 2026-09-27: the reissue ordered "write nothing else",
+        which would drop a refusal or an approval request."""
+        rejected = "\n".join(
+            [
+                '{"type":"tool_use","sessionID":"ses_a","part":{"type":"tool",'
+                '"tool":"browser_exec","state":{"status":"error","error":"x"}}}',
+                '{"type":"text","sessionID":"ses_a","part":{"type":"text",'
+                '"text":"No ejecuto la compra; falta tu aprobacion."}}',
+                '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+            ]
+        )
+        kept = "\n".join(
+            [
+                '{"type":"text","sessionID":"ses_a","part":{"type":"text",'
+                '"text":"No ejecuto la compra; falta tu aprobacion."}}',
+                '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+            ]
+        )
+        runner = SequencedCliRunner([rejected, kept])
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            replace(request(self.workspace), tool_bridge=True),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+
+        self.assertNotIn("nothing else", runner.calls[1][1]["input"])
+        self.assertIn("aprobacion", result.text)
+
+    def test_the_session_id_on_the_rejected_call_is_enough_to_reissue(self):
+        rejected = "\n".join(
+            [
+                '{"type":"tool_use","sessionID":"ses_only","part":{"type":"tool",'
+                '"tool":"read","state":{"status":"error","error":"x"}}}',
+                '{"type":"text","part":{"type":"text","text":"dame un momento"}}',
+                '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+            ]
+        )
+        runner = SequencedCliRunner([rejected, rejected])
+
+        OpenCodeAdapter(runner=runner).invoke(
+            replace(request(self.workspace), tool_bridge=True),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+
+        self.assertEqual(len(runner.calls), 2)
+        resumed = runner.calls[1][0]
+        self.assertEqual(resumed[resumed.index("--session") + 1], "ses_only")
+
+    def test_a_transcript_shaped_call_after_a_preamble_is_kept(self):
+        echoed = json.dumps(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c9",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        stream = "\n".join(
+            [
+                '{"type":"tool_use","sessionID":"ses_c","part":{"type":"tool",'
+                '"tool":"read","state":{"status":"error","error":"x"}}}',
+                '{"type":"text","part":{"type":"text","text":"listo\\n"}}',
+                json.dumps({"type": "text", "part": {"type": "text", "text": echoed}}),
+                '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
+            ]
+        )
+        runner = SequencedCliRunner([stream])
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            replace(request(self.workspace), tool_bridge=True),
+            route(0, "opencode_go", "muse-spark-1.3-contributor"),
+        )
+
+        self.assertEqual(len(runner.calls), 1)
+        self.assertIn('"name": "read"', result.text)
+        self.assertTrue(result.text.startswith("listo"))
+
+    def test_malformed_tool_use_events_do_not_raise(self):
+        for line in (
+            '{"type":"tool_use","part":"x"}',
+            '{"type":"tool_use","part":{"state":"x"}}',
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(parse_opencode_jsonl(line)["rejected_native_call"])
+
     def test_a_rejected_native_call_outside_the_bridge_is_not_retried(self):
         rejected = "\n".join(
             [

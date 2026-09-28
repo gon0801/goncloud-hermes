@@ -64,19 +64,16 @@ def render_conversation_prompt(
         raise ValueError("tools must be a list of objects")
     normalized_tools = None if tools is None else json.loads(_json(tools))
     normalized_choice = json.loads(_json(tool_choice))
-    lines = [
-        "Continue this Hermes conversation. Preserve chronological order.",
-        f"TOOLS={_json(normalized_tools)}",
-        f"TOOL_CHOICE={_json(normalized_choice)}",
-        "MESSAGES_BEGIN",
-    ]
+    # Without tools here the schemas travel in the developer message; a
+    # TOOLS=null line beside "use only the declared tools" contradicted it.
+    lines = ["Continue this Hermes conversation. Preserve chronological order."]
+    if normalized_tools is not None:
+        lines.append(f"TOOLS={_json(normalized_tools)}")
+    if normalized_choice is not None:
+        lines.append(f"TOOL_CHOICE={_json(normalized_choice)}")
+    lines.append("MESSAGES_BEGIN")
     lines.extend(_json(message) for message in normalized_messages)
-    lines.extend(
-        [
-            "MESSAGES_END",
-            "Return the next assistant turn. Use only the declared tools and schema.",
-        ]
-    )
+    lines.extend(["MESSAGES_END", "Return the next assistant turn."])
     return "\n".join(lines)
 
 

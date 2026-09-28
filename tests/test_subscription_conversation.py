@@ -183,6 +183,17 @@ class ConversationRouterTests(unittest.TestCase):
         self.assertIn(r"\"city\":\"Lima\"", prompt)
         self.assertIn('"tool_call_id":"call_1"', prompt)
 
+    def test_a_prompt_without_tools_never_contradicts_the_developer_schemas(self):
+        """Codex review 2026-09-27: TOOLS=null next to "Use only the declared
+        tools" contradicted the schemas the developer message carries."""
+        prompt = render_conversation_prompt(
+            [{"role": "user", "content": "hola"}], None, None
+        )
+
+        self.assertNotIn("TOOLS=", prompt)
+        self.assertNotIn("TOOL_CHOICE=", prompt)
+        self.assertNotIn("declared tools", prompt)
+
     def test_task_and_invalid_request_failures_are_terminal(self):
         for kind in (FailureKind.TASK_FAILURE, FailureKind.INVALID_REQUEST):
             with self.subTest(kind=kind):
