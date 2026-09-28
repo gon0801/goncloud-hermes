@@ -41,6 +41,10 @@ _QUOTA_COOLDOWN_MINUTES = 15
 # slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
 # cooldown, not health, is what bridges it.
 _TIMEOUT_COOLDOWN_MINUTES = 15
+# A conversation turn times out on a heavy prompt far more often than on a
+# hung endpoint; fifteen minutes out sent the director past a healthy Opus to
+# grok for a whole task (live, 2026-09-27). The next turn retries it soon.
+_CONVERSATION_TIMEOUT_COOLDOWN_MINUTES = 2
 # Quota, connectivity and even credentials come back on their own, so a
 # quarantine is a verdict with a lifetime, not a permanent ban. After this
 # horizon the router may try the account again; only a successful real
@@ -265,7 +269,16 @@ class SubscriptionRouter:
             )
             denied = False
             if cooling:
-                availability = AdapterHealth(False, route.adapter, FailureKind.QUOTA)
+                # Name the real reason: a timeout bench recorded as "quota"
+                # made a healthy account look exhausted.
+                reason = (stored_health or {}).get("failure")
+                availability = AdapterHealth(
+                    False,
+                    route.adapter,
+                    FailureKind.TIMEOUT
+                    if reason == FailureKind.TIMEOUT.value
+                    else FailureKind.QUOTA,
+                )
             elif getattr(adapter, "probe_is_generative", False):
                 # Authorization runs outside OS locks: it may itself publish
                 # health. Recheck that publication under exclusion before any
@@ -475,10 +488,14 @@ class SubscriptionRouter:
                     + timedelta(minutes=_QUOTA_COOLDOWN_MINUTES),
                 )
             elif result.failure is FailureKind.TIMEOUT:
+                minutes = (
+                    _CONVERSATION_TIMEOUT_COOLDOWN_MINUTES
+                    if request.tool_bridge
+                    else _TIMEOUT_COOLDOWN_MINUTES
+                )
                 self.store.set_cooldown(
                     route.adapter,
-                    until=datetime.now(timezone.utc)
-                    + timedelta(minutes=_TIMEOUT_COOLDOWN_MINUTES),
+                    until=datetime.now(timezone.utc) + timedelta(minutes=minutes),
                 )
             skipped_routes.append(
                 SkippedRoute(

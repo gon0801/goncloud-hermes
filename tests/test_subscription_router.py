@@ -765,6 +765,56 @@ class FailoverTests(RouterTestCase):
         self.assertTrue(result.success)
         self.assertIsNotNone(router.store.cooldown_until("opencode_go"))
 
+    def test_a_timeout_cooldown_is_recorded_as_timeout_not_quota(self):
+        # Live 2026-09-27: one Opus timeout benched it and every later skip
+        # read "quota", so a healthy account looked exhausted.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TIMEOUT, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        router.run(request(self.workspace), routes_for_main())
+
+        router.run(
+            replace(request(self.workspace), workflow_id="wf-7", stage_id="st-7"),
+            routes_for_main(),
+        )
+
+        skipped = router.store.stage_attempts("wf-7", "st-7")[0]
+        self.assertEqual(skipped["disposition"], "skipped")
+        self.assertEqual(skipped["failure"], "timeout")
+
+    def test_a_conversation_timeout_benches_the_account_only_briefly(self):
+        # A conversation turn times out on a heavy prompt far more often than
+        # on a hung endpoint; fifteen minutes out sent the director to grok.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TIMEOUT, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        before = datetime.now(timezone.utc)
+
+        router.run(
+            replace(request(self.workspace), tool_bridge=True), routes_for_main()
+        )
+
+        until = router.store.cooldown_until("opencode_go")
+        self.assertIsNotNone(until)
+        self.assertLessEqual(until - before, timedelta(minutes=2, seconds=5))
+
+    def test_a_workflow_timeout_still_benches_a_hung_endpoint(self):
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TIMEOUT, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        before = datetime.now(timezone.utc)
+
+        router.run(request(self.workspace), routes_for_main())
+
+        until = router.store.cooldown_until("opencode_go")
+        self.assertGreaterEqual(until - before, timedelta(minutes=14))
+
     def test_ordinary_cooldown_is_recorded_with_quota_and_exact_duplicate_positions(
         self,
     ):
