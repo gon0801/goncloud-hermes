@@ -41,6 +41,56 @@ _DIRECTOR_TOOLSETS = [
     "web",
 ]
 
+ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
+
+#: How Hermes reaches each table adapter natively. Native tool calls are the
+#: point: through a CLI with its tools off, the director had to write calls as
+#: text and 8 of 13 were dropped on mis-escaped JSON (2026-09-28).
+_NATIVE_PROVIDERS = {
+    "opencode_go": {"provider": "opencode-go"},
+    # The owner's second Go account is a second credential of the same
+    # provider; Hermes' credential pool rotates to it on 429/exhaustion.
+    "opencode_go_2": {"provider": "opencode-go"},
+    "claude": {"provider": "anthropic"},
+    "muse": {"provider": "meta-ai"},
+    "grok": {"provider": "xai-oauth"},
+    "opencode_zai": {"provider": "zai", "base_url": ZAI_CODING_URL},
+    "codex": {"provider": "openai-codex"},
+    "kimi": {"provider": "kimi-coding"},
+}
+
+
+def director_native_config(source):
+    """The director's native chain, compiled from the table's ``main`` row."""
+    plugin_dir = str(ROOT / "plugins" / "goncloud-team")
+    if plugin_dir not in sys.path:
+        sys.path.insert(0, plugin_dir)
+    from subscriptions.catalog import compile_profile_routes
+
+    entries, overrides = [], {}
+    for route in compile_profile_routes("claw", source):
+        binding = _NATIVE_PROVIDERS.get(route.adapter)
+        if binding is None:
+            raise ValueError(
+                f"no native provider for table position {route.slot}: {route.label}"
+            )
+        entry = {**binding, "model": route.model}
+        if not entries or entries[-1] != entry:
+            entries.append(entry)
+        if route.reasoning_effort:
+            chosen = overrides.setdefault(route.model, route.reasoning_effort)
+            if chosen != route.reasoning_effort:
+                raise ValueError(f"two reasoning efforts for {route.model}")
+    primary, *fallbacks = entries
+    model = {"provider": primary["provider"], "default": primary["model"]}
+    if "base_url" in primary:
+        model["base_url"] = primary["base_url"]
+    return {
+        "model": model,
+        "fallback_providers": fallbacks,
+        "agent": {"reasoning_overrides": overrides},
+    }
+
 
 def remove_owned_native_routing(existing, previous):
     cleaned = copy.deepcopy(existing)

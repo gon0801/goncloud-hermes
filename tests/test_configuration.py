@@ -311,6 +311,74 @@ class ConfigurationTests(unittest.TestCase):
             module.refuse_regression({"source_revision": deployed}, repo)
             module.refuse_regression({}, repo)
 
+
+class DirectorNativeChainTests(unittest.TestCase):
+    def table(self):
+        return json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+
+    def test_director_chain_is_the_main_row_on_native_providers(self):
+        config = module.director_native_config(self.table())
+
+        # Slots 0 and 1 are the owner's two OpenCode Go accounts: one native
+        # provider whose credential pool rotates between them.
+        self.assertEqual(
+            config["model"],
+            {"provider": "opencode-go", "default": "muse-spark-1.3-contributor"},
+        )
+        self.assertEqual(
+            config["fallback_providers"],
+            [
+                {"provider": "anthropic", "model": "claude-opus-5"},
+                {"provider": "meta-ai", "model": "muse-spark-1.3"},
+                {"provider": "xai-oauth", "model": "grok-4.6"},
+                {
+                    "provider": "zai",
+                    "model": "glm-5.3",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                },
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "kimi-coding", "model": "k3"},
+            ],
+        )
+        self.assertEqual(
+            config["agent"],
+            {
+                "reasoning_overrides": {
+                    "claude-opus-5": "xhigh",
+                    "muse-spark-1.3": "max",
+                    "gpt-5.6-sol": "xhigh",
+                }
+            },
+        )
+
+    def test_reordering_the_table_reorders_the_chain(self):
+        table = self.table()
+        main = table["chains"]["main"]
+        main[3], main[4] = main[4], main[3]
+
+        chain = module.director_native_config(table)["fallback_providers"]
+
+        self.assertEqual(
+            [entry["provider"] for entry in chain[:3]],
+            ["anthropic", "xai-oauth", "meta-ai"],
+        )
+
+    def test_a_position_without_native_binding_fails_naming_the_label(self):
+        table = self.table()
+        table["chains"]["main"][5] = "deepseek/deepseek-flash"
+
+        with self.assertRaisesRegex(ValueError, "deepseek/deepseek-flash"):
+            module.director_native_config(table)
+
+    def test_one_model_with_two_efforts_is_refused(self):
+        table = self.table()
+        table["chains"]["main"][6] = "anthropic/claude-opus-5 (high)"
+
+        with self.assertRaisesRegex(ValueError, "claude-opus-5"):
+            module.director_native_config(table)
+
     def test_the_director_role_keeps_business_work_off_the_native_board(self):
         # 2026-09-15: after a gateway restart the director handed an Odoo
         # lookup to `operaciones` with kanban_create. Nothing executes those
