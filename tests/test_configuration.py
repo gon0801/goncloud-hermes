@@ -123,15 +123,16 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(applied.returncode, 0, applied.stderr)
             migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             managed = json.loads(state_path.read_text(encoding="utf-8"))
-            # The old owned chain is gone; the director carries exactly the
-            # one provider that compiles the authoritative table.
-            self.assertEqual(
-                migrated["model"],
-                {"provider": "goncloud-subscriptions", "default": "main"},
+            # The old owned chain is migrated into the native chain compiled
+            # from the authoritative table's main row.
+            native = module.director_native_config(
+                json.loads(routing_source.decode("utf-8"))
             )
-            self.assertNotIn("fallback_providers", migrated)
+            self.assertEqual(migrated["model"], native["model"])
+            self.assertEqual(
+                migrated["fallback_providers"], native["fallback_providers"]
+            )
             self.assertEqual(managed["config"]["model"], migrated["model"])
-            self.assertNotIn("fallback_providers", managed["config"])
             self.assertEqual(
                 (
                     profile / "plugins/goncloud-team/model-routing.source.json"
@@ -173,14 +174,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIs(team["kanban"].get("dispatch_in_gateway"), False)
 
     def test_only_the_director_converses_natively_and_workers_carry_nothing(self):
-        # The director must be able to converse on Telegram, so it gets the
-        # owner's conversation chain. Workers get no native model and no
-        # fallback chain: their models come from the slot table through the
-        # subscription router, and a native chain there would be the competing
-        # router the recovery removed.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        table = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
         self.assertNotIn("director_model", team)
         self.assertNotIn("director_fallbacks", team)
+        native = module.director_native_config(table)
 
         for role in team["profiles"]:
             with self.subTest(role=role):
@@ -188,41 +188,24 @@ class ConfigurationTests(unittest.TestCase):
                     role, team, Path("C:/runtime-home")
                 )
                 if role == team["director"]:
+                    self.assertEqual(desired["model"], native["model"])
                     self.assertEqual(
-                        desired["model"],
-                        {
-                            "provider": "goncloud-subscriptions",
-                            "default": "main",
-                        },
+                        desired["fallback_providers"], native["fallback_providers"]
                     )
-                    self.assertNotIn("fallback_providers", desired)
+                    self.assertEqual(
+                        desired["agent"]["reasoning_overrides"],
+                        native["agent"]["reasoning_overrides"],
+                    )
                 else:
                     self.assertNotIn("model", desired)
                     self.assertNotIn("fallback_providers", desired)
+                    self.assertNotIn("agent", desired)
 
-    def test_the_director_provider_compiles_the_exact_main_row(self):
+    def test_no_profile_is_configured_through_the_text_bridge(self):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-        table = json.loads(
-            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-        )
-        sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
-        from subscriptions.catalog import compile_profile_routes
-
-        claw = compile_profile_routes("claw", table)
-        entrega = compile_profile_routes("entrega", table)
-        desired = module.desired_profile_config(
-            team["director"], team, Path("C:/runtime-home")
-        )
-
-        self.assertEqual(
-            desired["model"],
-            {"provider": "goncloud-subscriptions", "default": "main"},
-        )
-        self.assertNotIn("fallback_providers", desired)
-        self.assertEqual(claw, entrega)
-        self.assertEqual([route.label for route in claw], table["chains"]["main"])
-        self.assertEqual(claw[1].adapter, "opencode_go_2")
-        self.assertEqual(claw[2].reasoning_effort, "xhigh")
+        for role in team["profiles"]:
+            desired = module.desired_profile_config(role, team, Path("C:/runtime-home"))
+            self.assertNotIn("goncloud-subscriptions", json.dumps(desired))
 
     def test_director_gets_the_full_toolset_and_workers_the_baseline(self):
         # Owner decision (2026-09-15): the director drives Odoo and Edge over
@@ -429,6 +412,28 @@ class DirectorNativeChainTests(unittest.TestCase):
                 {"terminal": "local"}, {"terminal": {"cwd": "here"}}, {}, fresh=True
             )
 
+    def test_an_owned_key_no_longer_desired_is_retired(self):
+        previous = {"agent": {"reasoning_overrides": {"a": "high", "b": "max"}}}
+        existing = {
+            "agent": {"reasoning_overrides": {"a": "high", "b": "max"}, "keep": 1}
+        }
+        desired = {"agent": {"reasoning_overrides": {"a": "high"}}}
+
+        merged = module.merge_owned(existing, desired, previous)
+
+        self.assertEqual(
+            merged, {"agent": {"reasoning_overrides": {"a": "high"}, "keep": 1}}
+        )
+
+    def test_a_retired_key_the_user_changed_is_a_conflict(self):
+        previous = {"agent": {"reasoning_overrides": {"b": "max"}}}
+        existing = {"agent": {"reasoning_overrides": {"b": "low"}}}
+
+        with self.assertRaisesRegex(ValueError, "agent.reasoning_overrides.b"):
+            module.merge_owned(
+                existing, {"agent": {"reasoning_overrides": {}}}, previous
+            )
+
     def test_managed_file_conflict_leaves_contents(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "SOUL.md"
@@ -528,11 +533,17 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
             self.assertEqual(preserved.returncode, 0, preserved.stderr)
             self.assertEqual(claw_soul.read_text(encoding="utf-8"), local_soul)
+            claw_config = yaml.safe_load(
+                (runtime / "profiles/claw/config.yaml").read_text(encoding="utf-8")
+            )
+            native = module.director_native_config(
+                json.loads(
+                    (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+                )
+            )
+            self.assertEqual(claw_config["model"], native["model"])
             self.assertEqual(
-                yaml.safe_load(
-                    (runtime / "profiles/claw/config.yaml").read_text(encoding="utf-8")
-                )["model"],
-                {"provider": "goncloud-subscriptions", "default": "main"},
+                claw_config["fallback_providers"], native["fallback_providers"]
             )
             self.assertEqual(
                 (

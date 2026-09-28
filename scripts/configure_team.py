@@ -155,6 +155,17 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
             raise ValueError(
                 f"Local configuration conflict: {location}; preserve and reconcile manually"
             )
+    # A key this script owned last time and no longer ships is retired, unless
+    # the user changed it, which is a conflict like any other.
+    for key, before in previous.items():
+        if key in desired or key not in existing:
+            continue
+        if existing[key] != before:
+            location = f"{prefix}.{key}".strip(".")
+            raise ValueError(
+                f"Local configuration conflict: {location}; preserve and reconcile manually"
+            )
+        result.pop(key)
     return result
 
 
@@ -268,12 +279,16 @@ def desired_profile_config(role, team, runtime_home):
         "kanban": team["kanban"],
     }
     if role == team["director"]:
-        # The local provider compiles the same authoritative main row used by
-        # workflows. A second native fallback list would compete with it.
-        desired["model"] = {
-            "provider": "goncloud-subscriptions",
-            "default": "main",
-        }
+        # The director converses on native providers (native tool calls),
+        # compiled from the authoritative main row so no hand-written chain
+        # can contradict the table.
+        desired.update(
+            director_native_config(
+                json.loads(
+                    (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+                )
+            )
+        )
         # The director carries the full toolset over Telegram by owner decision
         # (browser, computer_use and the rest): it drives Odoo and Edge and runs
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
