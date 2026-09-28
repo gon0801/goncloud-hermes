@@ -110,6 +110,15 @@ class RedactionTests(unittest.TestCase):
                     self.assertNotIn(marker, cleaned)
                     self.assertIn("worker said:", cleaned)
 
+    def test_email_addresses_are_ordinary_data(self):
+        # Live 2026-09-27: the model's fill_input("#login", "<email>") reached
+        # Hermes as "[redacted]      " and the Odoo login failed for hours.
+        # Only credentials are redacted; an address is not one.
+        call = 'fill_input("#login", "owner@example.test")'
+        for boundary in (redact_text, local_orchestrator._sanitize):
+            with self.subTest(boundary=boundary.__name__):
+                self.assertEqual(boundary(call), call)
+
     def test_git_revisions_survive_redaction(self):
         # Evidence carries commit hashes; hex heuristics would erase them.
         for boundary in (redact_text, local_orchestrator._sanitize):

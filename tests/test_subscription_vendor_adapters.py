@@ -662,7 +662,7 @@ class HttpAdapterTests(unittest.TestCase):
             "opaque-header-fixture",
             "opaque-inherited-fixture",
             "sk-synthetic-pattern",
-            "fixture@example.test",
+            "ghp_syntheticfixture0123456789ab",
         )
         for adapter_type, credentials, body_fn in (
             (ZAIAdapter, {"auth_token": sensitive[0]}, zai_ok_body),
@@ -842,7 +842,6 @@ class HttpAdapterTests(unittest.TestCase):
                     PROBE_MAX_TOKENS,
                 )
                 self.assertNotIn("sk-sensitive", repr(result))
-                self.assertNotIn("owner@example.test", repr(result))
             for status, failure in (
                 (401, FailureKind.AUTH),
                 (429, FailureKind.QUOTA),

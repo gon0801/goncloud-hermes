@@ -143,11 +143,11 @@ class SafeProcessTests(unittest.TestCase):
         self.assertFalse(runner.prompt_path.exists())
         self.assertNotIn("task", " ".join(runner.command))
 
-    def test_inherited_credentials_and_token_email_patterns_are_redacted(self):
+    def test_inherited_credentials_and_token_patterns_are_redacted(self):
         sensitive = (
             "opaque-inherited-fixture",
             "sk-synthetic-pattern",
-            "fixture@example.test",
+            "ghp_syntheticfixture0123456789ab",
         )
         with patch.dict(os.environ, {"SERVICE_PASSWORD": sensitive[0]}):
             evidence = run_cli(

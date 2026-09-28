@@ -122,7 +122,7 @@ class MuseBridgeTests(unittest.TestCase):
         sensitive = (
             "opaque-muse-fixture",
             "sk-synthetic-pattern",
-            "fixture@example.test",
+            "ghp_syntheticfixture0123456789ab",
             "private synthetic assignment",
         )
 

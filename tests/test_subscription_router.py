@@ -508,9 +508,7 @@ class FailoverTests(RouterTestCase):
         health = router.store.health("opencode_go")
         status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
         self.assertNotIn("sk-sensitive", repr(health))
-        self.assertNotIn("owner@example.test", repr(health))
         self.assertNotIn("sk-sensitive", repr(status))
-        self.assertNotIn("owner@example.test", repr(status))
 
     def test_absent_health_probes_once_and_persists_result(self):
         router = self.router()
@@ -1226,7 +1224,7 @@ class StateStoreTests(RouterTestCase):
         sensitive = (
             "opaque-state-fixture",
             "sk-synthetic-pattern",
-            "fixture@example.test",
+            "ghp_syntheticfixture0123456789ab",
         )
         text = " ".join(sensitive)
         store = SubscriptionStateStore(self.db_path)

@@ -633,7 +633,7 @@ class SubscriptionRunTests(unittest.TestCase):
         sensitive = (
             "opaque-inherited-fixture",
             "sk-synthetic-pattern",
-            "fixture@example.test",
+            "ghp_syntheticfixture0123456789ab",
             "private synthetic assignment",
         )
 

@@ -518,7 +518,6 @@ class LocalOrchestratorTests(unittest.TestCase):
         self.orchestrator.resume(first["workflow_id"], stop_after="ingenieria")
         public = repr(status) + self.requests[-1].prompt
         self.assertNotIn("sk-legacy-private", public)
-        self.assertNotIn("owner@example.test", public)
 
     def test_blocked_reviewer_retains_terminal_evidence_in_status(self):
         self.responses["reviewer"] = fenced(
@@ -613,7 +612,6 @@ class LocalOrchestratorTests(unittest.TestCase):
             )
         )
         self.assertNotIn("sk-cached-private", public)
-        self.assertNotIn("owner@example.test", public)
 
     def test_cached_malformed_success_becomes_durable_failure_without_reinvocation(
         self,
@@ -1286,7 +1284,7 @@ class LocalOrchestratorTests(unittest.TestCase):
             result["workflow_id"], result["stages"]["scout"]["id"]
         )
         public = repr(result) + repr(attempts)
-        for secret in (instruction, "sk-private-marker", "owner@example.test"):
+        for secret in (instruction, "sk-private-marker"):
             self.assertNotIn(secret, public)
 
     def test_invalid_assignment_and_stop_role_never_invoke_vendor(self):

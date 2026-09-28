@@ -14,16 +14,16 @@ _SENSITIVE_KEY = re.compile(
     r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY)(?:[_-](?:VALUE|JSON))?$",
     re.IGNORECASE,
 )
-# Credential shapes worth catching without knowing the value. Hex runs are
-# deliberately absent: evidence carries git revisions and hashes. Every open
-# class is bounded (RFC 5321 lengths for mail): an unbounded run backtracked
+# Credential shapes worth catching without knowing the value. Only real
+# credentials: hex runs would erase git revisions, and email addresses are
+# working data (a redacted address in a tool call broke the Odoo login,
+# 2026-09-27). Every open class stays bounded: an unbounded run backtracked
 # from every word boundary of a minified blob, minutes per 100 KB.
 SENSITIVE_TEXT = re.compile(
     r"\b(?:sk-[\w-]+|xai-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|glpat-[\w-]+|"
     r"xox[abopr]-[\w-]+|AIza[\w-]{20,}|(?-i:AKIA[0-9A-Z]{16})|"
     r"Bearer\s+[\w.\-]+|(?-i:Basic)\s+[A-Za-z0-9+/]{16,}={0,2}|"
-    r"eyJ[\w-]+\.[\w-]+\.[\w-]+|"
-    r"[\w.+-]{1,64}@[\w.-]{1,253}\.[a-z]{2,})"
+    r"eyJ[\w-]+\.[\w-]+\.[\w-]+)"
     r"|(?<=[?&])(?:access_token|token|api_key|apikey|secret|password|key)="
     r"[^&\s\"']+",
     re.IGNORECASE,
