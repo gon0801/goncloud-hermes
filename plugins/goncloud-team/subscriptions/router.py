@@ -268,7 +268,16 @@ class SubscriptionRouter:
                 request.workflow_id, request.stage_id, route.slot
             )
             denied = False
-            if cooling:
+            if request.tool_bridge and not getattr(
+                adapter, "serves_conversations", True
+            ):
+                # Skip before any probe or lock: muse cannot answer a
+                # conversation, yet the director still waited on its WSL
+                # probe (up to 120 s cold) first. The account stays healthy.
+                availability = AdapterHealth(
+                    False, route.adapter, FailureKind.MODEL_UNAVAILABLE
+                )
+            elif cooling:
                 # Name the real reason: a timeout bench recorded as "quota"
                 # made a healthy account look exhausted.
                 reason = (stored_health or {}).get("failure")

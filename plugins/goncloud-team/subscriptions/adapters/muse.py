@@ -30,6 +30,9 @@ _MUSE = "/home/goncloud/.local/bin/muse"
 class MuseAdapter(SubscriptionAdapter):
     """Delegate one bounded stage to the owner's Muse subscription in WSL."""
 
+    # muse exec cannot drop its own tools, so it never serves a Hermes
+    # conversation; the router skips it there without a WSL probe.
+    serves_conversations = False
     # WSL cold starts can exceed the default probe window by a wide margin.
     max_probe_timeout_seconds = 120
     probe_timeout_seconds = 120

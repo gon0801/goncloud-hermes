@@ -802,6 +802,48 @@ class FailoverTests(RouterTestCase):
         self.assertIsNotNone(until)
         self.assertLessEqual(until - before, timedelta(minutes=2, seconds=5))
 
+    def test_a_conversation_skips_an_adapter_that_cannot_serve_it_unprobed(self):
+        # muse cannot answer a Hermes conversation, yet the director still
+        # waited on its WSL probe (up to 120 s cold) before it said so.
+        for name in ("opencode_go", "claude"):
+            self.fake_adapters[name].result = failed(FailureKind.QUOTA, adapter=name)
+        self.fake_adapters["muse"].serves_conversations = False
+        self.fake_adapters["grok"].result = completed(adapter="grok")
+        router = self.router()
+
+        result = router.run(
+            replace(request(self.workspace), tool_bridge=True), routes_for_main()
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "grok")
+        self.assertEqual(self.fake_adapters["muse"].probes, [])
+        self.assertEqual(self.fake_adapters["muse"].requests, [])
+        self.assertIsNone(router.store.health("muse"))
+        skipped = [
+            row
+            for row in router.store.stage_attempts("wf-6", "st-6")
+            if row["adapter"] == "muse"
+        ]
+        self.assertTrue(skipped)
+        self.assertTrue(all(row["disposition"] == "skipped" for row in skipped))
+        self.assertTrue(all(row["failure"] == "model_unavailable" for row in skipped))
+
+    def test_a_workflow_still_uses_an_adapter_that_skips_conversations(self):
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.QUOTA, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = failed(
+            FailureKind.QUOTA, adapter="claude"
+        )
+        self.fake_adapters["muse"].serves_conversations = False
+        self.fake_adapters["muse"].result = completed(adapter="muse")
+        router = self.router()
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "muse")
+
     def test_a_workflow_timeout_still_benches_a_hung_endpoint(self):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.TIMEOUT, adapter="opencode_go"

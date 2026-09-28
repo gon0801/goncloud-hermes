@@ -1246,10 +1246,19 @@ class ClaudeToolBridgeTests(unittest.TestCase):
         self.assertEqual(command[command.index("--tools") + 1], "")
         self.assertIn("--strict-mcp-config", command)
 
+    def test_conversation_turn_skips_the_owners_claude_code_setup(self):
+        # Measured 2026-09-27 on the live 135k-char turn: the owner's hooks,
+        # 113 skills and plugins added ~15 s per turn (35 s vs 20 s) and fired
+        # the owner's session hooks on every Hermes turn. OAuth is not a setting.
+        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
+        self.assertEqual(command[command.index("--setting-sources") + 1], "")
+        self.assertIn("--disable-slash-commands", command)
+
     def test_workspace_stage_keeps_native_tools(self):
         command = self.command_for(request(self.workspace))
         self.assertNotIn("--tools", command)
         self.assertNotIn("--strict-mcp-config", command)
+        self.assertNotIn("--setting-sources", command)
 
 
 class GrokToolBridgeTests(unittest.TestCase):
