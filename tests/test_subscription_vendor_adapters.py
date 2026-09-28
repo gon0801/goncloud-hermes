@@ -380,6 +380,21 @@ class KimiGrokTests(unittest.TestCase):
         self.assertIsNotNone(runner.command)
         self.assertEqual(config.read_bytes(), original)
 
+    def test_kimi_high_effort_in_thinking_section_allows_invocation(self):
+        config = self.workspace / "config.toml"
+        original = b'[thinking]\nenabled = true\neffort = "high"\n'
+        config.write_bytes(original)
+        runner = AgentFileReadingRunner(stdout=KIMI_STREAM)
+
+        result = KimiAdapter(runner=runner, config_path=config).invoke(
+            request(self.workspace),
+            route_for("kimi", "kimi-for-coding", reasoning_effort="high"),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(runner.command)
+        self.assertEqual(config.read_bytes(), original)
+
     def test_kimi_effort_mismatch_fails_closed_without_invoking_or_rewriting(self):
         config = self.workspace / "config.toml"
         original = b'effort = "xhigh"\n'

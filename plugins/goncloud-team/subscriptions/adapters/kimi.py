@@ -209,7 +209,12 @@ class KimiAdapter(SubscriptionAdapter):
             configuration = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError):
             return None
-        effort = configuration.get("effort")
+        thinking = configuration.get("thinking")
+        effort = (
+            thinking["effort"]
+            if isinstance(thinking, dict) and "effort" in thinking
+            else configuration.get("effort")
+        )
         return effort if isinstance(effort, str) else None
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
