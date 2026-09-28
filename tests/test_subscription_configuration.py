@@ -1342,6 +1342,53 @@ class LiveEvidenceTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
+    def test_default_live_matrix_probes_exactly_the_adapters_the_table_binds(self):
+        from subscriptions.catalog import compile_profile_routes, load_routing_source
+
+        class ReadyAdapter:
+            timeout_seconds = 300
+            probe_timeout_seconds = 30
+
+            def probe(self, route):
+                return AdapterHealth(True, route.adapter)
+
+            def invoke(self, request, route):
+                return InvocationResult(
+                    True,
+                    "GONCLOUD_PROBE_OK",
+                    route.adapter,
+                    route.model,
+                    route.billing_mode,
+                )
+
+            def live_probe(self, route):
+                return self.invoke(None, route)
+
+        routing = load_routing_source()
+        bound = {
+            route.adapter
+            for profile in routing["chains"]
+            for route in compile_profile_routes(profile, routing)
+        }
+        # The HTTP twins are probed with a table model of their family.
+        expected = bound | {"zai", "deepseek"}
+        adapters = {name: ReadyAdapter() for name in expected | {"opencode_zen"}}
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry",
+                return_value=adapters,
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            summary = module.run_live_probe_all()
+
+        probed = [result["adapter"] for result in summary["results"]]
+        self.assertEqual(set(probed), expected)
+        self.assertEqual(len(probed), len(expected))
+        self.assertIn("opencode_zai", probed)
+        self.assertEqual(summary["passed"], len(expected))
+
     def test_live_probe_commands_exclude_other_processes_and_release_after_crash(self):
         import sqlite3
         import time

@@ -52,6 +52,7 @@ ADAPTER_ORDER = (
     "claude",
     "codex",
     "kimi",
+    "opencode_zai",
     "zai",
     "grok",
     "deepseek",
@@ -814,7 +815,9 @@ def _run_live_probe_all(json_out, only, *, private_env, state):
     from subscriptions.adapters import build_adapter_registry
 
     routes = _probe_routes()
-    order = ADAPTER_ORDER
+    # Only what the owner's table binds: an unbound adapter has no route to
+    # probe, and a bound one missing here would never be verified.
+    order = tuple(name for name in ADAPTER_ORDER if name in routes)
     if only:
         selected = {name.strip() for name in only.split(",") if name.strip()}
         unknown = selected - set(order)
