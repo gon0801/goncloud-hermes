@@ -35,6 +35,51 @@ except ImportError:
     )
 
 MAX_TERMINAL_BYTES = 1800
+#: Stages that must leave the repository exactly as they found it. Live
+#: 2026-09-28, ingenieria wrote and committed the change itself and scout did
+#: the same on another run; instructions alone did not hold.
+_READ_ONLY_STAGES = frozenset({"scout", "ingenieria"})
+
+
+def _workspace_fingerprint(repository):
+    """HEAD plus every tracked and untracked change, or None without git."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(repository), "status", "--porcelain", "-uall"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if head.returncode != 0 or status.returncode != 0:
+        return None
+    return head.stdout.strip(), status.stdout
+
+
+def _edited_by_read_only_stage(role, before, after):
+    """Blocked envelope when a planning stage changed the repository."""
+    changed = [line[3:] for line in after[1].splitlines()][:5]
+    evidence = [f"HEAD {before[0][:12]} -> {after[0][:12]}"] + [
+        f"changed: {path}"[:120] for path in changed
+    ]
+    return {
+        "status": "blocked",
+        "summary": (
+            f"{role} changed the repository, which its stage must not do; the "
+            "implementer stage makes changes. Review and revert before resuming."
+        ),
+        "evidence": evidence,
+        "review": None,
+    }
+
+
 MAX_INPUT_BYTES = 24000
 #: Same bound the local CLI applies to an assignment read from a file or stdin.
 MAX_INSTRUCTION_CHARS = 32768
@@ -664,6 +709,11 @@ class LocalOrchestrator:
                     for key in ("workflow_id", "task_id", "repository", "revision")
                 }
             )
+            before = (
+                _workspace_fingerprint(contract["repository"])
+                if role in _READ_ONLY_STAGES
+                else None
+            )
             try:
                 result = self.stage_runner(bound, **assignment)
                 if (
@@ -678,6 +728,10 @@ class LocalOrchestrator:
                 )
             except Exception:
                 terminal, result = None, {}
+            if before is not None and terminal is not None:
+                after = _workspace_fingerprint(contract["repository"])
+                if after is not None and after != before:
+                    terminal = _edited_by_read_only_stage(role, before, after)
             self._finish_stage(bound, workflow_id, stage["id"], role, terminal, result)
             if terminal is None or terminal["status"] == "blocked":
                 return self._report(workflow_id, "blocked")

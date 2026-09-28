@@ -435,7 +435,12 @@ class WorkflowService:
         )
         stage_directions = {
             "scout": "Investigate the code and constraints; report evidence, do not implement.",
-            "ingenieria": "Produce the technical plan and reconcile peer consultation findings.",
+            "ingenieria": (
+                "Produce the technical plan and reconcile peer consultation findings. "
+                "Plan only: do not create, edit or delete files and do not commit; "
+                "the implementer stage makes the change, and an edited repository "
+                "blocks this stage."
+            ),
             "implementer": "Implement the approved change and its regression tests.",
             "verifier": (
                 "Verify the requested behavior with fresh evidence. Also perform business-rule "

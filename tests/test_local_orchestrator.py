@@ -494,6 +494,56 @@ class LocalOrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(len(self.requests), 7)
 
+    def _real_git_repo(self):
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q", "-b", "main")
+        (self.repo / "README.md").write_text("probe\n", encoding="utf-8")
+        git("add", "README.md")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "init",
+        )
+
+    def test_a_planning_stage_that_edits_the_repository_stops_the_chain(self):
+        # Live 2026-09-28 (t_2748d636): ingenieria wrote and committed the
+        # change itself; implementer then only confirmed it. Planning stages
+        # must leave the repository exactly as they found it.
+        for role in ("scout", "ingenieria"):
+            with self.subTest(role=role):
+                self.setUp()
+                self._real_git_repo()
+                invoke = LocalOrchestratorTests.invoke.__get__(self)
+
+                def editing_invoke(request, route, role=role):
+                    if request.role == role:
+                        (Path(request.workspace) / "hola.txt").write_text(
+                            "hola\n", encoding="utf-8"
+                        )
+                    return invoke(request, route)
+
+                self.invoke = editing_invoke
+                result = self.start()
+
+                self.assertEqual(result["outcome"], "blocked")
+                self.assertEqual(result["stages"][role]["status"], "blocked")
+                self.assertNotIn("implementer", [r.role for r in self.requests])
+
+    def test_a_planning_stage_that_leaves_the_repository_alone_proceeds(self):
+        self._real_git_repo()
+        result = self.start()
+        self.assertEqual(result["outcome"], "delivered")
+
     def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
         self,
     ):
