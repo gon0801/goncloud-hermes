@@ -20,6 +20,25 @@ from hermes_constants import get_hermes_home
 _PROVIDER = "goncloud-subscriptions"
 
 
+def _as_text_contract(message: dict[str, Any]) -> dict[str, Any]:
+    """Show a past assistant tool call the way the contract asks for new ones.
+
+    A history of native ``tool_calls`` taught the model to call natively, which
+    the tool-less CLI rejects (live 2026-09-27).
+    """
+    calls = message.get("tool_calls")
+    if message.get("role") != "assistant" or not calls:
+        return message
+    blocks = [str(message.get("content") or "").strip()]
+    blocks += [
+        f"<tool_call>{json.dumps(call, ensure_ascii=False)}</tool_call>"
+        for call in calls
+    ]
+    rendered = {key: value for key, value in message.items() if key != "tool_calls"}
+    rendered["content"] = "\n".join(block for block in blocks if block)
+    return rendered
+
+
 def _contained(path: Path, parent: Path) -> Path:
     resolved = path.resolve()
     if not resolved.is_relative_to(parent.resolve()):
@@ -146,18 +165,20 @@ class GoncloudSubscriptionClient:
         requested_model = model or "main"
         if requested_model != "main":
             raise ValueError("goncloud-subscriptions exposes only the main row")
-        bridged_messages = list(messages or [])
+        bridged_messages = [_as_text_contract(message) for message in messages or []]
         bridge_sections = render_tool_bridge_sections(tools, tool_choice)
         if bridge_sections:
             bridged_messages.insert(
                 0,
                 {"role": "developer", "content": "\n\n".join(bridge_sections)},
             )
+        # The developer section already carries the schemas and the choice;
+        # passing them on as well rendered all of them a second time (TOOLS=).
         result = self._conversation_router.complete(
             "main",
             bridged_messages,
-            tools,
-            tool_choice,
+            None,
+            None,
             self._workspace,
         )
         if not result.success:

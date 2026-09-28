@@ -160,6 +160,65 @@ class SubscriptionProviderTests(unittest.TestCase):
             conversation.calls[0]["messages"][0]["content"],
         )
 
+    def test_tool_schemas_travel_once(self):
+        """Live 2026-09-27: every turn carried the 38 schemas twice (developer
+        section plus TOOLS=), ~62k of a 203k-char prompt."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "weather",
+                    "description": "Read weather",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        conversation = FakeConversationRouter("ok")
+        client = self.module.goncloud_subscriptions.create_client(
+            conversation_router=conversation,
+            workspace=self.workspace,
+        )
+
+        client.chat.completions.create(
+            model="main",
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=tools,
+            tool_choice="auto",
+        )
+
+        call = conversation.calls[0]
+        self.assertIn("Read weather", call["messages"][0]["content"])
+        self.assertIsNone(call["tools"])
+        self.assertIsNone(call["tool_choice"])
+
+    def test_history_tool_calls_are_shown_in_the_text_contract(self):
+        """A history of native tool_calls taught the model to call natively,
+        which the tool-less CLI rejects (live 2026-09-27)."""
+        conversation = FakeConversationRouter("ok")
+        client = self.module.goncloud_subscriptions.create_client(
+            conversation_router=conversation,
+            workspace=self.workspace,
+        )
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "weather", "arguments": '{"city":"Lima"}'},
+        }
+        messages = [
+            {"role": "user", "content": "weather?"},
+            {"role": "assistant", "content": "Checking.", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
+        ]
+
+        client.chat.completions.create(model="main", messages=messages)
+
+        sent = conversation.calls[0]["messages"][1]
+        self.assertNotIn("tool_calls", sent)
+        self.assertTrue(sent["content"].startswith("Checking.\n<tool_call>"))
+        self.assertIn('"name": "weather"', sent["content"])
+        # The caller's history is not mutated.
+        self.assertIn("tool_calls", messages[1])
+
 
 if __name__ == "__main__":
     unittest.main()
