@@ -100,6 +100,47 @@ def parse_codex_jsonl(output: str) -> dict:
     }
 
 
+#: Conversation turns: Hermes owns the tools (see claude.py). Codex has no
+#: "no tools" switch; without the instruction it answers that a listed Hermes
+#: tool "is not enabled" instead of emitting <tool_call> (measured, 0.157.1).
+_TOOL_BRIDGE_ARGS = (
+    "--ignore-user-config",
+    *(
+        arg
+        for feature in (
+            "shell_tool",
+            "unified_exec",
+            "apps",
+            "browser_use",
+            "browser_use_external",
+            "computer_use",
+            "plugins",
+            "multi_agent",
+            "image_generation",
+            "skill_search",
+            "tool_suggest",
+            "goals",
+            "sleep_tool",
+            "view_image",
+            "in_app_browser",
+            "hooks",
+        )
+        for arg in ("--disable", feature)
+    ),
+    "-c",
+    "web_search='disabled'",
+    "-c",
+    # npm's codex is a .cmd shim run through cmd.exe: no < > or double quotes
+    # here, or cmd reads "<tool_call" as an input redirect and the launch dies.
+    "developer_instructions='You are the text-only model behind a tool bridge. "
+    "You have NO native tools, skills or MCP servers of your own. The ONLY tools "
+    "that exist are the ones listed in the user prompt as an OpenAI function "
+    "schema; to call one, reply with ONLY the tool_call block exactly as the "
+    "prompt specifies, and the host will run it and send back the result. "
+    "Never claim a listed tool is unavailable.'",
+)
+
+
 class CodexAdapter(SubscriptionAdapter):
     """Run one stage on the owner's ChatGPT subscription (never API keys)."""
 
@@ -138,7 +179,8 @@ class CodexAdapter(SubscriptionAdapter):
             "-",
             "--json",
             "--sandbox",
-            "workspace-write",
+            "read-only" if request.tool_bridge else "workspace-write",
+            *(_TOOL_BRIDGE_ARGS if request.tool_bridge else ()),
             # Stage workspaces are validated absolute directories already;
             # skipping the git-repo convenience check keeps non-git
             # workspaces usable without weakening the sandbox.

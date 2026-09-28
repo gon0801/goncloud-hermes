@@ -135,6 +135,9 @@ class GrokAdapter(SubscriptionAdapter):
                 if route.reasoning_effort is not None
                 else []
             ),
+            # Conversation turns: Hermes owns the tools (see claude.py).
+            # "none" empties the built-ins; an empty string does not.
+            *(["--tools", "none"] if request.tool_bridge else []),
             "--max-turns",
             str(request.max_steps),
             "--prompt-file",

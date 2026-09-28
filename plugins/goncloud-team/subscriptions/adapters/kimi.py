@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -29,12 +30,33 @@ _SUCCESS_SUBTYPES = {"success", "success_streamcomplete", "streamcomplete"}
 KIMI_SENTINEL = "Carry out the assignment defined in your agent profile."
 
 
-def kimi_agent_definition(prompt: str) -> str:
+#: Conversation turns: Hermes owns the tools (see claude.py). `tools: []`
+#: alone left kimi narrating instead of emitting the block (measured, 0.34.0).
+TOOL_BRIDGE_INSTRUCTION = (
+    "You are the text-only model behind a tool bridge. You have NO native "
+    "tools, skills or MCP servers of your own. The ONLY tools that exist are "
+    "the ones listed below as an OpenAI function schema; to call one, reply "
+    "with ONLY the <tool_call>{...}</tool_call> block exactly as specified, and "
+    "the host will run it and send back the result. Never claim a listed tool "
+    "is unavailable, and never narrate an action instead of emitting the block."
+)
+
+
+def kimi_agent_definition(prompt: str, tool_bridge: bool = False) -> str:
     """Wrap the assignment as the agent definition kimi loads from a private file.
 
     kimi refuses an agent file without frontmatter ("Missing frontmatter"); the
     extension is irrelevant, so run_cli's ``.txt`` prompt transport is fine.
     """
+    if tool_bridge:
+        return (
+            "---\n"
+            "name: goncloud-stage\n"
+            "description: One bounded Goncloud stage assignment.\n"
+            "tools: []\n"
+            "---\n"
+            f"{TOOL_BRIDGE_INSTRUCTION}\n\n{prompt}\n"
+        )
     return (
         "---\n"
         "name: goncloud-stage\n"
@@ -225,10 +247,17 @@ class KimiAdapter(SubscriptionAdapter):
         model = route.model if "/" in route.model else f"kimi-code/{route.model}"
         # The assignment never enters argv: run_cli writes it to a private file
         # that kimi loads as the agent definition; -p carries only the sentinel.
+        # A bridge turn loads skills from an empty dir so user skills stay out.
+        no_skills = (
+            tempfile.TemporaryDirectory(prefix="kimi-no-skills-")
+            if request.tool_bridge
+            else None
+        )
         command = [
             "kimi",
             "--agent-file",
             PROMPT_PLACEHOLDER,
+            *(["--skills-dir", no_skills.name] if no_skills else []),
             "-p",
             KIMI_SENTINEL,
             "--output-format",
@@ -239,7 +268,9 @@ class KimiAdapter(SubscriptionAdapter):
         try:
             evidence = run_cli(
                 command,
-                kimi_agent_definition(build_assignment_prompt(request)),
+                kimi_agent_definition(
+                    build_assignment_prompt(request), request.tool_bridge
+                ),
                 request.workspace,
                 self.timeout_seconds,
                 prompt_transport="tempfile",
@@ -247,6 +278,9 @@ class KimiAdapter(SubscriptionAdapter):
             )
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
+        finally:
+            if no_skills:
+                no_skills.cleanup()
 
         parsed = parse_kimi_jsonl(evidence.stream)
         if evidence.returncode == 0:

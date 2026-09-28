@@ -37,6 +37,11 @@ _PROVIDER_PREFIXES = {
     "opencode_zen": "opencode",
     "opencode_zai": "zai-coding-plan",
 }
+#: Conversation turns: Hermes owns the tools (see claude.py). With its
+#: built-ins on, glm-5.3 answered "no such skill" instead of <tool_call>
+#: (measured, opencode 1.18.30); inline config disables every tool.
+_TOOL_BRIDGE_ENV = {"OPENCODE_CONFIG_CONTENT": json.dumps({"tools": {"*": False}})}
+
 _CREDENTIAL_NAMES = {
     "opencode_go": "opencode go",
     "opencode_zen": "opencode zen",
@@ -151,6 +156,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 build_assignment_prompt(request),
                 request.workspace,
                 self.timeout_seconds,
+                env_overlay=_TOOL_BRIDGE_ENV if request.tool_bridge else None,
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:

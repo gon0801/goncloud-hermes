@@ -59,6 +59,12 @@ class MuseAdapter(SubscriptionAdapter):
         )
 
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
+        if request.tool_bridge:
+            # Hermes owns the tools on a conversation turn (see claude.py), but
+            # muse exec cannot drop its own and its system prompt overrides the
+            # <tool_call> contract (measured: 2 of 3 "solo mis herramientas
+            # nativas"). Advance without launching; the account stays healthy.
+            return self._failed_result(route, FailureKind.MODEL_UNAVAILABLE)
         try:
             outcome = delegate_to_muse(
                 prompt=build_assignment_prompt(request),
