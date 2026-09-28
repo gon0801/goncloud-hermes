@@ -690,6 +690,12 @@ class LocalOrchestrator:
     def _instruction(instruction, directions, role):
         return (
             f"{instruction}\n\nStage duties: {directions}\n"
+            # Live 2026-09-28: scout read an implementation request, rightly did
+            # not implement, then returned blocked and stopped the whole chain.
+            "The instruction above is the goal of the whole chain; later stages "
+            "carry out the parts outside your duties. Report status completed once "
+            "your own stage duties are done, even when the goal itself is not yet "
+            "met; use blocked only when you cannot do your own stage.\n"
             "Return one final fenced json object, its closing fence alone on its own "
             "line, and no content after that closing fence. "
             "Exact keys: status (completed or blocked), summary (nonempty, at most 400 characters), "

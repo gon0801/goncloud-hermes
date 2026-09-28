@@ -59,6 +59,21 @@ def fenced(value):
     return "```json\n" + json.dumps(value) + "\n```"
 
 
+class StageInstructionTests(unittest.TestCase):
+    def test_each_stage_is_told_the_instruction_is_the_chain_goal(self):
+        # Live 2026-09-28 (t_1dbd51ce): scout read "create hola.txt and commit",
+        # correctly did not implement, and then returned blocked, which stopped
+        # the whole chain. Completing its own duty is scout's success.
+        for role in ORDER:
+            with self.subTest(role=role):
+                text = LocalOrchestrator._instruction(
+                    "Create hola.txt and commit.", "Do your stage.", role
+                )
+                self.assertIn("goal of the whole chain", text)
+                self.assertIn("completed once your own stage duties are done", text)
+                self.assertIn("blocked only when you cannot do your own stage", text)
+
+
 class TerminalParserTests(unittest.TestCase):
     def test_only_last_complete_json_fence_has_authority(self):
         approved = envelope(review={"decision": "approve", "severity": None})
