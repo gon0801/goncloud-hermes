@@ -5,6 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -183,10 +184,14 @@ def check_file(target, desired, previous=None):
 
 
 def _prune_empty_dirs(directory, stop):
-    """Remove directories a retired file left empty (``__pycache__`` aside)."""
-    import shutil
+    """Remove directories a retired file left empty (``__pycache__`` aside).
 
-    while directory != stop and directory.is_dir():
+    Never removes ``stop`` itself or anything outside it: the loop only
+    continues while ``stop`` is a strict ancestor of ``directory``.
+    """
+    directory = directory.resolve()
+    stop = stop.resolve()
+    while stop in directory.parents and directory.is_dir():
         if any(child.name != "__pycache__" for child in directory.iterdir()):
             return
         shutil.rmtree(directory)
@@ -395,12 +400,16 @@ def configure(
                 old = target.read_text(encoding="utf-8")
             check_file(target, content, old)
         retired = [rel for rel in state.get("files", {}) if rel not in shipped]
+        retired_targets = {}
         for relative in retired:
+            # A retired path is confined to its own profile, never a
+            # sibling's: containment is scoped to ``profile``, not the whole
+            # runtime, so a managed-file record like "../scout/x" aborts the
+            # deploy instead of touching another profile.
+            target = contained(profile / relative, profile)
             # Deleting is safe only for the exact content this script wrote.
-            check_file(
-                contained(profile / relative, runtime_home),
-                state["files"][relative],
-            )
+            check_file(target, state["files"][relative])
+            retired_targets[relative] = target
         prepared.append(
             (
                 profile,
@@ -410,7 +419,7 @@ def configure(
                 state_path,
                 desired,
                 state,
-                retired,
+                retired_targets,
                 shipped,
             )
         )
@@ -423,7 +432,7 @@ def configure(
         state_path,
         desired,
         state,
-        retired,
+        retired_targets,
         shipped,
     ) in prepared:
         recorded_files = {
@@ -444,8 +453,7 @@ def configure(
         )
         for relative, content in files.items():
             write_changed(profile / relative, content)
-        for relative in retired:
-            target = profile / relative
+        for target in retired_targets.values():
             if target.exists():
                 target.unlink()
             _prune_empty_dirs(target.parent, profile)

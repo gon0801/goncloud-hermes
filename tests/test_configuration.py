@@ -573,7 +573,7 @@ class ManagedFileRetirementTests(unittest.TestCase):
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.temporary = Path(self.tmp.name)
 
-    def deploy(self, runtime=None):
+    def deploy(self, runtime=None, extra_args=()):
         upstream = Path(
             os.environ.get(
                 "HERMES_INSTALL_DIR",
@@ -589,6 +589,7 @@ class ManagedFileRetirementTests(unittest.TestCase):
                 str(runtime),
                 "--install-dir",
                 str(upstream),
+                *extra_args,
             ],
             capture_output=True,
             text=True,
@@ -638,6 +639,99 @@ class ManagedFileRetirementTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "managed-file conflict"):
             self.deploy(runtime)
         self.assertEqual((profile / stale).read_text(encoding="utf-8"), "edited\n")
+
+    def test_a_retired_path_escaping_its_profile_aborts_without_touching_the_sibling(
+        self,
+    ):
+        # A managed-file record like "../scout/x" must never let retirement
+        # delete or prune a sibling profile's files; containment is scoped to
+        # the profile being processed, so this aborts the whole deploy first.
+        runtime = self.deploy()
+        claw = runtime / "profiles/claw"
+        scout = runtime / "profiles/scout"
+        sibling = "some/file.txt"
+        (scout / sibling).parent.mkdir(parents=True, exist_ok=True)
+        (scout / sibling).write_text("sibling\n", encoding="utf-8")
+        escape = f"../scout/{sibling}"
+        state_path = claw / "goncloud-managed.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][escape] = "sibling\n"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        with self.assertRaisesRegex(AssertionError, "escapes"):
+            self.deploy(runtime)
+
+        self.assertEqual((scout / sibling).read_text(encoding="utf-8"), "sibling\n")
+
+    def test_preserve_local_soul_keeps_soul_while_retiring_other_files(self):
+        runtime = self.deploy()
+        profile = runtime / "profiles/claw"
+        stale = "plugins/model-providers/goncloud-subscriptions/client.py"
+        (profile / stale).parent.mkdir(parents=True, exist_ok=True)
+        (profile / stale).write_text("old\n", encoding="utf-8")
+        state_path = profile / "goncloud-managed.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][stale] = "old\n"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        local_soul = (profile / "SOUL.md").read_text(
+            encoding="utf-8"
+        ) + "\nLOCAL RULE\n"
+        (profile / "SOUL.md").write_text(local_soul, encoding="utf-8")
+
+        self.deploy(runtime, extra_args=("--preserve-local-soul",))
+
+        self.assertEqual((profile / "SOUL.md").read_text(encoding="utf-8"), local_soul)
+        self.assertFalse((profile / stale).exists())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotIn(stale, state["files"])
+        self.assertIn("SOUL.md", state["files"])
+
+
+class PruneEmptyDirsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.root = Path(self.tmp.name)
+
+    def test_prunes_empty_ancestors_up_to_stop(self):
+        stop = self.root / "profile"
+        nested = stop / "plugins" / "model-providers" / "goncloud-subscriptions"
+        nested.mkdir(parents=True)
+
+        module._prune_empty_dirs(nested, stop)
+
+        self.assertTrue(stop.is_dir())
+        self.assertFalse((stop / "plugins").exists())
+
+    def test_stops_at_a_directory_that_still_has_content(self):
+        stop = self.root / "profile"
+        nested = stop / "plugins" / "a" / "b"
+        nested.mkdir(parents=True)
+        (stop / "plugins" / "keep.txt").write_text("x\n", encoding="utf-8")
+
+        module._prune_empty_dirs(nested, stop)
+
+        self.assertTrue((stop / "plugins").is_dir())
+        self.assertFalse((stop / "plugins" / "a").exists())
+        self.assertTrue((stop / "plugins" / "keep.txt").exists())
+
+    def test_stop_itself_is_never_removed(self):
+        stop = self.root / "profile"
+        stop.mkdir()
+
+        module._prune_empty_dirs(stop, stop)
+
+        self.assertTrue(stop.is_dir())
+
+    def test_a_directory_outside_stop_is_left_alone(self):
+        stop = self.root / "profile"
+        stop.mkdir()
+        outside_empty = self.root / "sibling" / "empty"
+        outside_empty.mkdir(parents=True)
+
+        module._prune_empty_dirs(outside_empty, stop)
+
+        self.assertTrue(outside_empty.is_dir())
 
 
 if __name__ == "__main__":
