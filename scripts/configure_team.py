@@ -101,11 +101,8 @@ def director_native_config(source):
             if chosen != route.reasoning_effort:
                 raise ValueError(f"two reasoning efforts for {route.model}")
     primary, *fallbacks = entries
-    model = {"provider": primary["provider"], "default": primary["model"]}
-    if "base_url" in primary:
-        model["base_url"] = primary["base_url"]
-    if "api_mode" in primary:
-        model["api_mode"] = primary["api_mode"]
+    extras = {k: v for k, v in primary.items() if k not in ("provider", "model")}
+    model = {"provider": primary["provider"], "default": primary["model"], **extras}
     return {
         "model": model,
         "fallback_providers": fallbacks,
