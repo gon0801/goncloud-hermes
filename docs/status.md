@@ -35,6 +35,11 @@ perfil. Suite completa: 443 pruebas, `OK (skipped=3)` en `379268c`.
 Pendiente (Tarea 6): cargar las credenciales nativas que falten, el live
 probe por proveedor y el despliegue. Nada de esto esta desplegado todavia.
 
+Vision: el primario (`opencode-go/muse-spark-1.3-contributor`) rechaza
+`vision_analyze` con `400 ModelProtocolUnsupported`; el director lee
+`auxiliary.vision` = `anthropic/claude-opus-5` (decision del propietario,
+2026-09-28) en vez del primario.
+
 # Estado — 2026-09-27
 
 ## Enrutamiento conversacional exacto, desplegado (superado 2026-09-28)

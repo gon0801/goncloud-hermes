@@ -199,10 +199,18 @@ class ConfigurationTests(unittest.TestCase):
                         desired["agent"]["reasoning_overrides"],
                         native["agent"]["reasoning_overrides"],
                     )
+                    # The primary rejects vision (400 ModelProtocolUnsupported);
+                    # the owner sends the director's vision calls to Claude Opus
+                    # 5 instead. Only the director gets this override.
+                    self.assertEqual(
+                        desired["auxiliary"],
+                        {"vision": {"provider": "anthropic", "model": "claude-opus-5"}},
+                    )
                 else:
                     self.assertNotIn("model", desired)
                     self.assertNotIn("fallback_providers", desired)
                     self.assertNotIn("agent", desired)
+                    self.assertNotIn("auxiliary", desired)
 
     def test_no_profile_is_configured_through_the_text_bridge(self):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
