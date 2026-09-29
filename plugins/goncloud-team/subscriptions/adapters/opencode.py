@@ -111,7 +111,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
             raise ValueError(f"unsupported OpenCode slot adapter: {route.adapter}")
         return provider
 
-    def _env_overlay(self, request: InvocationRequest, route: RouteSpec):
+    def _env_overlay(self, route: RouteSpec):
         config: dict = {}
         key_env = _ACCOUNT_KEY_ENVS.get(route.adapter)
         if key_env:
@@ -162,9 +162,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
             detail=f"credential class not installed: {expected}",
         )
 
-    def _run(
-        self, request: InvocationRequest, route: RouteSpec, prompt: str, session_id=""
-    ):
+    def _run(self, request: InvocationRequest, route: RouteSpec, prompt: str):
         command = [
             "opencode",
             "run",
@@ -175,14 +173,12 @@ class OpenCodeAdapter(SubscriptionAdapter):
             "--dir",
             str(request.workspace),
         ]
-        if session_id:
-            command += ["--session", session_id]
         return run_cli(
             command,
             prompt,
             request.workspace,
             self.timeout_seconds,
-            env_overlay=self._env_overlay(request, route),
+            env_overlay=self._env_overlay(route),
             runner=self.runner,
         )
 
@@ -199,23 +195,18 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return self._failed_result(route, failure)
 
         parsed = parse_opencode_jsonl(evidence.stream)
-        if evidence.returncode == 0:
-            if parsed["terminal_valid"] and parsed["text"].strip():
-                return InvocationResult(
-                    success=True,
-                    text=parsed["text"],
-                    adapter=route.adapter,
-                    model=route.model,
-                    billing_mode=route.billing_mode,
-                    session_id=parsed["session_id"] or "",
-                )
-            # The CLI answered, it just did not answer in the terminal
-            # contract. task_failure is never auto-advanced, so classifying
-            # a rejected envelope that way pins the stage to this slot with
-            # every healthy account untried. Nothing here shows the task
-            # itself failed, which is exactly invalid_terminal.
-            return self._failed_result(route, FailureKind.INVALID_TERMINAL)
-        return self._failed_result(
-            route,
-            classify_failure(evidence.returncode, evidence.stream, evidence.stderr),
-        )
+        if parsed["terminal_valid"] and parsed["text"].strip():
+            return InvocationResult(
+                success=True,
+                text=parsed["text"],
+                adapter=route.adapter,
+                model=route.model,
+                billing_mode=route.billing_mode,
+                session_id=parsed["session_id"] or "",
+            )
+        # The CLI answered, it just did not answer in the terminal
+        # contract. task_failure is never auto-advanced, so classifying
+        # a rejected envelope that way pins the stage to this slot with
+        # every healthy account untried. Nothing here shows the task
+        # itself failed, which is exactly invalid_terminal.
+        return self._failed_result(route, FailureKind.INVALID_TERMINAL)

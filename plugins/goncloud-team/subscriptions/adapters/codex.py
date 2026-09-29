@@ -137,10 +137,7 @@ class CodexAdapter(SubscriptionAdapter):
             "exec",
             "-",
             "--json",
-            # Every remaining caller is a workspace stage: the director now
-            # reaches Codex through its native chain instead of this router,
-            # so the read-only, tools-disabled bridge sandbox this adapter
-            # used to switch into for a conversation turn no longer applies.
+            # Stages write only inside their workspace; never widen the sandbox.
             "--sandbox",
             "workspace-write",
             # Stage workspaces are validated absolute directories already;
