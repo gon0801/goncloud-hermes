@@ -49,10 +49,12 @@ nativas; ya no pasa por un proveedor local que escribe la llamada como texto.
 la fila `main` de la misma fuente que usan los workflows: `opencode-go`
 (slots 0 y 1, una entrada con un pool de dos credenciales), `anthropic`,
 `meta-ai`, `xai-oauth`, `zai` sobre el endpoint del Coding Plan, `openai-codex`
-y `kimi-coding` sobre su endpoint `/coding`. Si Primary no esta disponible, la
-posicion inmediata es Claude; no existe un salto especial a Kimi. Los
-trabajadores, `entrega` incluida, siguen conversando por el router de
-suscripciones de esta pagina, sin cambio. Detalle en
+y `kimi-coding` sobre su endpoint OpenAI `/coding/v1` (`chat_completions`): el
+wire Anthropic Messages que Hermes elige para toda URL `/coding` le perdia 5
+de 12 llamadas a herramienta a K3, el OpenAI solo 1. Si Primary no esta
+disponible, la posicion inmediata es Claude; no existe un salto especial a
+Kimi. Los trabajadores, `entrega` incluida, siguen conversando por el router
+de suscripciones de esta pagina, sin cambio. Detalle en
 [spec](superpowers/specs/2026-09-28-director-native-chain-design.md).
 
 Los marcadores son politica de ejecucion, no texto decorativo: compilan a

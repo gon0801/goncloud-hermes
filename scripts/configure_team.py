@@ -43,7 +43,11 @@ _DIRECTOR_TOOLSETS = [
 ]
 
 ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
-KIMI_CODING_URL = "https://api.kimi.com/coding"
+#: Kimi's OpenAI wire, not its Anthropic one: Hermes picks the Anthropic
+#: Messages wire for any `/coding` URL, and on that wire K3 dropped 5 of 12
+#: tool calls across identical runs (2026-09-28 evidence); the OpenAI wire
+#: dropped 1.
+KIMI_CODING_URL = "https://api.kimi.com/coding/v1"
 
 #: How Hermes reaches each table adapter natively. Native tool calls are the
 #: point: through a CLI with its tools off, the director had to write calls as
@@ -58,7 +62,11 @@ _NATIVE_PROVIDERS = {
     "grok": {"provider": "xai-oauth"},
     "opencode_zai": {"provider": "zai", "base_url": ZAI_CODING_URL},
     "codex": {"provider": "openai-codex"},
-    "kimi": {"provider": "kimi-coding", "base_url": KIMI_CODING_URL},
+    "kimi": {
+        "provider": "kimi-coding",
+        "base_url": KIMI_CODING_URL,
+        "api_mode": "chat_completions",
+    },
 }
 
 
@@ -87,6 +95,8 @@ def director_native_config(source):
     model = {"provider": primary["provider"], "default": primary["model"]}
     if "base_url" in primary:
         model["base_url"] = primary["base_url"]
+    if "api_mode" in primary:
+        model["api_mode"] = primary["api_mode"]
     return {
         "model": model,
         "fallback_providers": fallbacks,

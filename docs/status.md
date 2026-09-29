@@ -17,7 +17,9 @@ siete proveedores Hermes nativos (ocho posiciones) con llamadas a
 herramientas nativas — `opencode-go` (slots 0 y 1, una sola entrada con un
 pool de dos credenciales), `anthropic`, `meta-ai`, `xai-oauth`, `zai` sobre
 el endpoint del Coding Plan, `openai-codex` y `kimi-coding` sobre su
-endpoint `/coding` — y los marcadores de esfuerzo a
+endpoint OpenAI `/coding/v1` (`chat_completions`: el wire Anthropic Messages
+que Hermes elige para toda URL `/coding` le perdia 5 de 12 llamadas a
+herramienta a K3, el OpenAI solo 1) — y los marcadores de esfuerzo a
 `agent.reasoning_overrides`. Ya no existe una cadena nativa escrita a mano
 que pueda contradecir la tabla. `entrega` hereda la fila `main` como etapa
 trabajadora y sigue en el router de suscripciones; los demas trabajadores no

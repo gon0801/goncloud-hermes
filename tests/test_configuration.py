@@ -328,7 +328,8 @@ class DirectorNativeChainTests(unittest.TestCase):
                 {
                     "provider": "kimi-coding",
                     "model": "k3",
-                    "base_url": "https://api.kimi.com/coding",
+                    "base_url": "https://api.kimi.com/coding/v1",
+                    "api_mode": "chat_completions",
                 },
             ],
         )
