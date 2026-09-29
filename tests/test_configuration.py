@@ -734,5 +734,23 @@ class PruneEmptyDirsTests(unittest.TestCase):
         self.assertTrue(outside_empty.is_dir())
 
 
+class NoTextBridgeTests(unittest.TestCase):
+    def test_no_text_tool_call_bridge_remains(self):
+        self.assertFalse((ROOT / "plugins/model-providers").exists())
+        self.assertFalse(
+            (ROOT / "plugins/goncloud-team/subscriptions/conversation.py").exists()
+        )
+        for path in (ROOT / "plugins").rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for marker in (
+                "tool_bridge",
+                "_REISSUE_PROMPT",
+                "_TOOL_BRIDGE",
+                "serves_conversations",
+                "<tool_call>",
+            ):
+                self.assertNotIn(marker, text, f"{marker} in {path}")
+
+
 if __name__ == "__main__":
     unittest.main()

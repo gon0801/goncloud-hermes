@@ -110,18 +110,6 @@ class ClaudeAdapter(SubscriptionAdapter):
             _PERMISSION_MODE,
             "--model",
             route.model,
-            # Conversation turns: Hermes owns the tools. Native/MCP tools make
-            # Claude call them directly ("No such tool", Bash denied) instead
-            # of emitting <tool_call> for Hermes to run.
-            *(["--tools", "", "--strict-mcp-config"] if request.tool_bridge else []),
-            # Nor the owner's Claude Code setup: its hooks, skills and plugins
-            # added ~15 s per turn and fired those session hooks on every Hermes
-            # turn (measured 2026-09-27). The OAuth login is not a setting.
-            *(
-                ["--setting-sources", "", "--disable-slash-commands"]
-                if request.tool_bridge
-                else []
-            ),
             *(
                 ["--effort", route.reasoning_effort]
                 if route.reasoning_effort is not None

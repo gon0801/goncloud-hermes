@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
@@ -40,10 +39,6 @@ _PROVIDER_PREFIXES = {
     "opencode_zen": "opencode",
     "opencode_zai": "zai-coding-plan",
 }
-#: Conversation turns: Hermes owns the tools (see claude.py). With its
-#: built-ins on, glm-5.3 answered "no such skill" instead of <tool_call>
-#: (measured, opencode 1.18.30); inline config disables every tool (see
-#: ``_env_overlay``).
 #: The owner's second OpenCode Go account (2026-09-27). The saved CLI login is
 #: the first account, so the second key reaches opencode as an env reference in
 #: inline config: the value never enters argv, and redaction keys on the name.
@@ -56,60 +51,10 @@ _CREDENTIAL_NAMES = {
 }
 
 
-#: With its tools off, OpenCode rejects a native function call and the model
-#: closes with a promise ("dame un momento"); Hermes saw only that text and
-#: ended the turn with nothing done (live, 2026-09-27). The call's arguments
-#: are lost in the rejection, so the same session is asked to reissue it; it
-#: may also decline, so a refusal or an approval request is never dropped.
-_REISSUE_PROMPT = (
-    "Native function calling is not available in this channel, so your last "
-    "tool call was never executed. If you still want to call it, reissue it "
-    'as text, exactly as <tool_call>{"id":"...","type":"function","function":'
-    '{"name":"...","arguments":"<JSON string>"}}</tool_call>. If you decided '
-    "not to call a tool, repeat your answer to the user instead."
-)
-_TOOL_CALL_BLOCK = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-
-
-def _has_tool_call(text: str) -> bool:
-    """A parseable call, not a mere mention of the tag."""
-    for body in _TOOL_CALL_BLOCK.findall(text):
-        try:
-            call = json.loads(body)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(call, dict) and isinstance(call.get("function"), dict):
-            return True
-    return False
-
-
-def _as_text_tool_calls(text: str) -> str:
-    """Rewrite a reply that echoes the MESSAGES line format into the contract.
-
-    The history shows earlier turns as ``{"role":"assistant","tool_calls":...}``
-    lines and the model sometimes answers in that shape (reproduced live).
-    """
-    start = text.find("{")
-    if start < 0:
-        return text
-    try:
-        message = json.loads(text[start:].strip())
-    except json.JSONDecodeError:
-        return text
-    if not isinstance(message, dict) or not isinstance(message.get("tool_calls"), list):
-        return text
-    # A preamble before the echoed object is kept as prose.
-    blocks = [text[:start].strip(), str(message.get("content") or "").strip()]
-    for call in message["tool_calls"]:
-        blocks.append(f"<tool_call>{json.dumps(call, ensure_ascii=False)}</tool_call>")
-    return "\n".join(block for block in blocks if block)
-
-
 def parse_opencode_jsonl(output: str) -> dict:
     """Accumulate text parts and session identity from raw JSON events."""
     text_parts: list[str] = []
     session_id = None
-    rejected_native_call = False
     terminal_valid = False
     saw_error = False
     malformed = False
@@ -126,11 +71,6 @@ def parse_opencode_jsonl(output: str) -> dict:
         event_type = str(event.get("type") or "").lower()
         session_id = event.get("sessionID") or event.get("session_id") or session_id
         if event_type == "tool_use":
-            # A failed tool is a rejected call, not a failed invocation.
-            part = event.get("part")
-            state = part.get("state") if isinstance(part, dict) else None
-            if isinstance(state, dict) and state.get("status") == "error":
-                rejected_native_call = True
             continue
         if "error" in event_type or event.get("error"):
             saw_error = True
@@ -158,7 +98,6 @@ def parse_opencode_jsonl(output: str) -> dict:
     return {
         "session_id": session_id,
         "text": "".join(text_parts),
-        "rejected_native_call": rejected_native_call,
         "terminal_valid": terminal_valid and not saw_error and not malformed,
     }
 
@@ -174,8 +113,6 @@ class OpenCodeAdapter(SubscriptionAdapter):
 
     def _env_overlay(self, request: InvocationRequest, route: RouteSpec):
         config: dict = {}
-        if request.tool_bridge:
-            config["tools"] = {"*": False}
         key_env = _ACCOUNT_KEY_ENVS.get(route.adapter)
         if key_env:
             config["provider"] = {
@@ -252,16 +189,6 @@ class OpenCodeAdapter(SubscriptionAdapter):
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         try:
             evidence = self._run(request, route, build_assignment_prompt(request))
-            if evidence.returncode == 0 and request.tool_bridge:
-                parsed = parse_opencode_jsonl(evidence.stream)
-                if (
-                    parsed["rejected_native_call"]
-                    and parsed["session_id"]
-                    and not _has_tool_call(_as_text_tool_calls(parsed["text"]))
-                ):
-                    evidence = self._run(
-                        request, route, _REISSUE_PROMPT, parsed["session_id"]
-                    )
         except SubscriptionProcessError as error:
             return self._failed_result(route, error.failure, str(error))
 
@@ -272,8 +199,6 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return self._failed_result(route, failure)
 
         parsed = parse_opencode_jsonl(evidence.stream)
-        if request.tool_bridge:
-            parsed["text"] = _as_text_tool_calls(parsed["text"])
         if evidence.returncode == 0:
             if parsed["terminal_valid"] and parsed["text"].strip():
                 return InvocationResult(

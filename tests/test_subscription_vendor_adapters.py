@@ -1240,11 +1240,8 @@ class ProbeFailureClassificationTests(unittest.TestCase):
                 self.assertIn(adapter.probe(route).failure, _ADVANCING_FAILURES)
 
 
-class ClaudeToolBridgeTests(unittest.TestCase):
-    """A Hermes conversation reaches Claude as text with its tools in the
-    <tool_call> contract. If the CLI keeps its own built-in and MCP tools,
-    Claude calls those natively ("No such tool available: skill_view", Bash
-    denied under dontAsk) and the turn loses browser, vault and skills."""
+class ClaudeCommandTests(unittest.TestCase):
+    """A stage invocation keeps Claude's own native and MCP tools available."""
 
     STREAM = json.dumps({"type": "result", "subtype": "success", "result": "ok"})
 
@@ -1258,19 +1255,6 @@ class ClaudeToolBridgeTests(unittest.TestCase):
         ClaudeAdapter(runner=runner).invoke(req, route_for("claude", "claude-opus-5"))
         return runner.command
 
-    def test_conversation_turn_strips_native_and_mcp_tools(self):
-        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
-        self.assertEqual(command[command.index("--tools") + 1], "")
-        self.assertIn("--strict-mcp-config", command)
-
-    def test_conversation_turn_skips_the_owners_claude_code_setup(self):
-        # Measured 2026-09-27 on the live 135k-char turn: the owner's hooks,
-        # 113 skills and plugins added ~15 s per turn (35 s vs 20 s) and fired
-        # the owner's session hooks on every Hermes turn. OAuth is not a setting.
-        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
-        self.assertEqual(command[command.index("--setting-sources") + 1], "")
-        self.assertIn("--disable-slash-commands", command)
-
     def test_workspace_stage_keeps_native_tools(self):
         command = self.command_for(request(self.workspace))
         self.assertNotIn("--tools", command)
@@ -1278,10 +1262,8 @@ class ClaudeToolBridgeTests(unittest.TestCase):
         self.assertNotIn("--setting-sources", command)
 
 
-class GrokToolBridgeTests(unittest.TestCase):
-    """Same failure as Claude: with its built-ins on, Grok lists and greps the
-    filesystem instead of emitting <tool_call>. `--tools none` (measured on
-    grok 1.0.34) leaves zero built-ins; `--tools ""` does NOT restrict."""
+class GrokCommandTests(unittest.TestCase):
+    """A stage invocation keeps Grok's own native tools available."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1293,19 +1275,12 @@ class GrokToolBridgeTests(unittest.TestCase):
         GrokAdapter(runner=runner).invoke(req, route_for("grok", "grok-4.6"))
         return runner.command
 
-    def test_conversation_turn_strips_native_tools(self):
-        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
-        self.assertEqual(command[command.index("--tools") + 1], "none")
-
     def test_workspace_stage_keeps_native_tools(self):
         self.assertNotIn("--tools", self.command_for(request(self.workspace)))
 
 
-class KimiToolBridgeTests(unittest.TestCase):
-    """Measured on kimi 0.34.0: with its built-ins and user skills loaded it
-    reads files itself instead of emitting <tool_call>; `tools: []` alone left
-    it narrating ("voy a leer la skill") without the block. Empty tools, no
-    skills and the bridge instruction together gave 4/4 <tool_call> answers."""
+class KimiCommandTests(unittest.TestCase):
+    """A stage invocation keeps Kimi's own native tools and skills available."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1318,24 +1293,14 @@ class KimiToolBridgeTests(unittest.TestCase):
             KimiAdapter(runner=runner).invoke(req, route_for("kimi", "k3"))
         return runner
 
-    def test_conversation_turn_runs_as_a_text_only_bridge(self):
-        runner = self.run_adapter(replace(request(self.workspace), tool_bridge=True))
-        head = runner.agent_file.split("---", 2)[1]
-        self.assertIn("tools: []", head)
-        self.assertIn("tool bridge", runner.agent_file)
-        skills = Path(runner.command[runner.command.index("--skills-dir") + 1])
-        self.assertFalse(skills.exists() and any(skills.iterdir()))
-
     def test_workspace_stage_keeps_native_tools(self):
         runner = self.run_adapter(request(self.workspace))
         self.assertNotIn("tools:", runner.agent_file.split("---", 2)[1])
         self.assertNotIn("--skills-dir", runner.command)
 
 
-class OpenCodeToolBridgeTests(unittest.TestCase):
-    """Measured on opencode 1.18.30 with glm-5.3: with its built-ins on, 1 of
-    2 bridge turns answered "no existe la skill" instead of <tool_call>; with
-    every tool disabled through OPENCODE_CONFIG_CONTENT, 3 of 3 emitted it."""
+class OpenCodeCommandTests(unittest.TestCase):
+    """A stage invocation keeps OpenCode's own native tools available."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1353,34 +1318,17 @@ class OpenCodeToolBridgeTests(unittest.TestCase):
             OpenCodeAdapter().invoke(req, route_for("opencode_zai", "glm-5.3"))
         return seen["env"]
 
-    def test_conversation_turn_disables_every_native_tool(self):
-        env = self.env_for(replace(request(self.workspace), tool_bridge=True))
-        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        self.assertEqual(config["tools"], {"*": False})
-
     def test_workspace_stage_keeps_native_tools(self):
         self.assertFalse(self.env_for(request(self.workspace)))
 
 
-class MuseToolBridgeTests(unittest.TestCase):
-    """Muse exec has no switch to drop its native tools, and its own system
-    prompt wins: measured 1 of 3 bridge turns answered <tool_call>; the rest
-    replied "solo puedo usar mis herramientas nativas". A bridge turn must
-    advance to the next slot without launching Muse or marking it unhealthy."""
+class MuseCommandTests(unittest.TestCase):
+    """A stage invocation still launches Muse."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.workspace = Path(self.tmp.name).resolve()
-
-    def test_conversation_turn_advances_without_launching_muse(self):
-        runner = FakeCliRunner(stdout="")
-        result = MuseAdapter(runner=runner).invoke(
-            replace(request(self.workspace), tool_bridge=True),
-            route_for("muse", "muse-spark-1.3"),
-        )
-        self.assertIsNone(runner.command)
-        self.assertEqual(result.failure, FailureKind.MODEL_UNAVAILABLE)
 
     def test_workspace_stage_still_launches_muse(self):
         runner = FakeCliRunner(stdout="")
@@ -1390,11 +1338,8 @@ class MuseToolBridgeTests(unittest.TestCase):
         self.assertIsNotNone(runner.command)
 
 
-class CodexToolBridgeTests(unittest.TestCase):
-    """Codex has no "no tools" switch. Measured on codex-cli 0.157.1: with
-    its own tools and skills in view it answers "skill_view is not enabled"
-    instead of emitting <tool_call>; a developer instruction naming the bridge
-    fixes that, and the disabled exec features keep it from running shell."""
+class CodexCommandTests(unittest.TestCase):
+    """A stage invocation keeps Codex's own sandbox and native tools available."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1405,26 +1350,6 @@ class CodexToolBridgeTests(unittest.TestCase):
         runner = FakeCliRunner(stdout="")
         CodexAdapter(runner=runner).invoke(req, route_for("codex", "gpt-5.6-sol"))
         return runner.command
-
-    def test_conversation_turn_runs_as_a_text_only_bridge(self):
-        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
-        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertIn("--ignore-user-config", command)
-        disabled = {command[i + 1] for i, a in enumerate(command) if a == "--disable"}
-        self.assertTrue({"shell_tool", "unified_exec"} <= disabled)
-        self.assertTrue(
-            any(
-                a.startswith("developer_instructions=") and "tool_call" in a
-                for a in command
-            )
-        )
-
-    def test_bridge_args_survive_the_cmd_shim(self):
-        # codex runs through cmd.exe /c; < > become redirects and a bare "
-        # ends the quoted argument. Measured: "<tool_call>" killed the launch.
-        command = self.command_for(replace(request(self.workspace), tool_bridge=True))
-        for arg in command[1:]:
-            self.assertFalse(set(arg) & set('<>"|&^'), arg)
 
     def test_workspace_stage_keeps_native_tools(self):
         command = self.command_for(request(self.workspace))

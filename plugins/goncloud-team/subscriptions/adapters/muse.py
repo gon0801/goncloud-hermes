@@ -30,9 +30,6 @@ _MUSE = "/home/goncloud/.local/bin/muse"
 class MuseAdapter(SubscriptionAdapter):
     """Delegate one bounded stage to the owner's Muse subscription in WSL."""
 
-    # muse exec cannot drop its own tools, so it never serves a Hermes
-    # conversation; the router skips it there without a WSL probe.
-    serves_conversations = False
     # WSL cold starts can exceed the default probe window by a wide margin.
     max_probe_timeout_seconds = 120
     probe_timeout_seconds = 120
@@ -62,12 +59,6 @@ class MuseAdapter(SubscriptionAdapter):
         )
 
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
-        if request.tool_bridge:
-            # Hermes owns the tools on a conversation turn (see claude.py), but
-            # muse exec cannot drop its own and its system prompt overrides the
-            # <tool_call> contract (measured: 2 of 3 "solo mis herramientas
-            # nativas"). Advance without launching; the account stays healthy.
-            return self._failed_result(route, FailureKind.MODEL_UNAVAILABLE)
         try:
             outcome = delegate_to_muse(
                 prompt=build_assignment_prompt(request),
