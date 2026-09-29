@@ -41,19 +41,24 @@ mientras que el adaptador HTTP homonimo es la unica ruta que factura como API,
 declarada asi para verifier F6 y scout F4. Migrarlo al CLI cambiaria esa
 decision de facturacion, asi que queda pendiente de una orden explicita.
 
-## Cadena conversacional unica de `main` (2026-09-27)
+## Cadena conversacional del director en proveedores nativos (2026-09-28)
 
-`claw` ya no mantiene una lista nativa paralela. Hermes selecciona
-`goncloud-subscriptions/main`, y ese proveedor compila directamente la fila
-`main` de la misma fuente que usan los workflows: OpenCode Go, Claude Opus 5
-`xhigh`, Muse Spark `max`, Grok, GLM, Codex `xhigh` y Kimi. Si Primary no esta
-disponible, la posicion inmediata es Claude; no existe un salto especial a
-Kimi.
+`claw` conversa por proveedores Hermes nativos, con llamadas a herramientas
+nativas; ya no pasa por un proveedor local que escribe la llamada como texto.
+`configure_team.py` compila su `model` + `fallback_providers` directamente de
+la fila `main` de la misma fuente que usan los workflows: `opencode-go`
+(slots 0 y 1, una entrada con un pool de dos credenciales), `anthropic`,
+`meta-ai`, `xai-oauth`, `zai` sobre el endpoint del Coding Plan, `openai-codex`
+y `kimi-coding`. Si Primary no esta disponible, la posicion inmediata es
+Claude; no existe un salto especial a Kimi. Los trabajadores, `entrega`
+incluida, siguen conversando por el router de suscripciones de esta pagina,
+sin cambio. Detalle en
+[spec](superpowers/specs/2026-09-28-director-native-chain-design.md).
 
-Los marcadores son politica de ejecucion, no texto decorativo. Claude recibe
-`--effort xhigh`, Muse y Grok `--reasoning-effort`, Codex su
-`model_reasoning_effort`, y Kimi `(high)` se valida contra su `config.toml` sin
-reescribirlo. Cualquier marcador desconocido bloquea la compilacion de la tabla.
+Los marcadores son politica de ejecucion, no texto decorativo: compilan a
+`agent.reasoning_overrides: {model: effort}` (Claude `xhigh`, Muse `max`,
+igual para el resto de la fila), que Hermes re-resuelve si un fallback se
+activa. Cualquier marcador desconocido bloquea la compilacion de la tabla.
 
 ## Matriz vigente: 8/8 rutas y 15/15 modelos listos (2026-09-26)
 

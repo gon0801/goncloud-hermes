@@ -1,6 +1,45 @@
+# Estado — 2026-09-28
+
+## Director en proveedores nativos
+
+Causa: desde 2026-09-27 13:00 `claw` conversaba por el proveedor
+`goncloud-subscriptions/main`, que corria las CLI de cada proveedor con sus
+herramientas apagadas (`tools: {"*": false}`) y le pedia al modelo escribir
+cada llamada como texto `<tool_call>{json}</tool_call>`. Ese canal se pierde
+con quotes anidados: el 2026-09-28, 8 de las 13 llamadas emitidas en la
+conversacion real se descartaron por JSON mal escapado, y el director
+prometio trabajo ("lo verifico ahorita") durante siete horas sin ejecutar una
+sola herramienta.
+
+Arreglo: `configure_team.py` compila el `model` + `fallback_providers` de
+`claw` directamente de la fila `main` de `model-routing.source.json`, en ocho
+proveedores Hermes nativos con llamadas a herramientas nativas —
+`opencode-go` (slots 0 y 1, una sola entrada con un pool de dos
+credenciales), `anthropic`, `meta-ai`, `xai-oauth`, `zai` sobre el endpoint
+del Coding Plan, `openai-codex` y `kimi-coding` — y los marcadores de esfuerzo
+a `agent.reasoning_overrides`. Ya no existe una cadena nativa escrita a mano
+que pueda contradecir la tabla. `entrega` hereda la fila `main` como etapa
+trabajadora y sigue en el router de suscripciones; los demas trabajadores no
+cambiaron. Detalle en
+[spec](superpowers/specs/2026-09-28-director-native-chain-design.md).
+
+Se elimino de punta a punta el proveedor `goncloud-subscriptions`,
+`subscriptions/conversation.py`, `InvocationRequest.tool_bridge` y cada rama
+`tool_bridge` de los adaptadores. Un deploy ahora retira ademas las claves de
+configuracion y los archivos administrados que deja de servir, acotado al
+perfil. Suite completa: 443 pruebas, `OK (skipped=3)` en `379268c`.
+
+Pendiente (Tarea 6): cargar las credenciales nativas que falten, el live
+probe por proveedor y el despliegue. Nada de esto esta desplegado todavia.
+
 # Estado — 2026-09-27
 
-## Enrutamiento conversacional exacto, desplegado
+## Enrutamiento conversacional exacto, desplegado (superado 2026-09-28)
+
+Superado por «Director en proveedores nativos» arriba: el proveedor
+`goncloud-subscriptions/main` que describe esta seccion ya no existe en el
+repo. Se conserva como registro historico de esa aceptacion; para el estado
+vigente del director, esta seccion no aplica.
 
 Se elimino de `team.json` la excepcion `director_model`/`director_fallbacks`
 que reducia `main` a OpenCode Go, Kimi y Z.AI. `claw` selecciona ahora un unico

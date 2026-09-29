@@ -2,7 +2,7 @@
 
 ## Problem
 
-Since 2026-09-27 13:00 the director (`claw`, and `entrega` through inheritance)
+Since 2026-09-27 13:00 the director (`claw`)
 no longer finishes tasks. On 2026-09-28 it told the owner "lo verifico ahorita"
 for seven hours without running a single tool.
 
@@ -39,7 +39,8 @@ The director converses only through Hermes-native providers, with native tool
 calls. Its `model` + `fallback_providers` are **compiled from the `main` row of
 `model-routing.source.json`** by `configure_team.py`, so no hand-written chain
 exists to contradict the table. Workers keep the subscription router and their
-CLIs unchanged. The owner decided this on 2026-09-28, and confirmed that every
+CLIs unchanged; `entrega` inherits the `main` row as a worker stage and stays
+on the router. The owner decided this on 2026-09-28, and confirmed that every
 position of the table has a native subscription or API credential, Muse
 included.
 
