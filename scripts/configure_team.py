@@ -42,21 +42,32 @@ _DIRECTOR_TOOLSETS = [
     "web",
 ]
 
-#: Hermes auto-picks the main provider for vision_analyze; the primary
-#: (opencode-go/muse-spark-1.3-contributor) rejects it with
-#: "400 ModelProtocolUnsupported: Model does not support this protocol."
-#: Owner decision (2026-09-28): only the director's vision calls go to
-#: Claude Opus 5 instead.
-_DIRECTOR_VISION_AUXILIARY = {
-    "vision": {"provider": "anthropic", "model": "claude-opus-5"}
-}
-
 ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
 #: Kimi's OpenAI wire, not its Anthropic one: Hermes picks the Anthropic
 #: Messages wire for any `/coding` URL, and on that wire K3 dropped 5 of 12
 #: tool calls across identical runs (2026-09-28 evidence); the OpenAI wire
 #: dropped 1.
 KIMI_CODING_URL = "https://api.kimi.com/coding/v1"
+
+#: Owner decision (2026-09-28): director's vision chain order is GLM 5.3 Flash
+#: first, then Kimi For Coding, then Claude Opus 5. Note: glm-5.3 (text only)
+#: and glm-5.3-flashx (not in the plan) cannot serve vision.
+_DIRECTOR_VISION_AUXILIARY = {
+    "vision": {
+        "provider": "zai",
+        "model": "glm-5.3-flash",
+        "base_url": ZAI_CODING_URL,
+        "fallback_chain": [
+            {
+                "provider": "kimi-coding",
+                "model": "kimi-for-coding",
+                "base_url": KIMI_CODING_URL,
+                "api_mode": "chat_completions",
+            },
+            {"provider": "anthropic", "model": "claude-opus-5"},
+        ],
+    }
+}
 
 #: How Hermes reaches each table adapter natively. Native tool calls are the
 #: point: through a CLI with its tools off, the director had to write calls as

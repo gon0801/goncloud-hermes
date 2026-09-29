@@ -62,6 +62,14 @@ Los marcadores son politica de ejecucion, no texto decorativo: compilan a
 igual para el resto de la fila), que Hermes re-resuelve si un fallback se
 activa. Cualquier marcador desconocido bloquea la compilacion de la tabla.
 
+## Cadena de vision del director (2026-09-28)
+
+La cadena conversacional arriba es para codigo y tareas generales. Para
+`vision_analyze`, el director obtiene una cadena de vision separada del
+propietario: `zai/glm-5.3-flash` (primario), luego `kimi-coding/kimi-for-coding`,
+luego `anthropic/claude-opus-5`. El primario rechaza `vision_analyze` con
+`400 ModelProtocolUnsupported` y aquella cadena permite el fallback automatico.
+
 ## Matriz vigente: 8/8 rutas y 15/15 modelos listos (2026-09-26)
 
 OpenCode Zen no ocupa slot y no se sondea. Probes oficiales uno por uno con

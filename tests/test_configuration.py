@@ -200,11 +200,27 @@ class ConfigurationTests(unittest.TestCase):
                         native["agent"]["reasoning_overrides"],
                     )
                     # The primary rejects vision (400 ModelProtocolUnsupported);
-                    # the owner sends the director's vision calls to Claude Opus
-                    # 5 instead. Only the director gets this override.
+                    # the owner sends the director's vision calls through a chain:
+                    # GLM 5.3 Flash, then Kimi For Coding, then Claude Opus 5.
+                    # Only the director gets this override.
                     self.assertEqual(
                         desired["auxiliary"],
-                        {"vision": {"provider": "anthropic", "model": "claude-opus-5"}},
+                        {
+                            "vision": {
+                                "provider": "zai",
+                                "model": "glm-5.3-flash",
+                                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                                "fallback_chain": [
+                                    {
+                                        "provider": "kimi-coding",
+                                        "model": "kimi-for-coding",
+                                        "base_url": "https://api.kimi.com/coding/v1",
+                                        "api_mode": "chat_completions",
+                                    },
+                                    {"provider": "anthropic", "model": "claude-opus-5"},
+                                ],
+                            }
+                        },
                     )
                 else:
                     self.assertNotIn("model", desired)
