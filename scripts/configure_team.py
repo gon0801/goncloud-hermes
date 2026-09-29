@@ -43,6 +43,7 @@ _DIRECTOR_TOOLSETS = [
 ]
 
 ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
+KIMI_CODING_URL = "https://api.kimi.com/coding"
 
 #: How Hermes reaches each table adapter natively. Native tool calls are the
 #: point: through a CLI with its tools off, the director had to write calls as
@@ -57,7 +58,7 @@ _NATIVE_PROVIDERS = {
     "grok": {"provider": "xai-oauth"},
     "opencode_zai": {"provider": "zai", "base_url": ZAI_CODING_URL},
     "codex": {"provider": "openai-codex"},
-    "kimi": {"provider": "kimi-coding"},
+    "kimi": {"provider": "kimi-coding", "base_url": KIMI_CODING_URL},
 }
 
 

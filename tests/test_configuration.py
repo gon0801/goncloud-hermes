@@ -325,7 +325,11 @@ class DirectorNativeChainTests(unittest.TestCase):
                     "base_url": "https://api.z.ai/api/coding/paas/v4",
                 },
                 {"provider": "openai-codex", "model": "gpt-5.6-sol"},
-                {"provider": "kimi-coding", "model": "k3"},
+                {
+                    "provider": "kimi-coding",
+                    "model": "k3",
+                    "base_url": "https://api.kimi.com/coding",
+                },
             ],
         )
         self.assertEqual(
