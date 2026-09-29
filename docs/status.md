@@ -12,12 +12,13 @@ prometio trabajo ("lo verifico ahorita") durante siete horas sin ejecutar una
 sola herramienta.
 
 Arreglo: `configure_team.py` compila el `model` + `fallback_providers` de
-`claw` directamente de la fila `main` de `model-routing.source.json`, en ocho
-proveedores Hermes nativos con llamadas a herramientas nativas —
-`opencode-go` (slots 0 y 1, una sola entrada con un pool de dos
-credenciales), `anthropic`, `meta-ai`, `xai-oauth`, `zai` sobre el endpoint
-del Coding Plan, `openai-codex` y `kimi-coding` — y los marcadores de esfuerzo
-a `agent.reasoning_overrides`. Ya no existe una cadena nativa escrita a mano
+`claw` directamente de la fila `main` de `model-routing.source.json`, en
+siete proveedores Hermes nativos (ocho posiciones) con llamadas a
+herramientas nativas — `opencode-go` (slots 0 y 1, una sola entrada con un
+pool de dos credenciales), `anthropic`, `meta-ai`, `xai-oauth`, `zai` sobre
+el endpoint del Coding Plan, `openai-codex` y `kimi-coding` sobre su
+endpoint `/coding` — y los marcadores de esfuerzo a
+`agent.reasoning_overrides`. Ya no existe una cadena nativa escrita a mano
 que pueda contradecir la tabla. `entrega` hereda la fila `main` como etapa
 trabajadora y sigue en el router de suscripciones; los demas trabajadores no
 cambiaron. Detalle en
