@@ -406,6 +406,21 @@ class DirectorNativeChainTests(unittest.TestCase):
         self.assertIn("navegador", claw)
         self.assertIn("kanban dispatch", claw)
 
+    def test_bot_mode_messages_never_carry_engineering_work(self):
+        # 2026-10-03: Bot Mode gave every Bot Chat a message_agent tool, a
+        # second channel beside the chain. Owner's decision: the chain keeps
+        # all engineering work; message_agent is for quick questions only.
+        # Every profile's SOUL starts with the shared contract, so the rule
+        # lives there, and the director's role must not contradict it.
+        contract = (ROOT / "shared/CONTRACT.md").read_text(encoding="utf-8")
+        self.assertIn("message_agent", contract)
+        self.assertIn(
+            "Nunca asignes, aceptes ni entregues trabajo de ingenieria por message_agent",
+            contract,
+        )
+        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
+        self.assertIn("el trabajo tecnico entra solo por goncloud_local_run", claw)
+
     def test_preserve_user_model_and_credentials(self):
         existing = {
             "model": {"provider": "custom", "base_url": "https://example.invalid"},
