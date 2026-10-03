@@ -13,8 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MISSING = object()
 
 #: Workers route their models through the subscription router and never touch a
-#: browser or the machine; three toolsets cover their work.
-_WORKER_TOOLSETS = ["coding", "kanban", "goncloud_team"]
+#: browser or the machine; three toolsets cover their work. `connections` is
+#: the one Hermes 0.21.5 added to every profile on update (2026-10-02); the
+#: owner keeps it (2026-10-03). The order is the one Hermes wrote, so a
+#: redeploy reads the live list as already reconciled.
+_WORKER_TOOLSETS = ["coding", "connections", "goncloud_team", "kanban"]
 
 #: The director drives Odoo and Edge over Telegram (owner decision 2026-09-15),
 #: so it carries the full toolset — browser and computer_use included. Baking it
