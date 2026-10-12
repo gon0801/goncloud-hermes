@@ -6,22 +6,12 @@
     "~/bin/workers.v1.json:56",
     "~/bin/workers.v1.json:70"
   ],
-  "claude-opus-5": [
-    "~/.claude/agents/adversary.md:8",
-    "~/.claude/agents/reviewer.md:8"
-  ],
   "claude-opus-5-5": [
     "~/bin/workers.v1.json:113",
     "~/bin/workers.v1.json:123",
     "~/bin/workers.v1.json:133",
     "~/bin/workers.v1.json:142",
     "~/bin/workers.v1.json:156"
-  ],
-  "claude-sonnet-5": [
-    "~/.claude/agents/implementer.md:8",
-    "~/.claude/agents/reporter.md:6",
-    "~/.claude/agents/scout.md:6",
-    "~/.claude/agents/verifier.md:8"
   ],
   "deepseek-flash": [
     "~/bin/deepseek:10",
@@ -91,8 +81,8 @@
     "~/.agents/pstack-plataformas/opencode.md:32",
     "~/.config/opencode/opencode.jsonc:12",
     "~/.config/opencode/opencode.jsonc:23",
-    "~/.config/opencode/opencode.jsonc:59",
-    "~/.config/opencode/opencode.jsonc:60",
+    "~/.config/opencode/opencode.jsonc:68",
+    "~/.config/opencode/opencode.jsonc:69",
     "~/.config/opencode/agent/poteto-agent-rapido.md:4",
     "~/.claude/skills/prompt-claw/SKILL.md:16",
     "~/.claude/skills/prompt-claw/SKILL.md:35"
@@ -115,15 +105,13 @@
   "gpt-6.1-sol": [
     "~/.codex/config.toml:55"
   ],
-  "grok-4.6": [
+  "grok-4.7": [
     "~/.grok/config.toml:17",
+    "~/.grok/config.toml:23",
     "~/.grok/agents/adversary.md:7",
     "~/.grok/agents/implementer.md:7",
     "~/.grok/agents/reviewer.md:7",
     "~/.grok/agents/verifier.md:7"
-  ],
-  "grok-4.7": [
-    "~/.grok/config.toml:23"
   ],
   "k3": [
     "~/bin/workers.v1.json:199",
@@ -171,6 +159,9 @@
   ],
   "muse-spark-1.3-contributor": [
     "~/.config/opencode/opencode.jsonc:38"
+  ],
+  "muse-wonder-1.0": [
+    "~/.config/opencode/opencode.jsonc:56"
   ],
   "muse-wonder-full-1.0-contributor": [
     "~/.config/muse/settings.json:4",
