@@ -123,6 +123,8 @@ when its exit criterion is observed, not when its code merges.
   probing after each, and find why the Muse auto-update does not land in WSL.
   Exit: versions on the PC match the Mac's and the Muse worker route passes
   one real stage.
+  Done 2026-10-12 for muse and opencode; kimi, claude, grok and codex are left
+  as they were, with the reason for each in `docs/status.md`.
 
 **Phase 1 - one source with nicknames.** `modelos.json`, a generator with
 tests, rows for the 11 extra profiles copied from their claw chains, and an

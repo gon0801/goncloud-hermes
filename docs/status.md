@@ -1,5 +1,37 @@
 # Estado — 2026-10-12
 
+## CLIs de la PC: lo que se actualizo y lo que se dejo (fase 0C)
+
+Se actualizo solo lo que se podia comprobar despues con una llamada real, uno
+por uno, con el mismo arnes de la fase 0B (sin router ni cuarentena).
+
+| CLI | Antes | Despues | Comprobacion |
+|---|---|---|---|
+| muse (WSL) | 1.4.0 | 1.4.6 | ruta `muse-spark-1.3` OK, 73 s |
+| opencode | 1.18.30 | 1.18.35 (la version de la Mac) | Go/Muse, Go/DeepSeek y Z.AI/GLM OK |
+| kimi | 0.34.0 | sin cambio | la ruta funciona; `kimi upgrade` salta a 2.x y migra estado, sin vuelta atras clara |
+| claude | 2.1.288 | sin cambio | sesion vencida: no hay como comprobar la actualizacion |
+| grok | 1.0.34 | sin cambio | sin sesion: igual |
+| codex | 0.157.1 | sin cambio | cuenta en plan gratuito y dos procesos `codex` abiertos desde 10-09 |
+
+Por que Muse no se actualizaba solo en WSL: el lanzador baja la version nueva
+en un subproceso en segundo plano, y `wsl.exe --exec` termina la sesion antes
+de que acabe (quedaban temporales `.muse-launcher.*` de 0 bytes). En primer
+plano tarda 15 s:
+
+```powershell
+wsl.exe -d Ubuntu --exec env MUSE_SYNC_UPDATE=1 MUSE_UPDATE_INTERVAL_SECONDS=0 /home/goncloud/.local/bin/muse --version
+```
+
+El respaldo de la instalacion anterior esta en WSL,
+`/home/goncloud/.local/bin.pre-0c-20261012` (339 MB); se puede borrar cuando
+Muse 1.4.6 lleve unos dias sin problema. Rollback de opencode:
+`npm install -g opencode-ai@1.18.30`.
+
+Pendiente: claude, grok y codex se actualizan cuando el propietario inicie
+sesion en cada uno, para poder comprobarlos; kimi, cuando se decida con una
+prueba lado a lado.
+
 ## El instalador vuelve a desplegar y el despachador ya no toca la cadena
 
 Causa: el 2026-10-03 se editaron a mano en la PC el perfil `claw` (toolset
