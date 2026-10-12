@@ -88,6 +88,15 @@ Un modelo entra a la tabla despues de probarse con una llamada real, nunca antes
 hermes -p claw cron create "35 8 * * *" --name vigia-modelos --script model_watch.py --no-agent --deliver telegram
 ```
 
+## Modelos escritos a mano fuera de la tabla
+
+Lanzadores, agentes de cada CLI y scripts fijan modelos que la tabla no gobierna. `pinned-files.json` lista esos archivos (hoy, los de la Mac del propietario) y `scripts/pinned_models.py` los revisa: dice que modelo fija cada uno, en que linea, y si sigue en los catalogos publicos (`ok`, `deprecated`, `not in the catalogs`). Con `--write` guarda la lista en `scripts/pinned-models.json`, que el instalador entrega junto al vigia; asi el vigia tambien avisa cuando uno de esos modelos desaparece. No cambia ningun archivo ajeno.
+
+```bash
+python3 scripts/pinned_models.py            # reporte
+python3 scripts/pinned_models.py --write    # reporte y lista para el vigia; despues, desplegar
+```
+
 ## Calidad
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.

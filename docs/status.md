@@ -1,5 +1,33 @@
 # Estado — 2026-10-12
 
+## Modelos escritos a mano fuera de la tabla (fase 4)
+
+`scripts/pinned_models.py` reviso 22 rutas de la Mac del propietario
+(`pinned-files.json`) y encontro 34 modelos fijados. Contra los catalogos:
+
+- **Retirado, corregido:** `deepseek-v4-flash` en `~/bin/deepseek` (ranuras
+  haiku y subagente) paso a `deepseek-flash`, el ID vigente de V4.1 Flash, que
+  el revisor de PRs ya usa con Claude Code. Respaldo: `~/bin/deepseek.bak-20261012`.
+  No se probo lanzando una sesion.
+- **Documento que contradecia la configuracion, corregido:**
+  `~/.agents/pstack-plataformas/muse.md` decia `muse-spark-1.3-contributor`;
+  la configuracion de Muse ya usa `muse-wonder-full-1.0-contributor`.
+  Respaldo: `muse.md.bak-20261012`.
+- **Fuera de los catalogos publicos, aceptado:**
+  `muse-wonder-full-1.0-contributor` (ID propio del CLI de Muse) y cinco IDs
+  viejos de `~/.qwen/settings.json` (`deepseek-v3.2`,
+  `deepseek-v4-flash-0731`, `deepseek-v4-pro-0813`, `glm-5`, `kimi-k2.5`).
+- **Vigentes pero con version mas nueva disponible, decision del propietario:**
+  `claude-sonnet-5` y `claude-opus-5` en `~/.claude/agents/*.md` (existe 5.5),
+  `grok-4.6` en `~/.grok/agents/*.md` (existe 4.7), `gpt-5.3-codex` en
+  `~/.cursor/cli-config.json`, y el proveedor `meta` escrito a mano en
+  `~/.config/opencode/opencode.jsonc` (solo Spark). `gpt-6-astra` en
+  `~/.codex` no responde mientras no haya suscripcion.
+
+La lista quedo en `scripts/pinned-models.json` (33 modelos) y el instalador
+la entrega junto al vigia, que ahora tambien avisa cuando uno de ellos
+desaparece de un catalogo. Los lanzadores de la PC no se incluyeron.
+
 ## Muse Wonder en la ruta directa de Muse (fase 3)
 
 `meta/muse-spark-1.3 (max)` paso a `meta/muse-wonder-1.0 (max)` en las ocho

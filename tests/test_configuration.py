@@ -633,6 +633,10 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertFalse(
                 (runtime / "profiles/scout/scripts/model_watch.py").exists()
             )
+            self.assertEqual(
+                (watcher.parent / "pinned-models.json").read_text(encoding="utf-8"),
+                (ROOT / "scripts/pinned-models.json").read_text(encoding="utf-8"),
+            )
             soul = runtime / "profiles/scout/SOUL.md"
             soul.write_text("user edit", encoding="utf-8")
             state = runtime / "profiles/claw/goncloud-managed.json"

@@ -497,6 +497,11 @@ def configure(
             files["scripts/model_watch.py"] = (
                 ROOT / "scripts/model_watch.py"
             ).read_text(encoding="utf-8")
+            # Models pinned by hand outside the table (launchers, agent files):
+            # the watcher reports when one of them leaves the catalogs.
+            files["scripts/pinned-models.json"] = (
+                ROOT / "scripts/pinned-models.json"
+            ).read_text(encoding="utf-8")
         shipped = set(files)
         if preserve_local_soul and (profile / "SOUL.md").exists():
             files.pop("SOUL.md")

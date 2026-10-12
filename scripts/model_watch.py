@@ -72,8 +72,12 @@ def _direct(uses):
     return [use for use in uses if int(use.rsplit(":", 1)[1]) >= 2]
 
 
-def compare(previous, current, in_use):
-    """Notices for what changed between two catalog views; none on the first run."""
+def compare(previous, current, in_use, pins=None):
+    """Notices for what changed between two catalog views; none on the first run.
+
+    ``pins`` are models written by hand outside the table (ID -> places); they
+    are reported when they leave any catalog that listed them.
+    """
     if previous is None:
         return []
     families = {family_of(model) for model in in_use} - {None}
@@ -103,6 +107,26 @@ def compare(previous, current, in_use):
             if model in previous[source] and model not in current[source]:
                 gone.append(
                     {"kind": "gone", "source": source, "id": model, "uses": cells}
+                )
+    for model, places in sorted((pins or {}).items()):
+        if model in in_use:
+            for notice in gone:
+                if notice["id"] == model:
+                    notice["uses"] = [*notice["uses"], *places]
+            continue
+        for source in sorted(previous):
+            if (
+                source in current
+                and model in previous[source]
+                and model not in current[source]
+            ):
+                gone.append(
+                    {
+                        "kind": "gone",
+                        "source": source,
+                        "id": model,
+                        "uses": list(places),
+                    }
                 )
     return new + gone
 
@@ -185,6 +209,7 @@ def catalog_view(models_dev, go_ids):
                     for key, value in (
                         ("release_date", facts.get("release_date")),
                         ("context", (facts.get("limit") or {}).get("context")),
+                        ("status", facts.get("status")),
                     )
                     if value
                 }
@@ -261,7 +286,11 @@ def main():
     muse = _try(_installed_muse)
 
     current = catalog_view(models_dev, go)
-    notices = compare(state.get("sources"), current, in_use)
+    pins_file = here / "pinned-models.json"
+    pins = (
+        json.loads(pins_file.read_text(encoding="utf-8")) if pins_file.is_file() else {}
+    )
+    notices = compare(state.get("sources"), current, in_use, pins)
     latest = {"muse": channel} if channel else {}
     cli = cli_notices(
         {"muse": muse} if muse else {}, latest, state.get("cli_notified", {})

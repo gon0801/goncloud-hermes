@@ -172,6 +172,10 @@ the one-day row are claw-side steps that have not been needed yet.
 PR reviewer either read a nickname or are listed in the watcher's report.
 Exit: the watcher's "pinned elsewhere" list is empty or every entry is
 acknowledged.
+Done 2026-10-12: `scripts/pinned_models.py`, `pinned-files.json` and
+`scripts/pinned-models.json`; the acknowledged list is in `docs/status.md`.
+Instead of making each file read a nickname, the watcher reports when a
+pinned ID leaves the catalogs. The PC's launchers are not scanned.
 
 ## Corrections to the 2026-10-03 hand edits
 
