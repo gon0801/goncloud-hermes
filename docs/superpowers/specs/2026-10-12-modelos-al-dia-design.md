@@ -150,6 +150,10 @@ in use, an ID in use that disappeared or was renamed, or a CLI behind its
 channel. It runs from an existing script-type cron.
 Exit: replaying the last three Muse releases from catalog history produces
 the three expected notices and no others.
+Done 2026-10-12: `scripts/model_watch.py` with `tests/test_model_watch.py`
+(the replay is `test_replaying_the_last_three_muse_releases`). It watches
+models.dev, the OpenCode Go list and the Muse channel; OpenRouter and the
+other CLIs were left out until a notice is missed because of them.
 
 **Phase 3 - promotion with a real probe.** `promote <old label> <new label>`
 makes one isolated real call per affected route (never `--live-probe-all`,
