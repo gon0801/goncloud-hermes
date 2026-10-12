@@ -156,7 +156,7 @@ por uno, con el mismo arnes de la fase 0B (sin router ni cuarentena).
 |---|---|---|---|
 | muse (WSL) | 1.4.0 | 1.4.6 | ruta `muse-spark-1.3` OK, 73 s |
 | opencode | 1.18.30 | 1.18.35 (la version de la Mac) | Go/Muse, Go/DeepSeek y Z.AI/GLM OK |
-| kimi | 0.34.0 | sin cambio | la ruta funciona; `kimi upgrade` salta a 2.x y migra estado, sin vuelta atras clara |
+| kimi | 0.34.0 | 2.1.1 (la version de la Mac) | `kimi/k3` y `kimi/kimi-for-coding (high)` OK, 8.7 s cada una; `config.toml` sin cambios |
 | claude | 2.1.288 | 2.1.296 | el propietario inicio sesion; Opus 5, Sonnet 5 y Fable 5.1 OK antes y despues de actualizar |
 | grok | 1.0.34 | 1.0.46 (la version de la Mac, canal stable) | el propietario inicio sesion; `grok-4.6` OK antes y despues |
 | codex | 0.157.1 | sin cambio | cuenta en plan gratuito y dos procesos `codex` abiertos desde 10-09 |
@@ -178,8 +178,17 @@ Muse 1.4.6 lleve unos dias sin problema. Rollback de opencode:
 Respaldos de los binarios anteriores: `%USERPROFILE%\.local\bin\claude.exe.pre-0c`
 y `%USERPROFILE%\.grok\bin\grok.exe.pre-0c`.
 
+Kimi en Windows no se actualiza con `kimi upgrade` (solo avisa): hay que correr
+el instalador oficial, `install.ps1` de `code.kimi.com`. Se descargo y se leyo
+antes de ejecutarlo: baja el binario, verifica su SHA-256 e instala en
+`%USERPROFILE%\.kimi-code\bin`, dejando el anterior como `kimi.exe.bak`. Se
+corrio con `KIMI_VERSION=2.1.1` y `KIMI_NO_MODIFY_PATH=1`. Respaldo propio de
+la instalacion anterior (sin sesiones): `%USERPROFILE%\.kimi-code.pre-0c-20261012`.
+El piloto de pxpipe esta instalado pero apagado; si se vuelve a encender hay
+que correr `pxpipe-self-test`, porque cada salto de Kimi lo rompia.
+
 Pendiente: codex, cuando el propietario entre con la cuenta de pago y no haya
-procesos `codex` abiertos; kimi, cuando se decida con una prueba lado a lado.
+procesos `codex` abiertos.
 
 ## El instalador vuelve a desplegar y el despachador ya no toca la cadena
 
