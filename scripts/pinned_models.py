@@ -59,7 +59,7 @@ def scan(patterns):
             for number, model in find_ids(
                 file.read_text(encoding="utf-8", errors="ignore")
             ):
-                pins.setdefault(model, []).append(f"{path}:{number}")
+                pins.setdefault(model, []).append(f"{file.as_posix()}:{number}")
     return pins
 
 
