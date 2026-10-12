@@ -1,3 +1,28 @@
+# Estado — 2026-10-12
+
+## El instalador vuelve a desplegar y el despachador ya no toca la cadena
+
+Causa: el 2026-10-03 se editaron a mano en la PC el perfil `claw` (toolset
+`kanban`, `kanban.dispatch_in_gateway: true`, `SOUL.md` con la seccion
+"Especialistas") y `workflow.py` en las 20 copias (11 roles nuevos). Nada de
+eso estaba en el repo, asi que `configure_team.py` abortaba con
+`Local configuration conflict` y `Local managed-file conflict`.
+
+Al revisarlo aparecio un defecto anterior: el gateway corre un solo
+despachador Kanban para todos los perfiles y lee el `config.yaml` raiz, donde
+esta encendido por defecto desde 2026-10-02. El `dispatch_in_gateway: false`
+de cada perfil nunca le llego, asi que cualquier tarjeta de etapa en `ready`
+podia correr con un agente nativo, fuera del router. No ocurrio porque ningun
+workflow corrio desde 2026-09-28.
+
+Arreglo: el repo adopta el estado vivo (decision del propietario, 2026-10-12)
+y corrige lo que estaba mal. `configure_team.py` escribe en el `config.yaml`
+raiz la lista blanca `kanban.dispatch_profiles` con los once especialistas y
+`auto_decompose: false`; el rol del director usa `kanban_create` solo para
+ellos; `--check` valida contra los perfiles sin escribir. Pendiente para la
+fase 1: los especialistas no tienen `model:` propio.
+`docs/superpowers/specs/2026-10-12-modelos-al-dia-design.md`.
+
 # Estado — 2026-09-28
 
 ## Director en proveedores nativos
