@@ -1,5 +1,35 @@
 # Estado — 2026-10-12
 
+## Muse Wonder en claw y la llave de Meta
+
+Claw daba 401 en `meta/*` desde el 2026-09-28. La causa no era claw: su
+llave era una llave muerta, la misma que sigue escrita en
+`profiles\claw\.env` de hermes como `MODEL_API_KEY`. Hermes no usa esa: su
+proveedor `meta-ai` resuelve otra llave, del pool de credenciales (fuente
+`manual`), y esa es la que funciona. Se confirmo por huella y con la misma
+llamada desde las dos maquinas (PC 200, Mac Mini 401 con la del `.env`).
+
+Antes de copiar una credencial de hermes hay que tomar la que
+`resolve_runtime_provider` devuelve, no la del `.env`.
+
+En claw, siete agentes (adversary, implementer, ingenieria, operaciones,
+reviewer, scout, verifier) guardan una copia propia de `meta:manual`; mientras
+existan, `paste-api-key` sin `--profile-id` se niega a cambiar la compartida.
+Con `--profile-id meta:manual` escribe en la compartida (agente `main`) y en
+cada copia, y acepta la llave por stdin.
+
+Hecho, con aprobacion del propietario: la llave buena paso de la PC a la Mac
+Mini por tuberia, sin mostrarse, a los ocho lugares. Despues: llamada directa
+desde la Mac Mini 200; `openclaw infer model run --model meta/muse-spark-1.3`
+`PROBE_OK` con la compartida y con una copia. Se agrego la fila
+`muse-wonder-1.0` a `models.providers.meta` (la de Spark se conserva) y su
+esfuerzo `max` en `agents.defaults.models`; sonda de Wonder `PROBE_OK`;
+cadenas aplicadas a los 19 agentes. `claw_models.py check`: 0 diferencias y
+`id_overrides` vacio.
+
+Pendiente menor: `MODEL_API_KEY` en el `.env` de hermes sigue siendo la llave
+muerta; nadie la usa.
+
 ## Claude 5.5 y Grok 4.7 en las cadenas de hermes
 
 Por indicacion del propietario ("hay que actualizarlos"): todo modelo con
