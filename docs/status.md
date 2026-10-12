@@ -20,6 +20,30 @@ antes de los cambios de modelos del dia, se alineo una vez a mano con la de
 `claw` (era lo unico distinto en los once; respaldo en
 `backups\pre-especialistas-20261012-164245`).
 
+Desplegado en `0950cd1` (`Configured` 20 perfiles). Comprobado despues:
+
+- Los once quedaron con la misma cadena: `opencode-go/deepseek-v4.1-flash`,
+  luego `zai/glm-5.3-flash`, `openai-codex/gpt-5.6-terra`,
+  `anthropic/claude-sonnet-5-5`, `xai-oauth/grok-4.7`,
+  `kimi-coding/kimi-for-coding`, `meta-ai/muse-wonder-1.0`; conservaron sus
+  toolsets, su `terminal.cwd` y su `SOUL.md`.
+- Una llamada minima por perfil al modelo principal, con las credenciales que
+  resuelve su propio `HERMES_HOME`: los once contestaron `GONCLOUD_PROBE_OK`.
+  (OpenCode Go rechaza peticiones sin `User-Agent` de cliente, con 403 `1010`
+  de Cloudflare, y sin la cabecera `x-opencode-session`, con 400
+  `MissingSessionID`; con 32 tokens de tope el razonamiento se los come y la
+  respuesta llega vacia.)
+- De punta a punta: la tarjeta `t_37c976a8`, creada con
+  `hermes -p claw kanban create --assignee eggbot`, paso de `ready` a `running`
+  en 10 s (la tomo el despachador del gateway), corrio con
+  `provider=opencode-go model=deepseek-v4.1-flash` y cerro con `PONG` en 15 s.
+  Archivada.
+
+Queda abierto: los especialistas no tienen credencial de `meta-ai` (ultima
+posicion de su cadena) y `openai-codex` no responde mientras no haya
+suscripcion; las dos posiciones se saltan. Solo se probo una tarjeta, con
+`eggbot`; los otros diez no han corrido una tarea real.
+
 ## Muse Wonder en claw y la llave de Meta
 
 Claw daba 401 en `meta/*` desde el 2026-09-28. La causa no era claw: su
