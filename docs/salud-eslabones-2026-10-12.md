@@ -35,10 +35,10 @@ configuracion.
 | kimi, kimi-for-coding (high y sin esfuerzo) | vivo | sonda OK 9.9 s; el adaptador no pasa el esfuerzo, es la misma llamada | |
 | deepseek, deepseek-flash | vivo | HTTP 200, 2.4 s | |
 | muse, muse-spark-1.3, max | vivo | sonda OK 65.7 s (incluye arranque de WSL); el CLI repite `muse-spark-1.3` | los 4 `model_unavailable` del 09-28 no se reproducen |
-| claude, claude-opus-5, xhigh | muerto | sonda 21.6 s, `auth` | "OAuth session expired and could not be refreshed" |
-| claude, claude-sonnet-5, xhigh | muerto | sonda 8.2 s, `auth` | igual |
-| claude, claude-fable-5-1 | muerto | sonda 8.5 s, `auth` | igual |
-| grok, grok-4.6 | muerto | sonda 0.5 s, `auth` | "Not signed in" |
+| claude, claude-opus-5, xhigh | vivo desde las 14:30 | antes: `auth`, sesion vencida. El propietario inicio sesion; sonda OK 10.2 s con Claude Code 2.1.296 | |
+| claude, claude-sonnet-5, xhigh | vivo desde las 14:30 | igual; sonda OK 10.2 s | |
+| claude, claude-fable-5-1 | vivo desde las 14:30 | igual; sonda OK 9.2 s | |
+| grok, grok-4.6 | vivo desde las 14:30 | antes: "Not signed in". Sonda OK 8.3 s con grok 1.0.46 | |
 | codex, gpt-5.6-terra, xhigh | muerto | sonda 4.8 s, `quota` | limite de uso hasta 2026-11-07 19:06 |
 | codex, gpt-5.6-sol, xhigh | muerto | sonda 9.1 s, `invalid_request` | "model is not supported when using Codex with a ChatGPT account" |
 | codex, gpt-6-astra | muerto | sonda 4.0 s, `invalid_request` | igual |
@@ -88,8 +88,6 @@ se han ejercitado desde el 09-28.
 
 | Que | Donde | Accion | Quien |
 |---|---|---|---|
-| Claude CLI (3 rutas de trabajadores) | PC | `claude auth login` | propietario, en la PC |
-| Grok CLI | PC | `grok login --device-code` | propietario, en la PC |
 | OpenAI / Codex (3 modelos, en los dos sistemas) | PC y Mac Mini | La cuenta de ChatGPT responde como plan gratuito: `sol` y `astra` no existen para ella y `terra` esta en limite hasta el 7 de noviembre. Entrar con la cuenta de pago (`codex login`) o decidir que modelo ocupa esas posiciones | propietario |
 | `meta/muse-spark-1.3` | Mac Mini | llave nueva o `openclaw models auth login --provider meta`; su perfil ya traia un cooldown `auth` desde el 09-28 | propietario |
 

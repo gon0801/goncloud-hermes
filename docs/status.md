@@ -10,8 +10,8 @@ por uno, con el mismo arnes de la fase 0B (sin router ni cuarentena).
 | muse (WSL) | 1.4.0 | 1.4.6 | ruta `muse-spark-1.3` OK, 73 s |
 | opencode | 1.18.30 | 1.18.35 (la version de la Mac) | Go/Muse, Go/DeepSeek y Z.AI/GLM OK |
 | kimi | 0.34.0 | sin cambio | la ruta funciona; `kimi upgrade` salta a 2.x y migra estado, sin vuelta atras clara |
-| claude | 2.1.288 | sin cambio | sesion vencida: no hay como comprobar la actualizacion |
-| grok | 1.0.34 | sin cambio | sin sesion: igual |
+| claude | 2.1.288 | 2.1.296 | el propietario inicio sesion; Opus 5, Sonnet 5 y Fable 5.1 OK antes y despues de actualizar |
+| grok | 1.0.34 | 1.0.46 (la version de la Mac, canal stable) | el propietario inicio sesion; `grok-4.6` OK antes y despues |
 | codex | 0.157.1 | sin cambio | cuenta en plan gratuito y dos procesos `codex` abiertos desde 10-09 |
 
 Por que Muse no se actualizaba solo en WSL: el lanzador baja la version nueva
@@ -28,9 +28,11 @@ El respaldo de la instalacion anterior esta en WSL,
 Muse 1.4.6 lleve unos dias sin problema. Rollback de opencode:
 `npm install -g opencode-ai@1.18.30`.
 
-Pendiente: claude, grok y codex se actualizan cuando el propietario inicie
-sesion en cada uno, para poder comprobarlos; kimi, cuando se decida con una
-prueba lado a lado.
+Respaldos de los binarios anteriores: `%USERPROFILE%\.local\bin\claude.exe.pre-0c`
+y `%USERPROFILE%\.grok\bin\grok.exe.pre-0c`.
+
+Pendiente: codex, cuando el propietario entre con la cuenta de pago y no haya
+procesos `codex` abiertos; kimi, cuando se decida con una prueba lado a lado.
 
 ## El instalador vuelve a desplegar y el despachador ya no toca la cadena
 
