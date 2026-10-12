@@ -70,7 +70,7 @@ _DIRECTOR_VISION_AUXILIARY = {
                 "base_url": KIMI_CODING_URL,
                 "api_mode": "chat_completions",
             },
-            {"provider": "anthropic", "model": "claude-opus-5"},
+            {"provider": "anthropic", "model": "claude-opus-5-5"},
         ],
     }
 }
