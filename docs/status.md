@@ -1,5 +1,25 @@
 # Estado — 2026-10-12
 
+## Los once especialistas ya tienen cadena de modelos (fase 1B)
+
+Antes: ninguno tenia `model:` en su `config.yaml`; una tarjeta despachada a
+uno corria con el proveedor que su entorno eligiera y el primer modelo de su
+catalogo. Nunca habian corrido (0 tarjetas, 0 sesiones).
+
+Medido antes de cambiar nada, resolviendo cada proveedor con
+`resolve_runtime_provider` bajo el `HERMES_HOME` de cada perfil (sin mostrar
+llaves): los once pueden usar `opencode-go`, `zai`, `anthropic`, `xai-oauth` y
+`kimi-coding`; ninguno puede usar `meta-ai` (`AuthError`), que es la ultima
+posicion de su cadena. `openai-codex` no se midio: resolverlo hace que Hermes
+relance el script con otro interprete, y de todos modos no hay suscripcion.
+
+Cambio: `configure_team.py` administra en esos perfiles solo la cadena nativa
+de la fila `specialist_row` (`operaciones`) y su copia del plugin con la
+tabla. No los crea y no toca nada mas. Como su copia de la tabla venia de
+antes de los cambios de modelos del dia, se alineo una vez a mano con la de
+`claw` (era lo unico distinto en los once; respaldo en
+`backups\pre-especialistas-20261012-164245`).
+
 ## Muse Wonder en claw y la llave de Meta
 
 Claw daba 401 en `meta/*` desde el 2026-09-28. La causa no era claw: su

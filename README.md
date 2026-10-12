@@ -59,6 +59,10 @@ Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el wo
 
 Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway es uno solo para todos los perfiles y lee el `config.yaml` raiz, donde esta encendido; `configure_team.py` le escribe ahi la lista blanca `kanban.dispatch_profiles` (los once especialistas de `team.json`) para que despache sus tarjetas y nunca una etapa de la cadena, que debe correr por el router. `claw` conversa por proveedores Hermes nativos compilados de la tabla; los trabajadores no llevan una cadena nativa competidora y siguen en el router de suscripciones.
 
+## Especialistas
+
+Los once perfiles especialistas (`kanban.dispatch_profiles` en `team.json`) son del propietario: `configure_team.py` nunca los crea ni toca su `SOUL.md`, sus toolsets ni su workspace. Solo les administra dos cosas: la cadena nativa de modelos de la fila que nombra `specialist_row` (hoy `operaciones`, la misma que corren en claw), escrita como `model` + `fallback_providers` + `agent.reasoning_overrides`, y su copia del plugin con la tabla. Asi una tarjeta despachada a un especialista corre en una cadena conocida. Un perfil de la lista que no existe se omite con un aviso.
+
 ## Claw sigue la misma tabla
 
 Las cadenas de claw (OpenClaw, Mac Mini) son las mismas filas de `model-routing.source.json`. `claw-routing.json` dice que fila corre cada agente de claw, y `scripts/claw_models.py` deriva lo que claw deberia tener y lo compara con una foto de lo vivo; nunca escribe en claw.

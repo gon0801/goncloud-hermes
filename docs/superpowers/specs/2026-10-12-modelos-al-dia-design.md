@@ -130,7 +130,7 @@ when its exit criterion is observed, not when its code merges.
   `claw-routing.json` and `tests/test_claw_models.py`. `check` against the
   live snapshot of 2026-10-12 reports one difference in 19 agents: `verifier`
   lacks `thinking: high` for `kimi/kimi-for-coding`. It never writes to claw.
-- 1B: pin the eleven specialists in hermes to the `operaciones` row as native
+- 1B (done 2026-10-12, see `docs/status.md`): pin the eleven specialists in hermes to the `operaciones` row as native
   `model` + `fallback_providers`, so a dispatched card and the specialist's own
   bot chat stop running on whatever provider its environment selects. Needs
   first: which provider accounts each specialist profile can use, and one real
