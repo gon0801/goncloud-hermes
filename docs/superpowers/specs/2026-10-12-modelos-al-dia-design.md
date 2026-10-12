@@ -104,8 +104,8 @@ when its exit criterion is observed, not when its code merges.
 
 **Phase 0 - make the current state deployable and known.** No model changes.
 
-- 0A (this repo): adopt the 2026-10-03 edits, add `configure_team.py --check`,
-  converge on one deploy branch, redeploy with zero effective change.
+- 0A (this repo): adopt the 2026-10-03 edits and correct them (see below), add
+  `configure_team.py --check`, converge on one deploy branch, redeploy.
   Exit: `configure_team.py --check` passes on the PC from the default branch
   and a real apply reports nine profiles with the new revision.
   Plan: `docs/superpowers/plans/2026-10-12-modelos-fase0a-destrabar-instalador.md`.
@@ -149,24 +149,36 @@ PR reviewer either read a nickname or are listed in the watcher's report.
 Exit: the watcher's "pinned elsewhere" list is empty or every entry is
 acknowledged.
 
-## Risks carried by decision 1
+## Corrections to the 2026-10-03 hand edits
 
-Adopting the live state records two reversals of earlier, documented choices.
-Phase 0A changes nothing on the PC, so it adds no new risk; it makes these
-visible:
+The owner delegated this on 2026-10-12 ("fix what was written by hand; remove
+it if needed"). A read-only review of the live board, the gateway and the
+upstream dispatcher settled each edit:
 
-- **Gateway dispatch can race the stage chain.** `tests/test_configuration.py`
-  documents that with `dispatch_in_gateway` on, the gateway dispatcher claims
-  any `ready` card with an assignee, and stage cards carry their role as
-  assignee. The director has had dispatch on since 2026-10-03 and the worker
-  router has not run since 2026-09-28, so the race is untested. Phase 0B must
-  reproduce or rule it out before the worker chain is used again.
-- **Prompt size.** The 14 kanban schemas cost 23.5 KB of every director call
-  (measured 2026-09-27); the director now carries them.
-- **Contradictory role text.** The live director `SOUL.md` still says "No
-  crees tarjetas Kanban ... el despachador nativo esta apagado" two paragraphs
-  above "La via es una tarjeta: hermes kanban create". 0A adopts it verbatim;
-  rewriting it is a separate, owner-reviewed change.
+| Hand edit | Finding | Decision |
+|---|---|---|
+| 11 roles in `TEAM_ROLES` | Needed: without them the specialists' plugin tools answer "unknown Goncloud role". | Keep. |
+| `kanban.dispatch_in_gateway: true` on `claw` | Inert for dispatch. One dispatcher serves every multiplexed profile and reads the root `config.yaml`, where dispatch has been on by default since 2026-10-02. In a profile the key only decides whether `hermes kanban create` warns. | Keep (it is truthful), and fix the real switch: the installer writes `kanban.dispatch_profiles` (the 11 specialists) and `auto_decompose: false` into the root config. |
+| `kanban` toolset on `claw` | `kanban_create` subscribes the chat, so the gateway reports back when a card finishes; the CLI does not. Costs 23.9 KB per director call. | Keep. |
+| Director role text | Told the director to use the CLI (nobody is notified), listed `operaciones` as a card target (never dispatched, the card would sit in `ready` forever, as on 2026-09-15), and still said the dispatcher was off. | Rewrite: `kanban_create` only, specialists only, no claim that the dispatcher is off. |
+
+The race the repo's own test warned about was real and unguarded: a `ready`
+stage card has its role as assignee, the orchestrator never claims it, and the
+dispatcher ticks every 60 s. It has not happened only because no workflow has
+run since 2026-09-28. The allowlist closes it: it is fail-closed and read on
+every tick, and no chain role is in it.
+
+Nothing had used the specialist flow yet: zero cards since 2026-10-03 and
+zero sessions in the eleven specialist profiles.
+
+The installer overwrites a managed file only if the file on disk equals what
+it last recorded. So the role text is adopted verbatim in one revision and
+corrected in the next, and the deploy applies both in order.
+
+Still open after 0A, for phase 1: a specialist profile has no `model:` block,
+so its card (and its own bot chat) runs on whatever provider its `.env`
+selects and that provider's first catalog model. Phase 1 pins each one to the
+chain it already has in claw, which is the `operaciones` row.
 
 ## Open questions
 
