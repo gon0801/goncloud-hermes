@@ -481,11 +481,25 @@ class DirectorNativeChainTests(unittest.TestCase):
         # 2026-10-03 (adopted 2026-10-12): work that belongs to a specialist
         # profile goes to it through a kanban card; from Telegram there is no
         # message_agent. Code still goes through the chain.
+        #
+        # Corrected 2026-10-12. The hand-written text sent the director to the
+        # CLI (`hermes kanban create`), which subscribes nobody, so no one
+        # learned that a card had finished; kanban_create subscribes the chat.
+        # It also offered `operaciones` as a target, but only the allowlisted
+        # specialists are dispatched: that card would sit in `ready` forever,
+        # as on 2026-09-15. And it still said the dispatcher was off.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
-        self.assertIn("# Especialistas", claw)
-        for specialist in ("amazon", "meli", "odoo", "gonserver", "eggbot"):
+        section = claw.split("# Especialistas", 1)[1]
+        for specialist in team["kanban"]["dispatch_profiles"]:
             with self.subTest(specialist=specialist):
-                self.assertIn(f"- {specialist}:", claw)
+                self.assertIn(f"- {specialist}:", section)
+        for stage_role in team["profiles"]:
+            with self.subTest(stage_role=stage_role):
+                self.assertNotIn(f"- {stage_role}:", section)
+        self.assertIn("La via es una tarjeta con kanban_create", claw)
+        self.assertIn("No uses hermes kanban create", claw)
+        self.assertNotIn("despachador nativo esta apagado", claw)
 
     def test_preserve_user_model_and_credentials(self):
         existing = {
