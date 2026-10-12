@@ -163,6 +163,10 @@ records a before and after snapshot, and keeps the old OpenClaw
 catalog row for one day because subagent sessions stay pinned to the old ID.
 Exit: Muse Wonder is promoted on the direct routes, and a deliberate
 promotion to a nonexistent ID is refused with nothing applied.
+Done 2026-10-12 for hermes: `scripts/promote_model.py` and
+`scripts/probe_route.py`; Muse Wonder is in the eight direct cells. Claw is
+held on the old ID until its Meta key works; the before/after snapshot and
+the one-day row are claw-side steps that have not been needed yet.
 
 **Phase 4 - names pinned elsewhere.** Launchers, per-CLI agent files and the
 PR reviewer either read a nickname or are listed in the watcher's report.

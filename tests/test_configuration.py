@@ -395,7 +395,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["fallback_providers"],
             [
                 {"provider": "anthropic", "model": "claude-opus-5"},
-                {"provider": "meta-ai", "model": "muse-spark-1.3"},
+                {"provider": "meta-ai", "model": "muse-wonder-1.0"},
                 {"provider": "xai-oauth", "model": "grok-4.6"},
                 {
                     "provider": "zai",
@@ -416,7 +416,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             {
                 "reasoning_overrides": {
                     "claude-opus-5": "xhigh",
-                    "muse-spark-1.3": "max",
+                    "muse-wonder-1.0": "max",
                     "gpt-5.6-sol": "xhigh",
                 }
             },

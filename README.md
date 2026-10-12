@@ -70,6 +70,16 @@ python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/mo
 
 `check` sale con 1 y lista cada diferencia (agente, posicion o thinking). La foto se toma en el host del gateway con un parse de solo lectura de `openclaw.json`; su formato esta en el encabezado del archivo.
 
+## Cambiar un modelo
+
+Un modelo entra a la tabla despues de probarse con una llamada real, nunca antes.
+
+1. `python3 scripts/promote_model.py <viejo> <nuevo>` muestra las celdas que cambiarian y las sondas que hay que correr; no escribe nada.
+2. En la PC, con el Python del runtime Hermes, cada sonda debe imprimir `"success": true, "marker_exact": true`: `python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"`. La sonda llama al adaptador directo, fuera del router, asi que un fallo no pone a nadie en cuarentena. Si la celda esta en la fila `main`, el director la usa por su proveedor nativo y esa ruta se prueba aparte.
+3. `python3 scripts/promote_model.py <viejo> <nuevo> --apply` escribe la tabla. Con `--hold-claw` claw se queda en el modelo viejo (queda anotado en `id_overrides` de `claw-routing.json`); `--release-claw <nuevo>` lo suelta cuando claw ya pueda servirlo.
+4. Actualiza las pruebas que nombran el modelo viejo, corre la bateria, y despliega con `configure_team.py --check` y luego sin `--check`.
+5. Para claw: `claw_models.py check` contra una foto fresca dice que falta; el parche se aplica en el host del gateway en un hueco sin corridas.
+
 ## Vigia de modelos
 
 `scripts/model_watch.py` corre una vez al dia como trabajo programado sin agente del director (`cron`, `no_agent`): no llama a ningun modelo y no cambia nada. Compara los catalogos publicos (models.dev y la lista de OpenCode Go) con la corrida anterior y avisa por Telegram solo si hay novedad: un modelo nuevo de una familia que la tabla usa, un modelo en uso que desaparecio de su ruta, el CLI de Muse atrasado respecto a su canal, o una fuente que lleva tres corridas sin poder leerse. Si no hay nada que decir, no imprime nada y el trabajo queda en silencio. Su estado vive junto al script, en `model_watch.state.json`; `configure_team.py` lo instala en `profiles\claw\scripts`.

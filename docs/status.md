@@ -1,5 +1,28 @@
 # Estado — 2026-10-12
 
+## Muse Wonder en la ruta directa de Muse (fase 3)
+
+`meta/muse-spark-1.3 (max)` paso a `meta/muse-wonder-1.0 (max)` en las ocho
+filas. Antes se probo con llamada real en las dos rutas que alimenta esa
+celda:
+
+| Ruta | Sonda | Resultado |
+|---|---|---|
+| Trabajadores, CLI de Muse 1.4.6 en WSL | `probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"` | exito, marcador exacto, 5.5 s; el CLI repite `muse-wonder-1.0` |
+| Director, proveedor nativo `meta-ai` | `POST /v1/responses` con la llave que resuelve Hermes, esfuerzo `xhigh` | HTTP 200 de `muse-wonder-1.0`, 1.7 s (control con `muse-spark-1.3`: 200, 4.9 s) |
+
+De paso: la llave de Meta del perfil `claw` de hermes funciona; la que da 401
+es la de claw (OpenClaw).
+
+Claw se quedo en `muse-spark-1.3` con `--hold-claw` (su llave de Meta sigue
+rechazada); `claw_models.py check` sigue en 0 diferencias. El principal por
+OpenCode Go sigue en `muse-spark-1.3-contributor` hasta que OpenCode Go sirva
+Wonder; el vigia avisara.
+
+Las copias de la tabla en los once perfiles especialistas no las toca el
+instalador y quedan con el nombre anterior; no las usa nadie (esos perfiles no
+tienen fila).
+
 ## Una sola tabla para hermes y claw, y un vigia diario (fases 1A y 2)
 
 **Claw sigue la tabla.** Las 19 cadenas de claw resultaron ser filas de
