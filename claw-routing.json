@@ -3,7 +3,9 @@
   "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. The eleven specialists run the operaciones row and carry no per-model thinking there.",
   "second_account_suffix": "-2",
   "id_overrides": {
-    "meta/muse-wonder-1.0": "meta/muse-spark-1.3"
+    "meta/muse-wonder-1.0": "meta/muse-spark-1.3",
+    "anthropic/claude-opus-5-5": "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5-5": "anthropic/claude-sonnet-5"
   },
   "agents": {
     "main": {

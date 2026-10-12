@@ -248,7 +248,10 @@ class ConfigurationTests(unittest.TestCase):
                                         "base_url": "https://api.kimi.com/coding/v1",
                                         "api_mode": "chat_completions",
                                     },
-                                    {"provider": "anthropic", "model": "claude-opus-5"},
+                                    {
+                                        "provider": "anthropic",
+                                        "model": "claude-opus-5-5",
+                                    },
                                 ],
                             }
                         },
@@ -394,9 +397,9 @@ class DirectorNativeChainTests(unittest.TestCase):
         self.assertEqual(
             config["fallback_providers"],
             [
-                {"provider": "anthropic", "model": "claude-opus-5"},
+                {"provider": "anthropic", "model": "claude-opus-5-5"},
                 {"provider": "meta-ai", "model": "muse-wonder-1.0"},
-                {"provider": "xai-oauth", "model": "grok-4.6"},
+                {"provider": "xai-oauth", "model": "grok-4.7"},
                 {
                     "provider": "zai",
                     "model": "glm-5.3",
@@ -415,7 +418,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["agent"],
             {
                 "reasoning_overrides": {
-                    "claude-opus-5": "xhigh",
+                    "claude-opus-5-5": "xhigh",
                     "muse-wonder-1.0": "max",
                     "gpt-5.6-sol": "xhigh",
                 }
@@ -443,9 +446,9 @@ class DirectorNativeChainTests(unittest.TestCase):
 
     def test_one_model_with_two_efforts_is_refused(self):
         table = self.table()
-        table["chains"]["main"][6] = "anthropic/claude-opus-5 (high)"
+        table["chains"]["main"][6] = "anthropic/claude-opus-5-5 (high)"
 
-        with self.assertRaisesRegex(ValueError, "claude-opus-5"):
+        with self.assertRaisesRegex(ValueError, "claude-opus-5-5"):
             module.director_native_config(table)
 
     def test_the_director_role_keeps_business_work_off_the_native_board(self):

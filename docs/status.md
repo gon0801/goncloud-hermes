@@ -1,5 +1,25 @@
 # Estado — 2026-10-12
 
+## Claude 5.5 y Grok 4.7 en las cadenas de hermes
+
+Por indicacion del propietario ("hay que actualizarlos"): todo modelo con
+version mas nueva disponible se sube.
+
+| Cambio | Celdas | Sonda de trabajadores | Sonda del director |
+|---|---|---|---|
+| `anthropic/claude-opus-5` -> `claude-opus-5-5` | main:2, ingenieria:6, adversary:6 | exito, marcador exacto, 9.5 s | HTTP 200 de `claude-opus-5-5`, 1.3 s |
+| `anthropic/claude-sonnet-5` -> `claude-sonnet-5-5` | operaciones:4, implementer:5, verifier:5, scout:6 | exito, marcador exacto, 11.0 s | no aplica (no esta en `main`) |
+| `xai/grok-4.6` -> `grok-4.7` | main:4, operaciones:5, ingenieria:7, implementer:4, reviewer:6, adversary:2 | exito, marcador exacto, 13.6 s | HTTP 200 de `grok-4.7`, 2.8 s; a la peticion desnuda contesto con una negativa en vez del marcador, asi que prueba la ruta y no la obediencia |
+
+La cadena de vision del director (`_DIRECTOR_VISION_AUXILIARY`) tambien pasa
+de `claude-opus-5` a `claude-opus-5-5`. Claw queda detenido en los tres
+(`id_overrides`); `claw_models.py check` sigue en 0 diferencias.
+
+En la Mac del propietario, el mismo dia: los agentes de Claude Code
+(`~/.claude/agents/`) pasaron de IDs fijos a los alias `sonnet` y `opus`, los
+de Grok a `grok-4.7`, y `opencode.jsonc` gano `muse-wonder-1.0`. Cursor ya
+estaba en el Codex mas nuevo que ofrece.
+
 ## Modelos escritos a mano fuera de la tabla (fase 4)
 
 `scripts/pinned_models.py` reviso 22 rutas de la Mac del propietario

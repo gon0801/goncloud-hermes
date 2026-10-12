@@ -117,9 +117,9 @@ EXPECTED_MODELS = {
     "claw": [
         "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
-        "claude-opus-5",
+        "claude-opus-5-5",
         "muse-wonder-1.0",
-        "grok-4.6",
+        "grok-4.7",
         "glm-5.3",
         "gpt-5.6-sol",
         "k3",
@@ -129,8 +129,8 @@ EXPECTED_MODELS = {
         "deepseek-v4.1-flash",
         "glm-5.3-flash",
         "gpt-5.6-terra",
-        "claude-sonnet-5",
-        "grok-4.6",
+        "claude-sonnet-5-5",
+        "grok-4.7",
         "kimi-for-coding",
         "muse-wonder-1.0",
     ],
@@ -141,16 +141,16 @@ EXPECTED_MODELS = {
         "k3",
         "glm-5.3",
         "muse-wonder-1.0",
-        "claude-opus-5",
-        "grok-4.6",
+        "claude-opus-5-5",
+        "grok-4.7",
     ],
     "implementer": [
         "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
         "muse-wonder-1.0",
         "glm-5.3-flash",
-        "grok-4.6",
-        "claude-sonnet-5",
+        "grok-4.7",
+        "claude-sonnet-5-5",
         "gpt-5.6-terra",
         "kimi-for-coding",
     ],
@@ -161,17 +161,17 @@ EXPECTED_MODELS = {
         "k3",
         "gpt-6-astra",
         "muse-wonder-1.0",
-        "grok-4.6",
+        "grok-4.7",
         "glm-5.3",
     ],
     "adversary": [
         "deepseek-v4.1-flash",
         "deepseek-v4.1-flash",
-        "grok-4.6",
+        "grok-4.7",
         "k3",
         "glm-5.3",
         "muse-wonder-1.0",
-        "claude-opus-5",
+        "claude-opus-5-5",
         "gpt-5.6-sol",
     ],
     "verifier": [
@@ -180,7 +180,7 @@ EXPECTED_MODELS = {
         "glm-5.3-flash",
         "muse-wonder-1.0",
         "kimi-for-coding",
-        "claude-sonnet-5",
+        "claude-sonnet-5-5",
         "gpt-5.6-terra",
         "deepseek-flash",
     ],
@@ -191,7 +191,7 @@ EXPECTED_MODELS = {
         "muse-wonder-1.0",
         "kimi-for-coding",
         "deepseek-flash",
-        "claude-sonnet-5",
+        "claude-sonnet-5-5",
         "gpt-5.6-terra",
     ],
 }
@@ -241,8 +241,8 @@ class SlotSemanticsTests(unittest.TestCase):
                     "zai/glm-5.3",
                     "zai/glm-5.3",
                     "zai/glm-5.3",
-                    "xai/grok-4.6",
-                    "anthropic/claude-opus-5 (xhigh)",
+                    "xai/grok-4.7",
+                    "anthropic/claude-opus-5-5 (xhigh)",
                 ]
             }
         }
@@ -266,8 +266,8 @@ class SlotSemanticsTests(unittest.TestCase):
                     "kimi/kimi-for-coding (high)",
                     "kimi/kimi-for-coding",
                     "zai/glm-5.3-flash",
-                    "xai/grok-4.6",
-                    "anthropic/claude-sonnet-5",
+                    "xai/grok-4.7",
+                    "anthropic/claude-sonnet-5-5",
                     "openai/gpt-6-astra",
                 ]
             }
@@ -294,15 +294,15 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(muse.model, "muse-wonder-1.0")
         self.assertEqual(muse.label, "meta/muse-wonder-1.0 (max)")
         self.assertEqual(opus.adapter, "claude")
-        self.assertEqual(opus.model, "claude-opus-5")
-        self.assertEqual(opus.label, "anthropic/claude-opus-5 (xhigh)")
+        self.assertEqual(opus.model, "claude-opus-5-5")
+        self.assertEqual(opus.label, "anthropic/claude-opus-5-5 (xhigh)")
         self.assertEqual(sol.adapter, "codex")
         self.assertEqual(sol.model, "gpt-5.6-sol")
         self.assertEqual(sol.label, "openai/gpt-5.6-sol (xhigh)")
 
         scout = compile_profile_routes("scout", source)
-        self.assertEqual(scout[6].model, "claude-sonnet-5")
-        self.assertEqual(scout[6].label, "anthropic/claude-sonnet-5 (xhigh)")
+        self.assertEqual(scout[6].model, "claude-sonnet-5-5")
+        self.assertEqual(scout[6].label, "anthropic/claude-sonnet-5-5 (xhigh)")
 
         operaciones = compile_profile_routes("operaciones", source)
         self.assertEqual(operaciones[6].model, "kimi-for-coding")
@@ -334,7 +334,7 @@ class SlotSemanticsTests(unittest.TestCase):
         main = compile_profile_routes("claw", source)
         self.assertEqual(
             (main[2].adapter, main[2].model, main[2].reasoning_effort),
-            ("claude", "claude-opus-5", "xhigh"),
+            ("claude", "claude-opus-5-5", "xhigh"),
         )
         self.assertEqual(
             (main[3].adapter, main[3].model, main[3].reasoning_effort),
@@ -347,7 +347,7 @@ class SlotSemanticsTests(unittest.TestCase):
 
     def test_unknown_parenthetical_annotation_is_rejected(self):
         source = load_source()
-        source["chains"]["main"][2] = "anthropic/claude-opus-5 (maximum)"
+        source["chains"]["main"][2] = "anthropic/claude-opus-5-5 (maximum)"
 
         with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
             compile_profile_routes("claw", source)
@@ -365,8 +365,8 @@ class SlotSemanticsTests(unittest.TestCase):
                     "meta/muse-spark-1.3-contributor-free",
                     "kimi/k3",
                     "zai/glm-5.3",
-                    "xai/grok-4.6",
-                    "anthropic/claude-sonnet-5",
+                    "xai/grok-4.7",
+                    "anthropic/claude-sonnet-5-5",
                     "openai/gpt-6-astra",
                 ]
             }
@@ -395,7 +395,9 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(
             source["chains"]["ingenieria"][2], "openai/gpt-5.6-sol (xhigh)"
         )
-        self.assertEqual(source["chains"]["main"][2], "anthropic/claude-opus-5 (xhigh)")
+        self.assertEqual(
+            source["chains"]["main"][2], "anthropic/claude-opus-5-5 (xhigh)"
+        )
 
     def test_every_profile_compiles_the_owner_table(self):
         source = load_source()
