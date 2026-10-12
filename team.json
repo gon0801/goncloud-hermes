@@ -37,6 +37,7 @@
       "eggbot"
     ]
   },
+  "specialist_row": "operaciones",
   "director_kanban": {
     "dispatch_in_gateway": true
   }
