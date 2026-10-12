@@ -92,7 +92,7 @@ Baseline on `ab65f66`, run over SSH on 2026-10-12: 444 tests, 2 failures, 2 skip
 
 ---
 
-### Task 6: Full battery, one branch, deploy in two applies
+### Task 6: Full battery, one branch, deploy in two applies — done 2026-10-12, deployed at `acd792e`
 
 **Files:**
 - Modify: `docs/status.md` (new section at the top)
@@ -101,7 +101,7 @@ Baseline on `ab65f66`, run over SSH on 2026-10-12: 444 tests, 2 failures, 2 skip
 - Consumes: revision `db55f73` (adoption; desired state equals live state) and the branch head (corrections).
 - Produces: default branch `feat/hermes-team` containing `ab65f66` and this work; nine profiles recorded at the branch head; the allowlist in the root config.
 
-- [ ] **Step 1: Full battery and hooks at the branch head**
+- [x] **Step 1: Full battery and hooks at the branch head**
 
 ```bash
 cd /Users/dn/dev/goncloud-hermes
@@ -112,7 +112,7 @@ git diff --check origin/feat/bot-mode-messaging...HEAD
 
 Expected: `Ran 452 tests`, and the only `FAIL:` lines are the two baseline tests named above; every hook `Passed`; `git diff --check` prints nothing. Any other failing test stops the plan.
 
-- [ ] **Step 2: Record the result and merge to one branch (needs the owner's go)**
+- [x] **Step 2: Record the result and merge to one branch (needs the owner's go)**
 
 Insert at the very top of `docs/status.md`:
 
@@ -160,7 +160,7 @@ git fetch origin && git merge-base --is-ancestor ab65f66 origin/feat/hermes-team
 
 Expected: both PRs merged after their checks and review pass; the last command prints `ab65f66 is an ancestor`.
 
-- [ ] **Step 3: Back up, then apply the adoption revision (needs the owner's go)**
+- [x] **Step 3: Back up, then apply the adoption revision (needs the owner's go)**
 
 ```bash
 cd /Users/dn/dev/goncloud-hermes && git fetch origin
@@ -179,7 +179,7 @@ pcrun 'Set-Location C:\dev\goncloud-hermes; & "$env:LOCALAPPDATA\hermes\hermes-a
 
 Expected: nine lines `Configured <role>: ...`.
 
-- [ ] **Step 4: Apply the corrections and verify**
+- [x] **Step 4: Apply the corrections and verify**
 
 ```bash
 pcrun 'git -C C:\dev\goncloud-hermes switch -q feat/hermes-team 2>&1 | ForEach-Object { "$_" }; git -C C:\dev\goncloud-hermes merge -q --ff-only origin/feat/hermes-team 2>&1 | ForEach-Object { "$_" }; git -C C:\dev\goncloud-hermes status -sb; Set-Location C:\dev\goncloud-hermes; & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" scripts\configure_team.py --check 2>&1 | ForEach-Object { "$_" }'
@@ -191,7 +191,7 @@ Expected: the first check passes with `Root dispatch allowlist: up to date`; nin
 
 Rollback, if any line differs: copy the files back from the `pre-fase0a-*` directory printed in Step 3 (root `config.yaml` and the three files of each profile), then report. Do not use `--allow-regression`.
 
-- [ ] **Step 5: Clean up and tell the owner**
+- [x] **Step 5: Clean up and tell the owner**
 
 ```bash
 pcrun 'git -C C:\dev\goncloud-hermes worktree remove C:\dev\goncloud-hermes-fase0a; git -C C:\dev\goncloud-hermes update-ref -d refs/remotes/bundle/fix/adopt-live-state; Remove-Item C:\dev\fase0a.bundle; git -C C:\dev\goncloud-hermes worktree list'
