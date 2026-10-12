@@ -53,7 +53,7 @@ def main():
         os.environ.setdefault(name, "1")
     sys.path.insert(0, str(args.plugin_dir))
     import subscriptions  # noqa: F401 - loads the plugin's private env store
-    from subscriptions.adapters import build_adapter_registry, classify_failure
+    from subscriptions.adapters import build_adapter_registry
     from subscriptions.adapters._live_probe import PROBE_MARKER, PROBE_PROMPT
     from subscriptions.catalog import _compile_route
     from subscriptions.types import InvocationRequest
@@ -94,13 +94,6 @@ def main():
         else:
             record["failure"] = str(result.failure)
             record["detail"] = scrub(getattr(result, "detail", ""))
-            record["classified"] = str(
-                classify_failure(
-                    getattr(result, "returncode", 1) or 1,
-                    getattr(result, "stream", "") or "",
-                    getattr(result, "stderr", "") or "",
-                )
-            )
     except Exception as error:  # noqa: BLE001 - the probe reports, it does not raise
         record["success"] = False
         record["failure"] = f"{type(error).__name__}: {scrub(error, 200)}"
