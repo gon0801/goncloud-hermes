@@ -617,6 +617,22 @@ class DirectorNativeChainTests(unittest.TestCase):
                 root["kanban"]["dispatch_profiles"], team["kanban"]["dispatch_profiles"]
             )
             self.assertIs(root["kanban"]["auto_decompose"], False)
+            # The model watcher ships to the director only: it is a cron
+            # script of the director's gateway, next to the table it reads.
+            watcher = runtime / "profiles/claw/scripts/model_watch.py"
+            self.assertEqual(
+                watcher.read_text(encoding="utf-8"),
+                (ROOT / "scripts/model_watch.py").read_text(encoding="utf-8"),
+            )
+            self.assertTrue(
+                (
+                    watcher.parents[1]
+                    / "plugins/goncloud-team/model-routing.source.json"
+                ).is_file()
+            )
+            self.assertFalse(
+                (runtime / "profiles/scout/scripts/model_watch.py").exists()
+            )
             soul = runtime / "profiles/scout/SOUL.md"
             soul.write_text("user edit", encoding="utf-8")
             state = runtime / "profiles/claw/goncloud-managed.json"

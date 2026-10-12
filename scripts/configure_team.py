@@ -491,6 +491,12 @@ def configure(
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
             ] = source.read_text(encoding="utf-8")
+        if role == team["director"]:
+            # The daily model watcher is a no_agent cron script of the
+            # director's gateway; cron resolves it under <profile>/scripts.
+            files["scripts/model_watch.py"] = (
+                ROOT / "scripts/model_watch.py"
+            ).read_text(encoding="utf-8")
         shipped = set(files)
         if preserve_local_soul and (profile / "SOUL.md").exists():
             files.pop("SOUL.md")
