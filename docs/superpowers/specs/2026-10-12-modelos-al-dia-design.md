@@ -135,9 +135,9 @@ when its exit criterion is observed, not when its code merges.
   bot chat stop running on whatever provider its environment selects. Needs
   first: which provider accounts each specialist profile can use, and one real
   specialist turn to prove it.
-- Open, for the owner: whether claw's `verifier` should get the missing
-  thinking value, and whether the specialists should carry the `operaciones`
-  efforts in claw (today they carry none).
+- Decided 2026-10-12: claw's `verifier` got the missing thinking value
+  (applied, `check` now reports 0 differences); the specialists keep carrying
+  no efforts in claw.
 
 Exit: `check` reports no difference that the owner has not accepted, and a
 card dispatched to a specialist runs on the pinned chain.

@@ -1,5 +1,37 @@
 # Estado — 2026-10-12
 
+## Una sola tabla para hermes y claw, y un vigia diario (fases 1A y 2)
+
+**Claw sigue la tabla.** Las 19 cadenas de claw resultaron ser filas de
+`model-routing.source.json` con dos reglas (la posicion 1 pasa a la segunda
+cuenta de OpenCode Go; el marcador de esfuerzo pasa a `params.thinking`), asi
+que no hizo falta una lista de apodos encima. `scripts/claw_models.py check`
+compara la tabla con una foto de lo vivo y no escribe en claw. La unica
+diferencia era que a `verifier` le faltaba `thinking: high` para
+`kimi/kimi-for-coding`; se aplico a las 14:51 con
+`openclaw config patch --stdin` en el host del gateway, en un hueco sin
+corridas, y la recarga fue en caliente
+(`config hot reload applied (agents.entries.verifier.models.kimi/kimi-for-coding)`).
+Despues: `0 difference(s) in 19 agents`. La foto del repo
+`goncloud-openclaw` (`modelos-vivos-2026-10-12.json5`) es anterior a ese
+cambio. Los once especialistas siguen sin esfuerzos por modelo en claw, por
+decision del propietario.
+
+Para saber si claw esta quieto antes de un `config patch`: una sesion puede
+quedar marcada `running` durante dias (habia una de `operaciones` sin moverse
+desde hacia 4.7 dias), asi que solo cuenta como corrida viva la que se
+actualizo hace menos de diez minutos.
+
+**Vigia de modelos.** `scripts/model_watch.py` esta instalado en
+`profiles\claw\scripts` y programado como `vigia-modelos`
+(`d710c8527b7f`, `35 8 * * *`, sin agente, entrega por Telegram). La primera
+corrida, disparada a mano a las 14:49 con la linea base de ayer, termino en
+`ok` sin error de entrega y anuncio `muse-wonder-1.0` en Meta. No vigila
+OpenRouter ni los otros CLIs.
+
+Queda de la fase 1: fijar el modelo de los once especialistas en hermes (1B),
+que en la practica es echarlos a andar: nunca han corrido.
+
 ## CLIs de la PC: lo que se actualizo y lo que se dejo (fase 0C)
 
 Se actualizo solo lo que se podia comprobar despues con una llamada real, uno

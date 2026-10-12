@@ -47,6 +47,6 @@
 
 ### Task 3: What is left for the owner and for 1B
 
-- [ ] Owner: should claw's `verifier` get `thinking: high` for `kimi/kimi-for-coding`, as `operaciones` and `implementer` already have?
-- [ ] Owner: should the eleven specialists carry the `operaciones` efforts in claw? Today they carry none; `"thinking": false` in `claw-routing.json` reproduces that.
+- [x] Owner, 2026-10-12: claw's `verifier` gets `thinking: high` for `kimi/kimi-for-coding`. Applied; `check` reports `0 difference(s) in 19 agents`.
+- [x] Owner, 2026-10-12: the eleven specialists keep carrying no efforts in claw (`"thinking": false`).
 - [ ] 1B gets its own plan: native `model` + `fallback_providers` for the eleven specialist profiles in hermes.
