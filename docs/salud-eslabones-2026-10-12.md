@@ -35,10 +35,10 @@ configuracion.
 | kimi, kimi-for-coding (high y sin esfuerzo) | vivo | sonda OK 9.9 s; el adaptador no pasa el esfuerzo, es la misma llamada | |
 | deepseek, deepseek-flash | vivo | HTTP 200, 2.4 s | |
 | muse, muse-spark-1.3, max | vivo | sonda OK 65.7 s (incluye arranque de WSL); el CLI repite `muse-spark-1.3` | los 4 `model_unavailable` del 09-28 no se reproducen |
-| claude, claude-opus-5, xhigh | vivo desde las 14:30 | antes: `auth`, sesion vencida. El propietario inicio sesion; sonda OK 10.2 s con Claude Code 2.1.296 | |
-| claude, claude-sonnet-5, xhigh | vivo desde las 14:30 | igual; sonda OK 10.2 s | |
-| claude, claude-fable-5-1 | vivo desde las 14:30 | igual; sonda OK 9.2 s | |
-| grok, grok-4.6 | vivo desde las 14:30 | antes: "Not signed in". Sonda OK 8.3 s con grok 1.0.46 | |
+| claude, claude-opus-5, xhigh | vivo (tras el inicio de sesion del propietario, 2026-10-12) | antes: `auth`, sesion vencida. El propietario inicio sesion; sonda OK 10.2 s con Claude Code 2.1.296 | |
+| claude, claude-sonnet-5, xhigh | vivo (tras el inicio de sesion del propietario, 2026-10-12) | igual; sonda OK 10.2 s | |
+| claude, claude-fable-5-1 | vivo (tras el inicio de sesion del propietario, 2026-10-12) | igual; sonda OK 9.2 s | |
+| grok, grok-4.6 | vivo (tras el inicio de sesion del propietario, 2026-10-12) | antes: "Not signed in". Sonda OK 8.3 s con grok 1.0.46 | |
 | codex, gpt-5.6-terra, xhigh | muerto | sonda 4.8 s, `quota` | limite de uso hasta 2026-11-07 19:06 |
 | codex, gpt-5.6-sol, xhigh | muerto | sonda 9.1 s, `invalid_request` | "model is not supported when using Codex with a ChatGPT account" |
 | codex, gpt-6-astra | muerto | sonda 4.0 s, `invalid_request` | igual |
