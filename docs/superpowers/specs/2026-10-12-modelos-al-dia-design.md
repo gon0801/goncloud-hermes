@@ -66,36 +66,34 @@ Measured on 2026-10-12 (read-only survey, four explorers plus a synthesis):
 
 ## Design
 
-One registry of nicknames is the only place a human edits. Everything else is
-generated from it and checked before it is applied.
+The table the owner already edits, `model-routing.source.json`, stays the only
+place a human changes a model. The first draft of this design added a registry
+of nicknames above it. Measuring the two systems on 2026-10-12 showed it is not
+needed: every one of claw's 19 chains equals a row of the hermes table under
+two rules, with a single difference in 19 agents (one missing thinking value).
 
 ```
-modelos.json (nickname -> ID per route, effort, context, protocol)
+model-routing.source.json  (8 rows x 8 positions, the owner's table)
       |
-      +--> model-routing.source.json        (hermes workers + director)
-      +--> openclaw patch: chain + catalog row + params, one `config patch`
-      +--> report of names pinned elsewhere (launchers, agent files)
+      +--> hermes workers (read on every stage) and director (configure_team.py)
+      +--> claw: scripts/claw_models.py + claw-routing.json
+             desired chains per agent, and a drift report against live
 ```
 
-A registry entry names the model once per route, because the ID cannot be
-derived:
+- `claw-routing.json` says which row each claw agent runs (the eleven
+  specialists run `operaciones`) and whether it carries per-model thinking.
+- Rule 1: position 1 repeats position 0 in the table and means "second
+  OpenCode Go account"; claw names that account as a provider with suffix `-2`.
+- Rule 2: an effort marker `(max)` becomes `models.<id>.params.thinking` in
+  claw and leaves the ID.
+- `id_overrides` in `claw-routing.json` covers the case the nicknames were
+  meant for: the same model with one ID on the route hermes uses and another
+  on the route claw uses. It is empty today. If hermes itself needs two
+  different IDs for one cell (Muse CLI for workers, Meta API for the director),
+  the table cannot express it and that is a plugin change, not a config one.
 
-```json
-{
-  "muse-top": {
-    "routes": {
-      "opencode-go": {"id": "muse-spark-1.3-contributor", "api": "responses"},
-      "meta-api":    {"id": "muse-spark-1.3", "effort": "xhigh"},
-      "muse-cli":    {"id": "muse-spark-1.3", "effort": "max"}
-    },
-    "context_window": 1048576
-  }
-}
-```
-
-The chains keep their current shape but name nicknames per position. A missing
-route for a nickname is a generation error, not a runtime surprise: Muse Wonder
-cannot be promoted on `opencode-go` until OpenCode Go serves it.
+Replacing a model everywhere is then a search and replace of one label in one
+file, which phase 3's `promote` does after probing.
 
 ### Phases and exit criteria
 
@@ -126,11 +124,23 @@ when its exit criterion is observed, not when its code merges.
   Done 2026-10-12 for muse and opencode; kimi, claude, grok and codex are left
   as they were, with the reason for each in `docs/status.md`.
 
-**Phase 1 - one source with nicknames.** `modelos.json`, a generator with
-tests, rows for the 11 extra profiles copied from their claw chains, and an
-apply command that runs the catalog tests before writing anything.
-Exit: generating from the registry reproduces today's hermes table and
-today's claw chains byte for byte, so the cutover changes nothing.
+**Phase 1 - one source for both systems.**
+
+- 1A (done 2026-10-12): `scripts/claw_models.py desired|check`, with
+  `claw-routing.json` and `tests/test_claw_models.py`. `check` against the
+  live snapshot of 2026-10-12 reports one difference in 19 agents: `verifier`
+  lacks `thinking: high` for `kimi/kimi-for-coding`. It never writes to claw.
+- 1B: pin the eleven specialists in hermes to the `operaciones` row as native
+  `model` + `fallback_providers`, so a dispatched card and the specialist's own
+  bot chat stop running on whatever provider its environment selects. Needs
+  first: which provider accounts each specialist profile can use, and one real
+  specialist turn to prove it.
+- Open, for the owner: whether claw's `verifier` should get the missing
+  thinking value, and whether the specialists should carry the `operaciones`
+  efforts in claw (today they carry none).
+
+Exit: `check` reports no difference that the owner has not accepted, and a
+card dispatched to a specialist runs on the pinned chain.
 
 **Phase 2 - daily watcher, no tokens.** A script (no agent, no model call)
 diffs models.dev (ETag), `opencode.ai/zen/go/v1/models`, OpenRouter, the Muse
@@ -141,10 +151,11 @@ channel. It runs from an existing script-type cron.
 Exit: replaying the last three Muse releases from catalog history produces
 the three expected notices and no others.
 
-**Phase 3 - promotion with a real probe.** `promote <nickname> <route> <id>`
+**Phase 3 - promotion with a real probe.** `promote <old label> <new label>`
 makes one isolated real call per affected route (never `--live-probe-all`,
-which quarantines an adapter on failure), then applies through phase 1's
-generator, records a before and after snapshot, and keeps the old OpenClaw
+which quarantines an adapter on failure), then replaces the label in the
+table (and sets `id_overrides` when claw's ID differs), applies both sides,
+records a before and after snapshot, and keeps the old OpenClaw
 catalog row for one day because subagent sessions stay pinned to the old ID.
 Exit: Muse Wonder is promoted on the direct routes, and a deliberate
 promotion to a nonexistent ID is refused with nothing applied.

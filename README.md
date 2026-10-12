@@ -59,6 +59,17 @@ Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el wo
 
 Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway es uno solo para todos los perfiles y lee el `config.yaml` raiz, donde esta encendido; `configure_team.py` le escribe ahi la lista blanca `kanban.dispatch_profiles` (los once especialistas de `team.json`) para que despache sus tarjetas y nunca una etapa de la cadena, que debe correr por el router. `claw` conversa por proveedores Hermes nativos compilados de la tabla; los trabajadores no llevan una cadena nativa competidora y siguen en el router de suscripciones.
 
+## Claw sigue la misma tabla
+
+Las cadenas de claw (OpenClaw, Mac Mini) son las mismas filas de `model-routing.source.json`. `claw-routing.json` dice que fila corre cada agente de claw, y `scripts/claw_models.py` deriva lo que claw deberia tener y lo compara con una foto de lo vivo; nunca escribe en claw.
+
+```bash
+python3 scripts/claw_models.py desired
+python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/modelos-vivos-2026-10-12.json5
+```
+
+`check` sale con 1 y lista cada diferencia (agente, posicion o thinking). La foto se toma en el host del gateway con un parse de solo lectura de `openclaw.json`; su formato esta en el encabezado del archivo.
+
 ## Calidad
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
