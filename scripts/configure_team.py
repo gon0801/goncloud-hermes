@@ -5,6 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -22,10 +23,11 @@ _WORKER_TOOLSETS = ["coding", "connections", "goncloud_team", "kanban"]
 #: The director drives Odoo and Edge over Telegram (owner decision 2026-09-15),
 #: so it carries the full toolset — browser and computer_use included. Baking it
 #: in stops the director from re-editing its own config every session. Its role
-#: text, not a narrow toolset, keeps it out of logs and plugin code. No kanban:
-#: the director may not create or dispatch cards (goncloud_local_run does and
-#: goncloud_local_status reads them), and its 14 schemas cost 23.5 KB of every
-#: call (hermes prompt-size, 2026-09-27).
+#: text, not a narrow toolset, keeps it out of logs and plugin code. kanban is
+#: in since 2026-10-03 (owner; adopted 2026-10-12): kanban_create is how the
+#: director hands work to a specialist profile, and unlike the CLI it
+#: subscribes the chat, so the gateway reports back when the card finishes.
+#: Its 14 schemas cost 23.9 KB of every call. The order is the live one.
 _DIRECTOR_TOOLSETS = [
     "browser",
     "clarify",
@@ -36,6 +38,7 @@ _DIRECTOR_TOOLSETS = [
     "delegation",
     "file",
     "goncloud_team",
+    "kanban",
     "memory",
     "session_search",
     "skills",
@@ -276,6 +279,66 @@ def refuse_regression(state, root=ROOT, *, allow_regression=False):
     )
 
 
+#: The gateway runs one Kanban dispatcher for every multiplexed profile and it
+#: reads these keys from the ROOT config.yaml only; a profile's own kanban
+#: block never reaches it. Without the allowlist the dispatcher claims any
+#: `ready` card whose assignee is a profile, stage cards included, and runs
+#: the stage with a native agent outside the subscription router.
+_ROOT_KANBAN_KEYS = ("auto_decompose", "dispatch_profiles")
+_KANBAN_BLOCK = re.compile(r"^kanban:[ \t]*(#.*)?$")
+
+
+def root_kanban_policy(team):
+    """The kanban keys the gateway dispatcher must find in the root config."""
+    return {key: team["kanban"][key] for key in _ROOT_KANBAN_KEYS}
+
+
+def apply_root_kanban(text, policy):
+    """Set ``policy`` inside the top-level ``kanban:`` block of ``text``.
+
+    The root config is the owner's commented file, so the keys are edited in
+    place: every other line, and the file's newline style, stay as they were.
+    """
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(newline)
+    rendered = {key: f"{key}: {json.dumps(value)}" for key, value in policy.items()}
+    start = next((i for i, line in enumerate(lines) if _KANBAN_BLOCK.match(line)), None)
+    if start is None:
+        if any(line.startswith("kanban:") for line in lines):
+            raise ValueError(
+                "Root kanban block is written inline; make it a plain mapping first"
+            )
+        while lines and not lines[-1]:
+            lines.pop()
+        block = ["kanban:", *(f"  {line}" for line in rendered.values()), ""]
+        return newline.join([*lines, *block])
+    end = start + 1
+    # The block runs to the next top-level key; blank lines and comments in
+    # between still belong to it.
+    while end < len(lines) and (not lines[end] or lines[end][0] in " \t#"):
+        end += 1
+    children = [line for line in lines[start + 1 : end] if line[:1] in " \t"]
+    indent = (
+        children[0][: len(children[0]) - len(children[0].lstrip())]
+        if children
+        else "  "
+    )
+    kept, missing, index = [], dict(rendered), start + 1
+    while index < end:
+        line = lines[index]
+        key = line[len(indent) :].split(":", 1)[0]
+        index += 1
+        if line.startswith(indent) and key in missing:
+            kept.append(indent + missing.pop(key))
+            # A block-style value owns the deeper-indented lines under it.
+            while index < end and lines[index].startswith(indent + " "):
+                index += 1
+            continue
+        kept.append(line)
+    added = [indent + line for line in missing.values()]
+    return newline.join([*lines[: start + 1], *added, *kept, *lines[end:]])
+
+
 def write_changed(path, content):
     if path.exists() and (
         path.read_bytes() == content
@@ -344,6 +407,11 @@ def desired_profile_config(role, team, runtime_home):
             "cli": list(_DIRECTOR_TOOLSETS),
             "telegram": list(_DIRECTOR_TOOLSETS),
         }
+        # Not the dispatcher's switch (that is the root config, see
+        # apply_root_kanban): in a profile this only tells `hermes kanban
+        # create` whether to warn that nobody will run the card. The
+        # director's cards do run, so its copy says so (owner, 2026-10-03).
+        desired["kanban"] = {**team["kanban"], **team.get("director_kanban", {})}
         desired["auxiliary"] = copy.deepcopy(_DIRECTOR_VISION_AUXILIARY)
     return desired
 
@@ -355,6 +423,7 @@ def configure(
     *,
     allow_regression=False,
     preserve_local_soul=False,
+    check_only=False,
 ):
     import yaml
 
@@ -380,7 +449,7 @@ def configure(
     for role, description in team["profiles"].items():
         profile = contained(get_profile_dir(role), runtime_home)
         fresh = not profile.exists()
-        if fresh:
+        if fresh and not check_only:
             create_profile(role, no_alias=True, description=description)
         state_path = contained(profile / "goncloud-managed.json", runtime_home)
         state = (
@@ -455,7 +524,19 @@ def configure(
                 shipped,
             )
         )
-    # Validate every existing profile before changing any managed content.
+    root_config = contained(runtime_home / "config.yaml", runtime_home)
+    root_text = root_config.read_bytes().decode("utf-8") if root_config.exists() else ""
+    root_desired = apply_root_kanban(root_text, root_kanban_policy(team))
+    # Every profile validated above; nothing has been written yet.
+    if check_only:
+        print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
+        print(
+            "Root dispatch allowlist: "
+            + ("up to date" if root_desired == root_text else "would be written")
+        )
+        return
+    # The allowlist goes first: it is what keeps the gateway off stage cards.
+    write_changed(root_config, root_desired.encode("utf-8"))
     for (
         profile,
         config_path,
@@ -538,6 +619,11 @@ def main():
             "plugins, and configuration"
         ),
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate every profile against this checkout and exit without writing",
+    )
     args = parser.parse_args()
     configure(
         args.home,
@@ -545,6 +631,7 @@ def main():
         args.apply_model_routing,
         allow_regression=args.allow_regression,
         preserve_local_soul=args.preserve_local_soul,
+        check_only=args.check,
     )
 
 
