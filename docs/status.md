@@ -12,8 +12,22 @@ version mas nueva disponible se sube.
 | `xai/grok-4.6` -> `grok-4.7` | main:4, operaciones:5, ingenieria:7, implementer:4, reviewer:6, adversary:2 | exito, marcador exacto, 13.6 s | HTTP 200 de `grok-4.7`, 2.8 s; a la peticion desnuda contesto con una negativa en vez del marcador, asi que prueba la ruta y no la obediencia |
 
 La cadena de vision del director (`_DIRECTOR_VISION_AUXILIARY`) tambien pasa
-de `claude-opus-5` a `claude-opus-5-5`. Claw queda detenido en los tres
-(`id_overrides`); `claw_models.py check` sigue en 0 diferencias.
+de `claude-opus-5` a `claude-opus-5-5`.
+
+Claw, el mismo dia, en huecos sin corridas y con recarga en caliente:
+
+- Grok 4.7: sonda `openclaw infer model run --model xai/grok-4.7` -> `PROBE_OK`;
+  aplicado a los 17 agentes que lo llevan.
+- Claude 5.5: primero se agregaron a `agents.defaults.models` las entradas
+  `anthropic/claude-opus-5-5` y `anthropic/claude-sonnet-5-5` con
+  `agentRuntime: claude-cli` (sin ellas correrian por otro runtime y otra
+  credencial). Smoke con turno real: `main` con Opus 5.5 y `operaciones` con
+  Sonnet 5.5, ambos `winner claude-cli/...`, `fallbackUsed: false`, `PONG`.
+  Luego las cadenas (3 agentes con Opus, 15 con Sonnet) y se borraron las 7
+  claves de esfuerzo de los IDs viejos.
+
+`claw_models.py check` contra lo vivo: 0 diferencias en 19 agentes. El unico
+`id_overrides` que queda es el de Meta (Wonder), por la llave de claw.
 
 En la Mac del propietario, el mismo dia: los agentes de Claude Code
 (`~/.claude/agents/`) pasaron de IDs fijos a los alias `sonnet` y `opus`, los
