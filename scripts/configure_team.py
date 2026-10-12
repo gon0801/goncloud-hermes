@@ -98,13 +98,18 @@ _NATIVE_PROVIDERS = {
 
 def director_native_config(source):
     """The director's native chain, compiled from the table's ``main`` row."""
+    return native_config(source, "claw")
+
+
+def native_config(source, role):
+    """``model`` + ``fallback_providers`` + efforts for ``role``'s row, on native providers."""
     plugin_dir = str(ROOT / "plugins" / "goncloud-team")
     if plugin_dir not in sys.path:
         sys.path.insert(0, plugin_dir)
     from subscriptions.catalog import compile_profile_routes
 
     entries, overrides = [], {}
-    for route in compile_profile_routes("claw", source):
+    for route in compile_profile_routes(role, source):
         binding = _NATIVE_PROVIDERS.get(route.adapter)
         if binding is None:
             raise ValueError(
@@ -445,10 +450,23 @@ def configure(
         if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
     ]
     revision = current_revision()
+    routing_source = json.loads(
+        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+    )
     prepared = []
-    for role, description in team["profiles"].items():
+    # Team profiles are created and fully shaped here. A specialist profile is
+    # the owner's: it is never created, and only its native model chain and
+    # its copy of the plugin are managed, so a card dispatched to it runs on a
+    # known chain instead of whatever its environment happens to select.
+    targets = [(role, text, True) for role, text in team["profiles"].items()] + [
+        (role, None, False) for role in team["kanban"]["dispatch_profiles"]
+    ]
+    for role, description, is_team in targets:
         profile = contained(get_profile_dir(role), runtime_home)
         fresh = not profile.exists()
+        if fresh and not is_team:
+            print(f"Skipped specialist {role}: no such profile")
+            continue
         if fresh and not check_only:
             create_profile(role, no_alias=True, description=description)
         state_path = contained(profile / "goncloud-managed.json", runtime_home)
@@ -464,7 +482,11 @@ def configure(
             if config_path.exists()
             else {}
         )
-        desired = desired_profile_config(role, team, runtime_home)
+        desired = (
+            desired_profile_config(role, team, runtime_home)
+            if is_team
+            else native_config(routing_source, team["specialist_row"])
+        )
         previous_config = state.get("config", {})
         existing = remove_owned_native_routing(existing or {}, previous_config)
         merged = merge_profile_config(
@@ -474,19 +496,20 @@ def configure(
             fresh=fresh,
         )
         files = {
-            "SOUL.md": "\n\n".join(
+            # The router needs its slot table next to the plugin copy.
+            "plugins/goncloud-team/model-routing.source.json": (
+                ROOT / "model-routing.source.json"
+            ).read_bytes(),
+        }
+        if is_team:
+            files["SOUL.md"] = "\n\n".join(
                 (ROOT / name).read_text(encoding="utf-8")
                 for name in (
                     "shared/CONTRACT.md",
                     "shared/BUSINESS.md",
                     f"roles/{role}.md",
                 )
-            ),
-            # The router needs its slot table next to the plugin copy.
-            "plugins/goncloud-team/model-routing.source.json": (
-                ROOT / "model-routing.source.json"
-            ).read_bytes(),
-        }
+            )
         for source in plugin_files:
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
@@ -594,14 +617,16 @@ def configure(
             )
             + "\n",
         )
-        contained(Path(desired["terminal"]["cwd"]), runtime_home).mkdir(
-            parents=True, exist_ok=True
-        )
-        if not any((profile / "skills").rglob("SKILL.md")):
-            if seed_profile_skills(profile, quiet=True) is None:
-                raise RuntimeError(
-                    f"Could not seed bundled skills for {profile.name}; reapply to retry"
-                )
+        if "terminal" in desired:
+            # Team profiles only: a specialist keeps its own workspace and skills.
+            contained(Path(desired["terminal"]["cwd"]), runtime_home).mkdir(
+                parents=True, exist_ok=True
+            )
+            if not any((profile / "skills").rglob("SKILL.md")):
+                if seed_profile_skills(profile, quiet=True) is None:
+                    raise RuntimeError(
+                        f"Could not seed bundled skills for {profile.name}; reapply to retry"
+                    )
         print(f"Configured {profile.name}: {profile}")
 
 

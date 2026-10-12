@@ -657,6 +657,102 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertEqual(soul.read_text(encoding="utf-8"), "user edit")
             self.assertEqual(state.read_bytes(), recorded)
 
+    def test_a_specialist_gets_its_native_chain_and_keeps_everything_else(self):
+        # The eleven specialist profiles are the owner's: made and shaped by
+        # hand, never created here. Until 2026-10-12 they had no `model:`, so
+        # a card dispatched to one ran on whatever provider its environment
+        # selected. Only the chain (the row team.json names) and the plugin
+        # copy are managed; SOUL, toolsets and the rest stay untouched.
+        import yaml
+
+        upstream = Path(
+            os.environ.get(
+                "HERMES_INSTALL_DIR",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
+            )
+        )
+        self.assertTrue(
+            (upstream / "hermes_cli/profiles.py").is_file(),
+            "Run tests with the installed Hermes runtime",
+        )
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        source = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+        chain = module.native_config(source, team["specialist_row"])
+        self.assertEqual(
+            module.native_config(source, "claw"), module.director_native_config(source)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "hermes-test"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(upstream),
+            ]
+            env = {**os.environ, "PYTHONUTF8": "1"}
+
+            def run(*extra):
+                return subprocess.run(
+                    [*command, *extra],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=120,
+                )
+
+            first = run()
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("Skipped specialist amazon: no such profile", first.stdout)
+            self.assertFalse((runtime / "profiles/amazon").exists())
+
+            amazon = runtime / "profiles/amazon"
+            amazon.mkdir(parents=True)
+            own = {"platform_toolsets": {"cli": ["browser", "web"]}, "agent": {}}
+            (amazon / "config.yaml").write_text(yaml.safe_dump(own), encoding="utf-8")
+            (amazon / "SOUL.md").write_text("soy amazon", encoding="utf-8")
+
+            applied = run()
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("Configured amazon", applied.stdout)
+            config = yaml.safe_load(
+                (amazon / "config.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(config["model"], chain["model"])
+            self.assertEqual(config["model"]["provider"], "opencode-go")
+            self.assertEqual(config["fallback_providers"], chain["fallback_providers"])
+            self.assertEqual(
+                config["agent"]["reasoning_overrides"],
+                chain["agent"]["reasoning_overrides"],
+            )
+            self.assertEqual(config["platform_toolsets"], own["platform_toolsets"])
+            self.assertNotIn("terminal", config)
+            self.assertEqual(
+                (amazon / "SOUL.md").read_text(encoding="utf-8"), "soy amazon"
+            )
+            self.assertTrue(
+                (amazon / "plugins/goncloud-team/model-routing.source.json").is_file()
+            )
+            self.assertFalse((amazon / "skills").exists())
+
+            again = run()
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(
+                yaml.safe_load((amazon / "config.yaml").read_text(encoding="utf-8")),
+                config,
+            )
+
+            config["model"] = {"provider": "custom", "default": "mine"}
+            (amazon / "config.yaml").write_text(
+                yaml.safe_dump(config), encoding="utf-8"
+            )
+            conflict = run("--check")
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertIn("conflict", conflict.stderr)
+
     def test_real_profiles_apply_twice_without_touching_credentials(self):
         import json
         import yaml
