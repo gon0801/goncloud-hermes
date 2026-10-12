@@ -116,6 +116,9 @@ when its exit criterion is observed, not when its code merges.
   real probe per distinct link in both systems and record alive or dead with
   the cause. Exit: a table of every link with a verdict, and the owner has
   decided what replaces each dead link.
+  Measured 2026-10-12: `docs/salud-eslabones-2026-10-12.md`; snapshot in
+  `goncloud-openclaw` PR #274. The dispatcher race was settled in 0A. Open:
+  the owner's decisions on the dead links.
 - 0C (CLIs): bring the PC's agent CLIs to current versions one at a time,
   probing after each, and find why the Muse auto-update does not land in WSL.
   Exit: versions on the PC match the Mac's and the Muse worker route passes
