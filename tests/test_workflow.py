@@ -384,5 +384,33 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(len(matching), 1)
 
 
+class SpecialistRolesTests(unittest.TestCase):
+    def test_the_eleven_specialist_profiles_are_team_roles(self):
+        # 2026-10-03: the owner created eleven specialist profiles on the PC
+        # and extended TEAM_ROLES by hand in every profile copy; adopted
+        # 2026-10-12. The order is the live one (they sit before `entrega`): a
+        # redeploy compares the file content exactly, so a reordered tuple
+        # reads as a local conflict.
+        from workflow import TEAM_ROLES
+
+        self.assertEqual(TEAM_ROLES[-1], "entrega")
+        self.assertEqual(
+            TEAM_ROLES[8:-1],
+            (
+                "amazon",
+                "meli",
+                "mail",
+                "limpia",
+                "odoo",
+                "pers",
+                "arras",
+                "gonserver",
+                "skillverif",
+                "tinkabot",
+                "eggbot",
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

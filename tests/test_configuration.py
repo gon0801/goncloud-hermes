@@ -167,14 +167,45 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("NO aprobar el artefacto", verifier)
         self.assertNotIn("no completes exitosamente la etapa", verifier)
 
-    def test_gateway_never_dispatches_goncloud_stage_cards_natively(self):
-        # The gateway's own Kanban dispatcher claims any `ready` card with an
-        # assignee and runs it with a native profile agent. Stage cards carry
-        # their role as assignee, so with dispatch on, the gateway would race
-        # the local orchestrator and run stages outside the subscription router.
+    def test_the_gateway_may_dispatch_specialist_cards_and_no_stage_card(self):
+        # The gateway's own Kanban dispatcher claims any `ready` card whose
+        # assignee is a profile and runs it with a native profile agent. Stage
+        # cards carry their role as assignee, so an unrestricted dispatcher
+        # races the local orchestrator and runs stages outside the
+        # subscription router. One dispatcher serves every multiplexed profile
+        # and reads the ROOT config only, where dispatch is on by default: the
+        # per-profile `dispatch_in_gateway: false` this test used to assert
+        # never reached it (measured 2026-10-12). What keeps it off stage cards
+        # is the allowlist, so that is what must hold.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
 
-        self.assertIs(team["kanban"].get("dispatch_in_gateway"), False)
+        allowed = team["kanban"]["dispatch_profiles"]
+        self.assertEqual(len(allowed), 11)
+        self.assertEqual(set(allowed) & set(team["profiles"]), set())
+        self.assertEqual(
+            module.root_kanban_policy(team),
+            {"auto_decompose": False, "dispatch_profiles": allowed},
+        )
+
+    def test_only_the_director_profile_says_its_cards_are_dispatched(self):
+        # In a profile, `dispatch_in_gateway` only decides whether `hermes
+        # kanban create` warns that nobody will run the card. The director's
+        # cards for specialists do run (owner, 2026-10-03; adopted 2026-10-12).
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        worker = module.desired_profile_config("scout", team, Path("C:/home"))
+        director = module.desired_profile_config(
+            team["director"], team, Path("C:/home")
+        )
+
+        self.assertIs(worker["kanban"]["dispatch_in_gateway"], False)
+        self.assertIs(director["kanban"]["dispatch_in_gateway"], True)
+
+        def without_dispatch(kanban):
+            return {k: v for k, v in kanban.items() if k != "dispatch_in_gateway"}
+
+        self.assertEqual(
+            without_dispatch(director["kanban"]), without_dispatch(worker["kanban"])
+        )
 
     def test_only_the_director_converses_natively_and_workers_carry_nothing(self):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
@@ -260,11 +291,34 @@ class ConfigurationTests(unittest.TestCase):
         for machine_control in ("browser", "computer_use"):
             self.assertNotIn(machine_control, worker["platform_toolsets"]["telegram"])
             self.assertIn(machine_control, director["platform_toolsets"]["telegram"])
-        # The director may not create or dispatch cards (goncloud_local_run
-        # does), yet the 14 kanban schemas cost 23.5 KB of every call
-        # (hermes prompt-size, 2026-09-27). Workers keep them.
-        self.assertNotIn("kanban", director["platform_toolsets"]["telegram"])
-        self.assertIn("goncloud_team", director["platform_toolsets"]["telegram"])
+        # 2026-10-03 (adopted 2026-10-12): the director carries the kanban
+        # toolset. kanban_create is how it hands work to a specialist profile,
+        # and unlike the CLI it subscribes the chat so the gateway reports
+        # back when the card finishes. Its 14 schemas cost 23.9 KB of every
+        # director call. The order is the live one: a redeploy compares the
+        # whole list.
+        self.assertEqual(
+            director["platform_toolsets"]["telegram"],
+            [
+                "browser",
+                "clarify",
+                "code_execution",
+                "coding",
+                "computer_use",
+                "connections",
+                "delegation",
+                "file",
+                "goncloud_team",
+                "kanban",
+                "memory",
+                "session_search",
+                "skills",
+                "terminal",
+                "todo",
+                "vision",
+                "web",
+            ],
+        )
         self.assertIn("kanban", worker["platform_toolsets"]["telegram"])
 
     def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
@@ -406,6 +460,47 @@ class DirectorNativeChainTests(unittest.TestCase):
         self.assertIn("navegador", claw)
         self.assertIn("kanban dispatch", claw)
 
+    def test_bot_mode_messages_never_carry_engineering_work(self):
+        # 2026-10-03: Bot Mode gave every Bot Chat a message_agent tool, a
+        # second channel beside the chain. Owner's decision: the chain keeps
+        # all engineering work; message_agent is for quick questions only.
+        # Every profile's SOUL starts with the shared contract, so the rule
+        # lives there, and the director's role must not contradict it.
+        contract = (ROOT / "shared/CONTRACT.md").read_text(encoding="utf-8")
+        self.assertIn("message_agent", contract)
+        self.assertIn(
+            "Nunca asignes, aceptes ni entregues trabajo de ingenieria por message_agent",
+            contract,
+        )
+        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "El codigo sigue por goncloud_local_run, no por estas tarjetas", claw
+        )
+
+    def test_the_director_hands_specialist_work_to_a_card(self):
+        # 2026-10-03 (adopted 2026-10-12): work that belongs to a specialist
+        # profile goes to it through a kanban card; from Telegram there is no
+        # message_agent. Code still goes through the chain.
+        #
+        # Corrected 2026-10-12. The hand-written text sent the director to the
+        # CLI (`hermes kanban create`), which subscribes nobody, so no one
+        # learned that a card had finished; kanban_create subscribes the chat.
+        # It also offered `operaciones` as a target, but only the allowlisted
+        # specialists are dispatched: that card would sit in `ready` forever,
+        # as on 2026-09-15. And it still said the dispatcher was off.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
+        section = claw.split("# Especialistas", 1)[1]
+        for specialist in team["kanban"]["dispatch_profiles"]:
+            with self.subTest(specialist=specialist):
+                self.assertIn(f"- {specialist}:", section)
+        for stage_role in team["profiles"]:
+            with self.subTest(stage_role=stage_role):
+                self.assertNotIn(f"- {stage_role}:", section)
+        self.assertIn("La via es una tarjeta con kanban_create", claw)
+        self.assertIn("No uses hermes kanban create", claw)
+        self.assertNotIn("despachador nativo esta apagado", claw)
+
     def test_preserve_user_model_and_credentials(self):
         existing = {
             "model": {"provider": "custom", "base_url": "https://example.invalid"},
@@ -473,6 +568,71 @@ class DirectorNativeChainTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.check_file(target, "desired", "previous")
             self.assertEqual(target.read_text(encoding="utf-8"), "user edit")
+
+    def test_check_validates_without_writing(self):
+        import yaml
+
+        upstream = Path(
+            os.environ.get(
+                "HERMES_INSTALL_DIR",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
+            )
+        )
+        self.assertTrue(
+            (upstream / "hermes_cli/profiles.py").is_file(),
+            "Run tests with the installed Hermes runtime",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "hermes-test"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(upstream),
+            ]
+            env = {**os.environ, "PYTHONUTF8": "1"}
+
+            fresh = subprocess.run(
+                command + ["--check"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            self.assertIn("Check passed: 9 profiles", fresh.stdout)
+            self.assertIn("Root dispatch allowlist: would be written", fresh.stdout)
+            self.assertFalse((runtime / "profiles" / "claw").exists())
+            self.assertFalse((runtime / "config.yaml").exists())
+
+            applied = subprocess.run(
+                command, capture_output=True, text=True, env=env, timeout=120
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+            root = yaml.safe_load((runtime / "config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(
+                root["kanban"]["dispatch_profiles"], team["kanban"]["dispatch_profiles"]
+            )
+            self.assertIs(root["kanban"]["auto_decompose"], False)
+            soul = runtime / "profiles/scout/SOUL.md"
+            soul.write_text("user edit", encoding="utf-8")
+            state = runtime / "profiles/claw/goncloud-managed.json"
+            recorded = state.read_bytes()
+
+            conflict = subprocess.run(
+                command + ["--check"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertIn("Local managed-file conflict", conflict.stderr)
+            self.assertEqual(soul.read_text(encoding="utf-8"), "user edit")
+            self.assertEqual(state.read_bytes(), recorded)
 
     def test_real_profiles_apply_twice_without_touching_credentials(self):
         import json
@@ -594,6 +754,54 @@ class DirectorNativeChainTests(unittest.TestCase):
                 yaml.safe_load(claw_path.read_text())["model"], claw["model"]
             )
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+
+
+class RootKanbanPolicyTests(unittest.TestCase):
+    POLICY = {"auto_decompose": False, "dispatch_profiles": ["amazon", "meli"]}
+
+    def test_policy_lands_in_the_existing_block_and_keeps_the_rest(self):
+        text = (
+            "# header\r\nkanban:\r\n  review_dispatch: true\r\n\r\n"
+            "# next\r\nterminal:\r\n  backend: local\r\n"
+        )
+
+        result = module.apply_root_kanban(text, self.POLICY)
+
+        parsed = yaml.safe_load(result)
+        self.assertEqual(parsed["kanban"], {"review_dispatch": True, **self.POLICY})
+        self.assertEqual(parsed["terminal"], {"backend": "local"})
+        self.assertIn("# header\r\n", result)
+        self.assertIn("# next\r\n", result)
+        self.assertNotIn("\n", result.replace("\r\n", ""))
+        self.assertEqual(module.apply_root_kanban(result, self.POLICY), result)
+
+    def test_an_existing_allowlist_is_replaced_not_duplicated(self):
+        text = (
+            "kanban:\n  dispatch_profiles:\n    - scout\n"
+            "  auto_decompose: true\nmodel:\n  default: x\n"
+        )
+
+        result = module.apply_root_kanban(text, self.POLICY)
+
+        self.assertEqual(result.count("dispatch_profiles"), 1)
+        self.assertNotIn("scout", result)
+        parsed = yaml.safe_load(result)
+        self.assertEqual(parsed["kanban"], self.POLICY)
+        self.assertEqual(parsed["model"], {"default": "x"})
+
+    def test_a_config_without_the_block_gets_one(self):
+        self.assertEqual(
+            yaml.safe_load(module.apply_root_kanban("", self.POLICY)),
+            {"kanban": self.POLICY},
+        )
+        parsed = yaml.safe_load(
+            module.apply_root_kanban("model:\n  default: x\n", self.POLICY)
+        )
+        self.assertEqual(parsed, {"model": {"default": "x"}, "kanban": self.POLICY})
+
+    def test_an_inline_block_is_refused_instead_of_corrupted(self):
+        with self.assertRaisesRegex(ValueError, "written inline"):
+            module.apply_root_kanban("kanban: {review_dispatch: true}\n", self.POLICY)
 
 
 class ManagedFileRetirementTests(unittest.TestCase):

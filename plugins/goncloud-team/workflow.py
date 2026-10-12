@@ -46,6 +46,17 @@ TEAM_ROLES = (
     "verifier",
     "adversary",
     "reviewer",
+    "amazon",
+    "meli",
+    "mail",
+    "limpia",
+    "odoo",
+    "pers",
+    "arras",
+    "gonserver",
+    "skillverif",
+    "tinkabot",
+    "eggbot",
     "entrega",
 )
 INITIAL_STAGES = (
