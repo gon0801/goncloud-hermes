@@ -118,7 +118,7 @@ EXPECTED_MODELS = {
         "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
         "claude-opus-5",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "grok-4.6",
         "glm-5.3",
         "gpt-5.6-sol",
@@ -132,7 +132,7 @@ EXPECTED_MODELS = {
         "claude-sonnet-5",
         "grok-4.6",
         "kimi-for-coding",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
     ],
     "ingenieria": [
         "muse-spark-1.3-contributor",
@@ -140,14 +140,14 @@ EXPECTED_MODELS = {
         "gpt-5.6-sol",
         "k3",
         "glm-5.3",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "claude-opus-5",
         "grok-4.6",
     ],
     "implementer": [
         "muse-spark-1.3-contributor",
         "muse-spark-1.3-contributor",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "glm-5.3-flash",
         "grok-4.6",
         "claude-sonnet-5",
@@ -160,7 +160,7 @@ EXPECTED_MODELS = {
         "claude-fable-5-1",
         "k3",
         "gpt-6-astra",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "grok-4.6",
         "glm-5.3",
     ],
@@ -170,7 +170,7 @@ EXPECTED_MODELS = {
         "grok-4.6",
         "k3",
         "glm-5.3",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "claude-opus-5",
         "gpt-5.6-sol",
     ],
@@ -178,7 +178,7 @@ EXPECTED_MODELS = {
         "deepseek-v4.1-flash",
         "deepseek-v4.1-flash",
         "glm-5.3-flash",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "kimi-for-coding",
         "claude-sonnet-5",
         "gpt-5.6-terra",
@@ -188,7 +188,7 @@ EXPECTED_MODELS = {
         "deepseek-v4.1-flash",
         "deepseek-v4.1-flash",
         "glm-5.3-flash",
-        "muse-spark-1.3",
+        "muse-wonder-1.0",
         "kimi-for-coding",
         "deepseek-flash",
         "claude-sonnet-5",
@@ -237,7 +237,7 @@ class SlotSemanticsTests(unittest.TestCase):
                 "implementer": [
                     "opencode-go/muse-spark-1.3-contributor",
                     "opencode-go/muse-spark-1.3-contributor",
-                    "meta/muse-spark-1.3 (max)",
+                    "meta/muse-wonder-1.0 (max)",
                     "zai/glm-5.3",
                     "zai/glm-5.3",
                     "zai/glm-5.3",
@@ -291,8 +291,8 @@ class SlotSemanticsTests(unittest.TestCase):
         sol = claw[6]
 
         self.assertEqual(muse.adapter, "muse")
-        self.assertEqual(muse.model, "muse-spark-1.3")
-        self.assertEqual(muse.label, "meta/muse-spark-1.3 (max)")
+        self.assertEqual(muse.model, "muse-wonder-1.0")
+        self.assertEqual(muse.label, "meta/muse-wonder-1.0 (max)")
         self.assertEqual(opus.adapter, "claude")
         self.assertEqual(opus.model, "claude-opus-5")
         self.assertEqual(opus.label, "anthropic/claude-opus-5 (xhigh)")
@@ -338,7 +338,7 @@ class SlotSemanticsTests(unittest.TestCase):
         )
         self.assertEqual(
             (main[3].adapter, main[3].model, main[3].reasoning_effort),
-            ("muse", "muse-spark-1.3", "max"),
+            ("muse", "muse-wonder-1.0", "max"),
         )
         self.assertEqual(
             (main[7].adapter, main[7].model, main[7].reasoning_effort),
@@ -391,7 +391,7 @@ class SlotSemanticsTests(unittest.TestCase):
             source["chains"]["main"][0],
             "opencode-go-resp/muse-spark-1.3-contributor",
         )
-        self.assertEqual(source["chains"]["main"][3], "meta/muse-spark-1.3 (max)")
+        self.assertEqual(source["chains"]["main"][3], "meta/muse-wonder-1.0 (max)")
         self.assertEqual(
             source["chains"]["ingenieria"][2], "openai/gpt-5.6-sol (xhigh)"
         )
