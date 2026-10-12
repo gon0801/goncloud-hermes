@@ -70,6 +70,14 @@ python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/mo
 
 `check` sale con 1 y lista cada diferencia (agente, posicion o thinking). La foto se toma en el host del gateway con un parse de solo lectura de `openclaw.json`; su formato esta en el encabezado del archivo.
 
+## Vigia de modelos
+
+`scripts/model_watch.py` corre una vez al dia como trabajo programado sin agente del director (`cron`, `no_agent`): no llama a ningun modelo y no cambia nada. Compara los catalogos publicos (models.dev y la lista de OpenCode Go) con la corrida anterior y avisa por Telegram solo si hay novedad: un modelo nuevo de una familia que la tabla usa, un modelo en uso que desaparecio de su ruta, el CLI de Muse atrasado respecto a su canal, o una fuente que lleva tres corridas sin poder leerse. Si no hay nada que decir, no imprime nada y el trabajo queda en silencio. Su estado vive junto al script, en `model_watch.state.json`; `configure_team.py` lo instala en `profiles\claw\scripts`.
+
+```powershell
+hermes -p claw cron create "35 8 * * *" --name vigia-modelos --script model_watch.py --no-agent --deliver telegram
+```
+
 ## Calidad
 
 El remoto es `github.com/gon0801/goncloud-hermes`; no hay CI configurado todavia, asi que la bateria completa se ejecuta localmente una vez al cierre y durante el desarrollo se ejecuta solamente el archivo de pruebas cambiado.
