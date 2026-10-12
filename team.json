@@ -22,6 +22,22 @@
     "max_in_progress": 3,
     "max_in_progress_per_profile": 1,
     "failure_limit": 2,
-    "dispatch_in_gateway": false
+    "dispatch_in_gateway": false,
+    "dispatch_profiles": [
+      "amazon",
+      "meli",
+      "mail",
+      "limpia",
+      "odoo",
+      "pers",
+      "arras",
+      "gonserver",
+      "skillverif",
+      "tinkabot",
+      "eggbot"
+    ]
+  },
+  "director_kanban": {
+    "dispatch_in_gateway": true
   }
 }
