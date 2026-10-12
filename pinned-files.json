@@ -1,0 +1,27 @@
+{
+  "source": "Files on the owner's Mac that pin a model ID by hand, 2026-10-12. Add a path here when a new launcher or agent file appears.",
+  "files": [
+    "~/.config/muse/settings.json",
+    "~/.agents/pstack-plataformas/*.md",
+    "~/.config/opencode/opencode.jsonc",
+    "~/.config/opencode/opencode.json",
+    "~/.config/opencode/agent/*.md",
+    "~/.claude/skills/prompt-claw/SKILL.md",
+    "~/.claude/agents/*.md",
+    "~/.claude/pstack-models.md",
+    "~/bin/workers.v1.json",
+    "~/bin/glm",
+    "~/bin/glm-claude",
+    "~/bin/kimi-claude",
+    "~/bin/deepseek",
+    "~/bin/agent-tmux.sh",
+    "~/.codex/config.toml",
+    "~/.codex/agents/*.toml",
+    "~/.grok/config.toml",
+    "~/.grok/agents/*.md",
+    "~/.kimi-code/config.toml",
+    "~/dev/goncloud-pr-review/review.py",
+    "~/.cursor/cli-config.json",
+    "~/.qwen/settings.json"
+  ]
+}

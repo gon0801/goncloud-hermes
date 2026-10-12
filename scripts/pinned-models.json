@@ -1,0 +1,181 @@
+{
+  "claude-fable-5-1": [
+    "~/bin/workers.v1.json:27",
+    "~/bin/workers.v1.json:37",
+    "~/bin/workers.v1.json:47",
+    "~/bin/workers.v1.json:56",
+    "~/bin/workers.v1.json:70"
+  ],
+  "claude-opus-5": [
+    "~/.claude/agents/adversary.md:8",
+    "~/.claude/agents/reviewer.md:8"
+  ],
+  "claude-opus-5-5": [
+    "~/bin/workers.v1.json:113",
+    "~/bin/workers.v1.json:123",
+    "~/bin/workers.v1.json:133",
+    "~/bin/workers.v1.json:142",
+    "~/bin/workers.v1.json:156"
+  ],
+  "claude-sonnet-5": [
+    "~/.claude/agents/implementer.md:8",
+    "~/.claude/agents/reporter.md:6",
+    "~/.claude/agents/scout.md:6",
+    "~/.claude/agents/verifier.md:8"
+  ],
+  "deepseek-flash": [
+    "~/bin/deepseek:10",
+    "~/bin/deepseek:11",
+    "~/dev/goncloud-pr-review/review.py:82"
+  ],
+  "deepseek-v3.2": [
+    "~/.qwen/settings.json:196",
+    "~/.qwen/settings.json:197"
+  ],
+  "deepseek-v4-flash-0731": [
+    "~/.qwen/settings.json:175",
+    "~/.qwen/settings.json:176"
+  ],
+  "deepseek-v4-pro": [
+    "~/bin/deepseek:6",
+    "~/bin/deepseek:7",
+    "~/bin/deepseek:8",
+    "~/bin/deepseek:9",
+    "~/bin/deepseek:18",
+    "~/.qwen/settings.json:155",
+    "~/.qwen/settings.json:156"
+  ],
+  "deepseek-v4-pro-0813": [
+    "~/.qwen/settings.json:349",
+    "~/.qwen/settings.json:350"
+  ],
+  "deepseek-v4.1-flash": [
+    "~/dev/goncloud-pr-review/review.py:75"
+  ],
+  "glm-4.7": [
+    "~/.agents/pstack-plataformas/muse.md:44",
+    "~/.config/opencode/agent/panel-glm47.md:4",
+    "~/bin/glm-claude:9"
+  ],
+  "glm-5": [
+    "~/.qwen/settings.json:303",
+    "~/.qwen/settings.json:304"
+  ],
+  "glm-5-turbo": [
+    "~/.config/opencode/agent/panel-glm5turbo.md:4",
+    "~/bin/glm-claude:8"
+  ],
+  "glm-5.1": [
+    "~/.qwen/settings.json:291",
+    "~/.qwen/settings.json:292"
+  ],
+  "glm-5.2": [
+    "~/.agents/pstack-plataformas/muse.md:43",
+    "~/.config/opencode/agent/panel-glm52.md:4",
+    "~/.qwen/settings.json:279",
+    "~/.qwen/settings.json:280"
+  ],
+  "glm-5.3": [
+    "~/.agents/pstack-plataformas/muse.md:42",
+    "~/.agents/pstack-plataformas/opencode.md:30",
+    "~/.agents/pstack-plataformas/opencode.md:31",
+    "~/.agents/pstack-plataformas/opencode.md:33",
+    "~/.config/opencode/agent/comment-sicko.md:4",
+    "~/.config/opencode/agent/panel-glm53.md:4",
+    "~/.config/opencode/agent/poteto-agent.md:4",
+    "~/bin/glm-claude:6",
+    "~/bin/glm-claude:7",
+    "~/bin/glm-claude:10"
+  ],
+  "glm-5.3-flash": [
+    "~/.agents/pstack-plataformas/opencode.md:32",
+    "~/.config/opencode/opencode.jsonc:12",
+    "~/.config/opencode/opencode.jsonc:23",
+    "~/.config/opencode/opencode.jsonc:59",
+    "~/.config/opencode/opencode.jsonc:60",
+    "~/.config/opencode/agent/poteto-agent-rapido.md:4",
+    "~/.claude/skills/prompt-claw/SKILL.md:16",
+    "~/.claude/skills/prompt-claw/SKILL.md:35"
+  ],
+  "gpt-5.3-codex": [
+    "~/.cursor/cli-config.json:25",
+    "~/.cursor/cli-config.json:26",
+    "~/.cursor/cli-config.json:46",
+    "~/.cursor/cli-config.json:58",
+    "~/.cursor/cli-config.json:71"
+  ],
+  "gpt-5.6-luna": [
+    "~/.codex/agents/worker.toml:3"
+  ],
+  "gpt-6-astra": [
+    "~/.codex/config.toml:2",
+    "~/.codex/config.toml:54",
+    "~/.codex/agents/reviewer.toml:3"
+  ],
+  "gpt-6.1-sol": [
+    "~/.codex/config.toml:55"
+  ],
+  "grok-4.6": [
+    "~/.grok/config.toml:17",
+    "~/.grok/agents/adversary.md:7",
+    "~/.grok/agents/implementer.md:7",
+    "~/.grok/agents/reviewer.md:7",
+    "~/.grok/agents/verifier.md:7"
+  ],
+  "grok-4.7": [
+    "~/.grok/config.toml:23"
+  ],
+  "k3": [
+    "~/bin/workers.v1.json:199",
+    "~/bin/workers.v1.json:206",
+    "~/bin/workers.v1.json:213",
+    "~/bin/workers.v1.json:219",
+    "~/bin/workers.v1.json:229",
+    "~/.kimi-code/config.toml:62",
+    "~/.kimi-code/config.toml:64"
+  ],
+  "k3-256k": [
+    "~/.kimi-code/config.toml:4",
+    "~/.kimi-code/config.toml:71",
+    "~/.kimi-code/config.toml:73"
+  ],
+  "kimi-for-coding": [
+    "~/bin/workers.v1.json:272",
+    "~/bin/workers.v1.json:279",
+    "~/bin/workers.v1.json:286",
+    "~/bin/workers.v1.json:292",
+    "~/bin/workers.v1.json:302",
+    "~/.kimi-code/config.toml:46",
+    "~/.kimi-code/config.toml:48"
+  ],
+  "kimi-k2.5": [
+    "~/.qwen/settings.json:256",
+    "~/.qwen/settings.json:257"
+  ],
+  "kimi-k2.6": [
+    "~/.qwen/settings.json:237",
+    "~/.qwen/settings.json:238"
+  ],
+  "kimi-k2.7-code": [
+    "~/.qwen/settings.json:212",
+    "~/.qwen/settings.json:213"
+  ],
+  "kimi-k3": [
+    "~/bin/kimi-claude:4",
+    "~/bin/kimi-claude:8",
+    "~/bin/kimi-claude:9",
+    "~/bin/kimi-claude:10"
+  ],
+  "muse-spark-1.3": [
+    "~/.config/opencode/opencode.jsonc:47"
+  ],
+  "muse-spark-1.3-contributor": [
+    "~/.config/opencode/opencode.jsonc:38"
+  ],
+  "muse-wonder-full-1.0-contributor": [
+    "~/.config/muse/settings.json:4",
+    "~/.config/muse/settings.json:7",
+    "~/.agents/pstack-plataformas/muse.md:7",
+    "~/.agents/pstack-plataformas/muse.md:34"
+  ]
+}
