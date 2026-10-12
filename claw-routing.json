@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. The eleven specialists run the operaciones row and carry no per-model thinking there.",
+  "second_account_suffix": "-2",
+  "id_overrides": {},
+  "agents": {
+    "main": {
+      "row": "main",
+      "thinking": true
+    },
+    "operaciones": {
+      "row": "operaciones",
+      "thinking": true
+    },
+    "ingenieria": {
+      "row": "ingenieria",
+      "thinking": true
+    },
+    "implementer": {
+      "row": "implementer",
+      "thinking": true
+    },
+    "reviewer": {
+      "row": "reviewer",
+      "thinking": true
+    },
+    "adversary": {
+      "row": "adversary",
+      "thinking": true
+    },
+    "verifier": {
+      "row": "verifier",
+      "thinking": true
+    },
+    "scout": {
+      "row": "scout",
+      "thinking": true
+    },
+    "amazon": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "pers": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "meli": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "mail": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "limpia": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "odoo": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "arras": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "gonserver": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "skillverif": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "tinkabot": {
+      "row": "operaciones",
+      "thinking": false
+    },
+    "eggbot": {
+      "row": "operaciones",
+      "thinking": false
+    }
+  }
+}
