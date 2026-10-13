@@ -1,5 +1,24 @@
 # Estado — 2026-10-12
 
+## Pruebas de cierre con turnos reales
+
+Pedidas por el propietario para lo que habia quedado solo con llamada minima.
+
+| Que | Como | Resultado |
+|---|---|---|
+| Los otros diez especialistas | una tarjeta real a cada uno (`hermes -p claw kanban create --assignee <perfil>`), con el encargo de cerrar con `PONG` | las diez tomadas por el despachador y cerradas en 17 a 19 s, todas con `opencode-go/deepseek-v4.1-flash`; `gonserver` dejo el `PONG` en el resumen y no en el resultado |
+| Una tarjeta de la cadena no se despacha | tarjeta asignada a `scout`, observada 150 s | se quedo en `ready`; el despachador registro `skipped_nonspawnable` |
+| El director delega solo | turno real `hermes -p claw chat -Q -q` pidiendole pasar un encargo a `eggbot` | uso `kanban_create` (no la terminal), la tarjeta la corrio `eggbot` y cerro con `PONG` |
+| Respaldos del director en un turno real, con su rol y herramientas | `--provider meta-ai -m muse-wonder-1.0`, `anthropic` / `claude-opus-5-5`, `xai-oauth` / `grok-4.7` | los tres contestaron `PONG`, sin fallback ni errores (26.6K, 40.3K y 28.1K tokens de entrada) |
+| Respaldos del director con `base_url` propio | llamada minima a `zai/glm-5.3` y `kimi-coding/k3` con la direccion de su entrada | HTTP 200 y marcador exacto en los dos |
+| Respaldos de claw en un turno real de agente | `openclaw agent --agent verifier --session-key smoke:... --model <m>` para nueve modelos | los nueve ganaron sin fallback y contestaron `PONG`, incluido `opencode-go-resp-2/muse-spark-1.3-contributor`, que no tenia ninguna evidencia previa |
+
+Todas las tarjetas de prueba quedaron archivadas.
+
+No probado: el aviso por Telegram cuando termina una tarjeta creada desde un
+turno de Telegram (el turno de prueba fue por CLI, que no tiene chat al que
+avisar: 0 filas en `kanban_notify_subs`), y los modelos de OpenAI.
+
 ## Los once especialistas ya tienen cadena de modelos (fase 1B)
 
 Antes: ninguno tenia `model:` en su `config.yaml`; una tarjeta despachada a
