@@ -39,9 +39,16 @@ Desplegado en `0950cd1` (`Configured` 20 perfiles). Comprobado despues:
   `provider=opencode-go model=deepseek-v4.1-flash` y cerro con `PONG` en 15 s.
   Archivada.
 
-Queda abierto: los especialistas no tienen credencial de `meta-ai` (ultima
-posicion de su cadena) y `openai-codex` no responde mientras no haya
-suscripcion; las dos posiciones se saltan. Solo se probo una tarjeta, con
+Credencial de Meta: los once tenian solo la de `env:MODEL_API_KEY`, que es la
+llave muerta. Con aprobacion del propietario se les agrego la que resuelve el
+perfil `claw`, dentro de la misma PC y sin mostrarla, con
+`hermes -p <perfil> auth add meta-ai --type api-key --label "Muse api" --priority 0`.
+Quedaron igual que `claw` (`#1 Muse api manual`, `#2 MODEL_API_KEY env`).
+Verificado por perfil: misma huella que la de `claw` y HTTP 200 de
+`muse-wonder-1.0` con la credencial que resuelve su propio `HERMES_HOME`.
+
+Queda abierto: `openai-codex` no responde mientras no haya suscripcion; esa
+posicion se salta. Solo se probo una tarjeta, con
 `eggbot`; los otros diez no han corrido una tarea real.
 
 ## Muse Wonder en claw y la llave de Meta
