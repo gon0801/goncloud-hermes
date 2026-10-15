@@ -257,8 +257,11 @@ def undone(live, snapshot, old_ref, new_ref):
     to the snapshot; one only another writer changed keeps their value, and
     one both changed keeps theirs too (theirs is the later write). Where both
     changed an array, ``new_ref`` turns back into ``old_ref`` in it and the
-    staged copy goes. None when that cannot be told apart: the snapshot already
-    had ``new_ref`` in that array, or the ref sat inside a nested value.
+    staged copy goes. A ``new_ref`` key the snapshot lacked in a per-model
+    settings map goes even when another writer edited it: nothing refers to
+    ``new_ref`` afterwards. None when that cannot be told apart (the snapshot
+    already had ``new_ref`` in that array, or the ref sat inside a nested
+    value), or when another writer made something else refer to ``new_ref``.
     """
     stage = staged(snapshot, old_ref, new_ref)
     written = (stage, renamed(stage, old_ref, new_ref))
@@ -321,9 +324,13 @@ def undone(live, snapshot, old_ref, new_ref):
         return trimmed
 
     try:
-        result = undo(live, snapshot, written, ())
+        result = copy.deepcopy(undo(live, snapshot, written, ()))
     except _Tangled:
         return None
+    # Settings another writer gave new_ref would outlive every ref to it.
+    for table, before in _settings_tables(result, snapshot):
+        if new_ref not in before:
+            table.pop(new_ref, None)
     # Another writer pointed something at new_ref meanwhile: keeping it would
     # leave a ref whose row and allow entry this restore just took away.
     if mentions(outside_rows(result), new_ref) and not mentions(
@@ -331,6 +338,26 @@ def undone(live, snapshot, old_ref, new_ref):
     ):
         return None
     return result
+
+
+def _settings_tables(config, snapshot):
+    """``(per-model settings map, the snapshot's same map or {})`` for
+    ``agents.defaults.models`` and each ``agents.entries.*.models``."""
+    agents, before = config.get("agents") or {}, snapshot.get("agents") or {}
+    pairs = [
+        (
+            (agents.get("defaults") or {}).get("models"),
+            (before.get("defaults") or {}).get("models"),
+        )
+    ]
+    for name, entry in (agents.get("entries") or {}).items():
+        old_entry = (before.get("entries") or {}).get(name) or {}
+        pairs.append(((entry or {}).get("models"), old_entry.get("models")))
+    return [
+        (table, old if isinstance(old, dict) else {})
+        for table, old in pairs
+        if isinstance(table, dict)
+    ]
 
 
 def rename_patch(config, old_ref, new_ref):

@@ -883,6 +883,45 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(fake.config, expected)
                     self.assertNotIn("config entera", outcome.detail)
 
+    def test_settings_another_writer_gave_the_new_ref_go_with_it(self):
+        def unrelated(c):
+            c["models"]["providers"]["xai"]["baseUrl"] = "https://api.x.ai/v2"
+
+        def thinking(table):
+            def edit(c):
+                unrelated(c)
+                place = c["agents"]["defaults" if table == "defaults" else "entries"]
+                models = (place if table == "defaults" else place[table]).setdefault(
+                    "models", {}
+                )
+                models.setdefault("xai/grok-4.8", {})["params"] = {"thinking": "low"}
+
+            return edit
+
+        failing = {
+            "probe": ("infer xai/grok-4.8", Ran(1, "", "model not found")),
+            "verify": ("agent skillverif verify", turn("Error de proveedor", "xai")),
+        }
+        # skillverif had no settings map: the one another writer made stays, empty.
+        for table, left in (
+            ("defaults", {}),
+            ("main", {}),
+            ("skillverif", {"models": {}}),
+        ):
+            for stage, (kind, answer) in failing.items():
+                with self.subTest(table, during=stage):
+                    fake = FakeGateway(
+                        CONFIG, {kind: answer}, meddle={kind: thinking(table)}
+                    )
+
+                    outcome = self.go(fake)
+
+                    expected = copy.deepcopy(CONFIG)
+                    unrelated(expected)
+                    expected["agents"]["entries"]["skillverif"].update(left)
+                    self.assertEqual(fake.config, expected)
+                    self.assertNotIn("config entera", outcome.detail)
+
     def test_a_restore_it_cannot_tell_apart_puts_the_whole_snapshot_back(self):
         # A busy run left the staging, so the allowlist already had both refs:
         # after the rename and another writer's entry, no rule says which is ours.
