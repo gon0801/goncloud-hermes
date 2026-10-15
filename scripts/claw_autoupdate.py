@@ -58,6 +58,8 @@ IDLE_POLL = 15
 SETTLE_WAIT = 30
 SETTLE_POLL = 3
 READ_TIMEOUT = 30
+CONFIG_TRIES = 4
+CONFIG_RETRY = 3
 PATCH_TIMEOUT = 60
 TURN_TIMEOUT = 180
 PROBE_AGENT = "skillverif"
@@ -357,9 +359,17 @@ class Gateway:
         return json.loads(done.out)
 
     def config(self):
-        return self._json(
-            ["gateway", "call", "config.get", "--params", "{}", "--json"], READ_TIMEOUT
-        )["parsed"]
+        """The live config; a read right after a reload can lack it, so retry."""
+        for attempt in range(CONFIG_TRIES):
+            if attempt:
+                self.sleep(CONFIG_RETRY)
+            doc = self._json(
+                ["gateway", "call", "config.get", "--params", "{}", "--json"],
+                READ_TIMEOUT,
+            )
+            if isinstance(doc.get("parsed"), dict):
+                return doc["parsed"]
+        raise RuntimeError(f"config.get sin parsed tras {CONFIG_TRIES} lecturas")
 
     def settled(self, ready):
         """The live config once ``ready(config)`` holds, or the last read at SETTLE_WAIT."""

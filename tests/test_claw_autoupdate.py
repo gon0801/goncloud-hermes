@@ -374,6 +374,7 @@ class FakeGateway:
         lost_patches=(),
         patch_results=None,
         stale_reads=None,
+        unparsed_reads=0,
     ):
         self.config = copy.deepcopy(config)
         self.shown = self.config
@@ -392,6 +393,7 @@ class FakeGateway:
         self.stale_reads = stale_reads or {}
         self.stale_left = 0
         self.patches = 0
+        self.unparsed_reads = unparsed_reads
 
     def kind(self, argv):
         if argv[1:4] == ["gateway", "call", "status"]:
@@ -431,6 +433,9 @@ class FakeGateway:
             work = {"rootRequests": 1 if busy else 0, "cronRuns": 1}
             return Ran(0, json.dumps({"shutdownBudget": {"activeWork": work}}), "")
         if kind == "config":
+            if self.unparsed_reads:
+                self.unparsed_reads -= 1
+                return Ran(0, json.dumps({"hash": "h"}), "")
             if self.stale_left:
                 self.stale_left -= 1
             else:
@@ -619,6 +624,20 @@ class RunnerTests(unittest.TestCase):
 
         self.assertNotIn("patch", fake.calls)
         self.assertEqual(outcome.status, "pendiente")
+
+
+class ConfigReadTests(unittest.TestCase):
+    def test_a_read_without_parsed_right_after_a_reload_is_retried(self):
+        fake = FakeGateway(CONFIG, unparsed_reads=2)
+
+        self.assertEqual(fake.gateway().config(), CONFIG)
+        self.assertEqual(fake.calls, ["config"] * 3)
+
+    def test_a_read_that_never_has_parsed_fails_after_a_few_tries(self):
+        fake = FakeGateway(CONFIG, unparsed_reads=99)
+
+        with self.assertRaisesRegex(RuntimeError, "config.get sin parsed tras 4"):
+            fake.gateway().config()
 
 
 class HoldTests(unittest.TestCase):
