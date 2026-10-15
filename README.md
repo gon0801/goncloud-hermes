@@ -76,21 +76,51 @@ python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/mo
 
 ## Cambiar un modelo
 
-Un modelo entra a la tabla despues de probarse con una llamada real, nunca antes.
+Un modelo entra a la tabla despues de probarse con una llamada real, nunca antes. Una version nueva de un modelo en uso la cambia el vigia solo (ver abajo); a mano queda pasar a otro modelo.
 
 1. `python3 scripts/promote_model.py <viejo> <nuevo>` muestra las celdas que cambiarian y las sondas que hay que correr; no escribe nada.
 2. En la PC, con el Python del runtime Hermes, cada sonda debe imprimir `"success": true, "marker_exact": true`: `python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"`. La sonda llama al adaptador directo, fuera del router, asi que un fallo no pone a nadie en cuarentena. Si la celda esta en la fila `main`, el director la usa por su proveedor nativo y esa ruta se prueba aparte.
 3. `python3 scripts/promote_model.py <viejo> <nuevo> --apply` escribe la tabla. Con `--hold-claw` claw se queda en el modelo viejo (queda anotado en `id_overrides` de `claw-routing.json`); `--release-claw <nuevo>` lo suelta cuando claw ya pueda servirlo.
-4. Actualiza las pruebas que nombran el modelo viejo, corre la bateria, y despliega con `configure_team.py --check` y luego sin `--check`.
+4. Haz commit de la tabla y despliega con `configure_team.py --check` y luego sin `--check`. Las pruebas que nombran modelos leen `tests/fixtures/model-routing.source.json`, no la tabla viva.
 5. Para claw: `claw_models.py check` contra una foto fresca dice que falta; el parche se aplica en el host del gateway en un hueco sin corridas.
 
 ## Vigia de modelos
 
-`scripts/model_watch.py` corre una vez al dia como trabajo programado sin agente del director (`cron`, `no_agent`): no llama a ningun modelo y no cambia nada. Compara los catalogos publicos (models.dev y la lista de OpenCode Go) con la corrida anterior y avisa por Telegram solo si hay novedad: un modelo nuevo de una familia que la tabla usa, un modelo en uso que desaparecio de su ruta, el CLI de Muse atrasado respecto a su canal, o una fuente que lleva tres corridas sin poder leerse. Si no hay nada que decir, no imprime nada y el trabajo queda en silencio. Su estado vive junto al script, en `model_watch.state.json`; `configure_team.py` lo instala en `profiles\claw\scripts`.
+`scripts/model_watch.py` corre una vez al dia como trabajo programado sin agente del director (`cron`, `no_agent`). Lee los catalogos publicos (models.dev y la lista de OpenCode Go), avisa de lo que cambio desde la corrida anterior (un modelo nuevo de una familia que la tabla usa, un modelo en uso que desaparecio de su ruta, el CLI de Muse atrasado, una fuente que lleva tres corridas sin poder leerse) y cambia solo a la version nueva de un modelo en uso.
+
+Una version nueva es otro id de la misma linea con numero mayor: `grok-4.7` -> `grok-4.8`, `gpt-5.6-sol` -> `gpt-6.1-sol`, `claude-opus-5-5` -> `claude-opus-6`. No cuentan las fotos con fecha (`claude-opus-5-5-20260922`), los ids sin version (`kimi-for-coding`), los marcados `preview`, `exp`, `alpha`, `beta`, `free` o `latest`, ni los `deprecated`. Una etiqueta en las posiciones 0 y 1 sigue la lista de OpenCode Go; en 2 o mas, el catalogo de su proveedor. Una etiqueta en las dos a la vez no se cambia sola y se avisa.
+
+Por cada cambio, en el checkout de la PC (`hermes_autoupdate.py`):
+
+1. Corre todas las sondas reales de la etiqueta nueva (`probe_route.py`). Si una falla, no escribe nada y avisa por que.
+2. Escribe la tabla, hace commit `auto(modelos): viejo -> nuevo` (solo ese archivo; si la tabla tiene cambios sin commit no toca nada), despliega con `configure_team.py` y comprueba `configure_team.py --check` y un turno real del director que debe responder `PONG`.
+3. Si la comprobacion falla, `git revert` y vuelve a desplegar. Si pasa, `git pull --no-rebase` y `git push`; un push fallido se avisa y el cambio se queda.
+
+El mensaje dice que se cambio, que se probo y fallo (con la falla de la sonda), y nada mas. Un aviso de falla se repite solo cuando su texto cambia, asi que un modelo que espera cuota avisa una vez. Sin novedades no imprime nada y el trabajo queda en silencio. `--dry-run` no guarda nada ni cambia ningun modelo.
+
+`configure_team.py` instala en `profiles\claw\scripts` el vigia, `model_lines.py`, `hermes_autoupdate.py`, `promote_model.py` y `autoupdate.json` (ruta del checkout, el Python con que se desplego, `hermes.cmd` y `git`). Sin `autoupdate.json` el vigia solo avisa. Su estado vive junto al script, en `model_watch.state.json`.
+
+Hermes corta un script `no_agent` a los 3600 s de reloj (`HERMES_CRON_SCRIPT_TIMEOUT` o `cron.script_timeout_seconds`; `HERMES_CRON_TIMEOUT` es la inactividad de los trabajos con agente y no aplica). Un cambio empieza solo si su peor caso cabe; si no, queda pendiente para el dia siguiente. El vigia no reinicia el gateway; como en cualquier despliegue, la sesion de Telegram del director toma su cadena nueva con `/new`.
 
 ```powershell
 hermes -p claw cron create "35 8 * * *" --name vigia-modelos --script model_watch.py --no-agent --deliver telegram
 ```
+
+### Claw
+
+Claw no lee este repo, asi que se actualiza solo en la Mac Mini con `scripts/claw_autoupdate.py` y `scripts/model_lines.py`, sobre su config viva. Por cada ref de una cadena con version nueva espera un momento sin corridas (`config patch` mata las corridas en vuelo), agrega la ref nueva sin quitar nada (fila del proveedor propio, `modelPolicy.allow`, `agents.defaults.models`), la prueba con una llamada real (`openclaw infer model run`; anthropic con un turno real por `claude-cli`) con el thinking que usan las cadenas, renombra cada uso y comprueba un turno real con la ref nueva y que la vieja ya no aparezca en la config. Si la sonda o la comprobacion fallan, restaura la config de antes. Sus avisos usan la misma regla y viven en `claw_autoupdate.state.json` junto al script. Sin novedades imprime `NO_REPLY`, que el cron no entrega.
+
+Instalacion en la Mini (una vez): copia `scripts/claw_autoupdate.py` y `scripts/model_lines.py` a `~/goncloud-autoupdate/` (la Mini no tiene este repo; por ejemplo `scp` desde la Mac) y despues, en la Mini:
+
+```bash
+python3 ~/goncloud-autoupdate/claw_autoupdate.py --openclaw "$(command -v openclaw)" --dry-run
+openclaw cron add --name autoactualiza-modelos --cron "50 8 * * *" \
+  --command-argv "[\"$(command -v python3)\", \"$HOME/goncloud-autoupdate/claw_autoupdate.py\", \"--openclaw\", \"$(command -v openclaw)\"]" \
+  --timeout-seconds 1800 --no-output-timeout-seconds 1800 \
+  --announce --channel telegram --to telegram:6470689715
+```
+
+`--dry-run` lista lo que cambiaria y no toca nada. El runner solo imprime al final, por eso los dos limites del cron van en 1800 s (`RUN_LIMIT`); el limite por defecto de un trabajo de comando es 600 s.
 
 ## Modelos escritos a mano fuera de la tabla
 
