@@ -109,19 +109,29 @@ hermes -p claw cron create "35 8 * * *" --name vigia-modelos --script model_watc
 
 ### Claw
 
-Claw no lee este repo, asi que se actualiza solo en la Mac Mini con `scripts/claw_autoupdate.py` y `scripts/model_lines.py`, sobre su config viva. Por cada ref de una cadena con version nueva espera un momento sin corridas (`config patch` mata las corridas en vuelo), agrega la ref nueva sin quitar nada (fila del proveedor propio, `modelPolicy.allow`, `agents.defaults.models`), la prueba con una llamada real (`openclaw infer model run`; anthropic con un turno real por `claude-cli`) con el thinking que usan las cadenas, renombra cada uso y comprueba un turno real con la ref nueva y que la vieja ya no aparezca en la config. Si la sonda o la comprobacion fallan, restaura la config de antes, calculada contra una lectura nueva de la config (un parche que vencio el tiempo pudo haber entrado). La comprobacion espera hasta 30 s a que la config recargue. La restauracion corre aunque haya corridas en curso, y entonces el aviso lo dice. Cada parche lleva `--replace-path` para todo arreglo que pierde un elemento, y un parche vacio no se manda: la CLI rechaza los dos casos. Si queda pendiente despues de agregar la ref nueva, la siguiente corrida sigue desde ahi. Sus avisos usan la misma regla, incluido el par en espera tras una restauracion despues del renombre, y viven en `claw_autoupdate.state.json` (clave `notices`) junto al script. Sin novedades imprime `NO_REPLY`, que el cron no entrega.
+Claw no lee este repo, asi que se actualiza solo en la Mac Mini con `scripts/claw_autoupdate.py` y `scripts/model_lines.py`, sobre su config viva. Por cada ref de una cadena con version nueva agrega la ref nueva sin quitar nada (fila del proveedor propio, `modelPolicy.allow`, `agents.defaults.models`), la prueba con una llamada real (`openclaw infer model run`; anthropic con un turno real por `claude-cli`) con el thinking que usan las cadenas, renombra cada uso y comprueba un turno real con la ref nueva y que la vieja ya no aparezca en la config. Si la sonda o la comprobacion fallan, restaura la config de antes, calculada contra una lectura nueva de la config (un parche que vencio el tiempo pudo haber entrado). La comprobacion espera hasta 30 s a que la config recargue. Cada parche lleva `--replace-path` para todo arreglo que pierde un elemento, y un parche vacio no se manda: la CLI rechaza los dos casos.
 
-Instalacion en la Mini (una vez): copia `scripts/claw_autoupdate.py` y `scripts/model_lines.py` a `~/goncloud-autoupdate/` (la Mini no tiene este repo; por ejemplo `scp` desde la Mac) y despues, en la Mini:
+`config patch` mata las corridas en vuelo, asi que cada escritura (agregar, renombrar, restaurar) corre dentro de una ventana exclusiva que el gateway concede solo cuando no hay corridas: `openclaw gateway suspend --wait 0 --json`. Si esta ocupado contesta `busy` sin retener nada, y el runner vuelve a preguntar cada `retryAfterMs` (entre 10 y 60 s) hasta 20 minutos (`EXCLUSIVE_WAIT`); sin ventana el cambio queda pendiente y no se escribe nada. Mientras la ventana esta abierta el gateway rechaza trabajo nuevo, incluidos los mensajes del propietario, por eso dura solo los segundos del parche y se libera siempre con `openclaw gateway resume <id>`, tambien si algo falla; si el runner muere, la ventana vence sola. Nunca se usa `--wait` mayor que 0, que rechazaria trabajo nuevo durante toda la espera. Las sondas y el turno de comprobacion corren fuera de la ventana, porque necesitan que el gateway acepte trabajo. Una restauracion espera ventana hasta 2 minutos (`RESTORE_WAIT`) y despues restaura igual, y el aviso lo dice. Si queda pendiente despues de agregar la ref nueva, la siguiente corrida sigue desde ahi. `shutdownBudget.activeWork` no sirve como senal de reposo: no cuenta las corridas embebidas y se queda con conteos viejos.
+
+Corre a las 04:50 desde launchd y no desde un cron de OpenClaw: un trabajo de cron cuenta como trabajo del gateway, y entonces la ventana nunca estaria lista. A esa hora el propietario duerme y es lo mas probable que no haya corridas; de dia una corrida de agente dura 20 minutos o mas y puede no haber ningun hueco. El runner manda su propio aviso con `openclaw message send --channel telegram`, solo cuando hay algo nuevo, al chat de `--to` (por defecto el del propietario). Sus avisos usan la misma regla de una sola vez, incluido el par en espera tras una restauracion despues del renombre, y viven en `claw_autoupdate.state.json` (clave `notices`) junto al script. Si Telegram no toma el aviso, el estado no se guarda y la siguiente corrida lo repite (un par revertido se vuelve a intentar una vez en ese caso). Lo que imprime queda en `~/Library/Logs/goncloud/claw-autoupdate.log`.
+
+Instalacion en la Mini (una vez). Copia `scripts/claw_autoupdate.py`, `scripts/model_lines.py` y `scripts/ai.goncloud.claw-autoupdate.plist` a `~/goncloud-autoupdate/` (la Mini no tiene este repo; por ejemplo `scp` desde la Mac) y despues, en la Mini:
 
 ```bash
+mkdir -p ~/Library/Logs/goncloud ~/Library/LaunchAgents
 python3 ~/goncloud-autoupdate/claw_autoupdate.py --openclaw "$(command -v openclaw)" --dry-run
-openclaw cron add --name autoactualiza-modelos --cron "50 8 * * *" \
-  --command-argv "[\"$(command -v python3)\", \"$HOME/goncloud-autoupdate/claw_autoupdate.py\", \"--openclaw\", \"$(command -v openclaw)\"]" \
-  --timeout-seconds 1800 --no-output-timeout-seconds 1800 \
-  --announce --channel telegram --to telegram:6470689715
+sed -e "s|__PYTHON3__|$(command -v python3)|" \
+    -e "s|__SCRIPT__|$HOME/goncloud-autoupdate/claw_autoupdate.py|" \
+    -e "s|__OPENCLAW__|$(command -v openclaw)|" \
+    -e "s|__PATH__|$(dirname "$(command -v node)"):/usr/bin:/bin:/usr/sbin:/sbin|" \
+    -e "s|__HOME__|$HOME|g" \
+    ~/goncloud-autoupdate/ai.goncloud.claw-autoupdate.plist \
+    > ~/Library/LaunchAgents/ai.goncloud.claw-autoupdate.plist
+plutil -lint ~/Library/LaunchAgents/ai.goncloud.claw-autoupdate.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.goncloud.claw-autoupdate.plist
 ```
 
-`--dry-run` lista lo que cambiaria y no toca nada. El runner solo imprime al final, por eso los dos limites del cron van en 1800 s (`RUN_LIMIT`); el limite por defecto de un trabajo de comando es 600 s.
+`--dry-run` lista lo que cambiaria y no toca nada. launchd no expande `~` ni `$HOME`, por eso el `sed` escribe rutas completas; `__PATH__` lleva el directorio de `node` porque `openclaw` arranca con `#!/usr/bin/env node`. Para correrlo ya: `launchctl kickstart gui/$(id -u)/ai.goncloud.claw-autoupdate`. Para quitarlo: `launchctl bootout gui/$(id -u)/ai.goncloud.claw-autoupdate`. Si quedo instalado el cron `autoactualiza-modelos` de OpenClaw de la version anterior, borralo (`openclaw cron list` lo muestra).
 
 ## Modelos escritos a mano fuera de la tabla
 
