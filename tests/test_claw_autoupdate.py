@@ -318,17 +318,6 @@ class FailureDetailTests(unittest.TestCase):
         self.assertEqual(detail, ("a b " + "x" * 300)[:200])
 
 
-class PollPauseTests(unittest.TestCase):
-    def test_the_gateway_hint_is_followed_between_ten_and_sixty_seconds(self):
-        self.assertEqual(
-            [
-                claw_autoupdate.poll_pause(ms)
-                for ms in (20000, 500, 120000, None, "20000")
-            ],
-            [20, 10, 60, 10, 10],
-        )
-
-
 def merged(config, patch):
     result = copy.deepcopy(config)
     for key, value in patch.items():
@@ -437,6 +426,7 @@ class FakeGateway:
         self.acquired = []
         self.resumed = []
         self.waits = []
+        self.asked_at = []
         self.unguarded_patches = 0
         self.sent = []
         self.calls = []
@@ -486,6 +476,7 @@ class FakeGateway:
         self.calls.append(kind)
         if kind == "suspend":
             self.waits.append(argv[argv.index("--wait") + 1])
+            self.asked_at.append(self.now)
             if self.busy_polls or (
                 self.busy_from_patch is not None
                 and self.patches >= self.busy_from_patch
@@ -653,13 +644,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(fake.resumed, ["s1", "s2"])
         self.assertEqual(fake.config, CONFIG)
 
-    def test_a_busy_gateway_is_polled_at_its_hint_until_it_grants_the_window(self):
+    def test_a_busy_gateway_is_asked_every_five_minutes_until_it_grants(self):
         fake = FakeGateway(CONFIG, busy_polls=2)
 
         outcome = self.go(fake)
 
         self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
-        self.assertEqual(fake.now, 40)
+        self.assertEqual(fake.asked_at, [0, 300, 600, 600])
         self.assertEqual(fake.acquired, ["s1", "s2"])
 
     def test_staging_left_by_a_busy_run_is_picked_up_by_the_next_one(self):
@@ -722,8 +713,8 @@ class RunnerTests(unittest.TestCase):
             (outcome.status, outcome.detail),
             ("pendiente", "no hubo un momento sin corridas"),
         )
-        # Every 20 s (the gateway's retryAfterMs) for EXCLUSIVE_WAIT = 1200 s.
-        self.assertEqual(fake.calls.count("suspend"), 61)
+        # The gateway hints 20 s; each ask closes its admission, so 300 s it is.
+        self.assertEqual(fake.asked_at, list(range(0, 2401, 300)))
 
 
 class ConfigReadTests(unittest.TestCase):

@@ -51,12 +51,13 @@ from model_lines import (
 
 #: How long a write waits for the gateway to grant an exclusive window. Never
 #: ``suspend --wait N>0``: the gateway refuses new work (the owner's messages)
-#: for the whole drain; a ``--wait 0`` poll holds nothing while it is busy.
-EXCLUSIVE_WAIT = 1200
+#: for the whole drain.
+EXCLUSIVE_WAIT = 2400
 #: A restore waits less, then runs anyway: a half-applied switch is worse.
-RESTORE_WAIT = 120
-POLL_MIN = 10
-POLL_MAX = 60
+RESTORE_WAIT = 600
+#: Seconds between asks, whatever ``retryAfterMs`` says: every ask closes the
+#: gateway's admission for 13-20 s even when it answers busy (live, 2026.9.7).
+WINDOW_POLL = 300
 NO_WINDOW = "no hubo un momento sin corridas"
 #: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
@@ -275,12 +276,6 @@ def mentions(node, ref):
     return False
 
 
-def poll_pause(retry_after_ms):
-    """Seconds to wait before asking for the window again, from the gateway's hint."""
-    seconds = (retry_after_ms or 0) / 1000 if isinstance(retry_after_ms, int) else 0
-    return max(POLL_MIN, min(POLL_MAX, seconds))
-
-
 def _first_json(text):
     """The JSON value at the start of ``text``; openclaw may print lines after it."""
     try:
@@ -399,10 +394,9 @@ class Gateway:
                 break
             if doc.get("status") != "busy":
                 raise RuntimeError(f"gateway suspend: {failure(done)}")
-            pause = poll_pause(doc.get("retryAfterMs"))
-            if self.clock() + pause > deadline:
+            if self.clock() + WINDOW_POLL > deadline:
                 raise Busy(NO_WINDOW)
-            self.sleep(pause)
+            self.sleep(WINDOW_POLL)
         suspension = doc["suspensionId"]
         try:
             yield
