@@ -302,15 +302,15 @@ class FailureDetailTests(unittest.TestCase):
         self.assertEqual(detail, ("a b " + "x" * 300)[:200])
 
 
-class IdleTests(unittest.TestCase):
-    def test_only_this_runner_s_own_cron_run_may_be_in_flight(self):
-        def status(**work):
-            return {"shutdownBudget": {"activeWork": work}}
-
-        self.assertTrue(claw_autoupdate.is_idle(status(modelRuns=0, cronRuns=1)))
-        self.assertFalse(claw_autoupdate.is_idle(status(modelRuns=0, cronRuns=2)))
-        self.assertFalse(claw_autoupdate.is_idle(status(modelRuns=1, cronRuns=0)))
-        self.assertFalse(claw_autoupdate.is_idle({}))
+class PollPauseTests(unittest.TestCase):
+    def test_the_gateway_hint_is_followed_between_ten_and_sixty_seconds(self):
+        self.assertEqual(
+            [
+                claw_autoupdate.poll_pause(ms)
+                for ms in (20000, 500, 120000, None, "20000")
+            ],
+            [20, 10, 60, 10, 10],
+        )
 
 
 def merged(config, patch):
@@ -358,19 +358,48 @@ def array_drops(before, patch, path=()):
     return found
 
 
+def busy_reply():
+    """``gateway suspend --wait 0 --json`` while a run is in flight (live, 2026-10-15)."""
+    return Ran(
+        1,
+        json.dumps(
+            {
+                "status": "busy",
+                "reason": "active-work",
+                "retryAfterMs": 20000,
+                "activeCount": 9,
+                "blockers": [
+                    {
+                        "kind": "embedded-run",
+                        "count": 1,
+                        "message": "1 active embedded run(s)",
+                    }
+                ],
+                "writeCustody": [],
+                "requestId": "cli-1",
+            }
+        ),
+        "",
+    )
+
+
 class FakeGateway:
     """A live config that config patch really changes; model calls are scripted.
 
     Its config patch refuses what the real CLI refuses (2026.9.7): an empty
     patch, and dropping an array element whose path is not a --replace-path.
+    ``gateway suspend`` is busy for ``busy_polls`` polls (and for good once
+    ``busy_from_patch`` patches landed), then grants a window; while one is
+    held, model calls are refused as the gateway refuses new work.
     """
 
     def __init__(
         self,
         config,
         answers=None,
-        busy=False,
+        busy_polls=0,
         busy_from_patch=None,
+        explode_on_patch=None,
         lost_patches=(),
         patch_results=None,
         stale_reads=None,
@@ -384,8 +413,14 @@ class FakeGateway:
             "agent skillverif verify": turn("PONG", "xai"),
             **(answers or {}),
         }
-        self.busy = busy
+        self.busy_polls = busy_polls
         self.busy_from_patch = busy_from_patch
+        self.explode_on_patch = explode_on_patch
+        self.held = None
+        self.acquired = []
+        self.resumed = []
+        self.waits = []
+        self.unguarded_patches = 0
         self.calls = []
         self.now = 0.0
         self.lost_patches = lost_patches
@@ -396,8 +431,10 @@ class FakeGateway:
         self.unparsed_reads = unparsed_reads
 
     def kind(self, argv):
-        if argv[1:4] == ["gateway", "call", "status"]:
-            return "status"
+        if argv[1:3] == ["gateway", "suspend"]:
+            return "suspend"
+        if argv[1:3] == ["gateway", "resume"]:
+            return "resume"
         if argv[1:4] == ["gateway", "call", "config.get"]:
             return "config"
         if argv[1:3] == ["config", "patch"]:
@@ -425,13 +462,27 @@ class FakeGateway:
     def __call__(self, argv, timeout):
         kind = self.kind(argv)
         self.calls.append(kind)
-        if kind == "status":
-            busy = self.busy or (
+        if kind == "suspend":
+            self.waits.append(argv[argv.index("--wait") + 1])
+            if self.busy_polls or (
                 self.busy_from_patch is not None
                 and self.patches >= self.busy_from_patch
+            ):
+                self.busy_polls = max(0, self.busy_polls - 1)
+                return busy_reply()
+            self.held = f"s{len(self.acquired) + 1}"
+            self.acquired.append(self.held)
+            doc = {"status": "ready", "suspensionId": self.held, "requestId": "r"}
+            return Ran(0, json.dumps(doc), "")
+        if kind == "resume":
+            self.resumed.append(argv[3])
+            if argv[3] == self.held:
+                self.held = None
+            return Ran(0, "{}", "")
+        if self.held and kind.startswith(("agent", "infer")):
+            return Ran(
+                1, json.dumps({"ok": False, "error": {"message": "suspended"}}), ""
             )
-            work = {"rootRequests": 1 if busy else 0, "cronRuns": 1}
-            return Ran(0, json.dumps({"shutdownBudget": {"activeWork": work}}), "")
         if kind == "config":
             if self.unparsed_reads:
                 self.unparsed_reads -= 1
@@ -447,7 +498,11 @@ class FakeGateway:
                 return refused
             if kind == "dry-run":
                 return Ran(0, "{}", "")
+            if self.explode_on_patch == self.patches + 1:
+                raise RuntimeError("the CLI wrapper broke")
             self.patches += 1
+            if self.held is None:
+                self.unguarded_patches += 1
             if self.patches not in self.lost_patches:
                 self.config = merged(self.config, patch)
                 self.stale_left = self.stale_reads.get(self.patches, 0)
@@ -466,8 +521,12 @@ class FakeGateway:
 
 
 class RunnerTests(unittest.TestCase):
-    def go(self, fake, promotion=GROK, budget=10_000):
-        return claw_autoupdate.promote(fake.gateway(), promotion, lambda: budget)
+    def go(self, fake, promotion=GROK, unguarded=0):
+        outcome = claw_autoupdate.promote(fake.gateway(), promotion)
+        self.assertEqual(fake.resumed, fake.acquired, "every window is resumed")
+        self.assertEqual(fake.unguarded_patches, unguarded)
+        self.assertEqual(set(fake.waits) - {"0"}, set(), "never suspend --wait N>0")
+        return outcome
 
     def test_a_failed_probe_leaves_the_live_config_exactly_as_it_was(self):
         fake = FakeGateway(
@@ -557,6 +616,39 @@ class RunnerTests(unittest.TestCase):
             fake.config, claw_autoupdate.renamed(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
         )
 
+    def test_a_failed_patch_still_resumes_its_window(self):
+        fake = FakeGateway(CONFIG, patch_results={1: Ran(1, "", "boom")})
+
+        outcome = self.go(fake)
+
+        self.assertEqual(
+            (outcome.status, outcome.detail),
+            ("no cambiado", "preparar: config patch: salida 1: boom"),
+        )
+        self.assertEqual(fake.acquired, ["s1", "s2"])
+        self.assertEqual(fake.config, CONFIG)
+
+    def test_a_crash_inside_a_window_still_resumes_it(self):
+        fake = FakeGateway(CONFIG, explode_on_patch=1)
+
+        outcome = self.go(fake)
+
+        self.assertEqual(
+            (outcome.status, outcome.detail),
+            ("no cambiado", "RuntimeError: the CLI wrapper broke"),
+        )
+        self.assertEqual(fake.resumed, ["s1", "s2"])
+        self.assertEqual(fake.config, CONFIG)
+
+    def test_a_busy_gateway_is_polled_at_its_hint_until_it_grants_the_window(self):
+        fake = FakeGateway(CONFIG, busy_polls=2)
+
+        outcome = self.go(fake)
+
+        self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
+        self.assertEqual(fake.now, 40)
+        self.assertEqual(fake.acquired, ["s1", "s2"])
+
     def test_staging_left_by_a_busy_run_is_picked_up_by_the_next_one(self):
         first = FakeGateway(CONFIG, busy_from_patch=1)
 
@@ -584,7 +676,7 @@ class RunnerTests(unittest.TestCase):
             busy_from_patch=2,
         )
 
-        outcome = self.go(fake)
+        outcome = self.go(fake, unguarded=1)
 
         self.assertEqual(fake.config, CONFIG)
         self.assertEqual(
@@ -607,23 +699,18 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("infer anthropic/claude-opus-6", fake.calls)
 
     def test_nothing_is_written_while_runs_are_in_flight(self):
-        fake = FakeGateway(CONFIG, busy=True)
+        fake = FakeGateway(CONFIG, busy_polls=10**9)
 
         outcome = self.go(fake)
 
         self.assertNotIn("patch", fake.calls)
+        self.assertEqual(fake.acquired, [])
         self.assertEqual(
             (outcome.status, outcome.detail),
             ("pendiente", "no hubo un momento sin corridas"),
         )
-
-    def test_a_promotion_that_cannot_finish_before_the_cron_limit_waits(self):
-        fake = FakeGateway(CONFIG)
-
-        outcome = self.go(fake, budget=300)
-
-        self.assertNotIn("patch", fake.calls)
-        self.assertEqual(outcome.status, "pendiente")
+        # Every 20 s (the gateway's retryAfterMs) for EXCLUSIVE_WAIT = 1200 s.
+        self.assertEqual(fake.calls.count("suspend"), 61)
 
 
 class ConfigReadTests(unittest.TestCase):
@@ -649,7 +736,7 @@ class HoldTests(unittest.TestCase):
         for _ in range(2):
             before = fake.calls.count("patch")
             lines, last = claw_autoupdate.autoupdate(
-                fake.gateway(), {"xai": VIEW["xai"]}, last, started=0
+                fake.gateway(), {"xai": VIEW["xai"]}, last
             )
             said.append(lines)
             patches.append(fake.calls.count("patch") - before)
@@ -671,8 +758,8 @@ class HoldTests(unittest.TestCase):
         gateway = claw_autoupdate.Gateway("openclaw", down)
         held = {"revertido:xai/grok-4.7 -> xai/grok-4.8": "- Revertido: ..."}
 
-        lines, remembered = claw_autoupdate.said(gateway, VIEW, held, started=0)
-        again, _ = claw_autoupdate.said(gateway, VIEW, remembered, started=0)
+        lines, remembered = claw_autoupdate.said(gateway, VIEW, held)
+        again, _ = claw_autoupdate.said(gateway, VIEW, remembered)
 
         self.assertEqual(
             lines,

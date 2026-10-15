@@ -1,12 +1,13 @@
 """Move claw's live model chains to a newer release of a model they use, on its own.
 
-Runs on the gateway host (Mac Mini) as an OpenClaw cron command job, daily.
-Claw does not read this repo, so this works on its live config. For each ref
-in a chain with a newer release in its own line it waits for a moment with no
-model runs, stages the new ref, probes it with a real call, renames every use,
-and checks a real agent turn. A failed probe or check restores the snapshot.
+Runs on the gateway host (Mac Mini) from launchd, daily. Claw does not read
+this repo, so this works on its live config. For each ref in a chain with a
+newer release in its own line it stages the new ref, probes it with a real
+call, renames every use, and checks a real agent turn. A failed probe or check
+restores the snapshot. Each config write runs inside an exclusive window the
+gateway grants (``gateway suspend``) only when no run is in flight.
 
-    python3 claw_autoupdate.py [--openclaw PATH] [--state PATH] [--dry-run]
+    python3 claw_autoupdate.py [--openclaw PATH] [--state PATH] [--to CHAT] [--dry-run]
 
 It is two files on the host: this one and ``model_lines.py`` beside it.
 """
@@ -15,13 +16,14 @@ from __future__ import annotations
 
 import argparse
 import copy
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 from model_lines import (
     FAMILIES,
@@ -36,23 +38,25 @@ from model_lines import (
     held_notices,
     newer_in_line,
     read_catalogs,
-    run as real_run,
     split_held,
     version_text,
 )
+from model_lines import (
+    run as real_run,
+)
 
-#: The cron delivery suppresses a command whose whole output is this
-#: (OpenClaw docs/cli/cron.md, command jobs).
+#: How long a write waits for the gateway to grant an exclusive window. Never
+#: ``suspend --wait N>0``: the gateway refuses new work (the owner's messages)
+#: for the whole drain; a ``--wait 0`` poll holds nothing while it is busy.
+EXCLUSIVE_WAIT = 1200
+#: A restore waits less, then runs anyway: a half-applied switch is worse.
+RESTORE_WAIT = 120
+POLL_MIN = 10
+POLL_MAX = 60
+#: The cron delivery suppresses a command whose whole output is this.
 SILENT = "NO_REPLY"
-#: The status counts this runner's own cron run in ``cronRuns``.
-OWN_CRON_RUNS = 1
-#: Install the cron job with --timeout-seconds and --no-output-timeout-seconds
-#: of RUN_LIMIT: the runner prints only at the end. A promotion starts only when
-#: its worst case still fits.
-RUN_LIMIT = 1800
-SAFETY = 200
-IDLE_WAIT = 120
-IDLE_POLL = 15
+NO_WINDOW = "no hubo un momento sin corridas"
+TELEGRAM_TO = "6470689715"
 #: The gateway reloads its config after a patch; a read right after may still
 #: show the old one, so a check polls this long before calling it a failure.
 SETTLE_WAIT = 30
@@ -269,14 +273,10 @@ def mentions(node, ref):
     return False
 
 
-def is_idle(status):
-    work = (status.get("shutdownBudget") or {}).get("activeWork")
-    if not isinstance(work, dict):
-        return False
-    return (
-        all(count == 0 for key, count in work.items() if key != "cronRuns")
-        and work.get("cronRuns", 0) <= OWN_CRON_RUNS
-    )
+def poll_pause(retry_after_ms):
+    """Seconds to wait before asking for the window again, from the gateway's hint."""
+    seconds = (retry_after_ms or 0) / 1000 if isinstance(retry_after_ms, int) else 0
+    return max(POLL_MIN, min(POLL_MAX, seconds))
 
 
 def _first_json(text):
@@ -336,6 +336,10 @@ def turn_reply(doc):
 # Side effects -----------------------------------------------------------------
 
 
+class Busy(Exception):
+    """The gateway granted no exclusive window before the deadline; nothing written."""
+
+
 @dataclass(frozen=True)
 class Outcome:
     promotion: Promotion
@@ -380,19 +384,42 @@ class Gateway:
                 return live
             self.sleep(SETTLE_POLL)
 
-    def wait_idle(self):
-        deadline = self.clock() + IDLE_WAIT
+    @contextmanager
+    def exclusive(self, wait):
+        """Hold the gateway's suspension while the block runs; Busy if none by ``wait``.
+
+        ``suspend --wait 0`` either grants it at once (no run in flight) or
+        answers busy and holds nothing. The lease is always resumed, and it
+        expires on its own if this process dies first.
+        """
+        deadline = self.clock() + wait
         while True:
-            try:
-                if is_idle(
-                    self._json(["gateway", "call", "status", "--json"], READ_TIMEOUT)
-                ):
-                    return True
-            except (RuntimeError, ValueError):
-                pass
-            if self.clock() + IDLE_POLL > deadline:
-                return False
-            self.sleep(IDLE_POLL)
+            done = self.run(
+                [self.openclaw, "gateway", "suspend", "--wait", "0", "--json"],
+                READ_TIMEOUT,
+            )
+            doc = _first_json(done.out)
+            doc = doc if isinstance(doc, dict) else {}
+            if done.ok and doc.get("status") == "ready" and doc.get("suspensionId"):
+                break
+            if doc.get("status") != "busy":
+                raise RuntimeError(f"gateway suspend: {failure(done)}")
+            pause = poll_pause(doc.get("retryAfterMs"))
+            if self.clock() + pause > deadline:
+                raise Busy(NO_WINDOW)
+            self.sleep(pause)
+        suspension = doc["suspensionId"]
+        try:
+            yield
+        finally:
+            resumed = self.run(
+                [self.openclaw, "gateway", "resume", suspension, "--json"],
+                READ_TIMEOUT,
+            )
+            if not resumed.ok:
+                print(
+                    f"gateway resume {suspension}: {failure(resumed)}", file=sys.stderr
+                )
 
     def patch(self, patch, replace_paths, *, dry_run_first=True):
         """None once the patch is applied, else why not; an empty one is not sent.
@@ -510,44 +537,45 @@ def _verify(gateway, promotion, runtime):
     return None if ok else f"turno en {agent}: {why}"
 
 
-def worst_case(config, ref):
-    probes = max(1, len(efforts(config, ref)))
-    return (
-        3 * IDLE_WAIT
-        + 5 * READ_TIMEOUT
-        + SETTLE_WAIT
-        + 5 * PATCH_TIMEOUT
-        + (probes + 1) * (TURN_TIMEOUT + READ_TIMEOUT)
-    )
+def _write(gateway, target, wait, *, dry_run_first=True):
+    """Patch the live config into ``target(live)`` inside an exclusive window.
+
+    The live config is read inside the window, so the patch is computed against
+    what is there when it lands. None once applied, else why not.
+    """
+    with gateway.exclusive(wait):
+        live = gateway.config()
+        return gateway.patch(
+            *merge_patch(live, target(live)), dry_run_first=dry_run_first
+        )
 
 
-def promote(gateway, promotion, budget):
+def promote(gateway, promotion):
     old, new = promotion.old_ref, promotion.new_ref
 
     def outcome(status, detail=""):
         return Outcome(promotion, status, detail)
 
-    if not gateway.wait_idle():
-        return outcome("pendiente", "no hubo un momento sin corridas")
     snapshot = gateway.config()
-    if worst_case(snapshot, old) > budget():
-        return outcome("pendiente", "no cupo en el tiempo de esta corrida")
     runtime = runtime_of(snapshot, old)
     status = "no cambiado"
     try:
-        problem = gateway.patch(*merge_patch(snapshot, staged(snapshot, old, new)))
+        problem = _write(gateway, lambda live: staged(live, old, new), EXCLUSIVE_WAIT)
         if problem:
             problem = f"preparar: {problem}"
         else:
             problem = _probe(gateway, snapshot, old, new)
         if problem is None:
-            if not gateway.wait_idle():
-                # The staged ref is additive and harmless; the next run picks up here.
-                return outcome("pendiente", "no hubo un momento sin corridas")
             status = "revertido"
-            problem = gateway.patch(*rename_patch(gateway.config(), old, new))
+            problem = _write(
+                gateway, lambda live: renamed(live, old, new), EXCLUSIVE_WAIT
+            )
             if problem is None:
                 problem = _verify(gateway, promotion, runtime)
+    except Busy as busy:
+        # Before the staging nothing was written; after it, the staged ref is
+        # additive and harmless and the next run picks up from there.
+        return outcome("pendiente", str(busy))
     except Exception as error:  # noqa: BLE001 - the snapshot goes back first
         problem = f"{type(error).__name__}: {error}"
     if problem is None:
@@ -559,26 +587,31 @@ def _restore(gateway, snapshot):
     """Put ``snapshot`` back over the config live now; what to add to the notice.
 
     A patch that timed out may still have landed, so the restore is computed
-    from a fresh read, never from what the runner believes it wrote. It runs
-    even when the gateway stays busy: a half-applied switch is worse than a
-    cut run.
+    from a fresh read, never from what the runner believes it wrote. With no
+    window within RESTORE_WAIT it runs anyway: a half-applied switch is worse
+    than a cut run.
     """
-    idle = gateway.wait_idle()
+    note = ""
     try:
-        patch, replace = merge_patch(gateway.config(), snapshot)
-        failed = gateway.patch(patch, replace, dry_run_first=False)
+        try:
+            failed = _write(
+                gateway, lambda live: snapshot, RESTORE_WAIT, dry_run_first=False
+            )
+        except Busy:
+            patch, replace = merge_patch(gateway.config(), snapshot)
+            failed = gateway.patch(patch, replace, dry_run_first=False)
+            if patch:
+                note = "; restaure con corridas en curso, pude cortar alguna"
     except Exception as error:  # noqa: BLE001 - said in the notice
-        patch, failed = True, f"{type(error).__name__}: {error}"
+        failed = f"{type(error).__name__}: {error}"
     if failed:
         return f"; NO pude restaurar: {failed}"
-    if patch and not idle:
-        return "; restaure con corridas en curso, pude cortar alguna"
-    return ""
+    return note
 
 
-def _promote_or_say_why(gateway, promotion, budget):
+def _promote_or_say_why(gateway, promotion):
     try:
-        return promote(gateway, promotion, budget)
+        return promote(gateway, promotion)
     except Exception as error:  # noqa: BLE001 - nothing was written yet
         return Outcome(promotion, "no cambiado", f"{type(error).__name__}: {error}")
 
@@ -601,21 +634,17 @@ def report(outcomes, last):
     return lines + fresh_notices(remembered, last), remembered
 
 
-def autoupdate(gateway, view, last, *, started):
-    deadline = started + RUN_LIMIT - SAFETY
+def autoupdate(gateway, view, last):
     trying, kept = split_held(plan_claw(gateway.config(), view), last)
-    outcomes = [
-        _promote_or_say_why(gateway, promotion, lambda: deadline - gateway.clock())
-        for promotion in trying
-    ]
+    outcomes = [_promote_or_say_why(gateway, promotion) for promotion in trying]
     lines, remembered = report(outcomes, last)
     return lines, {**remembered, **kept}
 
 
-def said(gateway, view, last, *, started):
+def said(gateway, view, last):
     """``(lines, notices to remember)``; a crash is one notice, never a traceback."""
     try:
-        return autoupdate(gateway, view, last, started=started)
+        return autoupdate(gateway, view, last)
     except Exception as error:  # noqa: BLE001 - said once
         remembered = {
             **held_notices(last),
@@ -625,7 +654,6 @@ def said(gateway, view, last, *, started):
 
 
 def main():
-    started = time.monotonic()
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--openclaw", default="openclaw", help="openclaw CLI path")
@@ -649,7 +677,7 @@ def main():
                 f"{promotion.old_ref} -> {promotion.new_ref} ({', '.join(promotion.places)})"
             )
         return 0
-    lines, remembered = said(gateway, view, state.get("notices", {}), started=started)
+    lines, remembered = said(gateway, view, state.get("notices", {}))
     if lines:
         print("\n".join([f"Claw: modelos {time.strftime('%Y-%m-%d')}", *lines]))
     else:
