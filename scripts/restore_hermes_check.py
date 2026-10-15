@@ -33,17 +33,21 @@ class DrillError(Exception):
 
 def extract(archive, target):
     """Only plain files with relative names inside target; anything else fails."""
+    inside = target.resolve()
     with tarfile.open(archive) as tar:
         for member in tar:
             name = PurePosixPath(member.name)
+            destination = target.joinpath(*name.parts)
+            # Windows also splits on a backslash, so "..\x" would climb out.
             if (
                 not member.isfile()
                 or name.is_absolute()
                 or ".." in name.parts
                 or ":" in member.name
+                or "\\" in member.name
+                or not destination.resolve().is_relative_to(inside)
             ):
                 raise DrillError(f"entrada insegura en el archivo: {member.name}")
-            destination = target.joinpath(*name.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             with tar.extractfile(member) as source, destination.open("wb") as copy:
                 shutil.copyfileobj(source, copy)

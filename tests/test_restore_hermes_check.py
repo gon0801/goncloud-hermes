@@ -189,6 +189,41 @@ class RestoreDrillTest(unittest.TestCase):
         self.assertFalse((self.base / "fuera.txt").exists())
         self.assertEqual(list(self.workdir.iterdir()), [])
 
+    def test_a_backslash_entry_that_would_climb_out_on_windows_stops_the_drill(self):
+        self.archive.parent.mkdir(parents=True)
+        with tarfile.open(self.archive, "w:gz") as tar:
+            info = tarfile.TarInfo("..\\fuera.txt")
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+
+        code, line = self.drill()
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                f"ERROR restauracion de prueba {ARCHIVE}: entrada insegura en el "
+                "archivo: ..\\fuera.txt\n",
+            ),
+        )
+
+    @unittest.skipIf(os.name == "nt", "symlinks need developer mode on Windows")
+    def test_an_entry_that_resolves_outside_the_target_is_refused(self):
+        target = self.base / "destino"
+        target.mkdir()
+        (target / "atajo").symlink_to(self.base, target_is_directory=True)
+        self.archive.parent.mkdir(parents=True)
+        with tarfile.open(self.archive, "w:gz") as tar:
+            info = tarfile.TarInfo("atajo/fuera.txt")
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+
+        with self.assertRaisesRegex(
+            restore_hermes_check.DrillError, "entrada insegura en el archivo: atajo/"
+        ):
+            restore_hermes_check.extract(self.archive, target)
+        self.assertFalse((self.base / "fuera.txt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
