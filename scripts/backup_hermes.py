@@ -2,8 +2,9 @@
 
 Empaqueta el home de Hermes (menos lo que reinstalar recrea) y los logins de
 las CLIs del enrutador en hermes-backup-YYYYMMDD.tar.gz, lo sube a gonserver
-y conserva los 2 archivos locales mas nuevos. Imprime una linea: "OK ..." o
-"ERROR ..." con salida 1; el cron de Hermes entrega esa linea al propietario.
+y conserva los 2 archivos locales mas nuevos. Si todo sale bien no imprime
+nada; si algo falla imprime una sola linea "ERROR ..." y sale con 1, y el cron
+de Hermes entrega esa linea al propietario por Telegram.
 """
 
 from __future__ import annotations
@@ -418,12 +419,8 @@ class Settings:
     retry_wait: float = 30
 
 
-def _megabytes(size):
-    return f"{size / 1_000_000:.0f} MB"
-
-
 def run(settings):
-    """Build, keep and upload one archive; return the OK line."""
+    """Build, keep and upload one archive."""
     deadline = time.monotonic() + settings.budget
     today = settings.today or datetime.date.today()
     out_dir = settings.out_dir
@@ -453,16 +450,11 @@ def run(settings):
         upload(archive, digest, settings, deadline)
     except BackupError as error:
         raise BackupError(f"{error}; copia local en {archive}") from error
-    databases = sum(1 for entry in manifest["files"] if entry["sqlite"])
-    line = (
-        f"OK respaldo Hermes {archive.name}: {_megabytes(archive.stat().st_size)}, "
-        f"{len(manifest['files'])} archivos, {databases} bases, "
-        f"subido a {settings.server} (sha256 {digest[:12]})"
-    )
     unreadable = manifest["unreadable"]
     if unreadable:
-        line += f"; AVISO {len(unreadable)} sin leer, p. ej. {unreadable[0]['path']}"
-    return line
+        raise BackupError(
+            f"subido, pero {len(unreadable)} sin leer, p. ej. {unreadable[0]['path']}"
+        )
 
 
 def default_home(script):
@@ -519,7 +511,7 @@ def parse_settings(argv):
 
 def main(argv=None, settings=None):
     try:
-        print(run(settings or parse_settings(argv)))
+        run(settings or parse_settings(argv))
     except BackupError as error:
         print(f"ERROR respaldo Hermes: {error}")
         return 1

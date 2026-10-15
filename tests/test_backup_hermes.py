@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import os
 import sqlite3
 import tarfile
 import tempfile
@@ -180,14 +181,7 @@ class BackupTest(unittest.TestCase):
         code, line = self.backup(receiver)
 
         archive = self.out / ARCHIVE
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        self.assertEqual(code, 0)
-        size = f"{archive.stat().st_size / 1_000_000:.0f} MB"
-        self.assertEqual(
-            line,
-            f"OK respaldo Hermes {ARCHIVE}: {size}, 18 archivos, 2 bases, "
-            f"subido a clawbackup@10.13.13.1 (sha256 {digest[:12]})\n",
-        )
+        self.assertEqual((code, line), (0, ""))
         self.assertEqual(
             (receiver / "received" / ARCHIVE).read_bytes(), archive.read_bytes()
         )
@@ -231,6 +225,26 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(len(calls(receiver)), 3)
         self.assertEqual(sorted(path.name for path in self.out.iterdir()), [ARCHIVE])
         self.assertEqual(manifest(archive)["format"], 1)
+
+    @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
+    def test_an_unreadable_file_is_uploaded_around_and_fails_the_run(self):
+        login = self.home / "auth.json"
+        login.chmod(0)
+        self.addCleanup(login.chmod, 0o600)
+        receiver = make_receiver(self.base)
+
+        code, line = self.backup(receiver)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            line,
+            "ERROR respaldo Hermes: subido, pero 1 sin leer, p. ej. home/auth.json\n",
+        )
+        self.assertEqual(len(calls(receiver)), 1)
+        self.assertEqual(
+            manifest(self.out / ARCHIVE)["unreadable"],
+            [{"path": "home/auth.json", "error": "Permission denied"}],
+        )
 
     def test_a_wrong_remote_checksum_counts_as_a_failed_upload(self):
         code, line = self.backup(make_receiver(self.base, mode="badsum"))

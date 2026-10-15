@@ -53,7 +53,7 @@ Rollback: vuelve a una revision anterior del repo y reaplica `configure_team.py 
 
 ## Respaldo y reinstalacion
 
-`scripts/backup_hermes.py` respalda todo lo necesario para reinstalar Hermes en otra PC. Corre cada dia a las 03:00 como trabajo `no_agent` del director y deja `hermes-backup-YYYYMMDD.tar.gz` en dos lugares: `%LOCALAPPDATA%\hermes-respaldo\` (los 2 mas nuevos) y gonserver `/mnt/data/backups/hermes/` (los 7 mas nuevos, receptor `recibe-respaldo hermes`). Imprime una sola linea y el cron la entrega por Telegram: `OK respaldo Hermes ...` con tamano, archivos, bases y sha256, o `ERROR respaldo Hermes: ...` con salida 1. En gonserver, `vigila-respaldos` avisa si el ultimo tiene mas de 36 h o pesa menos de la mitad que el anterior.
+`scripts/backup_hermes.py` respalda todo lo necesario para reinstalar Hermes en otra PC. Corre cada dia a las 03:00 como trabajo `no_agent` del director y deja `hermes-backup-YYYYMMDD.tar.gz` en dos lugares: `%LOCALAPPDATA%\hermes-respaldo\` (los 2 mas nuevos) y gonserver `/mnt/data/backups/hermes/` (los 7 mas nuevos, receptor `recibe-respaldo hermes`). Si todo sale bien no imprime nada y el cron no manda mensaje. Si algo falla imprime una sola linea `ERROR respaldo Hermes: ...`, sale con 1 y el cron la entrega por Telegram. Si la corrida no llega a imprimir nada (la PC apagada o el cron muerto), lo detecta gonserver: `vigila-respaldos` avisa si el ultimo tiene mas de 36 h o pesa menos de la mitad que el anterior.
 
 Que entra. Todo el home `%LOCALAPPDATA%\hermes` (los perfiles, `config.yaml`, `.env`, `auth.json`, `subscription-router.env`, `kanban.db`, memorias, skills, crons, `backup-key`) menos lo que el instalador o el uso recrean: `hermes-agent`, `tools`, `installs`, `node`, `bin`, caches, logs, copias viejas (`backups`, `recovery-backups`, `state-snapshots`), candados y pids, y la cache y los logs de cada perfil. Tambien entran, si existen, los logins de las CLIs del enrutador en `%USERPROFILE%`: `.claude`, `.claude.json`, `.codex`, `.grok`, `.kimi`, `.config\opencode`, `.local\share\opencode`, `AppData\Roaming\himalaya`, `.gitconfig` y `.ssh`, sin historiales de sesiones ni `node_modules`. La tabla `RULES` del script es la lista completa con la razon de cada omision, y el `manifest.json` del archivo repite que se omitio y por que. Cada SQLite (reconocido por su encabezado, no por la extension) se copia con la API de backup en linea, asi que entra lo que todavia esta en el WAL, y la copia debe pasar `integrity_check` o el respaldo aborta sin subir nada. El login de Muse vive dentro de WSL y no entra.
 
@@ -67,10 +67,10 @@ La subida usa la llave existente `%LOCALAPPDATA%\hermes\backup-key` (`id_ed25519
 hermes -p claw cron list                  # anota el id de respaldo-semanal-claw
 hermes -p claw cron remove <id>
 hermes -p claw cron create "0 3 * * *" --name respaldo-diario-hermes --script backup_hermes.py --no-agent --deliver telegram
-hermes -p claw cron run <id-del-nuevo>    # primera corrida ahora; debe llegar la linea OK
+hermes -p claw cron run <id-del-nuevo>    # primera corrida ahora; no debe llegar ningun ERROR
 ```
 
-Despues de la primera linea OK puedes borrar `profiles\claw\scripts\backup-claw.sh` y `%LOCALAPPDATA%\hermes\scripts\backup-claw.sh`.
+Cuando la primera corrida termine sin ERROR y el archivo aparezca en gonserver, puedes borrar `profiles\claw\scripts\backup-claw.sh` y `%LOCALAPPDATA%\hermes\scripts\backup-claw.sh`.
 
 ### Simulacro de restauracion
 
