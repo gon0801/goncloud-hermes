@@ -313,6 +313,22 @@ class UndoneTests(unittest.TestCase):
             CONFIG,
         )
 
+    def test_a_provider_with_several_rows_keeps_their_order(self):
+        config = copy.deepcopy(CONFIG)
+        rows = config["models"]["providers"]["xai"]["models"]
+        rows.append({"id": "grok-3", "name": "Grok 3"})
+        stage = claw_autoupdate.staged(config, self.OLD, self.NEW)
+        done = claw_autoupdate.renamed(stage, self.OLD, self.NEW)
+        done["models"]["providers"]["xai"]["models"][0]["contextWindow"] = 1
+
+        self.assertEqual(
+            [row["id"] for row in done["models"]["providers"]["xai"]["models"]],
+            ["grok-4.8", "grok-3"],
+        )
+        self.assertEqual(
+            claw_autoupdate.undone(done, config, self.OLD, self.NEW), config
+        )
+
 
 class FailureDetailTests(unittest.TestCase):
     def test_the_json_error_message_beats_the_closing_brace(self):

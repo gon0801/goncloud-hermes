@@ -152,7 +152,8 @@ def staged(config, old_ref, new_ref):
     if rows is not None and not any(row.get("id") == new_id for row in rows):
         old_row = next((row for row in rows if row.get("id") == old_id), None)
         if old_row is not None:
-            rows.append(_cloned_row(old_row, old_id, new_id))
+            # Beside the old row, so the rename leaves the new one in its place.
+            rows.insert(rows.index(old_row) + 1, _cloned_row(old_row, old_id, new_id))
     defaults = (result.get("agents") or {}).get("defaults") or {}
     allow = (defaults.get("modelPolicy") or {}).get("allow")
     if isinstance(allow, list) and old_ref in allow and new_ref not in allow:
