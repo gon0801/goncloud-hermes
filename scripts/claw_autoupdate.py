@@ -61,6 +61,7 @@ READ_TIMEOUT = 30
 PATCH_TIMEOUT = 60
 TURN_TIMEOUT = 180
 PROBE_AGENT = "skillverif"
+REASON = "[openclaw] Reason:"
 _MISSING = object()
 
 
@@ -276,6 +277,39 @@ def is_idle(status):
     )
 
 
+def _first_json(text):
+    """The JSON value at the start of ``text``; openclaw may print lines after it."""
+    try:
+        return json.JSONDecoder().raw_decode((text or "").lstrip())[0]
+    except ValueError:
+        return None
+
+
+def reported_error(done, limit=200):
+    """The error openclaw reported, on one line: its JSON ``error.message`` on
+    stdout, else its ``[openclaw] Reason:`` line; None when it gave neither."""
+    doc = _first_json(done.out)
+    error = doc.get("error") if isinstance(doc, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        reasons = [
+            line.split(REASON, 1)[1]
+            for line in (done.err + "\n" + done.out).splitlines()
+            if REASON in line
+        ]
+        message = reasons[-1] if reasons else ""
+    return " ".join(message.split())[:limit] or None
+
+
+def failure(done):
+    """Why an openclaw command failed, for a notice.
+
+    Its JSON is pretty-printed, so the last line of its output alone says
+    nothing (``}``); the exit and last line are only the fallback.
+    """
+    return reported_error(done) or done.why()
+
+
 def _last_word(text):
     lines = [line.strip(" .!\t").upper() for line in (text or "").splitlines()]
     return next((line for line in reversed(lines) if line), "")
@@ -319,7 +353,7 @@ class Gateway:
     def _json(self, argv, timeout):
         done = self.run([self.openclaw, *argv], timeout)
         if not done.ok:
-            raise RuntimeError(f"{' '.join(argv[:3])}: {done.why()}")
+            raise RuntimeError(f"{' '.join(argv[:3])}: {failure(done)}")
         return json.loads(done.out)
 
     def config(self):
@@ -366,9 +400,9 @@ class Gateway:
             if dry_run_first:
                 checked = self.run([*argv, "--dry-run", "--json"], PATCH_TIMEOUT)
                 if not checked.ok:
-                    return f"config patch --dry-run: {checked.why()}"
+                    return f"config patch --dry-run: {failure(checked)}"
             done = self.run(argv, PATCH_TIMEOUT)
-            return None if done.ok else f"config patch: {done.why()}"
+            return None if done.ok else f"config patch: {failure(done)}"
 
     def turn(self, agent, ref, *, thinking=None, purpose="probe"):
         """``(ok, why, winner provider)`` of one real agent turn on ``ref``.
@@ -396,7 +430,7 @@ class Gateway:
             [self.openclaw, "sessions", "delete", "--yes", "--json", key], READ_TIMEOUT
         )
         if not done.ok:
-            return False, done.why(), None
+            return False, failure(done), None
         try:
             text, winner = turn_reply(json.loads(done.out))
         except (ValueError, AttributeError):
@@ -424,14 +458,14 @@ class Gateway:
             argv += ["--thinking", thinking]
         done = self.run(argv, TURN_TIMEOUT)
         if not done.ok:
-            return False, done.why()
+            return False, failure(done)
         try:
             doc = json.loads(done.out)
             text = (doc.get("outputs") or [{}])[0].get("text")
         except (ValueError, AttributeError, IndexError):
             return False, "respuesta no es JSON"
         if doc.get("ok") is not True or _last_word(text) != "OK":
-            return False, "no dijo OK"
+            return False, reported_error(done) or "no dijo OK"
         return True, ""
 
 

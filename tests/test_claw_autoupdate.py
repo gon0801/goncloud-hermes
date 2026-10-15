@@ -259,6 +259,49 @@ class RenamePatchTests(unittest.TestCase):
         )
 
 
+#: What ``openclaw infer model run --json`` printed live (2026-10-15) for a ref
+#: the gateway did not know: pretty JSON on stdout, the reason on stderr.
+UNKNOWN_MODEL = Ran(
+    1,
+    json.dumps(
+        {
+            "ok": False,
+            "error": {
+                "type": "cli_error",
+                "message": "Unknown model: xai/grok-4.8",
+            },
+        },
+        indent=2,
+    )
+    + "\n",
+    "[openclaw] Error: infer\n[openclaw] Reason: model run failed\n",
+)
+
+
+class FailureDetailTests(unittest.TestCase):
+    def test_the_json_error_message_beats_the_closing_brace(self):
+        self.assertEqual(
+            claw_autoupdate.failure(UNKNOWN_MODEL), "Unknown model: xai/grok-4.8"
+        )
+
+    def test_without_json_the_reason_line_is_used(self):
+        done = Ran(1, "", "[openclaw] Error\n[openclaw] Reason: quota exhausted\n")
+
+        self.assertEqual(claw_autoupdate.failure(done), "quota exhausted")
+
+    def test_without_either_the_exit_and_last_line_are_used(self):
+        self.assertEqual(
+            claw_autoupdate.failure(Ran(2, "", "boom\n")), "salida 2: boom"
+        )
+
+    def test_a_long_message_is_one_bounded_line(self):
+        doc = {"ok": False, "error": {"message": "a\nb " + "x" * 300}}
+
+        detail = claw_autoupdate.failure(Ran(1, json.dumps(doc), ""))
+
+        self.assertEqual(detail, ("a b " + "x" * 300)[:200])
+
+
 class IdleTests(unittest.TestCase):
     def test_only_this_runner_s_own_cron_run_may_be_in_flight(self):
         def status(**work):
@@ -437,6 +480,13 @@ class RunnerTests(unittest.TestCase):
             [kind for kind in fake.calls if kind in ("patch", "infer xai/grok-4.8")],
             ["patch", "infer xai/grok-4.8", "patch"],
         )
+
+    def test_a_probe_failure_notice_quotes_the_error_openclaw_gave(self):
+        fake = FakeGateway(CONFIG, {"infer xai/grok-4.8": UNKNOWN_MODEL})
+
+        outcome = self.go(fake)
+
+        self.assertEqual(outcome.detail, "sonda (high): Unknown model: xai/grok-4.8")
 
     def test_a_failed_check_after_the_rename_restores_the_snapshot(self):
         fake = FakeGateway(
