@@ -135,7 +135,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.goncloud.claw-autoupd
 
 ## Modelos escritos a mano fuera de la tabla
 
-Lanzadores, agentes de cada CLI y scripts fijan modelos que la tabla no gobierna. `pinned-files.json` lista esos archivos (hoy, los de la Mac del propietario) y `scripts/pinned_models.py` los revisa: dice que modelo fija cada uno, en que linea, y si sigue en los catalogos publicos (`ok`, `deprecated`, `not in the catalogs`). Con `--write` guarda la lista en `scripts/pinned-models.json`, que el instalador entrega junto al vigia; asi el vigia tambien avisa cuando uno de esos modelos desaparece. No cambia ningun archivo ajeno.
+Lanzadores, agentes de cada CLI y scripts fijan modelos que la tabla no gobierna. `pinned-files.json` lista esos archivos (hoy, los de la Mac del propietario) y `scripts/pinned_models.py` los revisa: dice que modelo fija cada uno, en que linea, y si sigue en los catalogos publicos (`ok`, `deprecated`, `not in the catalogs`). Un modelo Kimi se reconoce como en el router: `k` y un numero, con o sin contexto (`k3`, `k4`, `kimi/k4`, `k3-256k`); `k8s`, `4k` o `k10s` no cuentan. Con `--write` guarda la lista en `scripts/pinned-models.json`, que el instalador entrega junto al vigia; asi el vigia tambien avisa cuando uno de esos modelos desaparece. No cambia ningun archivo ajeno.
 
 ```bash
 python3 scripts/pinned_models.py            # reporte

@@ -52,6 +52,16 @@ class FindTests(unittest.TestCase):
 
         self.assertEqual(module.find_ids(text), [])
 
+    def test_kimi_is_k_with_any_number_as_the_router_binds_it(self):
+        text = "model = k4\nkimi/k4 or k3-256k, k12\n"
+
+        self.assertEqual(
+            module.find_ids(text), [(1, "k4"), (2, "k4"), (2, "k3-256k"), (2, "k12")]
+        )
+
+    def test_words_that_merely_hold_a_k_and_a_number_are_not_kimi(self):
+        self.assertEqual(module.find_ids('k8s 4k kubectl "k10s" k3x ok4'), [])
+
     def test_a_context_suffix_is_not_part_of_the_id(self):
         self.assertEqual(
             module.find_ids('X = "deepseek-flash[1m]"'), [(1, "deepseek-flash")]
