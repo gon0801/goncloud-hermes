@@ -33,7 +33,7 @@ _MODEL = re.compile(
       | glm-\d[\w.-]*
       | kimi-k\d[\w.-]*
       | kimi-for-coding
-      | k3(?:-\d+k)?
+      | k\d+(?:-\d+k)?
       | deepseek-(?:v\d|flash|pro|chat|reasoner)[\w.-]*
       | muse-(?:spark|wonder|glimmer)-[\w.-]*
     )(?![\w-])""",

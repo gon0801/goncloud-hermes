@@ -65,6 +65,9 @@ WINDOW_POLL = 300
 SUSPEND_TIMEOUT_MS = "30000"
 SUSPEND_RUN_TIMEOUT = 45
 NO_WINDOW = "no hubo un momento sin corridas"
+#: Why the promotions after one that found no window are not tried this run:
+#: each would wait EXCLUSIVE_WAIT again, stretching the run into the morning.
+STILL_BUSY = "el gateway siguio ocupado; queda para la siguiente corrida"
 #: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
 SEND_TIMEOUT = 60
@@ -149,7 +152,8 @@ def staged(config, old_ref, new_ref):
     if rows is not None and not any(row.get("id") == new_id for row in rows):
         old_row = next((row for row in rows if row.get("id") == old_id), None)
         if old_row is not None:
-            rows.append(_cloned_row(old_row, old_id, new_id))
+            # Beside the old row, so the rename leaves the new one in its place.
+            rows.insert(rows.index(old_row) + 1, _cloned_row(old_row, old_id, new_id))
     defaults = (result.get("agents") or {}).get("defaults") or {}
     allow = (defaults.get("modelPolicy") or {}).get("allow")
     if isinstance(allow, list) and old_ref in allow and new_ref not in allow:
@@ -254,8 +258,11 @@ def undone(live, snapshot, old_ref, new_ref):
     to the snapshot; one only another writer changed keeps their value, and
     one both changed keeps theirs too (theirs is the later write). Where both
     changed an array, ``new_ref`` turns back into ``old_ref`` in it and the
-    staged copy goes. None when that cannot be told apart: the snapshot already
-    had ``new_ref`` in that array, or the ref sat inside a nested value.
+    staged copy goes. A ``new_ref`` key the snapshot lacked in a per-model
+    settings map goes even when another writer edited it: nothing refers to
+    ``new_ref`` afterwards. None when that cannot be told apart (the snapshot
+    already had ``new_ref`` in that array, or the ref sat inside a nested
+    value), or when another writer made something else refer to ``new_ref``.
     """
     stage = staged(snapshot, old_ref, new_ref)
     written = (stage, renamed(stage, old_ref, new_ref))
@@ -318,9 +325,13 @@ def undone(live, snapshot, old_ref, new_ref):
         return trimmed
 
     try:
-        result = undo(live, snapshot, written, ())
+        result = copy.deepcopy(undo(live, snapshot, written, ()))
     except _Tangled:
         return None
+    # Settings another writer gave new_ref would outlive every ref to it.
+    for table, before in _settings_tables(result, snapshot):
+        if new_ref not in before:
+            table.pop(new_ref, None)
     # Another writer pointed something at new_ref meanwhile: keeping it would
     # leave a ref whose row and allow entry this restore just took away.
     if mentions(outside_rows(result), new_ref) and not mentions(
@@ -328,6 +339,46 @@ def undone(live, snapshot, old_ref, new_ref):
     ):
         return None
     return result
+
+
+def edited_new_row(live, snapshot, old_ref, new_ref):
+    """The new id when the live provider row for ``new_ref`` is not the clone
+    this runner wrote (another writer edited it), else None."""
+    provider, _, old_id = old_ref.partition("/")
+    new_id = new_ref.partition("/")[2]
+    old_row = next(
+        (
+            row
+            for row in _provider_rows(snapshot, provider) or []
+            if row.get("id") == old_id
+        ),
+        None,
+    )
+    ours = _cloned_row(old_row, old_id, new_id) if old_row is not None else None
+    for row in _provider_rows(live, provider) or []:
+        if isinstance(row, dict) and row.get("id") == new_id and row != ours:
+            return new_id
+    return None
+
+
+def _settings_tables(config, snapshot):
+    """``(per-model settings map, the snapshot's same map or {})`` for
+    ``agents.defaults.models`` and each ``agents.entries.*.models``."""
+    agents, before = config.get("agents") or {}, snapshot.get("agents") or {}
+    pairs = [
+        (
+            (agents.get("defaults") or {}).get("models"),
+            (before.get("defaults") or {}).get("models"),
+        )
+    ]
+    for name, entry in (agents.get("entries") or {}).items():
+        old_entry = (before.get("entries") or {}).get(name) or {}
+        pairs.append(((entry or {}).get("models"), old_entry.get("models")))
+    return [
+        (table, old if isinstance(old, dict) else {})
+        for table, old in pairs
+        if isinstance(table, dict)
+    ]
 
 
 def rename_patch(config, old_ref, new_ref):
@@ -706,10 +757,10 @@ def promote(gateway, promotion):
             )
             if problem is None:
                 problem = _verify(gateway, promotion, runtime)
-    except Busy as busy:
+    except Busy:
         # Before the staging nothing was written; after it, the staged ref is
         # additive and harmless and the next run picks up from there.
-        return outcome("pendiente", str(busy))
+        return outcome("pendiente", NO_WINDOW)
     except Exception as error:  # noqa: BLE001 - the snapshot goes back first
         problem = f"{type(error).__name__}: {error}"
     if problem is None:
@@ -724,17 +775,22 @@ def _restore(gateway, snapshot, old_ref, new_ref):
     A patch that timed out may still have landed, so the restore is computed
     from a fresh read, never from what the runner believes it wrote, and it
     keeps what another writer changed meanwhile. When the two cannot be told
-    apart the whole snapshot goes back, and the notice says so. With no window
+    apart the whole snapshot goes back, and the notice says so. The new
+    provider row is this runner's own, so it goes even when another writer
+    edited it, and the notice says that too. With no window
     within RESTORE_WAIT it runs anyway: a half-applied switch is worse than a
     cut run.
     """
-    whole = []
+    whole, edited = [], []
 
     def target(live):
         restored = undone(live, snapshot, old_ref, new_ref)
         if restored is None:
             whole.append(True)
             return snapshot
+        row = edited_new_row(live, snapshot, old_ref, new_ref)
+        if row:
+            edited.append(row)
         return restored
 
     note = ""
@@ -753,6 +809,8 @@ def _restore(gateway, snapshot, old_ref, new_ref):
         return f"; NO pude restaurar: {failed}"
     if whole:
         note += "; restaure la config entera de antes, pude borrar cambios ajenos"
+    if edited:
+        note += f"; la fila {edited[0]} tenia cambios ajenos y se quito"
     return note
 
 
@@ -783,7 +841,12 @@ def report(outcomes, last):
 
 def autoupdate(gateway, view, last):
     trying, kept = split_held(plan_claw(gateway.config(), view), last)
-    outcomes = [_promote_or_say_why(gateway, promotion) for promotion in trying]
+    outcomes = []
+    for promotion in trying:
+        if any(outcome.detail == NO_WINDOW for outcome in outcomes):
+            outcomes.append(Outcome(promotion, "pendiente", STILL_BUSY))
+        else:
+            outcomes.append(_promote_or_say_why(gateway, promotion))
     lines, remembered = report(outcomes, last)
     return lines, {**remembered, **kept}
 

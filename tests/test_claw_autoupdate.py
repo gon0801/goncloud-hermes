@@ -313,6 +313,22 @@ class UndoneTests(unittest.TestCase):
             CONFIG,
         )
 
+    def test_a_provider_with_several_rows_keeps_their_order(self):
+        config = copy.deepcopy(CONFIG)
+        rows = config["models"]["providers"]["xai"]["models"]
+        rows.append({"id": "grok-3", "name": "Grok 3"})
+        stage = claw_autoupdate.staged(config, self.OLD, self.NEW)
+        done = claw_autoupdate.renamed(stage, self.OLD, self.NEW)
+        done["models"]["providers"]["xai"]["models"][0]["contextWindow"] = 1
+
+        self.assertEqual(
+            [row["id"] for row in done["models"]["providers"]["xai"]["models"]],
+            ["grok-4.8", "grok-3"],
+        )
+        self.assertEqual(
+            claw_autoupdate.undone(done, config, self.OLD, self.NEW), config
+        )
+
 
 class FailureDetailTests(unittest.TestCase):
     def test_the_json_error_message_beats_the_closing_brace(self):
@@ -883,6 +899,75 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(fake.config, expected)
                     self.assertNotIn("config entera", outcome.detail)
 
+    def test_settings_another_writer_gave_the_new_ref_go_with_it(self):
+        def unrelated(c):
+            c["models"]["providers"]["xai"]["baseUrl"] = "https://api.x.ai/v2"
+
+        def thinking(table):
+            def edit(c):
+                unrelated(c)
+                place = c["agents"]["defaults" if table == "defaults" else "entries"]
+                models = (place if table == "defaults" else place[table]).setdefault(
+                    "models", {}
+                )
+                models.setdefault("xai/grok-4.8", {})["params"] = {"thinking": "low"}
+
+            return edit
+
+        failing = {
+            "probe": ("infer xai/grok-4.8", Ran(1, "", "model not found")),
+            "verify": ("agent skillverif verify", turn("Error de proveedor", "xai")),
+        }
+        # skillverif had no settings map: the one another writer made stays, empty.
+        for table, left in (
+            ("defaults", {}),
+            ("main", {}),
+            ("skillverif", {"models": {}}),
+        ):
+            for stage, (kind, answer) in failing.items():
+                with self.subTest(table, during=stage):
+                    fake = FakeGateway(
+                        CONFIG, {kind: answer}, meddle={kind: thinking(table)}
+                    )
+
+                    outcome = self.go(fake)
+
+                    expected = copy.deepcopy(CONFIG)
+                    unrelated(expected)
+                    expected["agents"]["entries"]["skillverif"].update(left)
+                    self.assertEqual(fake.config, expected)
+                    self.assertNotIn("config entera", outcome.detail)
+
+    def test_an_edit_to_the_new_row_goes_with_it_and_the_notice_says_so(self):
+        def wider(c):
+            for row in c["models"]["providers"]["xai"]["models"]:
+                if row["id"] == "grok-4.8":
+                    row["contextWindow"] = 1000000
+
+        failing = {
+            "probe": (
+                "infer xai/grok-4.8",
+                Ran(1, "", "model not found"),
+                "sonda (high): salida 1: model not found",
+            ),
+            "verify": (
+                "agent skillverif verify",
+                turn("Error de proveedor", "xai"),
+                "turno en skillverif: no dijo PONG",
+            ),
+        }
+        for stage, (kind, answer, why) in failing.items():
+            with self.subTest(during=stage):
+                fake = FakeGateway(CONFIG, {kind: answer}, meddle={kind: wider})
+
+                outcome = self.go(fake)
+
+                self.assertEqual(fake.config, CONFIG)
+                self.assertEqual(
+                    outcome.detail,
+                    why + "; la fila grok-4.8 tenia cambios ajenos y se quito",
+                )
+
     def test_a_restore_it_cannot_tell_apart_puts_the_whole_snapshot_back(self):
         # A busy run left the staging, so the allowlist already had both refs:
         # after the rename and another writer's entry, no rule says which is ours.
@@ -1027,6 +1112,46 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(again, [])
         self.assertEqual(
             remembered["revertido:xai/grok-4.7 -> xai/grok-4.8"], "- Revertido: ..."
+        )
+
+
+class BusyRunTests(unittest.TestCase):
+    def test_once_no_window_came_the_rest_of_the_run_waits_without_asking(self):
+        fake = FakeGateway(CONFIG, busy_polls=10**9)
+
+        lines, _ = claw_autoupdate.autoupdate(fake.gateway(), VIEW, {})
+
+        self.assertEqual(
+            lines,
+            [
+                "- Pendiente: opencode-go/deepseek-v4.1-flash -> "
+                "opencode-go/deepseek-v4.2-flash (no hubo un momento sin corridas).",
+                "- Pendiente: xai/grok-4.7 -> xai/grok-4.8 (el gateway siguio "
+                "ocupado; queda para la siguiente corrida).",
+                "- Pendiente: anthropic/claude-opus-5-5 -> anthropic/claude-opus-6 "
+                "(el gateway siguio ocupado; queda para la siguiente corrida).",
+            ],
+        )
+        self.assertEqual(fake.asked_at, list(range(0, 2401, 300)))
+        self.assertEqual(fake.config, CONFIG)
+
+    def test_a_failed_probe_does_not_stop_the_next_promotion(self):
+        fake = FakeGateway(
+            CONFIG,
+            {"infer opencode-go/deepseek-v4.2-flash": Ran(1, "", "quota")},
+        )
+        view = {"opencode-go": VIEW["opencode-go"], "xai": VIEW["xai"]}
+
+        lines, _ = claw_autoupdate.autoupdate(fake.gateway(), view, {})
+
+        self.assertEqual(
+            lines,
+            [
+                "- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en defaults, main, "
+                "skillverif.",
+                "- No cambiado: opencode-go/deepseek-v4.1-flash -> "
+                "opencode-go/deepseek-v4.2-flash (sonda: salida 1: quota).",
+            ],
         )
 
 
