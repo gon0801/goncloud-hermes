@@ -1,10 +1,12 @@
 import ast
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -211,6 +213,32 @@ class RanTests(unittest.TestCase):
         while alive(grandchild) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertFalse(alive(grandchild), "the grandchild outlived the timeout")
+
+    def test_an_interrupt_kills_and_reaps_the_child(self):
+        started = []
+
+        class Interrupted(subprocess.Popen):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                started.append(self)
+
+            def communicate(self, *args, **kwargs):
+                if self is started[0]:
+                    raise KeyboardInterrupt
+                return super().communicate(*args, **kwargs)
+
+        with mock.patch.object(model_lines.subprocess, "Popen", Interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                model_lines.run(
+                    [sys.executable, "-c", "import time; time.sleep(30)"], 30
+                )
+
+        child = started[0]
+        child.stdout.close()
+        child.stderr.close()
+        self.assertEqual(
+            child.returncode, 1 if os.name == "nt" else -signal.SIGKILL, "reaped"
+        )
 
 
 def alive(pid):

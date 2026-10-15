@@ -215,7 +215,7 @@ class Ran:
 Run = Callable[[Sequence[str], float], Ran]
 
 
-#: After a timeout, how long the killed tree gets to close its pipes.
+#: After a timeout or an interrupt, how long the killed tree gets to exit.
 REAP_TIMEOUT = 10
 
 
@@ -250,6 +250,10 @@ def run(argv: Sequence[str], timeout: float) -> Ran:
         return Ran(None, "", f"sin respuesta tras {int(timeout)} s")
     except BaseException:
         _kill_tree(child)
+        try:
+            child.wait(timeout=REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            pass
         raise
     return Ran(child.returncode, out, err)
 
