@@ -2,9 +2,11 @@ import contextlib
 import hashlib
 import os
 import sqlite3
+import stat
 import tarfile
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -514,6 +516,21 @@ class BackupTest(unittest.TestCase):
                 "\\\\?\\C:\\ya\\tiene",
                 "relativa\\a.txt",
             ],
+        )
+
+    def test_a_junction_is_recognized_without_is_junction(self):
+        def entry(attributes):
+            status = types.SimpleNamespace(st_file_attributes=attributes)
+            return types.SimpleNamespace(
+                is_symlink=lambda: False, stat=lambda follow_symlinks: status
+            )
+
+        self.assertEqual(
+            [
+                backup_hermes._is_link(entry(stat.FILE_ATTRIBUTE_REPARSE_POINT)),
+                backup_hermes._is_link(entry(stat.FILE_ATTRIBUTE_DIRECTORY)),
+            ],
+            [True, False],
         )
 
     def test_the_installed_script_backs_up_the_whole_home_not_its_profile(self):

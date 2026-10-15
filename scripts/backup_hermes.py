@@ -19,6 +19,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tarfile
@@ -332,8 +333,18 @@ def _is_sqlite(path):
 
 
 def _is_link(entry):
+    """A symlink or a Windows junction.
+
+    The runtime is CPython 3.14, where DirEntry.is_junction exists (3.12+);
+    an older Python falls back to the reparse-point attribute.
+    """
+    if entry.is_symlink():
+        return True
     is_junction = getattr(entry, "is_junction", None)
-    return entry.is_symlink() or bool(is_junction and is_junction())
+    if is_junction is not None:
+        return is_junction()
+    attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _size(path):
