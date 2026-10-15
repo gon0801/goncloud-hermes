@@ -51,6 +51,68 @@ Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_
 
 Rollback: vuelve a una revision anterior del repo y reaplica `configure_team.py --allow-regression`; despues reinicia el gateway y abre una sesion nueva con `/new`. El proveedor que quede copiado pero ya no seleccionado es inerte. Para una recuperacion manual, conserva los archivos `.goncloud-backup` antes de tocar la configuracion.
 
+## Respaldo y reinstalacion
+
+`scripts/backup_hermes.py` respalda todo lo necesario para reinstalar Hermes en otra PC. Corre cada dia a las 03:00 como trabajo `no_agent` del director y deja `hermes-backup-YYYYMMDD.tar.gz` en dos lugares: `%LOCALAPPDATA%\hermes-respaldo\` (los 2 mas nuevos) y gonserver `/mnt/data/backups/hermes/` (los 7 mas nuevos, receptor `recibe-respaldo hermes`). Imprime una sola linea y el cron la entrega por Telegram: `OK respaldo Hermes ...` con tamano, archivos, bases y sha256, o `ERROR respaldo Hermes: ...` con salida 1. En gonserver, `vigila-respaldos` avisa si el ultimo tiene mas de 36 h o pesa menos de la mitad que el anterior.
+
+Que entra. Todo el home `%LOCALAPPDATA%\hermes` (los perfiles, `config.yaml`, `.env`, `auth.json`, `subscription-router.env`, `kanban.db`, memorias, skills, crons, `backup-key`) menos lo que el instalador o el uso recrean: `hermes-agent`, `tools`, `installs`, `node`, `bin`, caches, logs, copias viejas (`backups`, `recovery-backups`, `state-snapshots`), candados y pids, y la cache y los logs de cada perfil. Tambien entran, si existen, los logins de las CLIs del enrutador en `%USERPROFILE%`: `.claude`, `.claude.json`, `.codex`, `.grok`, `.kimi`, `.config\opencode`, `.local\share\opencode`, `AppData\Roaming\himalaya`, `.gitconfig` y `.ssh`, sin historiales de sesiones ni `node_modules`. La tabla `RULES` del script es la lista completa con la razon de cada omision, y el `manifest.json` del archivo repite que se omitio y por que. Cada SQLite (reconocido por su encabezado, no por la extension) se copia con la API de backup en linea, asi que entra lo que todavia esta en el WAL, y la copia debe pasar `integrity_check` o el respaldo aborta sin subir nada. El login de Muse vive dentro de WSL y no entra.
+
+El archivo lleva credenciales en claro: solo vive en la PC y en gonserver, nunca en Git ni en otro servidor.
+
+La subida usa la llave existente `%LOCALAPPDATA%\hermes\backup-key` (`id_ed25519` y `known_hosts`) contra `clawbackup@10.13.13.1`, cuyo comando forzado recibe el archivo y devuelve su sha256; el script lo compara con el local y reintenta hasta 3 veces. Una subida fallida deja la copia local y la nombra en la linea de error. Hermes corta un script `no_agent` a los 3600 s, asi que el respaldo se detiene solo a los 3300 s (`--budget`) para que la linea de error llegue. Si el archivo crece hasta no caber, sube `cron.script_timeout_seconds` y `--budget` juntos.
+
+`configure_team.py` instala el script en `profiles\claw\scripts`. El cron diario reemplaza al semanal `respaldo-semanal-claw` (`backup-claw.sh`, que solo copiaba el perfil claw). Antes de crearlo, el receptor de gonserver debe aceptar la familia `hermes`: el viejo solo acepta nombres `claw-backup-*` y la subida fallaria con "nombre invalido".
+
+```powershell
+hermes -p claw cron list                  # anota el id de respaldo-semanal-claw
+hermes -p claw cron remove <id>
+hermes -p claw cron create "0 3 * * *" --name respaldo-diario-hermes --script backup_hermes.py --no-agent --deliver telegram
+hermes -p claw cron run <id-del-nuevo>    # primera corrida ahora; debe llegar la linea OK
+```
+
+Despues de la primera linea OK puedes borrar `profiles\claw\scripts\backup-claw.sh` y `%LOCALAPPDATA%\hermes\scripts\backup-claw.sh`.
+
+### Simulacro de restauracion
+
+`scripts/restore_hermes_check.py` extrae un archivo en una carpeta temporal nueva y comprueba que coincide con su manifiesto (tamano y sha256 de cada archivo), corre `integrity_check` en cada SQLite, lee cada `config.yaml` y cada `.env` sin repetir sus valores, e imprime `OK restauracion de prueba ...: N perfiles, N crons, N bases, N archivos` o `ERROR ...` con salida 1. Nunca toca el home vivo y borra el temporal al terminar. Usa una ruta corta en `--workdir` para no chocar con el limite de 260 caracteres de Windows.
+
+```powershell
+& $python scripts/restore_hermes_check.py C:\r\hermes-backup-20261015.tar.gz --workdir C:\r
+```
+
+### Reinstalar en una PC nueva
+
+`$python` es `"$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe"`.
+
+1. Instala Git for Windows, WSL y la VPN a gonserver (WireGuard `10.13.13.1` o Tailscale `100.127.167.103`). Si la PC tiene Kaspersky, exporta su raiz y fija `NODE_EXTRA_CA_CERTS` como dice [estado](docs/status.md) antes de arrancar cualquier proceso de Hermes.
+2. Instala Hermes en el commit fijado (seccion "Instalacion reproducible") y clona este repo en `C:\dev\goncloud-hermes`. Deten el gateway: `hermes -p claw gateway stop`.
+3. Trae el archivo mas nuevo de gonserver con tu cuenta de administrador (la cuenta `clawbackup` solo puede recibir): `scp <admin>@10.13.13.1:/mnt/data/backups/hermes/hermes-backup-YYYYMMDD.tar.gz C:\r\`. Si la PC vieja sigue viva, sirve tambien su copia de `%LOCALAPPDATA%\hermes-respaldo\`.
+4. Corre el simulacro sobre ese archivo. Si no imprime `OK`, prueba con el del dia anterior.
+5. Con el gateway detenido, pon los archivos en su lugar:
+
+   ```powershell
+   mkdir C:\r\x; tar -xzf C:\r\hermes-backup-YYYYMMDD.tar.gz -C C:\r\x
+   robocopy C:\r\x\home "$env:LOCALAPPDATA\hermes" /E
+   robocopy C:\r\x\user "$env:USERPROFILE" /E
+   ```
+
+   `manifest.json` se queda fuera. Si el usuario de Windows ya no es `ehven`, busca rutas viejas: `Get-ChildItem "$env:LOCALAPPDATA\hermes" -Recurse -Include *.yaml,*.json | Select-String 'Users\\ehven'`.
+6. Corre `& $python scripts/configure_team.py --check` y despues sin `--check`. Reescribe los scripts del director y `autoupdate.json` con las rutas de esta PC.
+7. Rehaz los logins que fallen en el paso 9: los archivos de login copiados suelen bastar, pero un proveedor puede invalidar la sesion en una maquina nueva.
+8. Vuelve a crear Muse en WSL: instala su CLI en Ubuntu e inicia sesion con el login oficial (ver [estado](docs/status.md)); su login no viaja en el respaldo.
+9. Comprueba:
+   - `hermes -p claw gateway start`; `hermes -p claw gateway status --deep --full` dice que esta corriendo.
+   - Una sonda por adaptador de la fila `main`; cada una debe imprimir `"success": true, "marker_exact": true`:
+
+     ```powershell
+     $chain = (Get-Content model-routing.source.json | ConvertFrom-Json).chains.main
+     for ($i = 0; $i -lt $chain.Count; $i++) { & $python scripts/probe_route.py --position $i $chain[$i] }
+     ```
+
+   - Un turno real del director: `hermes -p claw chat -q "Responde solo: PONG" --oneshot -Q` responde `PONG`.
+   - `hermes -p claw cron list` muestra `respaldo-diario-hermes` y `vigia-modelos`.
+   - En Telegram, `/new` en la sesion del director.
+
 ## Modelo y ejecucion continua
 
 La seleccion de proveedor y las pruebas con inferencia real se registran en [estado](docs/status.md). Muse usa el login oficial de su CLI dentro de WSL; sus encargos conservan el sandbox de Muse y un archivo temporal privado, eliminado al terminar, mantiene el prompt fuera de la linea de comandos. No pegues claves en el chat ni en Git. No se copiaron tokens, canales, crons ni conexiones comerciales de OpenClaw.
