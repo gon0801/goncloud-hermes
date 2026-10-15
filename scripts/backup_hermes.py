@@ -43,6 +43,25 @@ class BackupError(Exception):
 
 
 @dataclass(frozen=True)
+class Deadline:
+    """When the run must stop so its error line beats the cron's kill."""
+
+    at: float
+    budget: float
+    clock: object
+
+    def left(self):
+        return self.at - self.clock()
+
+    def check(self, doing):
+        if self.left() <= 0:
+            raise BackupError(
+                f"se acabo el tiempo (--budget {self.budget:.0f} s) {doing}; "
+                "no se subio nada"
+            )
+
+
+@dataclass(frozen=True)
 class Rule:
     """Decides a path under one root ("home" or "user").
 
@@ -342,7 +361,7 @@ def _bound_user_side(selection):
         )
 
 
-def collect(roots, avoid=()):
+def collect(roots, deadline, avoid=()):
     """Every file the rules keep under each root, and what they skip."""
     selection = Selection()
     avoid = {Path(path).resolve() for path in avoid}
@@ -352,6 +371,7 @@ def collect(roots, avoid=()):
 
     def visit(root, path, parts, is_dir, is_link=False):
         arcname = "/".join((root, *parts))
+        deadline.check(f"juntando {arcname}")
         size = None if is_dir else _size(path)
         rule = decide(root, parts, size)
         leads = is_dir and _leads_to_keep(root, parts)
@@ -437,13 +457,14 @@ def _add(tar, arcname, spool, size, mtime):
     tar.addfile(info, spool)
 
 
-def write_archive(selection, destination, meta, work):
+def write_archive(selection, destination, meta, work, deadline):
     """Write the archive atomically and return its manifest."""
     files = []
     partial = destination.with_name(destination.name + ".tmp")
     try:
         with tarfile.open(partial, "w:gz", compresslevel=6) as tar:
             for number, item in enumerate(selection.items):
+                deadline.check(f"escribiendo {item.arcname}")
                 if item.sqlite:
                     copy = work / f"db-{number}.sqlite"
                     copy_sqlite(item.path, copy, item.arcname)
@@ -524,7 +545,7 @@ def upload(archive, digest, settings, deadline):
     ]
     failures = []
     for attempt in range(1, UPLOAD_ATTEMPTS + 1):
-        remaining = deadline - time.monotonic()
+        remaining = deadline.left()
         if remaining <= 0:
             failures.append(f"intento {attempt}: sin tiempo antes del corte del cron")
             break
@@ -558,7 +579,7 @@ def upload(archive, digest, settings, deadline):
                 f"intento {attempt}: sha256 remoto distinto ({remote[:12]})"
             )
         if attempt < UPLOAD_ATTEMPTS:
-            time.sleep(max(0, min(settings.retry_wait, deadline - time.monotonic())))
+            time.sleep(max(0, min(settings.retry_wait, deadline.left())))
     raise BackupError(f"no se pudo subir a {settings.server}: {'; '.join(failures)}")
 
 
@@ -599,17 +620,30 @@ class Settings:
     today: datetime.date | None = None
     budget: float = DEFAULT_BUDGET
     retry_wait: float = 30
+    clock: object = time.monotonic
+
+
+def remove_leftovers(out_dir):
+    """What a run killed mid-write left behind; a new run never resumes it."""
+    for path in out_dir.glob("hermes-backup-*.tar.gz.tmp"):
+        path.unlink(missing_ok=True)
+    for path in out_dir.glob(".trabajo-*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def run(settings):
     """Build, keep and upload one archive."""
-    deadline = time.monotonic() + settings.budget
+    deadline = Deadline(
+        settings.clock() + settings.budget, settings.budget, settings.clock
+    )
     today = settings.today or datetime.date.today()
     out_dir = settings.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    remove_leftovers(out_dir)
     archive = out_dir / f"hermes-backup-{today:%Y%m%d}.tar.gz"
     roots = {"home": settings.home, "user": settings.user_home}
-    selection = collect(roots, avoid=[out_dir])
+    selection = collect(roots, deadline, avoid=[out_dir])
     meta = {
         "format": 1,
         "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -625,7 +659,7 @@ def run(settings):
         },
     }
     with tempfile.TemporaryDirectory(prefix=".trabajo-", dir=out_dir) as work:
-        manifest = write_archive(selection, archive, meta, Path(work))
+        manifest = write_archive(selection, archive, meta, Path(work), deadline)
     prune(out_dir)
     digest = _sha256(archive)
     try:

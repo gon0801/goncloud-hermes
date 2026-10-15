@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,6 +23,11 @@ from backup_support import (
     write,
 )
 from goncloud_test_support import cleanup_temp_directory
+
+
+def clock_jumping_once(path):
+    """A clock that leaps past any budget once path exists."""
+    return lambda: time.monotonic() + (1_000_000 if path.exists() else 0)
 
 
 def corrupt_index(path):
@@ -418,11 +424,58 @@ class BackupTest(unittest.TestCase):
     def test_no_upload_starts_once_the_cron_budget_is_spent(self):
         receiver = make_receiver(self.base)
 
-        code, line = self.backup(receiver, budget=0)
+        code, line = self.backup(
+            receiver, budget=100, clock=clock_jumping_once(self.out / ARCHIVE)
+        )
 
         self.assertEqual(code, 1)
         self.assertIn("intento 1: sin tiempo antes del corte del cron", line)
         self.assertEqual(calls(receiver), [])
+
+    def test_a_spent_budget_stops_collecting_before_anything_is_written(self):
+        receiver = make_receiver(self.base)
+
+        code, line = self.backup(receiver, budget=0)
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                "ERROR respaldo Hermes: se acabo el tiempo (--budget 0 s) juntando "
+                "home; no se subio nada\n",
+            ),
+        )
+        self.assertEqual(list(self.out.iterdir()), [])
+        self.assertEqual(calls(receiver), [])
+
+    def test_a_budget_spent_while_writing_aborts_without_a_partial_file(self):
+        receiver = make_receiver(self.base)
+        partial = self.out / f"{ARCHIVE}.tmp"
+
+        code, line = self.backup(
+            receiver, budget=100, clock=clock_jumping_once(partial)
+        )
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                "ERROR respaldo Hermes: se acabo el tiempo (--budget 100 s) "
+                "escribiendo home/.env; no se subio nada\n",
+            ),
+        )
+        self.assertEqual(list(self.out.iterdir()), [])
+        self.assertEqual(calls(receiver), [])
+
+    def test_leftovers_of_a_killed_run_are_removed(self):
+        self.out.mkdir()
+        (self.out / "hermes-backup-20261014.tar.gz.tmp").write_bytes(b"partial")
+        write(self.out / ".trabajo-k1ll3d/db-0.sqlite", "partial")
+
+        code, line = self.backup()
+
+        self.assertEqual((code, line), (0, ""))
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()), [ARCHIVE])
 
     def test_only_the_two_newest_local_archives_stay(self):
         self.out.mkdir()
