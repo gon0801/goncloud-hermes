@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import re
+import signal
 import subprocess
 from typing import Callable, Mapping, Sequence
 import urllib.request
@@ -213,19 +215,60 @@ class Ran:
 Run = Callable[[Sequence[str], float], Ran]
 
 
+#: After a timeout, how long the killed tree gets to close its pipes.
+REAP_TIMEOUT = 10
+
+
 def run(argv: Sequence[str], timeout: float) -> Ran:
+    """Run ``argv``; on timeout kill its whole process tree, never wait unbounded.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child, and on Windows
+    then reads its pipes with no bound: a grandchild holding them (hermes.cmd
+    -> python -> git) blocks forever.
+    """
     try:
-        done = subprocess.run(
+        child = subprocess.Popen(
             list(argv),
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            stdin=subprocess.DEVNULL,
-            timeout=timeout,
+            start_new_session=os.name != "nt",
         )
-    except subprocess.TimeoutExpired:
-        return Ran(None, "", f"sin respuesta tras {int(timeout)} s")
     except OSError as error:
         return Ran(None, "", f"no arranco: {type(error).__name__}: {error}")
-    return Ran(done.returncode, done.stdout, done.stderr)
+    try:
+        out, err = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(child)
+        try:
+            child.communicate(timeout=REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            pass
+        return Ran(None, "", f"sin respuesta tras {int(timeout)} s")
+    except BaseException:
+        _kill_tree(child)
+        raise
+    return Ran(child.returncode, out, err)
+
+
+def _kill_tree(child: subprocess.Popen) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(child.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=REAP_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        child.kill()
+        return
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except OSError:
+        pass
