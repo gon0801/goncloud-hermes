@@ -27,7 +27,7 @@ import restore_hermes_check  # noqa: E402
 
 
 def rewrite(archive, changes):
-    """Replace or drop members; changed members get a matching manifest entry."""
+    """Replace or drop members; with fix_manifest the manifest follows."""
     with tarfile.open(archive) as tar:
         contents = {member.name: tar.extractfile(member).read() for member in tar}
     manifest = json.loads(contents.pop("manifest.json"))
@@ -35,6 +35,8 @@ def rewrite(archive, changes):
     for name, (data, fix_manifest) in changes.items():
         if data is None:
             contents.pop(name)
+            if fix_manifest:
+                manifest["files"].remove(entries[name])
             continue
         contents[name] = data
         if fix_manifest:
@@ -109,6 +111,28 @@ class RestoreDrillTest(unittest.TestCase):
         self.assertEqual(
             line,
             f"ERROR restauracion de prueba {ARCHIVE}: 1 problemas: home/auth.json: falta\n",
+        )
+
+    def test_a_backup_without_a_required_file_fails_the_drill(self):
+        self.backup()
+        rewrite(
+            self.archive,
+            {
+                "home/kanban.db": (None, True),
+                "home/profiles/claw/config.yaml": (None, True),
+            },
+        )
+
+        code, line = self.drill()
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                f"ERROR restauracion de prueba {ARCHIVE}: 2 problemas: "
+                "home/kanban.db: falta y es obligatorio; "
+                "home/profiles/claw/config.yaml: falta y es obligatorio\n",
+            ),
         )
 
     def test_a_corrupt_database_is_named(self):

@@ -24,6 +24,15 @@ from backup_hermes import native
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 MANIFEST = "manifest.json"
+# Without these a rebuilt Hermes has no keys, settings, login, board or way
+# to upload; every profile also needs its own config.yaml.
+REQUIRED = (
+    "home/.env",
+    "home/config.yaml",
+    "home/auth.json",
+    "home/kanban.db",
+    "home/backup-key/id_ed25519",
+)
 ENV_LINE = re.compile(r"^(export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=")
 
 
@@ -146,11 +155,16 @@ def inspect(tree):
             if failure:
                 problems.append(f"{name}: {failure}")
     profiles_dir = tree / "home" / "profiles"
-    profiles = (
-        sum(1 for path in profiles_dir.iterdir() if path.is_dir())
+    profile_names = (
+        sorted(path.name for path in profiles_dir.iterdir() if path.is_dir())
         if profiles_dir.is_dir()
-        else 0
+        else []
     )
+    required = {*REQUIRED} | {
+        f"home/profiles/{name}/config.yaml" for name in profile_names
+    }
+    for name in sorted(required - listed.keys() - present.keys()):
+        problems.append(f"{name}: falta y es obligatorio")
     crons = 0
     for path in sorted(
         [tree / "home/cron/jobs.json", *profiles_dir.glob("*/cron/jobs.json")]
@@ -162,7 +176,7 @@ def inspect(tree):
         except ValueError as error:
             problems.append(f"{path.relative_to(tree).as_posix()}: {error}")
     counts = {
-        "profiles": profiles,
+        "profiles": len(profile_names),
         "crons": crons,
         "databases": databases,
         "files": len(present),

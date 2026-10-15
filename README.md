@@ -74,7 +74,7 @@ Cuando la primera corrida termine sin ERROR y el archivo aparezca en gonserver, 
 
 ### Simulacro de restauracion
 
-`scripts/restore_hermes_check.py` extrae un archivo en una carpeta temporal nueva y comprueba que coincide con su manifiesto (tamano y sha256 de cada archivo), corre `integrity_check` en cada SQLite, lee cada `config.yaml` y cada `.env` sin repetir sus valores, e imprime `OK restauracion de prueba ...: N perfiles, N crons, N bases, N archivos` o `ERROR ...` con salida 1. Nunca toca el home vivo y borra el temporal al terminar. El respaldo y el simulacro abren cada archivo con el prefijo `\\?\` de Windows, asi que una ruta de mas de 260 caracteres ya no falla; `--workdir` sigue disponible para elegir donde va el temporal.
+`scripts/restore_hermes_check.py` extrae un archivo en una carpeta temporal nueva y comprueba que coincide con su manifiesto (tamano y sha256 de cada archivo), corre `integrity_check` en cada SQLite, lee cada `config.yaml` y cada `.env` sin repetir sus valores, exige `home\.env`, `home\config.yaml`, `home\auth.json`, `home\kanban.db`, `home\backup-key\id_ed25519` y el `config.yaml` de cada perfil, falla si el respaldo anoto algun archivo sin leer, e imprime `OK restauracion de prueba ...: N perfiles, N crons, N bases, N archivos` o `ERROR ...` con salida 1. Nunca toca el home vivo y borra el temporal al terminar. El respaldo y el simulacro abren cada archivo con el prefijo `\\?\` de Windows, asi que una ruta de mas de 260 caracteres ya no falla; `--workdir` sigue disponible para elegir donde va el temporal.
 
 ```powershell
 & $python scripts/restore_hermes_check.py C:\r\hermes-backup-20261015.tar.gz --workdir C:\r
