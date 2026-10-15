@@ -930,7 +930,7 @@ class HoldTests(unittest.TestCase):
             lines,
             [
                 "- La autoactualizacion de claw fallo: FileNotFoundError: "
-                f"[Errno 2] No such file or directory: '{missing}'"
+                f"[Errno 2] No such file or directory: {str(missing)!r}"
             ],
         )
         self.assertEqual(again, [])
