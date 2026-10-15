@@ -655,6 +655,20 @@ class DirectorNativeChainTests(unittest.TestCase):
                 (watcher.parent / "pinned-models.json").read_text(encoding="utf-8"),
                 (ROOT / "scripts/pinned-models.json").read_text(encoding="utf-8"),
             )
+            for name in ("model_lines.py", "hermes_autoupdate.py", "promote_model.py"):
+                self.assertEqual(
+                    (watcher.parent / name).read_text(encoding="utf-8"),
+                    (ROOT / "scripts" / name).read_text(encoding="utf-8"),
+                    name,
+                )
+            setup = json.loads(
+                (watcher.parent / "autoupdate.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(setup["checkout"], str(ROOT))
+            self.assertEqual(setup["python"], sys.executable)
+            self.assertEqual(
+                setup["hermes"], str(runtime.resolve() / "bin" / "hermes.cmd")
+            )
             soul = runtime / "profiles/scout/SOUL.md"
             soul.write_text("user edit", encoding="utf-8")
             state = runtime / "profiles/claw/goncloud-managed.json"

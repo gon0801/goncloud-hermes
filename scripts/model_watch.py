@@ -1,8 +1,9 @@
-"""Daily watcher: say when the public catalogs change for the models in use.
+"""Daily watcher: report catalog changes for the models in use, and follow new releases.
 
 Runs as a Hermes ``no_agent`` cron script: whatever it prints is delivered to
-the owner, and printing nothing is a silent run. It calls no model and changes
-nothing; switching a model stays the owner's decision.
+the owner, and printing nothing is a silent run. After reading the catalogs it
+hands them to ``hermes_autoupdate``, which moves the table to a newer release
+of a model in use once real probes pass (see that module).
 
     python model_watch.py [--table PATH] [--state PATH] [--dry-run]
 """
@@ -15,22 +16,23 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import urllib.request
+import time
 
-#: Model-name prefix -> the models.dev provider that carries that vendor's own
-#: catalog. The prefixes are the families the subscription router binds
-#: (subscriptions/catalog.py); a test keeps the two lists equal.
-FAMILIES = {
-    "muse-": "meta",
-    "claude-": "anthropic",
-    "gpt-": "openai",
-    "grok-": "xai",
-    "glm-": "zai-coding-plan",
-    "k3": "kimi-code-plan-global",
-    "kimi-": "kimi-code-plan-global",
-    "deepseek-": "deepseek",
-}
-GO = "opencode-go"
+# Hermes on Windows may start this file through runpy, which does not put the
+# script's directory on sys.path; its sibling modules live there.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from model_lines import (  # noqa: E402
+    FAMILIES,
+    GO,
+    attempt,
+    catalog_view,
+    family_of,
+    fresh_notices,
+    get_json,
+    read_catalogs,
+)
+
 _NAMES = {
     GO: "OpenCode Go",
     "meta": "Meta",
@@ -42,15 +44,9 @@ _NAMES = {
     "deepseek": "DeepSeek",
     "models.dev": "models.dev",
 }
-MODELS_DEV_URL = "https://models.dev/api.json"
-GO_MODELS_URL = "https://opencode.ai/zen/go/v1/models"
 MUSE_CHANNEL_URL = "https://api.meta.ai/muse-code/channels/muse-stable"
 _EFFORT = re.compile(r"\s+\(([^)]+)\)\s*$")
 BLIND_AFTER = 3
-
-
-def family_of(model):
-    return next((prefix for prefix in FAMILIES if model.startswith(prefix)), None)
 
 
 def models_in_use(source):
@@ -159,8 +155,8 @@ def blind_notices(failures, read_ok):
     return notices, after
 
 
-def render(notices, in_use, today):
-    if not notices:
+def render(notices, in_use, today, autoupdate_lines=()):
+    if not notices and not autoupdate_lines:
         return ""
     lines = [f"Modelos: novedades del {today}"]
     for notice in notices:
@@ -193,46 +189,20 @@ def render(notices, in_use, today):
                 f"- No pude leer {source} en {BLIND_AFTER} corridas seguidas; "
                 "mientras siga asi no veo cambios ahi."
             )
-    lines.append("No se cambio nada: cambiar un modelo lo decides tu.")
-    return "\n".join(lines)
+    return "\n".join([*lines, *autoupdate_lines])
 
 
-def catalog_view(models_dev, go_ids):
-    """Reduce the public catalogs to the sources and facts the watcher compares."""
-    view = {}
-    if models_dev is not None:
-        for provider in sorted(set(FAMILIES.values())):
-            models = (models_dev.get(provider) or {}).get("models") or {}
-            view[provider] = {
-                model: {
-                    key: value
-                    for key, value in (
-                        ("release_date", facts.get("release_date")),
-                        ("context", (facts.get("limit") or {}).get("context")),
-                        ("status", facts.get("status")),
-                    )
-                    if value
-                }
-                for model, facts in models.items()
-            }
-    if go_ids is not None:
-        view[GO] = {model: {} for model in go_ids}
-    return view
-
-
-def _get_json(url):
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "goncloud-model-watch"}
-    )
-    with urllib.request.urlopen(request, timeout=40) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _try(fetch):
+def follow_releases(here, view, last, started):
+    """Run the autoupdate; a failure in it never stops the catalog report."""
     try:
-        return fetch()
-    except Exception:  # noqa: BLE001 - any failure means "not read this run"
-        return None
+        import hermes_autoupdate
+
+        return hermes_autoupdate.step(here, view, last, started=started)
+    except Exception as error:  # noqa: BLE001 - reported, the watcher goes on
+        remembered = {
+            "error": f"- La autoactualizacion fallo: {type(error).__name__}: {error}"
+        }
+        return fresh_notices(remembered, last), remembered
 
 
 def _installed_muse():
@@ -257,12 +227,15 @@ def _installed_muse():
 
 
 def main():
+    started = time.monotonic()
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--table", type=Path, help="model-routing.source.json")
     parser.add_argument("--state", type=Path, default=here / "model_watch.state.json")
     parser.add_argument(
-        "--dry-run", action="store_true", help="Do not save the new baseline"
+        "--dry-run",
+        action="store_true",
+        help="Do not save the new baseline and do not switch any model",
     )
     args = parser.parse_args()
     table = args.table or next(
@@ -280,10 +253,9 @@ def main():
         else {}
     )
 
-    models_dev = _try(lambda: _get_json(MODELS_DEV_URL))
-    go = _try(lambda: [row["id"] for row in _get_json(GO_MODELS_URL)["data"]])
-    channel = _try(lambda: _get_json(MUSE_CHANNEL_URL)["version"])
-    muse = _try(_installed_muse)
+    models_dev, go = read_catalogs()
+    channel = attempt(lambda: get_json(MUSE_CHANNEL_URL)["version"])
+    muse = attempt(_installed_muse)
 
     current = catalog_view(models_dev, go)
     pins_file = here / "pinned-models.json"
@@ -300,7 +272,13 @@ def main():
         {"models.dev": models_dev is not None, GO: go is not None},
     )
 
-    text = render(notices + cli + blind, in_use, datetime.date.today().isoformat())
+    last = state.get("autoupdate", {})
+    switched, remembered = (
+        ([], last) if args.dry_run else follow_releases(here, current, last, started)
+    )
+    text = render(
+        notices + cli + blind, in_use, datetime.date.today().isoformat(), switched
+    )
     if text:
         print(text)
     if not args.dry_run:
@@ -311,6 +289,7 @@ def main():
                 **{notice["name"]: notice["latest"] for notice in cli},
             },
             "failures": failures,
+            "autoupdate": remembered,
         }
         temporary = args.state.with_name(args.state.name + ".tmp")
         temporary.write_text(

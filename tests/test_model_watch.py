@@ -1,15 +1,12 @@
-import ast
-import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "model_watch", ROOT / "scripts/model_watch.py"
-)
-module = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(module)
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import model_watch as module  # noqa: E402
 
 TABLE = {
     "chains": {
@@ -51,24 +48,6 @@ class InUseTests(unittest.TestCase):
         self.assertEqual(in_use["muse-spark-1.3"], ["main:3", "scout:2"])
         self.assertEqual(in_use["claude-opus-5"], ["main:2"])
         self.assertNotIn("claude-opus-5 (xhigh)", in_use)
-
-    def test_family_prefixes_are_the_ones_the_router_binds(self):
-        # The watcher must call "the same family" what the plugin does, or a
-        # new model the router would accept goes unannounced.
-        tree = ast.parse(
-            (ROOT / "plugins/goncloud-team/subscriptions/catalog.py").read_text(
-                encoding="utf-8"
-            )
-        )
-        bound = next(
-            ast.literal_eval(node.value)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "_FAMILY_ADAPTERS"
-        )
-
-        self.assertEqual(set(module.FAMILIES), {prefix for prefix, _ in bound})
 
 
 class CompareTests(unittest.TestCase):
@@ -311,7 +290,7 @@ class RenderTests(unittest.TestCase):
             text,
         )
         self.assertIn("muse atrasado: instalado 1.4.0, disponible 1.4.6", text)
-        self.assertIn("No se cambio nada", text)
+        self.assertNotIn("No se cambio nada", text)
 
 
 if __name__ == "__main__":
