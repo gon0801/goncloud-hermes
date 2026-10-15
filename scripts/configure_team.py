@@ -84,7 +84,6 @@ _NATIVE_PROVIDERS = {
     # provider; Hermes' credential pool rotates to it on 429/exhaustion.
     "opencode_go_2": {"provider": "opencode-go"},
     "claude": {"provider": "anthropic"},
-    "muse": {"provider": "meta-ai"},
     "grok": {"provider": "xai-oauth"},
     "opencode_zai": {"provider": "zai", "base_url": ZAI_CODING_URL},
     "codex": {"provider": "openai-codex"},
@@ -94,6 +93,12 @@ _NATIVE_PROVIDERS = {
         "api_mode": "chat_completions",
     },
 }
+
+#: The owner's Muse subscription is reachable only through the Muse CLI (the
+#: worker router's ``muse`` adapter). The native ``meta-ai`` provider bills
+#: Meta's API, which the owner refused (2026-10-15), so native chains skip
+#: these positions instead of failing on them.
+_CLI_ONLY_ADAPTERS = frozenset({"muse"})
 
 
 def director_native_config(source):
@@ -110,6 +115,8 @@ def native_config(source, role):
 
     entries, overrides = [], {}
     for route in compile_profile_routes(role, source):
+        if route.adapter in _CLI_ONLY_ADAPTERS:
+            continue
         binding = _NATIVE_PROVIDERS.get(route.adapter)
         if binding is None:
             raise ValueError(
