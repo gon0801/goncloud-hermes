@@ -25,6 +25,7 @@ import re
 import sys
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,10 @@ RESTORE_WAIT = 600
 #: Seconds between asks, whatever ``retryAfterMs`` says: every ask closes the
 #: gateway's admission for 13-20 s even when it answers busy (live, 2026.9.7).
 WINDOW_POLL = 300
+#: The CLI's own 10 s default ran out on the live gateway; the process bound
+#: sits above it so the CLI's own answer comes first.
+SUSPEND_TIMEOUT_MS = "30000"
+SUSPEND_RUN_TIMEOUT = 45
 NO_WINDOW = "no hubo un momento sin corridas"
 #: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
@@ -374,41 +379,72 @@ class Gateway:
             f"{self.config_path} no es JSON legible tras {CONFIG_TRIES} lecturas"
         )
 
+    def _prepare(self, request):
+        """The gateway's answer to one ``suspend --wait 0``; None when it gave none.
+
+        No answer (a timeout, an exit without JSON) may still have been granted.
+        """
+        done = self.run(
+            [
+                self.openclaw,
+                "gateway",
+                "suspend",
+                "--wait",
+                "0",
+                "--timeout",
+                SUSPEND_TIMEOUT_MS,
+                "--request-id",
+                request,
+                "--json",
+            ],
+            SUSPEND_RUN_TIMEOUT,
+        )
+        doc = _first_json(done.out)
+        return doc if isinstance(doc, dict) and doc.get("status") else None
+
     @contextmanager
     def exclusive(self, wait):
         """Hold the gateway's suspension while the block runs; Busy if none by ``wait``.
 
         ``suspend --wait 0`` either grants it at once (no run in flight) or
-        answers busy and holds nothing. The lease is always resumed, and it
-        expires on its own if this process dies first.
+        answers ``busy``, ``draining`` or ``conflict``: not yet. One request id
+        serves the whole window, so asking again after an ask that gave no
+        answer returns the lease that ask may have been granted instead of a
+        second one. Any lease id an answer carried is resumed on the way out;
+        one whose id never came back expires on its own (120 s), as it does
+        if this process dies.
         """
+        request = f"claw-autoupdate-{uuid.uuid4()}"
         deadline = self.clock() + wait
-        while True:
-            done = self.run(
-                [self.openclaw, "gateway", "suspend", "--wait", "0", "--json"],
-                READ_TIMEOUT,
-            )
-            doc = _first_json(done.out)
-            doc = doc if isinstance(doc, dict) else {}
-            if done.ok and doc.get("status") == "ready" and doc.get("suspensionId"):
-                break
-            if doc.get("status") != "busy":
-                raise RuntimeError(f"gateway suspend: {failure(done)}")
-            if self.clock() + WINDOW_POLL > deadline:
-                raise Busy(NO_WINDOW)
-            self.sleep(WINDOW_POLL)
-        suspension = doc["suspensionId"]
+        suspension = None
         try:
+            while True:
+                answer = self._prepare(request) or self._prepare(request) or {}
+                suspension = answer.get("suspensionId") or suspension
+                if answer.get("status") == "ready" and answer.get("suspensionId"):
+                    break
+                if self.clock() + WINDOW_POLL > deadline:
+                    raise Busy(NO_WINDOW)
+                self.sleep(WINDOW_POLL)
             yield
         finally:
-            resumed = self.run(
-                [self.openclaw, "gateway", "resume", suspension, "--json"],
-                READ_TIMEOUT,
-            )
-            if not resumed.ok:
-                print(
-                    f"gateway resume {suspension}: {failure(resumed)}", file=sys.stderr
+            if suspension:
+                done = self.run(
+                    [
+                        self.openclaw,
+                        "gateway",
+                        "resume",
+                        suspension,
+                        "--timeout",
+                        SUSPEND_TIMEOUT_MS,
+                        "--json",
+                    ],
+                    SUSPEND_RUN_TIMEOUT,
                 )
+                if not done.ok:
+                    print(
+                        f"gateway resume {suspension}: {failure(done)}", file=sys.stderr
+                    )
 
     def patch(self, patch, replace_paths, *, dry_run_first=True):
         """None once the patch is applied, else why not; an empty one is not sent.

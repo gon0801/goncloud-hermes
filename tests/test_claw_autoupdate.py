@@ -388,6 +388,21 @@ def busy_reply():
     )
 
 
+def not_yet(status, **fields):
+    """A ``gateway suspend --json`` answer that grants nothing to this request."""
+    return Ran(1, json.dumps({"status": status, **fields, "requestId": "r"}), "")
+
+
+#: How the CLI relays the gateway's conflict RPC error (per its source): no JSON.
+CONFLICT_ERROR = Ran(
+    1,
+    "",
+    "Gateway suspend failed: Error: another gateway suspension is already prepared",
+)
+TIMED_OUT = Ran(1, "", "Gateway suspend failed: Error: gateway timeout after 30000ms")
+SUSPEND_TTL = 120
+
+
 class FakeGateway:
     """A live config file that config patch really changes; model calls are scripted.
 
@@ -396,7 +411,12 @@ class FakeGateway:
     ``gateway suspend`` is busy for ``busy_polls`` polls (and for good once
     ``busy_from_patch`` patches landed), then grants a window; while one is
     held, model calls and ``gateway call config.get`` are refused as the
-    gateway refuses new work.
+    gateway refuses new work. As in the gateway, a lease lasts SUSPEND_TTL s
+    unless resumed, the same request id gets the lease it holds back, and
+    another one gets a conflict. ``suspend_script`` overrides the next asks:
+    a Ran is answered as is (granting nothing), ``"timeout"`` reaches the
+    gateway but the CLI gives up before its answer. ``foreign_until`` is a
+    lease someone else holds until then.
     """
 
     def __init__(
@@ -408,6 +428,8 @@ class FakeGateway:
         explode_on_patch=None,
         lost_patches=(),
         patch_results=None,
+        suspend_script=(),
+        foreign_until=None,
     ):
         handle, name = tempfile.mkstemp(suffix=".json", dir=CONFIG_DIR.name)
         os.close(handle)
@@ -422,11 +444,20 @@ class FakeGateway:
         self.busy_polls = busy_polls
         self.busy_from_patch = busy_from_patch
         self.explode_on_patch = explode_on_patch
-        self.held = None
+        self.lease = (
+            ("someone else", "x1", foreign_until - SUSPEND_TTL)
+            if (foreign_until is not None)
+            else None
+        )
+        self.suspend_script = list(suspend_script)
         self.acquired = []
         self.resumed = []
+        self.expired = []
         self.waits = []
         self.asked_at = []
+        self.requests = []
+        self.answered = []
+        self.timeouts = []
         self.unguarded_patches = 0
         self.sent = []
         self.calls = []
@@ -434,6 +465,10 @@ class FakeGateway:
         self.lost_patches = lost_patches
         self.patch_results = patch_results or {}
         self.patches = 0
+
+    @property
+    def held(self):
+        return self.lease[1] if self.lease else None
 
     @property
     def config(self):
@@ -471,28 +506,51 @@ class FakeGateway:
                 )
         return patch, None
 
+    def prepare(self, request):
+        if self.lease:
+            if self.lease[0] != request:
+                return CONFLICT_ERROR
+            doc = {"status": "ready", "suspensionId": self.held, "requestId": request}
+            return Ran(0, json.dumps(doc), "")
+        if self.busy_polls or (
+            self.busy_from_patch is not None and self.patches >= self.busy_from_patch
+        ):
+            self.busy_polls = max(0, self.busy_polls - 1)
+            return busy_reply()
+        self.lease = (request, f"s{len(self.acquired) + 1}", self.now)
+        self.acquired.append(self.held)
+        return self.prepare(request)
+
+    def suspend(self, argv):
+        self.waits.append(argv[argv.index("--wait") + 1])
+        self.asked_at.append(self.now)
+        request = argv[argv.index("--request-id") + 1]
+        self.requests.append(request)
+        step = self.suspend_script.pop(0) if self.suspend_script else None
+        reply = step if isinstance(step, Ran) else self.prepare(request)
+        if step == "timeout":
+            reply = TIMED_OUT
+        self.answered.append(reply.out.startswith("{"))
+        return reply
+
     def __call__(self, argv, timeout):
         kind = self.kind(argv)
         self.calls.append(kind)
+        if self.lease and self.now >= self.lease[2] + SUSPEND_TTL:
+            if self.held in self.acquired:
+                self.expired.append(self.held)
+            self.lease = None
+        if kind in ("suspend", "resume"):
+            index = argv.index("--timeout") if "--timeout" in argv else None
+            self.timeouts.append(None if index is None else argv[index + 1])
         if kind == "suspend":
-            self.waits.append(argv[argv.index("--wait") + 1])
-            self.asked_at.append(self.now)
-            if self.busy_polls or (
-                self.busy_from_patch is not None
-                and self.patches >= self.busy_from_patch
-            ):
-                self.busy_polls = max(0, self.busy_polls - 1)
-                return busy_reply()
-            self.held = f"s{len(self.acquired) + 1}"
-            self.acquired.append(self.held)
-            doc = {"status": "ready", "suspensionId": self.held, "requestId": "r"}
-            return Ran(0, json.dumps(doc), "")
+            return self.suspend(argv)
         if kind == "message send":
             self.sent.append((argv[argv.index("-t") + 1], argv[argv.index("-m") + 1]))
         if kind == "resume":
             self.resumed.append(argv[3])
             if argv[3] == self.held:
-                self.held = None
+                self.lease = None
             return Ran(0, "{}", "")
         if self.held and kind == "config.get":
             return Ran(1, "", "")
@@ -537,9 +595,21 @@ class FakeGateway:
 class RunnerTests(unittest.TestCase):
     def go(self, fake, promotion=GROK, unguarded=0):
         outcome = claw_autoupdate.promote(fake.gateway(), promotion)
-        self.assertEqual(fake.resumed, fake.acquired, "every window is resumed")
+        self.assertEqual(
+            sorted(fake.resumed + fake.expired),
+            fake.acquired,
+            "every lease is resumed once, or expired because its id never came back",
+        )
         self.assertEqual(fake.unguarded_patches, unguarded)
         self.assertEqual(set(fake.waits) - {"0"}, set(), "never suspend --wait N>0")
+        self.assertEqual(set(fake.timeouts), {"30000"}, "never the CLI's 10 s")
+        for i in range(1, len(fake.asked_at)):
+            if fake.requests[i] == fake.requests[i - 1]:
+                gap = fake.asked_at[i] - fake.asked_at[i - 1]
+                self.assertTrue(
+                    gap >= 300 or (gap == 0 and not fake.answered[i - 1]),
+                    f"ask {i} came {gap} s after the last one",
+                )
         return outcome
 
     def test_a_failed_probe_leaves_the_live_config_exactly_as_it_was(self):
@@ -652,6 +722,62 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
         self.assertEqual(fake.asked_at, [0, 300, 600, 600])
         self.assertEqual(fake.acquired, ["s1", "s2"])
+
+    def test_an_ask_that_timed_out_but_was_granted_is_used_and_resumed_once(self):
+        fake = FakeGateway(CONFIG, suspend_script=["timeout"])
+
+        outcome = self.go(fake)
+
+        self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
+        self.assertEqual(fake.asked_at, [0, 0, 0])
+        self.assertEqual((fake.acquired, fake.resumed), (["s1", "s2"], ["s1", "s2"]))
+
+    def test_a_lease_whose_id_never_came_back_is_left_to_expire(self):
+        fake = FakeGateway(CONFIG, suspend_script=["timeout", "timeout"])
+
+        outcome = self.go(fake)
+
+        self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
+        self.assertEqual(fake.asked_at, [0, 0, 300, 300])
+        self.assertEqual((fake.expired, fake.resumed), (["s1"], ["s2", "s3"]))
+
+    def test_busy_draining_and_conflict_keep_waiting(self):
+        for name, script, foreign_until, asked_at in [
+            ("busy", [busy_reply()], None, [0, 300, 300]),
+            (
+                "draining",
+                [not_yet("draining", retryAfterMs=20000)],
+                None,
+                [0, 300, 300],
+            ),
+            (
+                "conflict",
+                [not_yet("conflict", expiresAtMs=120000)],
+                None,
+                [0, 300, 300],
+            ),
+            ("conflict, as the CLI relays it", [], 200, [0, 0, 300, 300]),
+        ]:
+            with self.subTest(name):
+                fake = FakeGateway(
+                    CONFIG, suspend_script=script, foreign_until=foreign_until
+                )
+
+                outcome = self.go(fake)
+
+                self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
+                self.assertEqual(fake.asked_at, asked_at)
+
+    def test_one_request_id_serves_each_window_and_each_window_has_its_own(self):
+        fake = FakeGateway(CONFIG, busy_polls=2)
+
+        self.go(fake)
+
+        self.assertEqual(len(fake.requests), 4)
+        self.assertEqual(len(set(fake.requests[:3])), 1)
+        self.assertNotEqual(fake.requests[3], fake.requests[0])
+        for request in fake.requests:
+            self.assertRegex(request, r"^claw-autoupdate-[0-9a-f-]{36}$")
 
     def test_staging_left_by_a_busy_run_is_picked_up_by_the_next_one(self):
         first = FakeGateway(CONFIG, busy_from_patch=1)
