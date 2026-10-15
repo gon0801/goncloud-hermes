@@ -922,6 +922,36 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(fake.config, expected)
                     self.assertNotIn("config entera", outcome.detail)
 
+    def test_an_edit_to_the_new_row_goes_with_it_and_the_notice_says_so(self):
+        def wider(c):
+            for row in c["models"]["providers"]["xai"]["models"]:
+                if row["id"] == "grok-4.8":
+                    row["contextWindow"] = 1000000
+
+        failing = {
+            "probe": (
+                "infer xai/grok-4.8",
+                Ran(1, "", "model not found"),
+                "sonda (high): salida 1: model not found",
+            ),
+            "verify": (
+                "agent skillverif verify",
+                turn("Error de proveedor", "xai"),
+                "turno en skillverif: no dijo PONG",
+            ),
+        }
+        for stage, (kind, answer, why) in failing.items():
+            with self.subTest(during=stage):
+                fake = FakeGateway(CONFIG, {kind: answer}, meddle={kind: wider})
+
+                outcome = self.go(fake)
+
+                self.assertEqual(fake.config, CONFIG)
+                self.assertEqual(
+                    outcome.detail,
+                    why + "; la fila grok-4.8 tenia cambios ajenos y se quito",
+                )
+
     def test_a_restore_it_cannot_tell_apart_puts_the_whole_snapshot_back(self):
         # A busy run left the staging, so the allowlist already had both refs:
         # after the rename and another writer's entry, no rule says which is ours.

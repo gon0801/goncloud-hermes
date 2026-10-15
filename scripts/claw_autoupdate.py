@@ -340,6 +340,26 @@ def undone(live, snapshot, old_ref, new_ref):
     return result
 
 
+def edited_new_row(live, snapshot, old_ref, new_ref):
+    """The new id when the live provider row for ``new_ref`` is not the clone
+    this runner wrote (another writer edited it), else None."""
+    provider, _, old_id = old_ref.partition("/")
+    new_id = new_ref.partition("/")[2]
+    old_row = next(
+        (
+            row
+            for row in _provider_rows(snapshot, provider) or []
+            if row.get("id") == old_id
+        ),
+        None,
+    )
+    ours = _cloned_row(old_row, old_id, new_id) if old_row is not None else None
+    for row in _provider_rows(live, provider) or []:
+        if isinstance(row, dict) and row.get("id") == new_id and row != ours:
+            return new_id
+    return None
+
+
 def _settings_tables(config, snapshot):
     """``(per-model settings map, the snapshot's same map or {})`` for
     ``agents.defaults.models`` and each ``agents.entries.*.models``."""
@@ -754,17 +774,22 @@ def _restore(gateway, snapshot, old_ref, new_ref):
     A patch that timed out may still have landed, so the restore is computed
     from a fresh read, never from what the runner believes it wrote, and it
     keeps what another writer changed meanwhile. When the two cannot be told
-    apart the whole snapshot goes back, and the notice says so. With no window
+    apart the whole snapshot goes back, and the notice says so. The new
+    provider row is this runner's own, so it goes even when another writer
+    edited it, and the notice says that too. With no window
     within RESTORE_WAIT it runs anyway: a half-applied switch is worse than a
     cut run.
     """
-    whole = []
+    whole, edited = [], []
 
     def target(live):
         restored = undone(live, snapshot, old_ref, new_ref)
         if restored is None:
             whole.append(True)
             return snapshot
+        row = edited_new_row(live, snapshot, old_ref, new_ref)
+        if row:
+            edited.append(row)
         return restored
 
     note = ""
@@ -783,6 +808,8 @@ def _restore(gateway, snapshot, old_ref, new_ref):
         return f"; NO pude restaurar: {failed}"
     if whole:
         note += "; restaure la config entera de antes, pude borrar cambios ajenos"
+    if edited:
+        note += f"; la fila {edited[0]} tenia cambios ajenos y se quito"
     return note
 
 
