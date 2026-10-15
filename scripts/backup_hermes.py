@@ -496,17 +496,24 @@ def parse_settings(argv):
     parser.add_argument("--server", default=DEFAULT_SERVER)
     parser.add_argument("--ssh", default=shutil.which("ssh") or "ssh")
     parser.add_argument("--repo", type=Path, default=setup.get("checkout"))
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=DEFAULT_BUDGET,
+        help="segundos; menor que cron.script_timeout_seconds de Hermes",
+    )
     args = parser.parse_args(argv)
     home = args.home.resolve()
     return Settings(
         home=home,
-        user_home=args.user_home,
+        user_home=args.user_home.resolve(),
         out_dir=args.out or home.parent / "hermes-respaldo",
         key_dir=args.key_dir or home / "backup-key",
         server=args.server,
         ssh=(args.ssh,),
         repo=Path(args.repo) if args.repo else None,
         git=setup.get("git") or shutil.which("git") or "git",
+        budget=args.budget,
     )
 
 
