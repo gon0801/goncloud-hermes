@@ -27,6 +27,7 @@ from model_lines import (
     FAMILIES,
     GO,
     HELD,
+    ON_HOLD,
     Promotion,
     catalog_view,
     change_of,
@@ -536,10 +537,6 @@ def _promote_or_say_why(gateway, promotion, budget):
         return promote(gateway, promotion, budget)
     except Exception as error:  # noqa: BLE001 - nothing was written yet
         return Outcome(promotion, "no cambiado", f"{type(error).__name__}: {error}")
-
-
-#: Said with a reverted pair: it stays as it is until the owner looks.
-ON_HOLD = "No lo vuelvo a intentar hasta que lo revises."
 
 
 def report(outcomes, last):

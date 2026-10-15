@@ -314,6 +314,21 @@ class RunnerTests(unittest.TestCase):
             [("pendiente", "turno PONG antes de cambiar: salida 1: opencode-go: 503")],
         )
 
+    def test_a_failed_turn_is_named_without_its_session_id(self):
+        run = FakeRun(
+            {
+                "turn": Ran(
+                    1, "Error: provider\n\nsession_id: 20261015_113404_1e7391\n", ""
+                )
+            }
+        )
+
+        outcomes = self.go(run)
+
+        self.assertEqual(
+            outcomes[0].detail, "turno PONG antes de cambiar: salida 1: Error: provider"
+        )
+
     def test_a_failed_push_is_reported_and_the_switch_stands(self):
         run = FakeRun({"git push": Ran(1, "", "rejected: fetch first")})
 

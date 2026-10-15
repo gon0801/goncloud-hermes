@@ -18,6 +18,7 @@ from model_lines import (
     FAMILIES,
     GO,
     HELD,
+    ON_HOLD,
     Promotion,
     Ran,
     change_of,
@@ -68,10 +69,6 @@ class Outcome:
     promotion: Promotion
     status: str  # "cambiado" | "no cambiado" | "revertido" | "pendiente"
     detail: str = ""
-
-
-#: Said with a reverted pair: it stays as it is until the owner looks.
-ON_HOLD = "No lo vuelvo a intentar hasta que lo revises."
 
 
 def plan_table(source, view):
@@ -133,7 +130,11 @@ def _pong_problem(setup, run):
         TURN_TIMEOUT,
     )
     if not turn.ok:
-        return turn.why()
+        # The session id changes every run; a notice quoting it would repeat daily.
+        out = "\n".join(
+            line for line in turn.out.splitlines() if not line.startswith("session_id:")
+        )
+        return Ran(turn.code, out, turn.err).why()
     return None if _is_pong(turn.out) else "no dijo PONG"
 
 

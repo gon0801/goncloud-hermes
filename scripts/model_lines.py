@@ -158,6 +158,7 @@ def read_catalogs():
 #: is kept run after run, so it is said once, and the pair is not tried again
 #: until the owner deletes that key from the runner's state file.
 HELD = "revertido:"
+ON_HOLD = "No lo vuelvo a intentar hasta que lo revises."
 
 
 def change_of(promotion):
