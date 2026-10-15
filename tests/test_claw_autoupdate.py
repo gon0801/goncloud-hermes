@@ -162,7 +162,17 @@ class RenamePatchTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(replace, [])
+        # Same lengths, yet each of these loses grok-4.7: the CLI refuses that
+        # without --replace-path (seen live on models.providers.xai.models).
+        self.assertEqual(
+            replace,
+            [
+                "agents.defaults.model.fallbacks",
+                "agents.defaults.modelPolicy.allow",
+                "agents.entries.main.model.fallbacks",
+                "models.providers.xai.models",
+            ],
+        )
 
     def test_renaming_an_already_renamed_config_is_an_empty_patch(self):
         done = claw_autoupdate.renamed(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
@@ -172,7 +182,7 @@ class RenamePatchTests(unittest.TestCase):
             ({}, []),
         )
 
-    def test_staging_only_adds_and_the_rename_after_it_shortens_two_arrays(self):
+    def test_staging_only_adds_and_the_rename_after_it_drops_from_four_arrays(self):
         stage = claw_autoupdate.staged(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
 
         self.assertEqual(
@@ -216,7 +226,12 @@ class RenamePatchTests(unittest.TestCase):
         )
         self.assertEqual(
             claw_autoupdate.rename_patch(stage, "xai/grok-4.7", "xai/grok-4.8")[1],
-            ["agents.defaults.modelPolicy.allow", "models.providers.xai.models"],
+            [
+                "agents.defaults.model.fallbacks",
+                "agents.defaults.modelPolicy.allow",
+                "agents.entries.main.model.fallbacks",
+                "models.providers.xai.models",
+            ],
         )
 
     def test_a_built_in_provider_needs_no_row(self):
@@ -287,11 +302,38 @@ def infer(text, ok=True):
     return Ran(0, json.dumps({"ok": ok, "outputs": [{"text": text}]}), "")
 
 
-class FakeGateway:
-    """A live config that config patch really changes; model calls are scripted."""
+def array_drops(before, patch, path=()):
+    """Paths of the arrays ``patch`` would drop an element from."""
+    found = []
+    for key, value in patch.items():
+        old = before.get(key) if isinstance(before, dict) else None
+        if isinstance(value, dict):
+            found += array_drops(old or {}, value, (*path, key))
+        elif isinstance(value, list) and isinstance(old, list):
+            if any(item not in value for item in old):
+                found.append(claw_autoupdate._path_text((*path, key)))
+    return found
 
-    def __init__(self, config, answers=None, busy=False, lost_patches=()):
+
+class FakeGateway:
+    """A live config that config patch really changes; model calls are scripted.
+
+    Its config patch refuses what the real CLI refuses (2026.9.7): an empty
+    patch, and dropping an array element whose path is not a --replace-path.
+    """
+
+    def __init__(
+        self,
+        config,
+        answers=None,
+        busy=False,
+        busy_from_patch=None,
+        lost_patches=(),
+        patch_results=None,
+        stale_reads=None,
+    ):
         self.config = copy.deepcopy(config)
+        self.shown = self.config
         self.answers = {
             "infer xai/grok-4.8": infer("OK"),
             "agent skillverif probe": turn("PONG", "claude-cli"),
@@ -299,9 +341,13 @@ class FakeGateway:
             **(answers or {}),
         }
         self.busy = busy
+        self.busy_from_patch = busy_from_patch
         self.calls = []
         self.now = 0.0
         self.lost_patches = lost_patches
+        self.patch_results = patch_results or {}
+        self.stale_reads = stale_reads or {}
+        self.stale_left = 0
         self.patches = 0
 
     def kind(self, argv):
@@ -317,19 +363,47 @@ class FakeGateway:
             return f"agent {argv[3]} {argv[5].rsplit('-', 1)[1]}"
         return " ".join(argv[1:3])
 
+    def refusal(self, argv):
+        patch = json.loads(Path(argv[4]).read_text(encoding="utf-8"))
+        if not patch:
+            return patch, Ran(1, "", "patch did not contain any config updates")
+        replace = [
+            argv[i + 1] for i, word in enumerate(argv) if word == "--replace-path"
+        ]
+        for path in array_drops(self.config, patch):
+            if path not in replace:
+                return patch, Ran(
+                    1, "", f"Refusing to replace {path}; it would remove entries"
+                )
+        return patch, None
+
     def __call__(self, argv, timeout):
         kind = self.kind(argv)
         self.calls.append(kind)
         if kind == "status":
-            work = {"modelRuns": 1 if self.busy else 0, "cronRuns": 1}
+            busy = self.busy or (
+                self.busy_from_patch is not None
+                and self.patches >= self.busy_from_patch
+            )
+            work = {"rootRequests": 1 if busy else 0, "cronRuns": 1}
             return Ran(0, json.dumps({"shutdownBudget": {"activeWork": work}}), "")
         if kind == "config":
-            return Ran(0, json.dumps({"hash": "h", "parsed": self.config}), "")
-        if kind == "patch":
+            if self.stale_left:
+                self.stale_left -= 1
+            else:
+                self.shown = self.config
+            return Ran(0, json.dumps({"hash": "h", "parsed": self.shown}), "")
+        if kind in ("dry-run", "patch"):
+            patch, refused = self.refusal(argv)
+            if refused:
+                return refused
+            if kind == "dry-run":
+                return Ran(0, "{}", "")
             self.patches += 1
             if self.patches not in self.lost_patches:
-                patch = json.loads(Path(argv[4]).read_text(encoding="utf-8"))
                 self.config = merged(self.config, patch)
+                self.stale_left = self.stale_reads.get(self.patches, 0)
+            return self.patch_results.get(self.patches, Ran(0, "{}", ""))
         if kind in self.answers:
             return self.answers[kind]
         return Ran(0, "{}", "")
@@ -401,6 +475,67 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(
             (outcome.status, outcome.detail),
             ("revertido", "xai/grok-4.7 sigue en la config"),
+        )
+
+    def test_a_rename_that_timed_out_after_landing_is_restored_from_a_fresh_read(
+        self,
+    ):
+        fake = FakeGateway(
+            CONFIG, patch_results={2: Ran(None, "", "sin respuesta tras 60 s")}
+        )
+
+        outcome = self.go(fake)
+
+        self.assertEqual(fake.config, CONFIG)
+        self.assertEqual(
+            (outcome.status, outcome.detail),
+            ("revertido", "config patch: sin respuesta tras 60 s"),
+        )
+
+    def test_a_config_that_reloads_late_is_waited_for_not_restored(self):
+        fake = FakeGateway(CONFIG, stale_reads={2: 3})
+
+        outcome = self.go(fake)
+
+        self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
+        self.assertEqual(
+            fake.config, claw_autoupdate.renamed(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
+        )
+
+    def test_staging_left_by_a_busy_run_is_picked_up_by_the_next_one(self):
+        first = FakeGateway(CONFIG, busy_from_patch=1)
+
+        waiting = self.go(first)
+        second = FakeGateway(first.config)
+        done = self.go(second)
+
+        self.assertEqual(
+            (waiting.status, waiting.detail),
+            ("pendiente", "no hubo un momento sin corridas"),
+        )
+        self.assertEqual(
+            first.config, claw_autoupdate.staged(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
+        )
+        self.assertEqual(done, claw_autoupdate.Outcome(GROK, "cambiado"))
+        self.assertEqual(
+            second.config,
+            claw_autoupdate.renamed(CONFIG, "xai/grok-4.7", "xai/grok-4.8"),
+        )
+
+    def test_a_restore_while_runs_are_in_flight_says_so(self):
+        fake = FakeGateway(
+            CONFIG,
+            {"agent skillverif verify": turn("Error de proveedor", "xai")},
+            busy_from_patch=2,
+        )
+
+        outcome = self.go(fake)
+
+        self.assertEqual(fake.config, CONFIG)
+        self.assertEqual(
+            outcome.detail,
+            "turno en skillverif: no dijo PONG; "
+            "restaure con corridas en curso, pude cortar alguna",
         )
 
     def test_anthropic_is_probed_by_a_real_turn_through_claude_cli(self):

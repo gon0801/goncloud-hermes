@@ -48,6 +48,10 @@ RUN_LIMIT = 1800
 SAFETY = 200
 IDLE_WAIT = 120
 IDLE_POLL = 15
+#: The gateway reloads its config after a patch; a read right after may still
+#: show the old one, so a check polls this long before calling it a failure.
+SETTLE_WAIT = 30
+SETTLE_POLL = 3
 READ_TIMEOUT = 30
 PATCH_TIMEOUT = 60
 TURN_TIMEOUT = 180
@@ -193,8 +197,9 @@ def _path_text(path):
 def merge_patch(before, after, path=()):
     """``(patch, replace_paths)`` turning ``before`` into ``after``.
 
-    Objects merge, arrays replace and null deletes; an array that gets shorter
-    needs its path passed as --replace-path.
+    Objects merge, arrays replace and null deletes. The CLI refuses to drop any
+    element of an existing array unless its path is passed as --replace-path,
+    so every array that loses one is listed, whatever its length.
     """
     patch, replace = {}, []
     for key in before.keys() - after.keys():
@@ -211,7 +216,7 @@ def merge_patch(before, after, path=()):
             if (
                 isinstance(value, list)
                 and isinstance(old, list)
-                and len(value) < len(old)
+                and any(item not in value for item in old)
             ):
                 replace.append(_path_text((*path, key)))
     return patch, sorted(replace)
@@ -317,6 +322,15 @@ class Gateway:
             ["gateway", "call", "config.get", "--params", "{}", "--json"], READ_TIMEOUT
         )["parsed"]
 
+    def settled(self, ready):
+        """The live config once ``ready(config)`` holds, or the last read at SETTLE_WAIT."""
+        deadline = self.clock() + SETTLE_WAIT
+        while True:
+            live = self.config()
+            if ready(live) or self.clock() + SETTLE_POLL > deadline:
+                return live
+            self.sleep(SETTLE_POLL)
+
     def wait_idle(self):
         deadline = self.clock() + IDLE_WAIT
         while True:
@@ -332,6 +346,12 @@ class Gateway:
             self.sleep(IDLE_POLL)
 
     def patch(self, patch, replace_paths, *, dry_run_first=True):
+        """None once the patch is applied, else why not; an empty one is not sent.
+
+        The CLI refuses an empty patch, and nothing to change is not a failure.
+        """
+        if not patch:
+            return None
         with tempfile.TemporaryDirectory(prefix="claw-autoupdate-") as directory:
             path = Path(directory) / "patch.json"
             path.write_text(json.dumps(patch, ensure_ascii=False), encoding="utf-8")
@@ -430,7 +450,7 @@ def _probe(gateway, config, old_ref, new_ref):
 
 
 def _verify(gateway, promotion, runtime):
-    live = gateway.config()
+    live = gateway.settled(lambda config: not mentions(config, promotion.old_ref))
     if mentions(live, promotion.old_ref):
         return f"{promotion.old_ref} sigue en la config"
     agents = [place for place in promotion.places if place != "defaults"]
@@ -445,7 +465,8 @@ def worst_case(config, ref):
     probes = max(1, len(efforts(config, ref)))
     return (
         3 * IDLE_WAIT
-        + 3 * READ_TIMEOUT
+        + 5 * READ_TIMEOUT
+        + SETTLE_WAIT
         + 5 * PATCH_TIMEOUT
         + (probes + 1) * (TURN_TIMEOUT + READ_TIMEOUT)
     )
@@ -463,31 +484,47 @@ def promote(gateway, promotion, budget):
     if worst_case(snapshot, old) > budget():
         return outcome("pendiente", "no cupo en el tiempo de esta corrida")
     runtime = runtime_of(snapshot, old)
-    stage = staged(snapshot, old, new)
-    problem = gateway.patch(*merge_patch(snapshot, stage))
-    if problem:
-        return outcome("no cambiado", f"preparar: {problem}")
-    current, status = stage, "no cambiado"
+    status = "no cambiado"
     try:
-        problem = _probe(gateway, stage, old, new)
+        problem = gateway.patch(*merge_patch(snapshot, staged(snapshot, old, new)))
+        if problem:
+            problem = f"preparar: {problem}"
+        else:
+            problem = _probe(gateway, snapshot, old, new)
         if problem is None:
             if not gateway.wait_idle():
                 # The staged ref is additive and harmless; the next run picks up here.
                 return outcome("pendiente", "no hubo un momento sin corridas")
-            target = renamed(stage, old, new)
-            problem = gateway.patch(*merge_patch(stage, target))
+            status = "revertido"
+            problem = gateway.patch(*rename_patch(gateway.config(), old, new))
             if problem is None:
-                current, status = target, "revertido"
                 problem = _verify(gateway, promotion, runtime)
     except Exception as error:  # noqa: BLE001 - the snapshot goes back first
         problem = f"{type(error).__name__}: {error}"
     if problem is None:
         return outcome("cambiado")
-    gateway.wait_idle()
-    restored = gateway.patch(*merge_patch(current, snapshot), dry_run_first=False)
-    if restored:
-        problem += f"; NO pude restaurar: {restored}"
-    return outcome(status, problem)
+    return outcome(status, problem + _restore(gateway, snapshot))
+
+
+def _restore(gateway, snapshot):
+    """Put ``snapshot`` back over the config live now; what to add to the notice.
+
+    A patch that timed out may still have landed, so the restore is computed
+    from a fresh read, never from what the runner believes it wrote. It runs
+    even when the gateway stays busy: a half-applied switch is worse than a
+    cut run.
+    """
+    idle = gateway.wait_idle()
+    try:
+        patch, replace = merge_patch(gateway.config(), snapshot)
+        failed = gateway.patch(patch, replace, dry_run_first=False)
+    except Exception as error:  # noqa: BLE001 - said in the notice
+        patch, failed = True, f"{type(error).__name__}: {error}"
+    if failed:
+        return f"; NO pude restaurar: {failed}"
+    if patch and not idle:
+        return "; restaure con corridas en curso, pude cortar alguna"
+    return ""
 
 
 def _promote_or_say_why(gateway, promotion, budget):
