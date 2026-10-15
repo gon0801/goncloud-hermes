@@ -154,6 +154,33 @@ def read_catalogs():
     return models_dev, go
 
 
+#: Notice key prefix for a pair that was switched and then reverted. Its notice
+#: is kept run after run, so it is said once, and the pair is not tried again
+#: until the owner deletes that key from the runner's state file.
+HELD = "revertido:"
+
+
+def change_of(promotion):
+    return f"{promotion.old_ref} -> {promotion.new_ref}"
+
+
+def split_held(promotions, last):
+    """``(promotions to try, notices kept for the pairs on hold)``."""
+    trying, kept = [], {}
+    for promotion in promotions:
+        key = HELD + change_of(promotion)
+        if key in last:
+            kept[key] = last[key]
+        else:
+            trying.append(promotion)
+    return trying, kept
+
+
+def held_notices(last):
+    """The pairs on hold, kept even by a run that failed before planning."""
+    return {key: text for key, text in last.items() if key.startswith(HELD)}
+
+
 def fresh_notices(current: Mapping[str, str], last: Mapping[str, str]) -> list[str]:
     """The notices that are new or worded differently since the last run.
 

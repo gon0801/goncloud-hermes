@@ -155,7 +155,9 @@ class FakeRun:
         kind = self.kind(argv)
         self.calls.append(kind)
         self.argv.append(list(argv))
-        return self.answers[kind]
+        answer = self.answers[kind]
+        # A list answers its calls in turn: the PONG turn runs before and after.
+        return answer.pop(0) if isinstance(answer, list) else answer
 
 
 class RunnerTests(unittest.TestCase):
@@ -210,7 +212,14 @@ class RunnerTests(unittest.TestCase):
         )
 
     def test_a_failed_turn_after_deploying_reverts_and_redeploys(self):
-        run = FakeRun({"turn": Ran(0, "Error: provider unavailable\n", "")})
+        run = FakeRun(
+            {
+                "turn": [
+                    Ran(0, PONG_TURN, ""),
+                    Ran(0, "Error: provider unavailable\n", ""),
+                ]
+            }
+        )
 
         outcomes = self.go(run)
 
@@ -219,6 +228,7 @@ class RunnerTests(unittest.TestCase):
             [
                 "git status",
                 "probe 4",
+                "turn",
                 "git commit",
                 "configure",
                 "configure --check",
@@ -246,7 +256,7 @@ class RunnerTests(unittest.TestCase):
         outcomes = self.go(run)
 
         self.assertIn("git revert", run.calls)
-        self.assertNotIn("turn", run.calls)
+        self.assertEqual(run.calls.count("turn"), 1)
         self.assertEqual(
             outcomes[0].detail,
             "configure_team --check: salida 1: conflict in claw/config.yaml",
@@ -262,6 +272,7 @@ class RunnerTests(unittest.TestCase):
             [
                 "git status",
                 "probe 4",
+                "turn",
                 "git commit",
                 "configure",
                 "configure --check",
@@ -271,7 +282,7 @@ class RunnerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            run.argv[2],
+            run.argv[3],
             [
                 "git",
                 "-C",
@@ -287,6 +298,21 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.table()["chains"]["adversary"][2], "xai/grok-4.8")
         self.assertNotIn("xai/grok-4.7", json.dumps(self.table()))
         self.assertEqual([(o.status, o.detail) for o in outcomes], [("cambiado", "")])
+
+    def test_a_turn_that_already_fails_before_the_switch_changes_nothing(self):
+        # OpenCode Go down: the check after deploying could not tell the new
+        # model apart, so nothing is written and the switch waits.
+        before = self.table()
+        run = FakeRun({"turn": Ran(1, "", "opencode-go: 503")})
+
+        outcomes = self.go(run)
+
+        self.assertEqual(run.calls, ["git status", "probe 4", "turn"])
+        self.assertEqual(self.table(), before)
+        self.assertEqual(
+            [(o.status, o.detail) for o in outcomes],
+            [("pendiente", "turno PONG antes de cambiar: salida 1: opencode-go: 503")],
+        )
 
     def test_a_failed_push_is_reported_and_the_switch_stands(self):
         run = FakeRun({"git push": Ran(1, "", "rejected: fetch first")})
@@ -392,6 +418,29 @@ class WatcherHookTests(unittest.TestCase):
             ],
         )
 
+    def test_a_reverted_switch_is_told_once_and_not_tried_again(self):
+        checkout = Path(self.tmp.name) / "checkout"
+        said, calls, last = [], [], {}
+        for _ in range(2):
+            run = FakeRun(
+                {"turn": [Ran(0, PONG_TURN, ""), Ran(0, "Error: provider\n", "")]}
+            )
+            lines, last = hermes_autoupdate.step(
+                self.here, GROK_ONLY, last, started=0, run=run, clock=lambda: 0
+            )
+            said.append(lines)
+            calls.append(run.calls)
+            # The fake git revert leaves the file; the real one restores it.
+            shutil.copy(FIXTURE, checkout / "model-routing.source.json")
+
+        notice = (
+            "- Revertido: xai/grok-4.7 -> xai/grok-4.8 (turno PONG: no dijo PONG). "
+            "No lo vuelvo a intentar hasta que lo revises."
+        )
+        self.assertEqual(said, [[notice], []])
+        self.assertEqual(calls[1], [])
+        self.assertEqual(last, {"revertido:xai/grok-4.7 -> xai/grok-4.8": notice})
+
     def test_without_its_setup_file_the_watcher_switches_nothing(self):
         (self.here / "autoupdate.json").unlink()
 
@@ -401,12 +450,16 @@ class WatcherHookTests(unittest.TestCase):
 
     def test_a_crash_in_the_autoupdate_is_reported_and_the_report_goes_on(self):
         (self.here / "autoupdate.json").write_text("{", encoding="utf-8")
+        held = {"revertido:xai/grok-4.7 -> xai/grok-4.8": "- Revertido: ..."}
 
-        lines, remembered = model_watch.follow_releases(self.here, GROK_ONLY, {}, 0)
+        lines, remembered = model_watch.follow_releases(self.here, GROK_ONLY, held, 0)
 
         self.assertEqual(len(lines), 1)
         self.assertTrue(
             lines[0].startswith("- La autoactualizacion fallo: JSONDecodeError")
+        )
+        self.assertEqual(
+            remembered["revertido:xai/grok-4.7 -> xai/grok-4.8"], "- Revertido: ..."
         )
         self.assertEqual(
             model_watch.follow_releases(self.here, GROK_ONLY, remembered, 0)[0], []

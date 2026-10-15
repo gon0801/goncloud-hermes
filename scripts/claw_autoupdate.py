@@ -26,13 +26,17 @@ import time
 from model_lines import (
     FAMILIES,
     GO,
+    HELD,
     Promotion,
     catalog_view,
+    change_of,
     family_of,
     fresh_notices,
+    held_notices,
     newer_in_line,
     read_catalogs,
     run as real_run,
+    split_held,
     version_text,
 )
 
@@ -534,13 +538,21 @@ def _promote_or_say_why(gateway, promotion, budget):
         return Outcome(promotion, "no cambiado", f"{type(error).__name__}: {error}")
 
 
+#: Said with a reverted pair: it stays as it is until the owner looks.
+ON_HOLD = "No lo vuelvo a intentar hasta que lo revises."
+
+
 def report(outcomes, last):
     lines, remembered = [], {}
     for outcome in outcomes:
         promotion = outcome.promotion
-        change = f"{promotion.old_ref} -> {promotion.new_ref}"
+        change = change_of(promotion)
         if outcome.status == "cambiado":
             lines.append(f"- Cambiado: {change} en {', '.join(promotion.places)}.")
+        elif outcome.status == "revertido":
+            remembered[HELD + change] = (
+                f"- Revertido: {change} ({outcome.detail}). {ON_HOLD}"
+            )
         else:
             remembered[change] = (
                 f"- {outcome.status.capitalize()}: {change} ({outcome.detail})."
@@ -550,12 +562,25 @@ def report(outcomes, last):
 
 def autoupdate(gateway, view, last, *, started):
     deadline = started + RUN_LIMIT - SAFETY
-    promotions = plan_claw(gateway.config(), view)
+    trying, kept = split_held(plan_claw(gateway.config(), view), last)
     outcomes = [
         _promote_or_say_why(gateway, promotion, lambda: deadline - gateway.clock())
-        for promotion in promotions
+        for promotion in trying
     ]
-    return report(outcomes, last)
+    lines, remembered = report(outcomes, last)
+    return lines, {**remembered, **kept}
+
+
+def said(gateway, view, last, *, started):
+    """``(lines, notices to remember)``; a crash is one notice, never a traceback."""
+    try:
+        return autoupdate(gateway, view, last, started=started)
+    except Exception as error:  # noqa: BLE001 - said once
+        remembered = {
+            **held_notices(last),
+            "error": f"- La autoactualizacion de claw fallo: {type(error).__name__}: {error}",
+        }
+        return fresh_notices(remembered, last), remembered
 
 
 def main():
@@ -583,14 +608,7 @@ def main():
                 f"{promotion.old_ref} -> {promotion.new_ref} ({', '.join(promotion.places)})"
             )
         return 0
-    last = state.get("notices", {})
-    try:
-        lines, remembered = autoupdate(gateway, view, last, started=started)
-    except Exception as error:  # noqa: BLE001 - said once, never a traceback
-        remembered = {
-            "error": f"- La autoactualizacion de claw fallo: {type(error).__name__}: {error}"
-        }
-        lines = fresh_notices(remembered, last)
+    lines, remembered = said(gateway, view, state.get("notices", {}), started=started)
     if lines:
         print("\n".join([f"Claw: modelos {time.strftime('%Y-%m-%d')}", *lines]))
     else:

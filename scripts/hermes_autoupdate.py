@@ -17,12 +17,15 @@ import time
 from model_lines import (
     FAMILIES,
     GO,
+    HELD,
     Promotion,
     Ran,
+    change_of,
     family_of,
     fresh_notices,
     newer_in_line,
     run as real_run,
+    split_held,
 )
 from promote_model import probe_routes, replace_label, split_label
 
@@ -65,6 +68,10 @@ class Outcome:
     promotion: Promotion
     status: str  # "cambiado" | "no cambiado" | "revertido" | "pendiente"
     detail: str = ""
+
+
+#: Said with a reverted pair: it stays as it is until the owner looks.
+ON_HOLD = "No lo vuelvo a intentar hasta que lo revises."
 
 
 def plan_table(source, view):
@@ -110,6 +117,26 @@ def _is_pong(text):
     return any(line.strip(" .!\t").upper() == "PONG" for line in text.splitlines())
 
 
+def _pong_problem(setup, run):
+    """None when claw answers a real turn with PONG, else why not."""
+    turn = run(
+        [
+            setup.hermes,
+            "-p",
+            "claw",
+            "chat",
+            "-q",
+            "Responde solo: PONG",
+            "--oneshot",
+            "-Q",
+        ],
+        TURN_TIMEOUT,
+    )
+    if not turn.ok:
+        return turn.why()
+    return None if _is_pong(turn.out) else "no dijo PONG"
+
+
 def promote(setup, promotion, run, budget):
     """Probe, switch, deploy and check one promotion; revert when the check fails."""
     git = [setup.git, "-C", str(setup.checkout)]
@@ -133,7 +160,7 @@ def promote(setup, promotion, run, budget):
     worst = (
         len(routes) * PROBE_TIMEOUT
         + 3 * DEPLOY_TIMEOUT
-        + TURN_TIMEOUT
+        + 2 * TURN_TIMEOUT
         + _GIT_STEPS * GIT_TIMEOUT
     )
     if worst > budget():
@@ -151,6 +178,12 @@ def promote(setup, promotion, run, budget):
         )
         if not probe.ok:
             return failed(f"sonda posicion {position}: {_probe_failure(probe)}")
+    # The check after deploying is the same turn on today's chain. When it
+    # fails before anything changes, a failure after would say nothing about
+    # the new model and would revert it.
+    baseline = _pong_problem(setup, run)
+    if baseline is not None:
+        return failed(f"turno PONG antes de cambiar: {baseline}", "pendiente")
 
     table.write_text(
         json.dumps(changed, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -172,21 +205,9 @@ def promote(setup, promotion, run, budget):
         if not check.ok:
             problem = f"configure_team --check: {check.why()}"
     if problem is None:
-        turn = run(
-            [
-                setup.hermes,
-                "-p",
-                "claw",
-                "chat",
-                "-q",
-                "Responde solo: PONG",
-                "--oneshot",
-                "-Q",
-            ],
-            TURN_TIMEOUT,
-        )
-        if not (turn.ok and _is_pong(turn.out)):
-            problem = f"turno PONG: {turn.why() if not turn.ok else 'no dijo PONG'}"
+        turn = _pong_problem(setup, run)
+        if turn is not None:
+            problem = f"turno PONG: {turn}"
     if problem is not None:
         revert = run([*git, "revert", "--no-edit", "HEAD"], GIT_TIMEOUT)
         redeploy = run(configure, DEPLOY_TIMEOUT) if revert.ok else None
@@ -224,12 +245,16 @@ def report(outcomes, mixed, last):
     lines, remembered = [], {}
     for outcome in outcomes:
         promotion = outcome.promotion
-        change = f"{promotion.old_ref} -> {promotion.new_ref}"
+        change = change_of(promotion)
         if outcome.status == "cambiado":
             lines.append(
                 f"- Cambiado: {change} en {', '.join(promotion.places)}"
                 + (f"; {outcome.detail}" if outcome.detail else "")
                 + "."
+            )
+        elif outcome.status == "revertido":
+            remembered[HELD + change] = (
+                f"- Revertido: {change} ({outcome.detail}). {ON_HOLD}"
             )
         else:
             remembered[change] = (
@@ -250,11 +275,13 @@ def step(here, view, last, *, started, run=real_run, clock=time.monotonic):
     setup = Setup.read(setup_path)
     source = json.loads((setup.checkout / TABLE).read_text(encoding="utf-8"))
     promotions, mixed = plan_table(source, view)
+    trying, kept = split_held(promotions, last)
     outcomes = autoupdate(
         setup,
-        promotions,
+        trying,
         run=run,
         clock=clock,
         deadline=started + SCRIPT_LIMIT - SAFETY,
     )
-    return report(outcomes, mixed, last)
+    lines, remembered = report(outcomes, mixed, last)
+    return lines, {**remembered, **kept}

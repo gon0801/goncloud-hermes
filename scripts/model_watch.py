@@ -30,6 +30,7 @@ from model_lines import (  # noqa: E402
     family_of,
     fresh_notices,
     get_json,
+    held_notices,
     read_catalogs,
 )
 
@@ -200,7 +201,8 @@ def follow_releases(here, view, last, started):
         return hermes_autoupdate.step(here, view, last, started=started)
     except Exception as error:  # noqa: BLE001 - reported, the watcher goes on
         remembered = {
-            "error": f"- La autoactualizacion fallo: {type(error).__name__}: {error}"
+            **held_notices(last),
+            "error": f"- La autoactualizacion fallo: {type(error).__name__}: {error}",
         }
         return fresh_notices(remembered, last), remembered
 

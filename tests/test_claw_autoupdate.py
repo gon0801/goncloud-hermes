@@ -571,6 +571,53 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(outcome.status, "pendiente")
 
 
+class HoldTests(unittest.TestCase):
+    def test_a_reverted_switch_is_told_once_and_not_tried_again(self):
+        fake = FakeGateway(
+            CONFIG, {"agent skillverif verify": turn("Error de proveedor", "xai")}
+        )
+        said, patches, last = [], [], {}
+        for _ in range(2):
+            before = fake.calls.count("patch")
+            lines, last = claw_autoupdate.autoupdate(
+                fake.gateway(), {"xai": VIEW["xai"]}, last, started=0
+            )
+            said.append(lines)
+            patches.append(fake.calls.count("patch") - before)
+
+        notice = (
+            "- Revertido: xai/grok-4.7 -> xai/grok-4.8 "
+            "(turno en skillverif: no dijo PONG). "
+            "No lo vuelvo a intentar hasta que lo revises."
+        )
+        self.assertEqual(said, [[notice], []])
+        self.assertEqual(patches, [3, 0])
+        self.assertEqual(last, {"revertido:xai/grok-4.7 -> xai/grok-4.8": notice})
+        self.assertEqual(fake.config, CONFIG)
+
+    def test_a_run_that_crashes_says_so_once_and_keeps_the_pairs_on_hold(self):
+        def down(argv, timeout):
+            return Ran(1, "", "gateway down")
+
+        gateway = claw_autoupdate.Gateway("openclaw", down)
+        held = {"revertido:xai/grok-4.7 -> xai/grok-4.8": "- Revertido: ..."}
+
+        lines, remembered = claw_autoupdate.said(gateway, VIEW, held, started=0)
+        again, _ = claw_autoupdate.said(gateway, VIEW, remembered, started=0)
+
+        self.assertEqual(
+            lines,
+            [
+                "- La autoactualizacion de claw fallo: RuntimeError: "
+                "gateway call config.get: salida 1: gateway down"
+            ],
+        )
+        self.assertEqual(again, [])
+        self.assertEqual(
+            remembered["revertido:xai/grok-4.7 -> xai/grok-4.8"], "- Revertido: ..."
+        )
+
+
 class ReportTests(unittest.TestCase):
     def test_a_failure_is_said_once_until_its_words_change(self):
         failed = [claw_autoupdate.Outcome(GROK, "no cambiado", "sonda (high): quota")]
