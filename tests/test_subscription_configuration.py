@@ -1822,10 +1822,14 @@ while True:
             deepseek_ok_body,
         )
 
+        # The model names below are the frozen table's: the live one moves on
+        # its own to newer releases.
+        frozen = ROOT / "tests/fixtures/model-routing.source.json"
         with (
             tempfile.TemporaryDirectory() as tmp,
             FakeEndpoint(body=zai_ok_body("GONCLOUD_PROBE_OK")) as zai,
             FakeEndpoint(body=deepseek_ok_body("GONCLOUD_PROBE_OK")) as deepseek,
+            patch.dict(os.environ, {"GONCLOUD_ROUTING_SOURCE": str(frozen)}),
         ):
             target = Path(tmp) / "fixture.env"
             module.write_private_env(

@@ -14,6 +14,15 @@ from subscriptions.catalog import SLOT_COUNT, compile_profile_routes  # noqa: E4
 
 
 def load_source() -> dict:
+    # The live table moves on its own to newer releases (hermes_autoupdate), so
+    # tests that name models read a frozen copy; the live file keeps only the
+    # invariants checked in LiveTableTests.
+    return json.loads(
+        (ROOT / "tests/fixtures/model-routing.source.json").read_text(encoding="utf-8")
+    )
+
+
+def load_live_source() -> dict:
     return json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
 
 
@@ -197,6 +206,26 @@ EXPECTED_MODELS = {
 }
 
 API_PROFILES = {"verifier", "scout"}
+
+
+class LiveTableTests(unittest.TestCase):
+    def test_the_live_table_keeps_every_slot_bound_to_the_same_adapters(self):
+        # A release switch stays inside a model's line, so the adapters (bound
+        # by family) and the shape of every chain never change with it.
+        source = load_live_source()
+
+        for chain_name, chain in source["chains"].items():
+            with self.subTest(chain=chain_name):
+                self.assertEqual(len(chain), SLOT_COUNT)
+                self.assertEqual(chain[1], chain[0])
+        for profile, adapters in EXPECTED_ADAPTERS.items():
+            with self.subTest(profile=profile):
+                routes = compile_profile_routes(profile, source)
+                self.assertEqual([route.adapter for route in routes], adapters)
+                self.assertEqual(
+                    [route.billing_mode for route in routes].count("api"),
+                    1 if profile in API_PROFILES else 0,
+                )
 
 
 class SlotSemanticsTests(unittest.TestCase):

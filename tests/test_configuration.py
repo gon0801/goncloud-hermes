@@ -381,8 +381,11 @@ class ConfigurationTests(unittest.TestCase):
 
 class DirectorNativeChainTests(unittest.TestCase):
     def table(self):
+        # A frozen copy: the live table moves on its own to newer releases.
         return json.loads(
-            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+            (ROOT / "tests/fixtures/model-routing.source.json").read_text(
+                encoding="utf-8"
+            )
         )
 
     def test_director_chain_is_the_main_row_on_native_providers(self):
