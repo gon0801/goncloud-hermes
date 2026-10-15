@@ -187,7 +187,7 @@ def inspect(tree):
 def drill(archive, workdir=None):
     """The one-line verdict on an archive, restored into a fresh temp dir."""
     with tempfile.TemporaryDirectory(prefix="hermes-restore-", dir=workdir) as temp:
-        tree = native(temp)
+        tree = native(Path(temp).resolve())
         extract(archive, tree)
         problems, counts = inspect(tree)
     if problems:
