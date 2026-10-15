@@ -53,10 +53,10 @@ EXCLUSIVE_WAIT = 1200
 RESTORE_WAIT = 120
 POLL_MIN = 10
 POLL_MAX = 60
-#: The cron delivery suppresses a command whose whole output is this.
-SILENT = "NO_REPLY"
 NO_WINDOW = "no hubo un momento sin corridas"
+#: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
+SEND_TIMEOUT = 60
 #: The gateway reloads its config after a patch; a read right after may still
 #: show the old one, so a check polls this long before calling it a failure.
 SETTLE_WAIT = 30
@@ -441,6 +441,28 @@ class Gateway:
             done = self.run(argv, PATCH_TIMEOUT)
             return None if done.ok else f"config patch: {failure(done)}"
 
+    def send(self, to, text):
+        """None once Telegram took ``text``, else why not."""
+        done = self.run(
+            [
+                self.openclaw,
+                "message",
+                "send",
+                "--channel",
+                "telegram",
+                "-t",
+                to,
+                "-m",
+                text,
+                "--json",
+            ],
+            SEND_TIMEOUT,
+        )
+        doc = _first_json(done.out)
+        if done.ok and not (isinstance(doc, dict) and doc.get("ok") is False):
+            return None
+        return failure(done)
+
     def turn(self, agent, ref, *, thinking=None, purpose="probe"):
         """``(ok, why, winner provider)`` of one real agent turn on ``ref``.
 
@@ -653,6 +675,33 @@ def said(gateway, view, last):
         return fresh_notices(remembered, last), remembered
 
 
+def daily(gateway, view, state_path, to, *, today):
+    """One run: switch what can switch, tell the owner, remember what was told.
+
+    Says nothing when there is nothing new. A failed send leaves the state as
+    it was, so the next run says it again; the exit code is then 1.
+    """
+    state = (
+        json.loads(state_path.read_text(encoding="utf-8"))
+        if state_path.is_file()
+        else {}
+    )
+    lines, remembered = said(gateway, view, state.get("notices", {}))
+    if lines:
+        text = "\n".join([f"Claw: modelos {today}", *lines])
+        print(text)
+        problem = gateway.send(to, text)
+        if problem:
+            print(f"Telegram no tomo el aviso: {problem}", file=sys.stderr)
+            return 1
+    temporary = state_path.with_name(state_path.name + ".tmp")
+    temporary.write_text(
+        json.dumps({"notices": remembered}, ensure_ascii=False), encoding="utf-8"
+    )
+    temporary.replace(state_path)
+    return 0
+
+
 def main():
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -660,15 +709,11 @@ def main():
     parser.add_argument(
         "--state", type=Path, default=here / "claw_autoupdate.state.json"
     )
+    parser.add_argument("--to", default=TELEGRAM_TO, help="Telegram chat to notify")
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan and change nothing"
     )
     args = parser.parse_args()
-    state = (
-        json.loads(args.state.read_text(encoding="utf-8"))
-        if args.state.is_file()
-        else {}
-    )
     gateway = Gateway(args.openclaw, real_run)
     view = catalog_view(*read_catalogs())
     if args.dry_run:
@@ -677,17 +722,7 @@ def main():
                 f"{promotion.old_ref} -> {promotion.new_ref} ({', '.join(promotion.places)})"
             )
         return 0
-    lines, remembered = said(gateway, view, state.get("notices", {}))
-    if lines:
-        print("\n".join([f"Claw: modelos {time.strftime('%Y-%m-%d')}", *lines]))
-    else:
-        print(SILENT)
-    temporary = args.state.with_name(args.state.name + ".tmp")
-    temporary.write_text(
-        json.dumps({"notices": remembered}, ensure_ascii=False), encoding="utf-8"
-    )
-    temporary.replace(args.state)
-    return 0
+    return daily(gateway, view, args.state, args.to, today=time.strftime("%Y-%m-%d"))
 
 
 if __name__ == "__main__":

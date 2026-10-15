@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. Fill __PYTHON3__, __SCRIPT__, __OPENCLAW__, __PATH__ and __HOME__
+  as the README says (launchd expands neither ~ nor $HOME), then load it with
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.goncloud.claw-autoupdate.plist
+  __PATH__ must hold node's directory: openclaw starts with #!/usr/bin/env node
+  and launchd's own PATH lacks it.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.goncloud.claw-autoupdate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON3__</string>
+    <string>__SCRIPT__</string>
+    <string>--openclaw</string>
+    <string>__OPENCLAW__</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>50</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/goncloud/claw-autoupdate.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/goncloud/claw-autoupdate.log</string>
+</dict>
+</plist>

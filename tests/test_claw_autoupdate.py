@@ -1,6 +1,9 @@
+import contextlib
 import copy
+import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -421,6 +424,7 @@ class FakeGateway:
         self.resumed = []
         self.waits = []
         self.unguarded_patches = 0
+        self.sent = []
         self.calls = []
         self.now = 0.0
         self.lost_patches = lost_patches
@@ -474,6 +478,8 @@ class FakeGateway:
             self.acquired.append(self.held)
             doc = {"status": "ready", "suspensionId": self.held, "requestId": "r"}
             return Ran(0, json.dumps(doc), "")
+        if kind == "message send":
+            self.sent.append((argv[argv.index("-t") + 1], argv[argv.index("-m") + 1]))
         if kind == "resume":
             self.resumed.append(argv[3])
             if argv[3] == self.held:
@@ -772,6 +778,85 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(
             remembered["revertido:xai/grok-4.7 -> xai/grok-4.8"], "- Revertido: ..."
         )
+
+
+class DailyTests(unittest.TestCase):
+    def run_daily(self, fake, view, state):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claw_autoupdate.state.json"
+            if state is not None:
+                path.write_text(json.dumps(state), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    code = claw_autoupdate.daily(
+                        fake.gateway(), view, path, "6470689715", today="2026-10-15"
+                    )
+            after = json.loads(path.read_text(encoding="utf-8"))
+        return code, after
+
+    def test_a_switch_is_sent_to_the_owner_and_remembered(self):
+        fake = FakeGateway(CONFIG)
+
+        code, state = self.run_daily(fake, {"xai": VIEW["xai"]}, None)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            fake.sent,
+            [
+                (
+                    "6470689715",
+                    "Claw: modelos 2026-10-15\n- Cambiado: xai/grok-4.7 -> "
+                    "xai/grok-4.8 en defaults, main, skillverif.",
+                )
+            ],
+        )
+        self.assertEqual(state, {"notices": {}})
+
+    def test_a_notice_telegram_did_not_take_is_not_remembered(self):
+        fake = FakeGateway(
+            CONFIG,
+            {
+                "infer xai/grok-4.8": Ran(1, "", "quota"),
+                "message send": Ran(1, "", "telegram down"),
+            },
+        )
+
+        code, state = self.run_daily(fake, {"xai": VIEW["xai"]}, {"notices": {}})
+
+        self.assertEqual(code, 1)
+        self.assertEqual(len(fake.sent), 1)
+        self.assertEqual(state, {"notices": {}})
+
+    def test_a_notice_telegram_took_is_not_sent_again(self):
+        fake = FakeGateway(CONFIG, {"infer xai/grok-4.8": Ran(1, "", "quota")})
+
+        _, state = self.run_daily(fake, {"xai": VIEW["xai"]}, None)
+        code, _ = self.run_daily(fake, {"xai": VIEW["xai"]}, state)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            [text for _, text in fake.sent],
+            [
+                "Claw: modelos 2026-10-15\n- No cambiado: xai/grok-4.7 -> "
+                "xai/grok-4.8 (sonda (high): salida 1: quota)."
+            ],
+        )
+
+    def test_a_send_that_exits_zero_with_ok_false_failed(self):
+        refused = Ran(
+            0, json.dumps({"ok": False, "error": {"message": "chat not found"}}), ""
+        )
+        fake = FakeGateway(CONFIG, {"message send": refused})
+
+        self.assertEqual(fake.gateway().send("1", "hola"), "chat not found")
+        self.assertIsNone(FakeGateway(CONFIG).gateway().send("1", "hola"))
+
+    def test_nothing_new_sends_nothing(self):
+        fake = FakeGateway(CONFIG)
+
+        code, state = self.run_daily(fake, {"xai": {"grok-4.7": {}}}, None)
+
+        self.assertEqual((code, fake.sent, state), (0, [], {"notices": {}}))
 
 
 class ReportTests(unittest.TestCase):
