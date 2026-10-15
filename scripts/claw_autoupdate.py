@@ -7,7 +7,11 @@ call, renames every use, and checks a real agent turn. A failed probe or check
 restores the snapshot. Each config write runs inside an exclusive window the
 gateway grants (``gateway suspend``) only when no run is in flight.
 
-    python3 claw_autoupdate.py [--openclaw PATH] [--state PATH] [--to CHAT] [--dry-run]
+    python3 claw_autoupdate.py [--openclaw PATH] [--config PATH] [--state PATH] [--to CHAT] [--dry-run]
+
+It reads the live config from its file (``--config``, default
+``~/.openclaw/openclaw.json``), never ``gateway call config.get``: that call
+fails while the runner holds the gateway's suspension.
 
 It is two files on the host: this one and ``model_lines.py`` beside it.
 """
@@ -57,13 +61,11 @@ NO_WINDOW = "no hubo un momento sin corridas"
 #: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
 SEND_TIMEOUT = 60
-#: The gateway reloads its config after a patch; a read right after may still
-#: show the old one, so a check polls this long before calling it a failure.
-SETTLE_WAIT = 30
-SETTLE_POLL = 3
 READ_TIMEOUT = 30
+CONFIG_PATH = Path("~/.openclaw/openclaw.json")
+#: The config file can be caught mid-write; a read that does not parse retries.
 CONFIG_TRIES = 4
-CONFIG_RETRY = 3
+CONFIG_RETRY = 1
 PATCH_TIMEOUT = 60
 TURN_TIMEOUT = 180
 PROBE_AGENT = "skillverif"
@@ -350,39 +352,32 @@ class Outcome:
 class Gateway:
     """The openclaw commands the runner needs, through an injectable ``run``."""
 
-    def __init__(self, openclaw, run, *, sleep=time.sleep, clock=time.monotonic):
+    def __init__(
+        self, openclaw, run, *, config_path, sleep=time.sleep, clock=time.monotonic
+    ):
         self.openclaw = openclaw
         self.run = run
+        self.config_path = Path(config_path)
         self.sleep = sleep
         self.clock = clock
 
-    def _json(self, argv, timeout):
-        done = self.run([self.openclaw, *argv], timeout)
-        if not done.ok:
-            raise RuntimeError(f"{' '.join(argv[:3])}: {failure(done)}")
-        return json.loads(done.out)
-
     def config(self):
-        """The live config; a read right after a reload can lack it, so retry."""
+        """The live config, from its file; one caught mid-write is read again.
+
+        Its contents hold secrets, so no error carries them.
+        """
         for attempt in range(CONFIG_TRIES):
             if attempt:
                 self.sleep(CONFIG_RETRY)
-            doc = self._json(
-                ["gateway", "call", "config.get", "--params", "{}", "--json"],
-                READ_TIMEOUT,
-            )
-            if isinstance(doc.get("parsed"), dict):
-                return doc["parsed"]
-        raise RuntimeError(f"config.get sin parsed tras {CONFIG_TRIES} lecturas")
-
-    def settled(self, ready):
-        """The live config once ``ready(config)`` holds, or the last read at SETTLE_WAIT."""
-        deadline = self.clock() + SETTLE_WAIT
-        while True:
-            live = self.config()
-            if ready(live) or self.clock() + SETTLE_POLL > deadline:
-                return live
-            self.sleep(SETTLE_POLL)
+            try:
+                doc = json.loads(self.config_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(doc, dict):
+                return doc
+        raise RuntimeError(
+            f"{self.config_path} no es JSON legible tras {CONFIG_TRIES} lecturas"
+        )
 
     @contextmanager
     def exclusive(self, wait):
@@ -548,8 +543,7 @@ def _probe(gateway, config, old_ref, new_ref):
 
 
 def _verify(gateway, promotion, runtime):
-    live = gateway.settled(lambda config: not mentions(config, promotion.old_ref))
-    if mentions(live, promotion.old_ref):
+    if mentions(gateway.config(), promotion.old_ref):
         return f"{promotion.old_ref} sigue en la config"
     agents = [place for place in promotion.places if place != "defaults"]
     agent = PROBE_AGENT if PROBE_AGENT in agents else (agents or ["main"])[0]
@@ -707,6 +701,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--openclaw", default="openclaw", help="openclaw CLI path")
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_PATH.expanduser(),
+        help="the gateway's live config file",
+    )
+    parser.add_argument(
         "--state", type=Path, default=here / "claw_autoupdate.state.json"
     )
     parser.add_argument("--to", default=TELEGRAM_TO, help="Telegram chat to notify")
@@ -714,7 +714,7 @@ def main():
         "--dry-run", action="store_true", help="Print the plan and change nothing"
     )
     args = parser.parse_args()
-    gateway = Gateway(args.openclaw, real_run)
+    gateway = Gateway(args.openclaw, real_run, config_path=args.config)
     view = catalog_view(*read_catalogs())
     if args.dry_run:
         for promotion in plan_claw(gateway.config(), view):

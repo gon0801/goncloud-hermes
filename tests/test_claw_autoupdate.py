@@ -2,6 +2,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import claw_autoupdate  # noqa: E402
 from model_lines import Promotion, Ran  # noqa: E402
+
+CONFIG_DIR = None
+
+
+def setUpModule():
+    global CONFIG_DIR
+    CONFIG_DIR = tempfile.TemporaryDirectory(prefix="claw-config-")
+
+
+def tearDownModule():
+    CONFIG_DIR.cleanup()
+
 
 CONFIG = {
     "agents": {
@@ -387,13 +400,14 @@ def busy_reply():
 
 
 class FakeGateway:
-    """A live config that config patch really changes; model calls are scripted.
+    """A live config file that config patch really changes; model calls are scripted.
 
-    Its config patch refuses what the real CLI refuses (2026.9.7): an empty
-    patch, and dropping an array element whose path is not a --replace-path.
+    As on 2026.9.7, config patch writes the file, and refuses an empty patch
+    and dropping an array element whose path is not a --replace-path.
     ``gateway suspend`` is busy for ``busy_polls`` polls (and for good once
     ``busy_from_patch`` patches landed), then grants a window; while one is
-    held, model calls are refused as the gateway refuses new work.
+    held, model calls and ``gateway call config.get`` are refused as the
+    gateway refuses new work.
     """
 
     def __init__(
@@ -405,11 +419,11 @@ class FakeGateway:
         explode_on_patch=None,
         lost_patches=(),
         patch_results=None,
-        stale_reads=None,
-        unparsed_reads=0,
     ):
-        self.config = copy.deepcopy(config)
-        self.shown = self.config
+        handle, name = tempfile.mkstemp(suffix=".json", dir=CONFIG_DIR.name)
+        os.close(handle)
+        self.path = Path(name)
+        self.write(config)
         self.answers = {
             "infer xai/grok-4.8": infer("OK"),
             "agent skillverif probe": turn("PONG", "claude-cli"),
@@ -429,10 +443,14 @@ class FakeGateway:
         self.now = 0.0
         self.lost_patches = lost_patches
         self.patch_results = patch_results or {}
-        self.stale_reads = stale_reads or {}
-        self.stale_left = 0
         self.patches = 0
-        self.unparsed_reads = unparsed_reads
+
+    @property
+    def config(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def write(self, config):
+        self.path.write_text(json.dumps(config), encoding="utf-8")
 
     def kind(self, argv):
         if argv[1:3] == ["gateway", "suspend"]:
@@ -440,7 +458,7 @@ class FakeGateway:
         if argv[1:3] == ["gateway", "resume"]:
             return "resume"
         if argv[1:4] == ["gateway", "call", "config.get"]:
-            return "config"
+            return "config.get"
         if argv[1:3] == ["config", "patch"]:
             return "dry-run" if "--dry-run" in argv else "patch"
         if argv[1:3] == ["infer", "model"]:
@@ -485,19 +503,15 @@ class FakeGateway:
             if argv[3] == self.held:
                 self.held = None
             return Ran(0, "{}", "")
+        if self.held and kind == "config.get":
+            return Ran(1, "", "")
         if self.held and kind.startswith(("agent", "infer")):
             return Ran(
                 1, json.dumps({"ok": False, "error": {"message": "suspended"}}), ""
             )
-        if kind == "config":
-            if self.unparsed_reads:
-                self.unparsed_reads -= 1
-                return Ran(0, json.dumps({"hash": "h"}), "")
-            if self.stale_left:
-                self.stale_left -= 1
-            else:
-                self.shown = self.config
-            return Ran(0, json.dumps({"hash": "h", "parsed": self.shown}), "")
+        if kind == "config.get":
+            doc = {"path": str(self.path), "includedPaths": [], "parsed": self.config}
+            return Ran(0, json.dumps(doc), "")
         if kind in ("dry-run", "patch"):
             patch, refused = self.refusal(argv)
             if refused:
@@ -510,8 +524,7 @@ class FakeGateway:
             if self.held is None:
                 self.unguarded_patches += 1
             if self.patches not in self.lost_patches:
-                self.config = merged(self.config, patch)
-                self.stale_left = self.stale_reads.get(self.patches, 0)
+                self.write(merged(self.config, patch))
             return self.patch_results.get(self.patches, Ran(0, "{}", ""))
         if kind in self.answers:
             return self.answers[kind]
@@ -522,7 +535,11 @@ class FakeGateway:
             self.now += seconds
 
         return claw_autoupdate.Gateway(
-            "openclaw", self, sleep=sleep, clock=lambda: self.now
+            "openclaw",
+            self,
+            config_path=self.path,
+            sleep=sleep,
+            clock=lambda: self.now,
         )
 
 
@@ -610,16 +627,6 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(
             (outcome.status, outcome.detail),
             ("revertido", "config patch: sin respuesta tras 60 s"),
-        )
-
-    def test_a_config_that_reloads_late_is_waited_for_not_restored(self):
-        fake = FakeGateway(CONFIG, stale_reads={2: 3})
-
-        outcome = self.go(fake)
-
-        self.assertEqual(outcome, claw_autoupdate.Outcome(GROK, "cambiado"))
-        self.assertEqual(
-            fake.config, claw_autoupdate.renamed(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
         )
 
     def test_a_failed_patch_still_resumes_its_window(self):
@@ -720,17 +727,51 @@ class RunnerTests(unittest.TestCase):
 
 
 class ConfigReadTests(unittest.TestCase):
-    def test_a_read_without_parsed_right_after_a_reload_is_retried(self):
-        fake = FakeGateway(CONFIG, unparsed_reads=2)
+    def test_the_config_is_read_from_its_file_inside_an_open_window(self):
+        fake = FakeGateway(CONFIG)
+        gateway = fake.gateway()
+        staged = claw_autoupdate.staged(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
 
-        self.assertEqual(fake.gateway().config(), CONFIG)
-        self.assertEqual(fake.calls, ["config"] * 3)
+        with gateway.exclusive(0):
+            before = gateway.config()
+            fake.write(staged)
+            after = gateway.config()
 
-    def test_a_read_that_never_has_parsed_fails_after_a_few_tries(self):
-        fake = FakeGateway(CONFIG, unparsed_reads=99)
+        self.assertEqual((before, after), (CONFIG, staged))
+        self.assertEqual(fake.calls, ["suspend", "resume"])
 
-        with self.assertRaisesRegex(RuntimeError, "config.get sin parsed tras 4"):
-            fake.gateway().config()
+    def test_a_file_caught_mid_write_is_read_again(self):
+        fake = FakeGateway(CONFIG)
+        whole = fake.path.read_text(encoding="utf-8")
+        fake.path.write_text(whole[: len(whole) // 2], encoding="utf-8")
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            fake.path.write_text(whole, encoding="utf-8")
+
+        gateway = claw_autoupdate.Gateway(
+            "openclaw", fake, config_path=fake.path, sleep=sleep
+        )
+
+        self.assertEqual(gateway.config(), CONFIG)
+        self.assertEqual(sleeps, [1])
+
+    def test_a_file_that_never_parses_fails_without_saying_what_it_holds(self):
+        fake = FakeGateway(CONFIG)
+        fake.path.write_text('{"apiKey": "sk-secreto', encoding="utf-8")
+        sleeps = []
+        gateway = claw_autoupdate.Gateway(
+            "openclaw", fake, config_path=fake.path, sleep=sleeps.append
+        )
+
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.config()
+
+        self.assertEqual(
+            str(caught.exception), f"{fake.path} no es JSON legible tras 4 lecturas"
+        )
+        self.assertEqual(sleeps, [1, 1, 1])
 
 
 class HoldTests(unittest.TestCase):
@@ -761,7 +802,8 @@ class HoldTests(unittest.TestCase):
         def down(argv, timeout):
             return Ran(1, "", "gateway down")
 
-        gateway = claw_autoupdate.Gateway("openclaw", down)
+        missing = Path(CONFIG_DIR.name) / "no-hay.json"
+        gateway = claw_autoupdate.Gateway("openclaw", down, config_path=missing)
         held = {"revertido:xai/grok-4.7 -> xai/grok-4.8": "- Revertido: ..."}
 
         lines, remembered = claw_autoupdate.said(gateway, VIEW, held)
@@ -770,8 +812,8 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "- La autoactualizacion de claw fallo: RuntimeError: "
-                "gateway call config.get: salida 1: gateway down"
+                "- La autoactualizacion de claw fallo: FileNotFoundError: "
+                f"[Errno 2] No such file or directory: '{missing}'"
             ],
         )
         self.assertEqual(again, [])

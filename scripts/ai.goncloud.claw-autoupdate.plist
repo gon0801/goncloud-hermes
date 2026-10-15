@@ -17,6 +17,8 @@
     <string>__SCRIPT__</string>
     <string>--openclaw</string>
     <string>__OPENCLAW__</string>
+    <string>--config</string>
+    <string>__HOME__/.openclaw/openclaw.json</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
