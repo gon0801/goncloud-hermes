@@ -1,5 +1,9 @@
 import ast
+import os
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -173,11 +177,56 @@ class RanTests(unittest.TestCase):
 
     def test_the_real_runner_reports_exit_output_and_timeout(self):
         done = model_lines.run(
-            [sys.executable, "-c", "print('hola'); raise SystemExit(3)"], 30
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('hola'); print('mal', file=sys.stderr); sys.exit(3)",
+            ],
+            30,
         )
-        self.assertEqual((done.code, done.out), (3, "hola\n"))
+        self.assertEqual(done, model_lines.Ran(3, "hola\n", "mal\n"))
         slow = model_lines.run([sys.executable, "-c", "import time; time.sleep(5)"], 1)
         self.assertEqual((slow.code, slow.err), (None, "sin respuesta tras 1 s"))
+
+    def test_a_timeout_kills_the_grandchild_that_holds_the_output_open(self):
+        # hermes.cmd -> python -> configure_team -> git: the grandchild inherits
+        # the pipes, and on Windows CPython's own timeout then waits on it forever.
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "grandchild.pid"
+            parent = (
+                "import subprocess, sys\n"
+                "child = subprocess.Popen([sys.executable, '-c',"
+                " 'import time; time.sleep(30)'])\n"
+                f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+                "child.wait()\n"
+            )
+            started = time.monotonic()
+            done = model_lines.run([sys.executable, "-c", parent], 1)
+            took = time.monotonic() - started
+            grandchild = int(pid_file.read_text())
+
+        self.assertEqual((done.code, done.err), (None, "sin respuesta tras 1 s"))
+        self.assertLess(took, 5)
+        deadline = time.monotonic() + 5
+        while alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(alive(grandchild), "the grandchild outlived the timeout")
+
+
+def alive(pid):
+    if os.name == "nt":
+        listed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return str(pid) in listed.split()
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 if __name__ == "__main__":

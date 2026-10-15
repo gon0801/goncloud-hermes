@@ -4,7 +4,8 @@ Runs on the gateway host (Mac Mini) from launchd, daily. Claw does not read
 this repo, so this works on its live config. For each ref in a chain with a
 newer release in its own line it stages the new ref, probes it with a real
 call, renames every use, and checks a real agent turn. A failed probe or check
-restores the snapshot. Each config write runs inside an exclusive window the
+takes those changes back out, keeping what any other writer changed meanwhile.
+Each config write runs inside an exclusive window the
 gateway grants (``gateway suspend``) only when no run is in flight.
 
     python3 claw_autoupdate.py [--openclaw PATH] [--config PATH] [--state PATH] [--to CHAT] [--dry-run]
@@ -240,6 +241,93 @@ def merge_patch(before, after, path=()):
             ):
                 replace.append(_path_text((*path, key)))
     return patch, sorted(replace)
+
+
+class _Tangled(Exception):
+    """This runner's change and another writer's sit in one array."""
+
+
+def undone(live, snapshot, old_ref, new_ref):
+    """``live`` with this runner's staging and rename of ``old_ref`` taken back.
+
+    A node still as the snapshot, the staging or the rename left it goes back
+    to the snapshot; one only another writer changed keeps their value, and
+    one both changed keeps theirs too (theirs is the later write). Where both
+    changed an array, ``new_ref`` turns back into ``old_ref`` in it and the
+    staged copy goes. None when that cannot be told apart: the snapshot already
+    had ``new_ref`` in that array, or the ref sat inside a nested value.
+    """
+    stage = staged(snapshot, old_ref, new_ref)
+    written = (stage, renamed(stage, old_ref, new_ref))
+    provider, _, old_id = old_ref.partition("/")
+    new_id = new_ref.partition("/")[2]
+    rows_path = ("models", "providers", provider, "models")
+
+    def refs(now, before):
+        if mentions(before, new_ref) or any(
+            item != old_ref and mentions(item, old_ref) for item in before
+        ):
+            raise _Tangled
+        result = []
+        for item in now:
+            item = old_ref if item == new_ref else item
+            if not (item == old_ref and old_ref in result):
+                result.append(item)
+        return result
+
+    def rows(now, before):
+        by_id = {row.get("id"): row for row in before if isinstance(row, dict)}
+        if new_id in by_id or old_id not in by_id:
+            raise _Tangled
+        old_row = by_id[old_id]
+        has_old = any(isinstance(row, dict) and row.get("id") == old_id for row in now)
+        result = []
+        for row in now:
+            if isinstance(row, dict) and row.get("id") == new_id:
+                if not has_old:
+                    result.append(copy.deepcopy(old_row))
+                    has_old = True
+            else:
+                result.append(row)
+        return result
+
+    def undo(now, before, ours, path):
+        if now == before or now in ours:
+            return before
+        if all(value == before for value in ours):
+            return now
+        if all(isinstance(value, dict) for value in (now, before, *ours)):
+            result = {}
+            for key in dict.fromkeys([*before, *now, *(k for v in ours for k in v)]):
+                value = undo(
+                    now.get(key, _MISSING),
+                    before.get(key, _MISSING),
+                    tuple(value.get(key, _MISSING) for value in ours),
+                    (*path, key),
+                )
+                if value is not _MISSING:
+                    result[key] = value
+            return result
+        if isinstance(now, list) and isinstance(before, list):
+            return (rows if path == rows_path else refs)(now, before)
+        return now
+
+    def outside_rows(config):
+        trimmed = copy.deepcopy(config)
+        trimmed.get("models", {}).pop("providers", None)
+        return trimmed
+
+    try:
+        result = undo(live, snapshot, written, ())
+    except _Tangled:
+        return None
+    # Another writer pointed something at new_ref meanwhile: keeping it would
+    # leave a ref whose row and allow entry this restore just took away.
+    if mentions(outside_rows(result), new_ref) and not mentions(
+        outside_rows(snapshot), new_ref
+    ):
+        return None
+    return result
 
 
 def rename_patch(config, old_ref, new_ref):
@@ -626,25 +714,36 @@ def promote(gateway, promotion):
         problem = f"{type(error).__name__}: {error}"
     if problem is None:
         return outcome("cambiado")
-    return outcome(status, problem + _restore(gateway, snapshot))
+    return outcome(status, problem + _restore(gateway, snapshot, old, new))
 
 
-def _restore(gateway, snapshot):
-    """Put ``snapshot`` back over the config live now; what to add to the notice.
+def _restore(gateway, snapshot, old_ref, new_ref):
+    """Take this runner's changes back out of the config live now; what to add
+    to the notice.
 
     A patch that timed out may still have landed, so the restore is computed
-    from a fresh read, never from what the runner believes it wrote. With no
-    window within RESTORE_WAIT it runs anyway: a half-applied switch is worse
-    than a cut run.
+    from a fresh read, never from what the runner believes it wrote, and it
+    keeps what another writer changed meanwhile. When the two cannot be told
+    apart the whole snapshot goes back, and the notice says so. With no window
+    within RESTORE_WAIT it runs anyway: a half-applied switch is worse than a
+    cut run.
     """
+    whole = []
+
+    def target(live):
+        restored = undone(live, snapshot, old_ref, new_ref)
+        if restored is None:
+            whole.append(True)
+            return snapshot
+        return restored
+
     note = ""
     try:
         try:
-            failed = _write(
-                gateway, lambda live: snapshot, RESTORE_WAIT, dry_run_first=False
-            )
+            failed = _write(gateway, target, RESTORE_WAIT, dry_run_first=False)
         except Busy:
-            patch, replace = merge_patch(gateway.config(), snapshot)
+            live = gateway.config()
+            patch, replace = merge_patch(live, target(live))
             failed = gateway.patch(patch, replace, dry_run_first=False)
             if patch:
                 note = "; restaure con corridas en curso, pude cortar alguna"
@@ -652,6 +751,8 @@ def _restore(gateway, snapshot):
         failed = f"{type(error).__name__}: {error}"
     if failed:
         return f"; NO pude restaurar: {failed}"
+    if whole:
+        note += "; restaure la config entera de antes, pude borrar cambios ajenos"
     return note
 
 
