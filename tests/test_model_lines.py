@@ -35,6 +35,21 @@ class FamilyTests(unittest.TestCase):
 
         self.assertEqual(set(model_lines.FAMILIES), {prefix for prefix, _ in bound})
 
+    def test_kimi_is_every_k_with_a_number_and_nothing_else_starting_with_k(self):
+        self.assertEqual(
+            {
+                model: model_lines.family_of(model)
+                for model in ("k3", "k4", "k3-256k", "kimi-for-coding", "kling-1")
+            },
+            {
+                "k3": r"k\d",
+                "k4": r"k\d",
+                "k3-256k": r"k\d",
+                "kimi-for-coding": "kimi-",
+                "kling-1": None,
+            },
+        )
+
 
 class ParseTests(unittest.TestCase):
     def test_the_single_version_run_becomes_the_line(self):

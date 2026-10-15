@@ -312,6 +312,37 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(routes[4].adapter, "opencode_zai")
         self.assertEqual(routes[4].model, "glm-5.3-flash")
 
+    def test_every_kimi_release_binds_to_kimi_and_other_k_names_do_not(self):
+        source = {
+            "chains": {
+                "scout": [
+                    "opencode-go/deepseek-v4.1-flash",
+                    "opencode-go/deepseek-v4.1-flash",
+                    "kimi/k3",
+                    "kimi/k4",
+                    "kimi/k3-256k",
+                    "kimi/kimi-for-coding",
+                    "xai/grok-4.7",
+                    "openai/gpt-6-astra",
+                ]
+            }
+        }
+
+        routes = compile_profile_routes("scout", source)
+
+        self.assertEqual(
+            [(route.adapter, route.model) for route in routes[2:6]],
+            [
+                ("kimi", "k3"),
+                ("kimi", "k4"),
+                ("kimi", "k3-256k"),
+                ("kimi", "kimi-for-coding"),
+            ],
+        )
+        source["chains"]["scout"][3] = "kling/kling-1"
+        with self.assertRaisesRegex(ValueError, "unknown model family: kling-1"):
+            compile_profile_routes("scout", source)
+
     def test_parenthetical_annotations_stay_on_the_label_not_the_model_id(self):
         source = load_source()
         claw = compile_profile_routes("claw", source)

@@ -14,12 +14,14 @@ from .types import RouteSpec
 #: (added 2026-09-27) are bound by slot. Later positions bind by family.
 _SLOT_FORCED_ADAPTERS = {0: "opencode_go", 1: "opencode_go_2"}
 
-#: Later slots bind by model family regardless of the recorded prefix.
+#: Later slots bind by model family regardless of the recorded prefix. Each
+#: family is a pattern matched at the start of the id: Kimi's own releases are
+#: ``k<digits>`` (k3, k4, k3-256k), so a literal "k3" would drop k4.
 _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("muse-", "muse"),
     ("claude-", "claude"),
     ("gpt-", "codex"),
-    ("k3", "kimi"),
+    (r"k\d", "kimi"),
     ("kimi-", "kimi"),
     # Served through the OpenCode CLI so GLM gets workspace tools; the plain
     # HTTP zai adapter has none. Same Coding Plan subscription either way.
@@ -37,8 +39,8 @@ _REASONING_EFFORTS = frozenset({"high", "xhigh", "max"})
 
 
 def _family_adapter(model: str) -> str:
-    for prefix, adapter in _FAMILY_ADAPTERS:
-        if model.startswith(prefix):
+    for family, adapter in _FAMILY_ADAPTERS:
+        if re.match(family, model):
             return adapter
     raise ValueError(f"unknown model family: {model}")
 

@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import sys
 
-from model_lines import FAMILIES
+from model_lines import family_of
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "model-routing.source.json"
@@ -47,7 +47,7 @@ def replace_label(source, old, new):
         raise ValueError(f"no cell uses {old}")
     name = new.split("/", 1)[-1]
     direct = [cell for cell in cells if int(cell.rsplit(":", 1)[1]) >= 2]
-    if direct and not name.startswith(tuple(FAMILIES)):
+    if direct and family_of(name) is None:
         raise ValueError(
             f"{name} is not a family the router binds, and these cells pick "
             f"their adapter from the name: {', '.join(direct)}"

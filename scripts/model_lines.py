@@ -13,16 +13,17 @@ import subprocess
 from typing import Callable, Mapping, Sequence
 import urllib.request
 
-#: Model-name prefix -> the models.dev provider that carries that vendor's own
-#: catalog. The prefixes are the families the subscription router binds
-#: (subscriptions/catalog.py); a test keeps the two lists equal.
+#: Model family -> the models.dev provider that carries that vendor's own
+#: catalog. A family is a pattern matched at the start of the id, the same ones
+#: the subscription router binds (subscriptions/catalog.py); a test keeps the
+#: two lists equal.
 FAMILIES = {
     "muse-": "meta",
     "claude-": "anthropic",
     "gpt-": "openai",
     "grok-": "xai",
     "glm-": "zai-coding-plan",
-    "k3": "kimi-code-plan-global",
+    r"k\d": "kimi-code-plan-global",
     "kimi-": "kimi-code-plan-global",
     "deepseek-": "deepseek",
 }
@@ -48,7 +49,7 @@ class Promotion:
 
 
 def family_of(model):
-    return next((prefix for prefix in FAMILIES if model.startswith(prefix)), None)
+    return next((family for family in FAMILIES if re.match(family, model)), None)
 
 
 def parse(model_id: str) -> Versioned | None:
