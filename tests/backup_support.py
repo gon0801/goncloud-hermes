@@ -94,6 +94,79 @@ def make_install(base):
     return home, user
 
 
+def make_cli_homes(user):
+    """The router CLIs' dirs, shaped like the PC's listing of 2026-10-15."""
+    keep = (
+        ".codex/auth.json",
+        ".codex/config.toml",
+        ".codex/hooks.json",
+        ".codex/AGENTS.md",
+        ".codex/installation_id",
+        ".codex/version.json",
+        ".codex/agents/worker.toml",
+        ".codex/hooks/stop.ps1",
+        ".codex/memories/notes.md",
+        ".codex/prompts/review.md",
+        ".codex/rules/default.rules",
+        ".codex/skills/poteto/SKILL.md",
+        ".codex/skills/poteto/uv.lock",
+        ".claude/.credentials.json",
+        ".claude/.claude.json",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".claude/CLAUDE.md",
+        ".claude/agents/reviewer.md",
+        ".claude/commands/ship.md",
+        ".claude/hooks/guard.py",
+        ".claude/skills/verify/SKILL.md",
+        ".claude/skills-inactive/old/SKILL.md",
+        ".claude/memory/MEMORY.md",
+        ".claude/memory-archive/2026.md",
+        ".claude/plugins/known_marketplaces.json",
+        ".grok/config.toml",
+        ".grok/agents/reviewer.md",
+        ".kimi/config.toml",
+        ".kimi/credentials/kimi-code.json",
+        ".kimi-code/config.toml",
+        ".local/share/opencode/auth.json",
+        ".config/opencode/opencode.jsonc",
+        ".config/opencode/agent/poteto-agent.md",
+    )
+    drop = (
+        ".codex/packages/standalone/codex.exe",
+        ".codex/sessions/2026/10/15/rollout.jsonl",
+        ".codex/plugins/cache/nvidia/SKILL.md",
+        ".codex/.sandbox-bin/rg.exe",
+        ".codex/.tmp/plugins/x.md",
+        ".codex/cache/models.json",
+        ".codex/sqlite/state.db",
+        ".codex/vendor_imports/skills.json",
+        ".codex/tmp/arg0/x",
+        ".codex/history.jsonl",
+        ".codex/session_index.jsonl",
+        ".codex/sandbox.20261015.log",
+        ".codex/config.toml.bak1",
+        ".codex/state_5.sqlite",
+        ".codex/skills/poteto/run.log",
+        ".claude/plugins/cache/pstack/SKILL.md",
+        ".claude/projects/c--dev/session.jsonl",
+        ".claude/state/x.json",
+        ".claude/jobs/x.json",
+        ".claude/file-history/x",
+        ".claude/history.jsonl",
+        ".grok/bin/grok.exe",
+        ".grok/marketplace-cache/x.json",
+        ".grok/downloads/x.zip",
+        ".kimi/sessions/x.jsonl",
+        ".local/share/opencode/bin/rg.exe",
+        ".local/share/opencode/storage/session/x.json",
+    )
+    for name in keep + drop:
+        write(user / name, "x")
+    (user / ".grok/models.json").write_bytes(b"x" * 1_000_001)
+    return {f"user/{name}" for name in keep}
+
+
 def make_receiver(base, mode="ok", fail_first=0):
     receiver = base / "receiver"
     (receiver / "received").mkdir(parents=True)

@@ -48,63 +48,142 @@ class Rule:
 
     The pattern is a posix path relative to the root matched segment by
     segment ("*" stays inside one segment; a leading "**/" matches at any
-    depth) and covers everything below what it names. The last matching rule
-    wins. Under "user" only the paths a keep rule names are visited at all.
+    depth) and covers everything below what it names. A small_file rule names
+    only files of at most SMALL_FILE bytes at exactly its depth. The last
+    matching rule wins. A path no rule names is not visited, unless a keep
+    rule names something below it.
     """
 
     root: str
     pattern: str
     keep: bool
     reason: str
+    small_file: bool = False
 
+
+SMALL_FILE = 1_000_000
 
 _REINSTALL = "el instalador oficial lo recrea en el commit fijado"
 _CACHE = "cache que Hermes vuelve a llenar"
-RULES = (
-    Rule("home", "", True, "estado de Hermes"),
-    Rule("home", "hermes-agent", False, _REINSTALL),
-    Rule("home", "tools", False, _REINSTALL),
-    Rule("home", "installs", False, _REINSTALL),
-    Rule("home", "node", False, _REINSTALL),
-    Rule("home", "bin", False, _REINSTALL),
-    Rule("home", "cache", False, _CACHE),
-    Rule("home", "image_cache", False, _CACHE),
-    Rule("home", "audio_cache", False, _CACHE),
-    Rule("home", "logs", False, "bitacoras; no hacen falta para reinstalar"),
-    Rule("home", "backups", False, "copias viejas; este archivo las reemplaza"),
-    Rule(
-        "home", "recovery-backups", False, "copias viejas; este archivo las reemplaza"
-    ),
-    Rule("home", "state-snapshots", False, "copias viejas; este archivo las reemplaza"),
-    Rule("home", "locks", False, "candados de procesos vivos"),
-    Rule("home", "**/*.lock", False, "candado de un proceso vivo"),
-    Rule("home", "**/*.pid", False, "pid de un proceso vivo"),
-    Rule("home", "profiles/*/cache", False, _CACHE),
-    Rule("home", "profiles/*/image_cache", False, _CACHE),
-    Rule("home", "profiles/*/audio_cache", False, _CACHE),
-    Rule("home", "profiles/*/logs", False, "bitacoras; no hacen falta para reinstalar"),
-    Rule("user", ".claude", True, "login y ajustes de Claude Code (enrutador)"),
-    Rule("user", ".claude.json", True, "login y ajustes de Claude Code (enrutador)"),
-    Rule("user", ".codex", True, "login de Codex (enrutador)"),
-    Rule("user", ".grok", True, "login de Grok (enrutador)"),
-    Rule("user", ".kimi", True, "login de Kimi (enrutador)"),
-    Rule("user", ".config/opencode", True, "ajustes de OpenCode (enrutador)"),
-    Rule("user", ".local/share/opencode", True, "login de OpenCode (enrutador)"),
-    Rule("user", "AppData/Roaming/himalaya", True, "cuentas de correo de himalaya"),
-    Rule("user", ".gitconfig", True, "identidad de git del autoactualizador"),
-    Rule("user", ".ssh", True, "llave con que el autoactualizador hace push"),
-    Rule("user", ".claude/projects", False, "historial de sesiones; puede pesar GB"),
-    Rule("user", ".claude/file-history", False, "historial de sesiones"),
-    Rule("user", ".claude/shell-snapshots", False, _CACHE),
-    Rule("user", ".claude/debug", False, "bitacoras"),
-    Rule("user", ".claude/todos", False, "historial de sesiones"),
-    Rule("user", ".claude/statsig", False, _CACHE),
-    Rule("user", ".codex/sessions", False, "historial de sesiones"),
-    Rule("user", ".codex/log", False, "bitacoras"),
-    Rule("user", ".local/share/opencode/storage", False, "historial de sesiones"),
-    Rule("user", ".local/share/opencode/log", False, "bitacoras"),
-    Rule("user", "**/node_modules", False, "dependencias que la CLI reinstala"),
+_OLD = "copias viejas; este archivo las reemplaza"
+_LIVE = "candado de un proceso vivo"
+_LOGS = "bitacoras; no hacen falta para reinstalar"
+
+# Each profiles/<name>/ is a full HERMES_HOME, so these apply at both levels.
+HERMES_HOME_DROPS = (
+    ("hermes-agent", _REINSTALL),
+    ("tools", _REINSTALL),
+    ("installs", _REINSTALL),
+    ("node", _REINSTALL),
+    ("bin", _REINSTALL),
+    ("cache", _CACHE),
+    ("image_cache", _CACHE),
+    ("audio_cache", _CACHE),
+    ("lsp", "cache de los servidores de lenguaje; se recrea"),
+    ("logs", _LOGS),
+    ("backups", _OLD),
+    ("recovery-backups", _OLD),
+    ("state-snapshots", _OLD),
+    ("locks", "candados de procesos vivos"),
+    ("auth.lock", _LIVE),
+    ("*.env.lock", _LIVE),
+    ("*.live-probe.lock", _LIVE),
+    ("*.dispatch-*.lock", _LIVE),
 )
+
+# The router's CLIs: their installers recreate everything but the login, the
+# settings and what the owner wrote, which is all that is kept.
+CLI_HOMES = (
+    (".claude", "Claude Code"),
+    (".codex", "Codex"),
+    (".grok", "Grok"),
+    (".kimi", "Kimi"),
+    (".kimi-code", "Kimi Code"),
+    (".config/opencode", "OpenCode"),
+    (".local/share/opencode", "OpenCode"),
+)
+CLI_OWNER_DIRS = (
+    "agent",
+    "agents",
+    "command",
+    "commands",
+    "credentials",
+    "hooks",
+    "memories",
+    "memory",
+    "memory-archive",
+    "prompts",
+    "rules",
+    "skills",
+    "skills-inactive",
+)
+_SESSIONS = "historial de sesiones; puede pesar GB"
+CLI_DROPS = (
+    ("packages", "binarios de la CLI; su instalador los recrea"),
+    ("plugins", "plugins; se reinstalan desde la configuracion"),
+    ("sessions", _SESSIONS),
+    ("projects", _SESSIONS),
+    ("file-history", _SESSIONS),
+    ("storage", _SESSIONS),
+    ("cache", "cache que la CLI vuelve a llenar"),
+    ("marketplace-cache", "cache que la CLI vuelve a llenar"),
+    ("downloads", "descargas que la CLI vuelve a bajar"),
+    ("bin", "binarios de la CLI; su instalador los recrea"),
+    (".sandbox-bin", "binarios de la CLI; su instalador los recrea"),
+    (".tmp", "temporales"),
+    ("tmp", "temporales"),
+    ("log", _LOGS),
+    ("logs", _LOGS),
+)
+
+
+def _hermes_home_rules():
+    yield Rule("home", "", True, "estado de Hermes")
+    for name, reason in HERMES_HOME_DROPS:
+        yield Rule("home", name, False, reason)
+        yield Rule("home", f"profiles/*/{name}", False, reason)
+    yield Rule("home", "**/*.pid", False, "pid de un proceso vivo")
+
+
+def _user_rules():
+    for path, name in CLI_HOMES:
+        yield Rule(
+            "user",
+            path,
+            False,
+            f"{name} lo recrea al reinstalarse; solo entran su login, sus ajustes "
+            "(archivos sueltos de hasta 1 MB) y lo que escribio el dueno",
+        )
+        for child, reason in CLI_DROPS:
+            yield Rule("user", f"{path}/{child}", False, reason)
+        yield Rule(
+            "user", f"{path}/*", True, f"login y ajustes de {name}", small_file=True
+        )
+        for child in CLI_OWNER_DIRS:
+            yield Rule(
+                "user", f"{path}/{child}", True, f"lo escribio el dueno de {name}"
+            )
+    yield Rule("user", ".claude.json", True, "login y ajustes de Claude Code")
+    yield Rule(
+        "user", "AppData/Roaming/himalaya", True, "cuentas de correo de himalaya"
+    )
+    yield Rule("user", ".gitconfig", True, "identidad de git del autoactualizador")
+    yield Rule("user", ".ssh", True, "llave con que el autoactualizador hace push")
+    yield Rule("user", "**/node_modules", False, "dependencias que la CLI reinstala")
+    yield Rule("user", "**/*.log", False, _LOGS)
+    yield Rule("user", "**/*.bak*", False, _OLD)
+    yield Rule("user", "**/history.jsonl", False, _SESSIONS)
+    yield Rule("user", "**/session_index.jsonl", False, _SESSIONS)
+    yield Rule("user", ".codex/*.sqlite*", False, _SESSIONS)
+    yield Rule(
+        "user",
+        ".claude/plugins/known_marketplaces.json",
+        True,
+        "de donde Claude Code reinstala los plugins de settings.json",
+    )
+
+
+RULES = (*_hermes_home_rules(), *_user_rules())
 
 
 def _segments_match(pattern, parts):
@@ -114,26 +193,46 @@ def _segments_match(pattern, parts):
     )
 
 
-def _matches(pattern, parts):
-    if pattern.startswith("**/"):
-        tail = pattern[3:].split("/")
+def _matches(rule, parts, size):
+    if rule.pattern.startswith("**/"):
+        tail = rule.pattern[3:].split("/")
         return any(_segments_match(tail, parts[i:]) for i in range(len(parts)))
-    return _segments_match(pattern.split("/") if pattern else [], parts)
+    pattern = rule.pattern.split("/") if rule.pattern else []
+    if rule.small_file and (
+        size is None or size > SMALL_FILE or len(parts) != len(pattern)
+    ):
+        return False
+    return _segments_match(pattern, parts)
 
 
-def decide(root, parts):
-    """The rule that owns this path, or None when no rule names it."""
+def decide(root, parts, size=None):
+    """The rule that owns this path, or None when no rule names it.
+
+    size is the file's size in bytes, or None for a directory.
+    """
     owner = None
     for rule in RULES:
-        if rule.root == root and _matches(rule.pattern, parts):
+        if rule.root == root and _matches(rule, parts, size):
             owner = rule
     return owner
+
+
+def _leads_to_keep(root, parts):
+    """Whether a keep rule names something strictly below this directory."""
+    for rule in RULES:
+        if rule.root != root or not rule.keep or rule.pattern.startswith("**/"):
+            continue
+        pattern = rule.pattern.split("/") if rule.pattern else []
+        if len(pattern) > len(parts) and _segments_match(parts, pattern):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
 class Item:
     arcname: str
     path: Path
+    size: int
     sqlite: bool
 
 
@@ -156,31 +255,40 @@ def _is_link(entry):
     return entry.is_symlink() or bool(is_junction and is_junction())
 
 
+def _size(path):
+    """A file's size; 0 when stat fails, so reading it reports the failure."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def collect(roots, avoid=()):
     """Every file the rules keep under each root, and what they skip."""
     selection = Selection()
     avoid = {Path(path).resolve() for path in avoid}
-    seen = set()
 
     def skip(arcname, reason):
         selection.skipped.append({"path": arcname, "reason": reason})
 
-    def visit(root, path, parts, is_dir):
+    def visit(root, path, parts, is_dir, is_link=False):
         arcname = "/".join((root, *parts))
-        if arcname in seen:
+        size = None if is_dir else _size(path)
+        rule = decide(root, parts, size)
+        leads = is_dir and _leads_to_keep(root, parts)
+        if rule is None and not leads:
             return
-        seen.add(arcname)
-        rule = decide(root, parts)
-        if rule is None:
+        if is_link:
+            skip(arcname, "enlace; no se sigue")
             return
-        if not rule.keep:
+        if rule is not None and not rule.keep and not leads:
             skip(arcname, rule.reason)
             return
         if path.resolve() in avoid:
             skip(arcname, "carpeta de los respaldos")
             return
         if not is_dir:
-            selection.items.append(Item(arcname, path, _is_sqlite(path)))
+            selection.items.append(Item(arcname, path, size, _is_sqlite(path)))
             return
         try:
             entries = sorted(os.scandir(path), key=lambda entry: entry.name)
@@ -188,20 +296,17 @@ def collect(roots, avoid=()):
             skip(arcname, f"no se pudo leer: {error.strerror or error}")
             return
         for entry in entries:
-            child = (*parts, entry.name)
-            if _is_link(entry):
-                skip("/".join((root, *child)), "enlace; no se sigue")
-                continue
-            visit(root, Path(entry.path), child, entry.is_dir())
+            visit(
+                root,
+                Path(entry.path),
+                (*parts, entry.name),
+                entry.is_dir(follow_symlinks=False),
+                _is_link(entry),
+            )
 
     for root, base in roots.items():
-        starts = [rule.pattern for rule in RULES if rule.root == root and rule.keep]
-        for start in starts:
-            parts = tuple(start.split("/")) if start else ()
-            path = base.joinpath(*parts)
-            if path.is_symlink() or not path.exists():
-                continue
-            visit(root, path, parts, path.is_dir())
+        if base.is_dir() and not base.is_symlink():
+            visit(root, base, (), True)
 
     databases = {item.arcname for item in selection.items if item.sqlite}
     kept = []

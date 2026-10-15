@@ -11,12 +11,14 @@ from backup_support import (
     ARCHIVE,
     backup_hermes,
     calls,
+    make_cli_homes,
     make_install,
     make_receiver,
     manifest,
     members,
     run_main,
     settings,
+    write,
 )
 from goncloud_test_support import cleanup_temp_directory
 
@@ -100,6 +102,62 @@ class BackupTest(unittest.TestCase):
                 "user/.claude/projects": "historial de sesiones; puede pesar GB",
                 "user/.config/opencode/node_modules": "dependencias que la CLI reinstala",
             },
+        )
+
+    def test_only_logins_settings_and_owner_files_of_each_cli_are_kept(self):
+        kept = make_cli_homes(self.user)
+
+        code, line = self.backup()
+
+        self.assertEqual((code, line), (0, ""))
+        user_members = {
+            name for name in members(self.out / ARCHIVE) if name.startswith("user/")
+        }
+        self.assertEqual(
+            user_members - kept,
+            {
+                "user/.claude.json",
+                "user/.config/opencode/opencode.json",
+            },
+        )
+        self.assertEqual(kept - user_members, set())
+        skipped = {
+            entry["path"]: entry["reason"]
+            for entry in manifest(self.out / ARCHIVE)["skipped"]
+        }
+        self.assertEqual(
+            skipped["user/.codex/packages"],
+            "binarios de la CLI; su instalador los recrea",
+        )
+        self.assertEqual(
+            skipped["user/.claude/plugins/cache"],
+            "plugins; se reinstalan desde la configuracion",
+        )
+        self.assertEqual(
+            skipped["user/.grok/models.json"],
+            "Grok lo recrea al reinstalarse; solo entran su login, sus ajustes "
+            "(archivos sueltos de hasta 1 MB) y lo que escribio el dueno",
+        )
+
+    def test_profile_dirs_drop_what_the_home_drops(self):
+        for name in ("backups/a.zip", "lsp/index", "state-snapshots/s.db", "auth.lock"):
+            write(self.home / "profiles/claw" / name, "x")
+        write(self.home / "profiles/claw/skills/tool/uv.lock", "lock")
+
+        code, line = self.backup()
+
+        self.assertEqual((code, line), (0, ""))
+        names = set(members(self.out / ARCHIVE))
+        self.assertIn("home/profiles/claw/skills/tool/uv.lock", names)
+        skipped = {entry["path"] for entry in manifest(self.out / ARCHIVE)["skipped"]}
+        self.assertLessEqual(
+            {
+                "home/profiles/claw/backups",
+                "home/profiles/claw/lsp",
+                "home/profiles/claw/state-snapshots",
+                "home/profiles/claw/auth.lock",
+            },
+            skipped,
         )
 
     def test_every_manifest_entry_matches_the_bytes_archived(self):
