@@ -312,10 +312,22 @@ def undone(live, snapshot, old_ref, new_ref):
             return (rows if path == rows_path else refs)(now, before)
         return now
 
+    def outside_rows(config):
+        trimmed = copy.deepcopy(config)
+        trimmed.get("models", {}).pop("providers", None)
+        return trimmed
+
     try:
-        return undo(live, snapshot, written, ())
+        result = undo(live, snapshot, written, ())
     except _Tangled:
         return None
+    # Another writer pointed something at new_ref meanwhile: keeping it would
+    # leave a ref whose row and allow entry this restore just took away.
+    if mentions(outside_rows(result), new_ref) and not mentions(
+        outside_rows(snapshot), new_ref
+    ):
+        return None
+    return result
 
 
 def rename_patch(config, old_ref, new_ref):

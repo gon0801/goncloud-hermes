@@ -294,6 +294,26 @@ UNKNOWN_MODEL = Ran(
 )
 
 
+class UndoneTests(unittest.TestCase):
+    OLD, NEW = "xai/grok-4.7", "xai/grok-4.8"
+
+    def after_rename(self):
+        stage = claw_autoupdate.staged(CONFIG, self.OLD, self.NEW)
+        return claw_autoupdate.renamed(stage, self.OLD, self.NEW)
+
+    def test_a_chain_another_writer_pointed_at_the_new_ref_is_not_left_dangling(self):
+        live = self.after_rename()
+        live["agents"]["entries"]["main"]["model"]["primary"] = self.NEW
+
+        self.assertIsNone(claw_autoupdate.undone(live, CONFIG, self.OLD, self.NEW))
+
+    def test_without_that_the_restore_is_the_snapshot(self):
+        self.assertEqual(
+            claw_autoupdate.undone(self.after_rename(), CONFIG, self.OLD, self.NEW),
+            CONFIG,
+        )
+
+
 class FailureDetailTests(unittest.TestCase):
     def test_the_json_error_message_beats_the_closing_brace(self):
         self.assertEqual(
