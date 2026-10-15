@@ -20,6 +20,8 @@ import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from backup_hermes import native
+
 SQLITE_HEADER = b"SQLite format 3\x00"
 MANIFEST = "manifest.json"
 ENV_LINE = re.compile(r"^(export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=")
@@ -167,7 +169,7 @@ def inspect(tree):
 def drill(archive, workdir=None):
     """The one-line verdict on an archive, restored into a fresh temp dir."""
     with tempfile.TemporaryDirectory(prefix="hermes-restore-", dir=workdir) as temp:
-        tree = Path(temp)
+        tree = native(temp)
         extract(archive, tree)
         problems, counts = inspect(tree)
     if problems:
@@ -187,7 +189,7 @@ def main(argv=None):
     parser.add_argument(
         "--workdir",
         type=Path,
-        help="carpeta para el temporal (en Windows, una ruta corta evita MAX_PATH)",
+        help="carpeta para el temporal (por omision la temporal del sistema)",
     )
     args = parser.parse_args(argv)
     try:

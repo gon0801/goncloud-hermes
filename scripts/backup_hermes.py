@@ -25,7 +25,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 ARCHIVE_PATTERN = re.compile(r"^hermes-backup-\d{8}\.tar\.gz$")
@@ -40,6 +40,25 @@ DEFAULT_BUDGET = 3300
 
 class BackupError(Exception):
     pass
+
+
+def long_path(path):
+    """A Windows path in extended-length form, which lifts the 260-char limit.
+
+    That form turns off Windows' own normalization, so only an absolute path
+    gets it; resolved paths, as every caller passes, have no "." or "..".
+    """
+    text = str(PureWindowsPath(path))
+    if text.startswith("\\\\?\\") or not PureWindowsPath(text).is_absolute():
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def native(path):
+    """The form of path that every file operation under a root uses."""
+    return Path(long_path(path)) if os.name == "nt" else Path(path)
 
 
 @dataclass(frozen=True)
@@ -364,7 +383,7 @@ def _bound_user_side(selection):
 def collect(roots, deadline, avoid=()):
     """Every file the rules keep under each root, and what they skip."""
     selection = Selection()
-    avoid = {Path(path).resolve() for path in avoid}
+    avoid = {native(path).resolve() for path in avoid}
 
     def skip(arcname, reason):
         selection.skipped.append({"path": arcname, "reason": reason})
@@ -404,6 +423,7 @@ def collect(roots, deadline, avoid=()):
             )
 
     for root, base in roots.items():
+        base = native(base)
         if base.is_dir() and not base.is_symlink():
             visit(root, base, (), True)
 

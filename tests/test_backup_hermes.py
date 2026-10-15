@@ -495,6 +495,27 @@ class BackupTest(unittest.TestCase):
             ["hermes-backup-20261014.tar.gz", ARCHIVE, "notas.txt"],
         )
 
+    def test_a_long_windows_path_gets_the_extended_length_prefix(self):
+        deep = "C:\\Users\\ehven\\.codex\\skills\\" + "carpeta\\" * 40 + "SKILL.md"
+        self.assertGreater(len(deep), 260)
+
+        self.assertEqual(
+            [
+                backup_hermes.long_path(deep),
+                backup_hermes.long_path("C:/Users/ehven/.claude/settings.json"),
+                backup_hermes.long_path("\\\\gonserver\\share\\a.txt"),
+                backup_hermes.long_path("\\\\?\\C:\\ya\\tiene"),
+                backup_hermes.long_path("relativa\\a.txt"),
+            ],
+            [
+                "\\\\?\\" + deep,
+                "\\\\?\\C:\\Users\\ehven\\.claude\\settings.json",
+                "\\\\?\\UNC\\gonserver\\share\\a.txt",
+                "\\\\?\\C:\\ya\\tiene",
+                "relativa\\a.txt",
+            ],
+        )
+
     def test_the_installed_script_backs_up_the_whole_home_not_its_profile(self):
         script = self.home / "profiles/claw/scripts/backup_hermes.py"
         script.write_text("", encoding="utf-8")
