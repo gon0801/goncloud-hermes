@@ -427,7 +427,10 @@ class DirectorNativeChainTests(unittest.TestCase):
         # Native meta-ai bills Meta's API; the owner pays only the Muse
         # subscription, which the workers reach through the Muse CLI.
         table = self.table()
-        for row in table["chains"]:
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        # Only these rows run on native providers: the director's and the
+        # specialists'. The engineering rows go through the worker router.
+        for row in ("main", team["specialist_row"]):
             config = module.native_config(table, row)
             providers = [config["model"], *config["fallback_providers"]]
 
