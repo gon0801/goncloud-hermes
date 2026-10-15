@@ -398,7 +398,6 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["fallback_providers"],
             [
                 {"provider": "anthropic", "model": "claude-opus-5-5"},
-                {"provider": "meta-ai", "model": "muse-wonder-1.0"},
                 {"provider": "xai-oauth", "model": "grok-4.7"},
                 {
                     "provider": "zai",
@@ -419,22 +418,35 @@ class DirectorNativeChainTests(unittest.TestCase):
             {
                 "reasoning_overrides": {
                     "claude-opus-5-5": "xhigh",
-                    "muse-wonder-1.0": "max",
                     "gpt-5.6-sol": "xhigh",
                 }
             },
         )
 
+    def test_muse_never_reaches_a_native_provider(self):
+        # Native meta-ai bills Meta's API; the owner pays only the Muse
+        # subscription, which the workers reach through the Muse CLI.
+        table = self.table()
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        # Only these rows run on native providers: the director's and the
+        # specialists'. The engineering rows go through the worker router.
+        for row in ("main", team["specialist_row"]):
+            config = module.native_config(table, row)
+            providers = [config["model"], *config["fallback_providers"]]
+
+            self.assertNotIn("meta-ai", [entry["provider"] for entry in providers])
+            self.assertNotIn("muse-wonder-1.0", config["agent"]["reasoning_overrides"])
+
     def test_reordering_the_table_reorders_the_chain(self):
         table = self.table()
         main = table["chains"]["main"]
-        main[3], main[4] = main[4], main[3]
+        main[2], main[4] = main[4], main[2]
 
         chain = module.director_native_config(table)["fallback_providers"]
 
         self.assertEqual(
             [entry["provider"] for entry in chain[:3]],
-            ["anthropic", "xai-oauth", "meta-ai"],
+            ["xai-oauth", "anthropic", "zai"],
         )
 
     def test_a_position_without_native_binding_fails_naming_the_label(self):

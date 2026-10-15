@@ -36,10 +36,19 @@ def desired_agent(labels, mapping, *, thinking):
         # account"; claw addresses that account as a provider of its own.
         provider, model = ids[0].split("/", 1)
         ids[1] = f"{provider}{mapping['second_account_suffix']}/{model}"
+    # Claw has no route to a subscription for these providers, only their
+    # paid API, so the position is left out instead of billed.
+    api_only = tuple(mapping.get("api_only_prefixes", ()))
+    kept = [
+        (model_id, effort)
+        for model_id, (_, effort) in zip(ids, cells)
+        if not model_id.startswith(api_only)
+    ]
+    ids = [model_id for model_id, _ in kept]
     agent = {"model": {"primary": ids[0], "fallbacks": ids[1:]}}
     efforts = {
         model_id: {"params": {"thinking": effort}}
-        for model_id, (_, effort) in zip(ids, cells)
+        for model_id, effort in kept
         if effort
     }
     if thinking and efforts:

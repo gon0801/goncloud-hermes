@@ -83,6 +83,26 @@ class ChainTests(unittest.TestCase):
         )
         self.assertNotIn("meta/muse-b", agent["models"])
 
+    def test_an_api_only_provider_leaves_the_chain_and_its_thinking(self):
+        # Claw reaches Meta only through its paid API; the owner pays only the
+        # Muse subscription (2026-10-15), so claw skips that position.
+        mapping = {**MAPPING, "api_only_prefixes": ["meta/"]}
+
+        agent = module.desired_agent(ROW, mapping, thinking=True)
+
+        self.assertEqual(
+            agent["model"]["fallbacks"],
+            [
+                "go-2/muse-a",
+                "anthropic/opus",
+                "xai/grok",
+                "zai/glm",
+                "openai/gpt",
+                "kimi/k3",
+            ],
+        )
+        self.assertNotIn("meta/muse-b", agent["models"])
+
     def test_a_row_that_is_not_in_the_table_is_an_error(self):
         source = {"chains": {"main": ROW}}
         mapping = {
@@ -177,9 +197,15 @@ class RealFilesTests(unittest.TestCase):
         desired = module.desired_claw(source, mapping)["agents"]["entries"]
 
         self.assertEqual(set(desired), set(mapping["agents"]))
+        api_only = tuple(mapping["api_only_prefixes"])
         for agent, entry in desired.items():
             with self.subTest(agent=agent):
-                self.assertEqual(len(entry["model"]["fallbacks"]), 7)
+                row = source["chains"][mapping["agents"][agent]["row"]]
+                chain = [entry["model"]["primary"], *entry["model"]["fallbacks"]]
+                self.assertEqual(
+                    len(chain), len([c for c in row if not c.startswith(api_only)])
+                )
+                self.assertFalse([m for m in chain if m.startswith("meta/")])
         # Every specialist the gateway may dispatch has a chain in claw too.
         self.assertLessEqual(
             set(team["kanban"]["dispatch_profiles"]), set(mapping["agents"])
