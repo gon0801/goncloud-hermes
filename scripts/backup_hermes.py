@@ -235,6 +235,9 @@ TRANSIENT = (
     ("**/*.tmp", "temporal"),
     ("**/*.tmp-*", "temporal"),
     ("**/.sqlite-maintenance.lock", _LIVE_FILE),
+    # Held by the running Hermes gateway and its kanban dispatcher (seen on the PC).
+    ("**/gateway.lock", _LIVE_FILE),
+    ("**/.dispatcher.lock", _LIVE_FILE),
 )
 RECENT_OUTPUT = "**/cron/output"
 RECENT_SECONDS = 60

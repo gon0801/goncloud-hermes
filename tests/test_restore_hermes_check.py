@@ -135,6 +135,15 @@ class RestoreDrillTest(unittest.TestCase):
             ),
         )
 
+    def test_the_bin_of_removed_profiles_is_not_a_profile(self):
+        # Seen on the PC: profiles\.deleted holds removed profiles, no config.yaml.
+        write(self.home / "profiles/.deleted/viejo/SOUL.md", "perfil borrado\n")
+        self.backup()
+
+        code, line = self.drill()
+
+        self.assertEqual(code, 0, line)
+
     def test_a_corrupt_database_is_named(self):
         self.backup()
         broken = self.base / "broken.db"

@@ -371,6 +371,8 @@ class BackupTest(unittest.TestCase):
             write(self.home / "profiles/claw/gateway.sock"),
             write(self.user / ".codex/app.guard"),
             write(self.home / "profiles/claw/cron/output/a1/20261015-0300.md", "x"),
+            write(self.home / "gateway.lock"),
+            write(self.home / "kanban/.dispatcher.lock"),
         ]
         for path in held:
             path.chmod(0)
@@ -388,11 +390,15 @@ class BackupTest(unittest.TestCase):
                 skipped["home/profiles/claw/gateway.sock"],
                 skipped["user/.codex/app.guard"],
                 skipped["home/profiles/claw/cron/output/a1/20261015-0300.md"],
+                skipped["home/gateway.lock"],
+                skipped["home/kanban/.dispatcher.lock"],
             ],
             [
                 "archivo de un proceso vivo",
                 "archivo de un proceso vivo",
                 "salida de un cron que se estaba escribiendo",
+                "archivo de un proceso vivo",
+                "archivo de un proceso vivo",
             ],
         )
         self.assertEqual(manifest(self.out / ARCHIVE)["unreadable"], [])

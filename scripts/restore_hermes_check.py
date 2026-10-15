@@ -156,7 +156,12 @@ def inspect(tree):
                 problems.append(f"{name}: {failure}")
     profiles_dir = tree / "home" / "profiles"
     profile_names = (
-        sorted(path.name for path in profiles_dir.iterdir() if path.is_dir())
+        # Dot dirs are not profiles (``.deleted`` is where removed profiles go).
+        sorted(
+            path.name
+            for path in profiles_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        )
         if profiles_dir.is_dir()
         else []
     )
