@@ -18,15 +18,16 @@ from pathlib import Path
 import re
 import sys
 
+from model_lines import family_of
+
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "model-routing.source.json"
 CLAW = ROOT / "claw-routing.json"
 _EFFORT = re.compile(r"\s+\(([^)]+)\)\s*$")
-#: Positions 2+ pick their adapter from the model name (subscriptions/catalog.py).
-_FAMILIES = ("muse-", "claude-", "gpt-", "k3", "kimi-", "glm-", "grok-", "deepseek-")
 
 
-def _split(label):
+def split_label(label):
+    """``("provider/model", " (effort)")``; the effort part is empty when absent."""
     match = _EFFORT.search(label)
     if match is None:
         return label.strip(), ""
@@ -38,7 +39,7 @@ def replace_label(source, old, new):
     cells = []
     for row, labels in source["chains"].items():
         for position, label in enumerate(labels):
-            model, effort = _split(label)
+            model, effort = split_label(label)
             if model == old:
                 labels[position] = new + effort
                 cells.append(f"{row}:{position}")
@@ -46,7 +47,7 @@ def replace_label(source, old, new):
         raise ValueError(f"no cell uses {old}")
     name = new.split("/", 1)[-1]
     direct = [cell for cell in cells if int(cell.rsplit(":", 1)[1]) >= 2]
-    if direct and not name.startswith(_FAMILIES):
+    if direct and family_of(name) is None:
         raise ValueError(
             f"{name} is not a family the router binds, and these cells pick "
             f"their adapter from the name: {', '.join(direct)}"
@@ -65,8 +66,8 @@ def release_claw(mapping, new):
     del mapping["id_overrides"][new]
 
 
-def probes(source, cells):
-    """One real probe per route the change touches, as shell commands."""
+def probe_routes(source, cells):
+    """``(position, label)`` for one real probe per route the change touches."""
     wanted = {}
     for cell in cells:
         row, position = cell.rsplit(":", 1)
@@ -76,8 +77,16 @@ def probes(source, cells):
         key = (int(position), label) if int(position) < 2 else (None, label)
         wanted.setdefault(key, int(position))
     return [
-        f'python scripts/probe_route.py --position {position} "{label}"'
+        (position, label)
         for (_, label), position in sorted(wanted.items(), key=lambda item: item[1])
+    ]
+
+
+def probes(source, cells):
+    """The same probes as shell commands to run on the PC."""
+    return [
+        f'python scripts/probe_route.py --position {position} "{label}"'
+        for position, label in probe_routes(source, cells)
     ]
 
 
@@ -123,7 +132,7 @@ def main():
         hold_claw(mapping, args.old, args.new)
         _write(CLAW, mapping)
         print(f"claw stays on {args.old}")
-    print("Table written. Update the tests that pin the old name, then deploy.")
+    print("Table written. Commit it, then deploy with configure_team.py.")
     return 0
 
 

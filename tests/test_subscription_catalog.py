@@ -14,6 +14,15 @@ from subscriptions.catalog import SLOT_COUNT, compile_profile_routes  # noqa: E4
 
 
 def load_source() -> dict:
+    # The live table moves on its own to newer releases (hermes_autoupdate), so
+    # tests that name models read a frozen copy; the live file keeps only the
+    # invariants checked in LiveTableTests.
+    return json.loads(
+        (ROOT / "tests/fixtures/model-routing.source.json").read_text(encoding="utf-8")
+    )
+
+
+def load_live_source() -> dict:
     return json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
 
 
@@ -199,6 +208,26 @@ EXPECTED_MODELS = {
 API_PROFILES = {"verifier", "scout"}
 
 
+class LiveTableTests(unittest.TestCase):
+    def test_the_live_table_keeps_every_slot_bound_to_the_same_adapters(self):
+        # A release switch stays inside a model's line, so the adapters (bound
+        # by family) and the shape of every chain never change with it.
+        source = load_live_source()
+
+        for chain_name, chain in source["chains"].items():
+            with self.subTest(chain=chain_name):
+                self.assertEqual(len(chain), SLOT_COUNT)
+                self.assertEqual(chain[1], chain[0])
+        for profile, adapters in EXPECTED_ADAPTERS.items():
+            with self.subTest(profile=profile):
+                routes = compile_profile_routes(profile, source)
+                self.assertEqual([route.adapter for route in routes], adapters)
+                self.assertEqual(
+                    [route.billing_mode for route in routes].count("api"),
+                    1 if profile in API_PROFILES else 0,
+                )
+
+
 class SlotSemanticsTests(unittest.TestCase):
     def test_primary_is_go_and_later_slots_bind_by_family(self):
         routes = compile_profile_routes("claw", load_source())
@@ -282,6 +311,37 @@ class SlotSemanticsTests(unittest.TestCase):
         self.assertEqual(routes[3].label, "kimi/kimi-for-coding")
         self.assertEqual(routes[4].adapter, "opencode_zai")
         self.assertEqual(routes[4].model, "glm-5.3-flash")
+
+    def test_every_kimi_release_binds_to_kimi_and_other_k_names_do_not(self):
+        source = {
+            "chains": {
+                "scout": [
+                    "opencode-go/deepseek-v4.1-flash",
+                    "opencode-go/deepseek-v4.1-flash",
+                    "kimi/k3",
+                    "kimi/k4",
+                    "kimi/k3-256k",
+                    "kimi/kimi-for-coding",
+                    "xai/grok-4.7",
+                    "openai/gpt-6-astra",
+                ]
+            }
+        }
+
+        routes = compile_profile_routes("scout", source)
+
+        self.assertEqual(
+            [(route.adapter, route.model) for route in routes[2:6]],
+            [
+                ("kimi", "k3"),
+                ("kimi", "k4"),
+                ("kimi", "k3-256k"),
+                ("kimi", "kimi-for-coding"),
+            ],
+        )
+        source["chains"]["scout"][3] = "kling/kling-1"
+        with self.assertRaisesRegex(ValueError, "unknown model family: kling-1"):
+            compile_profile_routes("scout", source)
 
     def test_parenthetical_annotations_stay_on_the_label_not_the_model_id(self):
         source = load_source()

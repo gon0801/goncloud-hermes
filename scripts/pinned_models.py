@@ -11,12 +11,14 @@ disappears.
 
 import argparse
 import glob
-import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import sys
+
+import model_lines
+import model_watch
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ROOT / "pinned-files.json"
@@ -77,15 +79,6 @@ def classify(pins, view):
     return status
 
 
-def _model_watch():
-    spec = importlib.util.spec_from_file_location(
-        "model_watch", ROOT / "scripts/model_watch.py"
-    )
-    loaded = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -93,19 +86,15 @@ def main():
     )
     args = parser.parse_args()
 
-    watch = _model_watch()
     pins = scan(json.loads(FILES.read_text(encoding="utf-8"))["files"])
-    in_table = watch.models_in_use(
+    in_table = model_watch.models_in_use(
         json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
     )
-    models_dev = watch._try(lambda: watch._get_json(watch.MODELS_DEV_URL))
-    go = watch._try(
-        lambda: [row["id"] for row in watch._get_json(watch.GO_MODELS_URL)["data"]]
-    )
+    models_dev, go = model_lines.read_catalogs()
     if models_dev is None or go is None:
         print("Could not read the public catalogs; nothing classified.")
         return 2
-    status = classify(pins, watch.catalog_view(models_dev, go))
+    status = classify(pins, model_lines.catalog_view(models_dev, go))
     home = str(Path.home())
     for label in ("not in the catalogs", "deprecated", "ok"):
         rows = sorted(model for model in pins if status[model] == label)

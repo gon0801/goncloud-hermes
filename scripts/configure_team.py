@@ -372,6 +372,31 @@ def write_changed(path, content):
     temporary.replace(path)
 
 
+WATCHER_MODULES = (
+    "model_watch.py",
+    "model_lines.py",
+    "hermes_autoupdate.py",
+    "promote_model.py",
+)
+
+
+def autoupdate_setup(runtime_home):
+    """Where the installed watcher finds the checkout, its Python and Hermes."""
+    return (
+        json.dumps(
+            {
+                "checkout": str(ROOT),
+                "python": sys.executable,
+                "hermes": str(runtime_home / "bin" / "hermes.cmd"),
+                "git": shutil.which("git") or "git",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
     desired = {
@@ -524,9 +549,13 @@ def configure(
         if role == team["director"]:
             # The daily model watcher is a no_agent cron script of the
             # director's gateway; cron resolves it under <profile>/scripts.
-            files["scripts/model_watch.py"] = (
-                ROOT / "scripts/model_watch.py"
-            ).read_text(encoding="utf-8")
+            # It moves the table to newer releases through the modules beside
+            # it, working in this checkout with this Python.
+            for name in WATCHER_MODULES:
+                files[f"scripts/{name}"] = (ROOT / "scripts" / name).read_text(
+                    encoding="utf-8"
+                )
+            files["scripts/autoupdate.json"] = autoupdate_setup(runtime_home)
             # Models pinned by hand outside the table (launchers, agent files):
             # the watcher reports when one of them leaves the catalogs.
             files["scripts/pinned-models.json"] = (

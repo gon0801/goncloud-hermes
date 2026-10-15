@@ -1,10 +1,12 @@
 import copy
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def load(name):
@@ -70,6 +72,14 @@ class ReplaceTests(unittest.TestCase):
             module.replace_label(
                 copy.deepcopy(SOURCE), "meta/muse-spark-1.3", "meta/wonder-1.0"
             )
+
+    def test_a_new_kimi_release_is_a_family_the_router_binds(self):
+        source = copy.deepcopy(SOURCE)
+
+        cells = module.replace_label(source, "kimi/k3", "kimi/k4")
+
+        self.assertEqual(cells, ["scout:3"])
+        self.assertEqual(source["chains"]["scout"][3], "kimi/k4")
 
     def test_an_opencode_go_cell_takes_any_model_name(self):
         source = copy.deepcopy(SOURCE)
