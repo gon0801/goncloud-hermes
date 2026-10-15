@@ -62,6 +62,8 @@ class Rule:
 
 
 SMALL_FILE = 1_000_000
+USER_FILE_LIMIT = 20_000_000
+USER_TOTAL_LIMIT = 200_000_000
 
 _REINSTALL = "el instalador oficial lo recrea en el commit fijado"
 _CACHE = "cache que Hermes vuelve a llenar"
@@ -240,6 +242,7 @@ class Item:
 class Selection:
     items: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
+    problems: list = field(default_factory=list)
 
 
 def _is_sqlite(path):
@@ -261,6 +264,42 @@ def _size(path):
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _megabytes(size):
+    if size < 1_000_000:
+        return f"{size / 1000:.0f} KB"
+    return f"{size / 1_000_000:.0f} MB"
+
+
+def _bound_user_side(selection):
+    """Leave out oversized user files and report what breaks the limits."""
+    kept, user_total = [], 0
+    for item in selection.items:
+        if item.arcname.startswith("user/") and item.size > USER_FILE_LIMIT:
+            selection.skipped.append(
+                {"path": item.arcname, "reason": "pasa del tope por archivo"}
+            )
+            selection.problems.append(
+                f"{item.arcname} pesa {_megabytes(item.size)} (tope "
+                f"{_megabytes(USER_FILE_LIMIT)} por archivo del perfil de usuario) y "
+                "quedo fuera; si es una cache nueva agrega una regla"
+            )
+            continue
+        if item.arcname.startswith("user/"):
+            user_total += item.size
+        kept.append(item)
+    selection.items = kept
+    if user_total > USER_TOTAL_LIMIT:
+        biggest = max(
+            (item for item in kept if item.arcname.startswith("user/")),
+            key=lambda item: item.size,
+        )
+        selection.problems.append(
+            f"el perfil de usuario suma {_megabytes(user_total)} (tope "
+            f"{_megabytes(USER_TOTAL_LIMIT)}); el archivo mas grande es "
+            f"{biggest.arcname} ({_megabytes(biggest.size)})"
+        )
 
 
 def collect(roots, avoid=()):
@@ -317,6 +356,7 @@ def collect(roots, avoid=()):
         else:
             kept.append(item)
     selection.items = kept
+    _bound_user_side(selection)
     return selection
 
 
@@ -555,11 +595,12 @@ def run(settings):
         upload(archive, digest, settings, deadline)
     except BackupError as error:
         raise BackupError(f"{error}; copia local en {archive}") from error
+    problems = list(selection.problems)
     unreadable = manifest["unreadable"]
     if unreadable:
-        raise BackupError(
-            f"subido, pero {len(unreadable)} sin leer, p. ej. {unreadable[0]['path']}"
-        )
+        problems.append(f"{len(unreadable)} sin leer, p. ej. {unreadable[0]['path']}")
+    if problems:
+        raise BackupError(f"subido, pero {'; '.join(problems)}")
 
 
 def default_home(script):

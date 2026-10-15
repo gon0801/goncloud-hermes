@@ -6,6 +6,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backup_support import (
     ARCHIVE,
@@ -159,6 +160,41 @@ class BackupTest(unittest.TestCase):
             },
             skipped,
         )
+
+    def test_an_oversized_user_file_is_left_out_and_fails_the_run(self):
+        write(self.user / ".codex/skills/big/model.bin", "x" * 2000)
+        receiver = make_receiver(self.base)
+
+        with mock.patch.object(backup_hermes, "USER_FILE_LIMIT", 1000):
+            code, line = self.backup(receiver)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            line,
+            "ERROR respaldo Hermes: subido, pero user/.codex/skills/big/model.bin "
+            "pesa 2 KB (tope 1 KB por archivo del perfil de usuario) y quedo fuera; "
+            "si es una cache nueva agrega una regla\n",
+        )
+        self.assertEqual(len(calls(receiver)), 1)
+        self.assertNotIn(
+            "user/.codex/skills/big/model.bin", members(self.out / ARCHIVE)
+        )
+
+    def test_a_user_side_over_the_total_limit_fails_the_run(self):
+        write(self.user / ".codex/skills/big/a.md", "x" * 2000)
+        write(self.user / ".codex/skills/big/b.md", "x" * 1000)
+
+        with mock.patch.object(backup_hermes, "USER_TOTAL_LIMIT", 2000):
+            code, line = self.backup()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            line,
+            "ERROR respaldo Hermes: subido, pero el perfil de usuario suma 3 KB "
+            "(tope 2 KB); el archivo mas grande es user/.codex/skills/big/a.md "
+            "(2 KB)\n",
+        )
+        self.assertIn("user/.codex/skills/big/b.md", members(self.out / ARCHIVE))
 
     def test_every_manifest_entry_matches_the_bytes_archived(self):
         self.backup()
