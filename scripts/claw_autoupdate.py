@@ -65,6 +65,9 @@ WINDOW_POLL = 300
 SUSPEND_TIMEOUT_MS = "30000"
 SUSPEND_RUN_TIMEOUT = 45
 NO_WINDOW = "no hubo un momento sin corridas"
+#: Why the promotions after one that found no window are not tried this run:
+#: each would wait EXCLUSIVE_WAIT again, stretching the run into the morning.
+STILL_BUSY = "el gateway siguio ocupado; queda para la siguiente corrida"
 #: The owner's Telegram chat; the runner sends its own notices.
 TELEGRAM_TO = "6470689715"
 SEND_TIMEOUT = 60
@@ -706,10 +709,10 @@ def promote(gateway, promotion):
             )
             if problem is None:
                 problem = _verify(gateway, promotion, runtime)
-    except Busy as busy:
+    except Busy:
         # Before the staging nothing was written; after it, the staged ref is
         # additive and harmless and the next run picks up from there.
-        return outcome("pendiente", str(busy))
+        return outcome("pendiente", NO_WINDOW)
     except Exception as error:  # noqa: BLE001 - the snapshot goes back first
         problem = f"{type(error).__name__}: {error}"
     if problem is None:
@@ -783,7 +786,12 @@ def report(outcomes, last):
 
 def autoupdate(gateway, view, last):
     trying, kept = split_held(plan_claw(gateway.config(), view), last)
-    outcomes = [_promote_or_say_why(gateway, promotion) for promotion in trying]
+    outcomes = []
+    for promotion in trying:
+        if any(outcome.detail == NO_WINDOW for outcome in outcomes):
+            outcomes.append(Outcome(promotion, "pendiente", STILL_BUSY))
+        else:
+            outcomes.append(_promote_or_say_why(gateway, promotion))
     lines, remembered = report(outcomes, last)
     return lines, {**remembered, **kept}
 

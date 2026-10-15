@@ -1030,6 +1030,46 @@ class HoldTests(unittest.TestCase):
         )
 
 
+class BusyRunTests(unittest.TestCase):
+    def test_once_no_window_came_the_rest_of_the_run_waits_without_asking(self):
+        fake = FakeGateway(CONFIG, busy_polls=10**9)
+
+        lines, _ = claw_autoupdate.autoupdate(fake.gateway(), VIEW, {})
+
+        self.assertEqual(
+            lines,
+            [
+                "- Pendiente: opencode-go/deepseek-v4.1-flash -> "
+                "opencode-go/deepseek-v4.2-flash (no hubo un momento sin corridas).",
+                "- Pendiente: xai/grok-4.7 -> xai/grok-4.8 (el gateway siguio "
+                "ocupado; queda para la siguiente corrida).",
+                "- Pendiente: anthropic/claude-opus-5-5 -> anthropic/claude-opus-6 "
+                "(el gateway siguio ocupado; queda para la siguiente corrida).",
+            ],
+        )
+        self.assertEqual(fake.asked_at, list(range(0, 2401, 300)))
+        self.assertEqual(fake.config, CONFIG)
+
+    def test_a_failed_probe_does_not_stop_the_next_promotion(self):
+        fake = FakeGateway(
+            CONFIG,
+            {"infer opencode-go/deepseek-v4.2-flash": Ran(1, "", "quota")},
+        )
+        view = {"opencode-go": VIEW["opencode-go"], "xai": VIEW["xai"]}
+
+        lines, _ = claw_autoupdate.autoupdate(fake.gateway(), view, {})
+
+        self.assertEqual(
+            lines,
+            [
+                "- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en defaults, main, "
+                "skillverif.",
+                "- No cambiado: opencode-go/deepseek-v4.1-flash -> "
+                "opencode-go/deepseek-v4.2-flash (sonda: salida 1: quota).",
+            ],
+        )
+
+
 class DailyTests(unittest.TestCase):
     def run_daily(self, fake, view, state):
         with tempfile.TemporaryDirectory() as directory:
