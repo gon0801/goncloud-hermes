@@ -416,7 +416,8 @@ class FakeGateway:
     another one gets a conflict. ``suspend_script`` overrides the next asks:
     a Ran is answered as is (granting nothing), ``"timeout"`` reaches the
     gateway but the CLI gives up before its answer. ``foreign_until`` is a
-    lease someone else holds until then.
+    lease someone else holds until then. ``meddle`` maps a call kind to an
+    edit another writer makes to the live config when that call runs.
     """
 
     def __init__(
@@ -430,6 +431,7 @@ class FakeGateway:
         patch_results=None,
         suspend_script=(),
         foreign_until=None,
+        meddle=None,
     ):
         handle, name = tempfile.mkstemp(suffix=".json", dir=CONFIG_DIR.name)
         os.close(handle)
@@ -465,6 +467,7 @@ class FakeGateway:
         self.lost_patches = lost_patches
         self.patch_results = patch_results or {}
         self.patches = 0
+        self.meddle = dict(meddle or {})
 
     @property
     def held(self):
@@ -575,6 +578,10 @@ class FakeGateway:
             if self.patches not in self.lost_patches:
                 self.write(merged(self.config, patch))
             return self.patch_results.get(self.patches, Ran(0, "{}", ""))
+        if kind in self.meddle:
+            config = self.config
+            self.meddle.pop(kind)(config)
+            self.write(config)
         if kind in self.answers:
             return self.answers[kind]
         return Ran(0, "{}", "")
@@ -813,6 +820,70 @@ class RunnerTests(unittest.TestCase):
             outcome.detail,
             "turno en skillverif: no dijo PONG; "
             "restaure con corridas en curso, pude cortar alguna",
+        )
+
+    def test_a_restore_keeps_what_another_writer_changed_meanwhile(self):
+        base = copy.deepcopy(CONFIG)
+        base["agents"]["entries"]["otro"] = {
+            "model": {
+                "primary": "zai-coding-plan/glm-5.3",
+                "fallbacks": ["opencode-go/deepseek-v4.1-flash"],
+            }
+        }
+        edits = {
+            "an unrelated key": lambda c: c["models"]["providers"]["xai"].update(
+                baseUrl="https://api.x.ai/v2"
+            ),
+            "an unrelated agent's chain": lambda c: c["agents"]["entries"]["otro"][
+                "model"
+            ]["fallbacks"].append("zai-coding-plan/glm-5.4"),
+            "another slot of a chain the rename touched": lambda c: c["agents"][
+                "entries"
+            ]["main"]["model"].update(primary="zai-coding-plan/glm-5.4"),
+            "another model allowed": lambda c: c["agents"]["defaults"]["modelPolicy"][
+                "allow"
+            ].append("zai-coding-plan/glm-5.4"),
+            "another row of the same provider": lambda c: c["models"]["providers"][
+                "xai"
+            ]["models"].append({"id": "grok-code-2", "name": "Grok Code 2"}),
+        }
+        failing = {
+            "probe": ("infer xai/grok-4.8", Ran(1, "", "model not found")),
+            "verify": ("agent skillverif verify", turn("Error de proveedor", "xai")),
+        }
+        for name, edit in edits.items():
+            for stage, (kind, answer) in failing.items():
+                with self.subTest(name, during=stage):
+                    fake = FakeGateway(base, {kind: answer}, meddle={kind: edit})
+
+                    outcome = self.go(fake)
+
+                    expected = copy.deepcopy(base)
+                    edit(expected)
+                    self.assertEqual(fake.config, expected)
+                    self.assertNotIn("config entera", outcome.detail)
+
+    def test_a_restore_it_cannot_tell_apart_puts_the_whole_snapshot_back(self):
+        # A busy run left the staging, so the allowlist already had both refs:
+        # after the rename and another writer's entry, no rule says which is ours.
+        leftover = claw_autoupdate.staged(CONFIG, "xai/grok-4.7", "xai/grok-4.8")
+        fake = FakeGateway(
+            leftover,
+            {"agent skillverif verify": turn("Error de proveedor", "xai")},
+            meddle={
+                "agent skillverif verify": lambda c: c["agents"]["defaults"][
+                    "modelPolicy"
+                ]["allow"].append("zai-coding-plan/glm-5.4")
+            },
+        )
+
+        outcome = self.go(fake)
+
+        self.assertEqual(fake.config, leftover)
+        self.assertEqual(
+            outcome.detail,
+            "turno en skillverif: no dijo PONG; "
+            "restaure la config entera de antes, pude borrar cambios ajenos",
         )
 
     def test_anthropic_is_probed_by_a_real_turn_through_claude_cli(self):
