@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import sys
 import tarfile
@@ -149,6 +150,27 @@ class RestoreDrillTest(unittest.TestCase):
             line,
         )
         self.assertNotIn("secreto", line)
+
+    @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
+    def test_a_file_the_backup_could_not_read_fails_the_drill(self):
+        memory = self.home / "profiles/claw/memories/MEMORY.md"
+        memory.chmod(0)
+        self.addCleanup(memory.chmod, 0o600)
+        receiver = make_receiver(self.base)
+        code, _ = run_main(settings(self.home, self.user, self.base, receiver))
+        self.assertEqual(code, 1)
+
+        code, line = self.drill()
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                f"ERROR restauracion de prueba {ARCHIVE}: 1 problemas: "
+                "home/profiles/claw/memories/MEMORY.md: no se pudo leer al "
+                "respaldar\n",
+            ),
+        )
 
     def test_an_entry_that_escapes_the_temp_dir_stops_the_drill(self):
         self.archive.parent.mkdir(parents=True)

@@ -187,6 +187,19 @@ def _user_rules():
 
 RULES = (*_hermes_home_rules(), *_user_rules())
 
+# A live process holds or rewrites these, so failing to read one is expected
+# and only recorded as skipped. Any other unreadable path fails the run.
+_LIVE_FILE = "archivo de un proceso vivo"
+TRANSIENT = (
+    ("**/*.sock", _LIVE_FILE),
+    ("**/*.guard", _LIVE_FILE),
+    ("**/*.tmp", "temporal"),
+    ("**/*.tmp-*", "temporal"),
+    ("**/.sqlite-maintenance.lock", _LIVE_FILE),
+)
+RECENT_OUTPUT = "**/cron/output"
+RECENT_SECONDS = 60
+
 
 def _segments_match(pattern, parts):
     return len(parts) >= len(pattern) and all(
@@ -195,16 +208,33 @@ def _segments_match(pattern, parts):
     )
 
 
-def _matches(rule, parts, size):
-    if rule.pattern.startswith("**/"):
-        tail = rule.pattern[3:].split("/")
+def _pattern_matches(pattern, parts):
+    if pattern.startswith("**/"):
+        tail = pattern[3:].split("/")
         return any(_segments_match(tail, parts[i:]) for i in range(len(parts)))
-    pattern = rule.pattern.split("/") if rule.pattern else []
+    return _segments_match(pattern.split("/") if pattern else [], parts)
+
+
+def _matches(rule, parts, size):
     if rule.small_file and (
-        size is None or size > SMALL_FILE or len(parts) != len(pattern)
+        size is None or size > SMALL_FILE or len(parts) != len(rule.pattern.split("/"))
     ):
         return False
-    return _segments_match(pattern, parts)
+    return _pattern_matches(rule.pattern, parts)
+
+
+def _transient_reason(path, parts):
+    for pattern, reason in TRANSIENT:
+        if _pattern_matches(pattern, parts):
+            return reason
+    if _pattern_matches(RECENT_OUTPUT, parts):
+        try:
+            age = time.time() - os.stat(path).st_mtime
+        except OSError:
+            return None
+        if age < RECENT_SECONDS:
+            return "salida de un cron que se estaba escribiendo"
+    return None
 
 
 def decide(root, parts, size=None):
@@ -225,7 +255,7 @@ def _leads_to_keep(root, parts):
         if rule.root != root or not rule.keep or rule.pattern.startswith("**/"):
             continue
         pattern = rule.pattern.split("/") if rule.pattern else []
-        if len(pattern) > len(parts) and _segments_match(parts, pattern):
+        if len(pattern) > len(parts) and _segments_match(pattern[: len(parts)], parts):
             return True
     return False
 
@@ -242,7 +272,17 @@ class Item:
 class Selection:
     items: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
+    unreadable: list = field(default_factory=list)
     problems: list = field(default_factory=list)
+
+    def cannot_read(self, arcname, path, error):
+        reason = _transient_reason(path, tuple(arcname.split("/")[1:]))
+        if reason:
+            self.skipped.append({"path": arcname, "reason": reason})
+        else:
+            self.unreadable.append(
+                {"path": arcname, "error": error.strerror or str(error)}
+            )
 
 
 def _is_sqlite(path):
@@ -332,7 +372,7 @@ def collect(roots, avoid=()):
         try:
             entries = sorted(os.scandir(path), key=lambda entry: entry.name)
         except OSError as error:
-            skip(arcname, f"no se pudo leer: {error.strerror or error}")
+            selection.cannot_read(arcname, path, error)
             return
         for entry in entries:
             visit(
@@ -400,7 +440,6 @@ def _add(tar, arcname, spool, size, mtime):
 def write_archive(selection, destination, meta, work):
     """Write the archive atomically and return its manifest."""
     files = []
-    unreadable = []
     partial = destination.with_name(destination.name + ".tmp")
     try:
         with tarfile.open(partial, "w:gz", compresslevel=6) as tar:
@@ -426,9 +465,7 @@ def write_archive(selection, destination, meta, work):
                         size = spool.tell()
                         _add(tar, item.arcname, spool, size, mtime)
                 except OSError as error:
-                    unreadable.append(
-                        {"path": item.arcname, "error": error.strerror or str(error)}
-                    )
+                    selection.cannot_read(item.arcname, item.path, error)
                     continue
                 finally:
                     if item.sqlite:
@@ -445,7 +482,7 @@ def write_archive(selection, destination, meta, work):
                 **meta,
                 "files": files,
                 "skipped": selection.skipped,
-                "unreadable": unreadable,
+                "unreadable": selection.unreadable,
             }
             body = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8")
             with tempfile.SpooledTemporaryFile(32 << 20, dir=work) as spool:

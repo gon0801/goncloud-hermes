@@ -108,6 +108,8 @@ def inspect(tree):
         manifest = json.loads((tree / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise DrillError(f"manifiesto ilegible: {error}") from error
+    for entry in manifest["unreadable"]:
+        problems.append(f"{entry['path']}: no se pudo leer al respaldar")
     listed = {entry["path"]: entry for entry in manifest["files"]}
     present = {
         path.relative_to(tree).as_posix(): path

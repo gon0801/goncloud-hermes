@@ -340,6 +340,67 @@ class BackupTest(unittest.TestCase):
             [{"path": "home/auth.json", "error": "Permission denied"}],
         )
 
+    @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
+    def test_an_unreadable_directory_fails_the_run(self):
+        memories = self.home / "profiles/claw/memories"
+        memories.chmod(0)
+        self.addCleanup(memories.chmod, 0o700)
+
+        code, line = self.backup()
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                "ERROR respaldo Hermes: subido, pero 1 sin leer, "
+                "p. ej. home/profiles/claw/memories\n",
+            ),
+        )
+
+    @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
+    def test_files_a_live_process_holds_are_skipped_without_failing(self):
+        held = [
+            write(self.home / "profiles/claw/gateway.sock"),
+            write(self.user / ".codex/app.guard"),
+            write(self.home / "profiles/claw/cron/output/a1/20261015-0300.md", "x"),
+        ]
+        for path in held:
+            path.chmod(0)
+            self.addCleanup(path.chmod, 0o600)
+
+        code, line = self.backup()
+
+        self.assertEqual((code, line), (0, ""))
+        skipped = {
+            entry["path"]: entry["reason"]
+            for entry in manifest(self.out / ARCHIVE)["skipped"]
+        }
+        self.assertEqual(
+            [
+                skipped["home/profiles/claw/gateway.sock"],
+                skipped["user/.codex/app.guard"],
+                skipped["home/profiles/claw/cron/output/a1/20261015-0300.md"],
+            ],
+            [
+                "archivo de un proceso vivo",
+                "archivo de un proceso vivo",
+                "salida de un cron que se estaba escribiendo",
+            ],
+        )
+        self.assertEqual(manifest(self.out / ARCHIVE)["unreadable"], [])
+
+    @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
+    def test_an_old_unreadable_cron_output_fails_the_run(self):
+        output = write(self.home / "profiles/claw/cron/output/a1/old.md", "x")
+        os.utime(output, (1_000_000_000, 1_000_000_000))
+        output.chmod(0)
+        self.addCleanup(output.chmod, 0o600)
+
+        code, line = self.backup()
+
+        self.assertEqual(code, 1)
+        self.assertIn("home/profiles/claw/cron/output/a1/old.md", line)
+
     def test_a_wrong_remote_checksum_counts_as_a_failed_upload(self):
         code, line = self.backup(make_receiver(self.base, mode="badsum"))
 
