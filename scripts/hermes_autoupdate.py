@@ -106,8 +106,8 @@ def _probe_failure(done: Ran):
 
 
 def _is_pong(text):
-    lines = [line.strip(" .!\t").upper() for line in text.splitlines()]
-    return next((line for line in reversed(lines) if line), "") == "PONG"
+    # hermes chat -Q prints the reply, a blank line and then "session_id: ...".
+    return any(line.strip(" .!\t").upper() == "PONG" for line in text.splitlines())
 
 
 def promote(setup, promotion, run, budget):

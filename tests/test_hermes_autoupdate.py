@@ -17,6 +17,8 @@ from model_lines import Promotion, Ran  # noqa: E402
 FIXTURE = ROOT / "tests/fixtures/model-routing.source.json"
 PROBE_OK = '{"success": true, "marker_exact": true, "seconds": 4.2}\n'
 PROBE_QUOTA = '{"success": false, "failure": "quota", "detail": "x", "seconds": 1.0}\n'
+#: What hermes.cmd -p claw chat -q ... --oneshot -Q printed on the PC (2026-10-15).
+PONG_TURN = "PONG\n\nsession_id: 20261015_113404_1e7391\n"
 
 
 GROK_ONLY = {"xai": {"grok-4.7": {}, "grok-4.8": {}}}
@@ -128,7 +130,7 @@ class FakeRun:
             "git commit": Ran(0, "", ""),
             "configure": Ran(0, "Configured claw\n", ""),
             "configure --check": Ran(0, "Check passed\n", ""),
-            "turn": Ran(0, "PONG\n", ""),
+            "turn": Ran(0, PONG_TURN, ""),
             "git revert": Ran(0, "", ""),
             "git pull": Ran(0, "", ""),
             "git push": Ran(0, "", ""),
@@ -229,6 +231,14 @@ class RunnerTests(unittest.TestCase):
             [(o.status, o.detail) for o in outcomes],
             [("revertido", "turno PONG: no dijo PONG")],
         )
+
+    def test_the_real_turn_output_with_its_session_line_counts_as_pong(self):
+        run = FakeRun({"turn": Ran(0, PONG_TURN, "")})
+
+        outcomes = self.go(run)
+
+        self.assertNotIn("git revert", run.calls)
+        self.assertEqual([(o.status, o.detail) for o in outcomes], [("cambiado", "")])
 
     def test_a_failed_check_reverts_too(self):
         run = FakeRun({"configure --check": Ran(1, "", "conflict in claw/config.yaml")})
