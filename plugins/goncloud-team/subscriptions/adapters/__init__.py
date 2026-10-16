@@ -12,6 +12,7 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
+from ._http import failure_for_status
 
 _AUTH_PATTERN = re.compile(
     r"unauthorized|not authenticated|authentication|credential|"
@@ -20,9 +21,26 @@ _AUTH_PATTERN = re.compile(
     r"token (is )?(invalid|expired|missing)",
     re.IGNORECASE,
 )
+#: The plan's window is spent ("The usage limit has been reached", kimi's
+#: weekly limit). It outranks throttle wording when a message carries both.
 _QUOTA_PATTERN = re.compile(
-    r"\bquota\b|\bbalance\b|insufficient|rate[ _-]?limit|usage[ _-]?limit|"
-    r"\bexceeded\b|out of credit",
+    r"\bquota\b|\bbalance\b|insufficient|usage[ _-]?limit|out of credit|"
+    r"\b(?:daily|weekly|monthly)\b[^.\n]{0,24}\blimit",
+    re.IGNORECASE,
+)
+#: A short throttle: OpenCode Go answers "429 Output token rate limit
+#: exceeded. Please retry after a brief wait." The same route works again in
+#: seconds, so the router retries it instead of benching the account.
+_RATE_LIMIT_PATTERN = re.compile(
+    r"rate[ _-]?limit|too many requests|retry[ _-]?after|throttl|"
+    r"try again (?:later|in a (?:moment|bit|few))|slow down|overloaded",
+    re.IGNORECASE,
+)
+#: Older wording the router always advanced as quota; kept as a last resort.
+_EXCEEDED_PATTERN = re.compile(r"\bexceeded\b", re.IGNORECASE)
+_RETRY_AFTER_PATTERN = re.compile(
+    r"(?:retry[ _-]?after|try again in)[:\s]+(\d+(?:\.\d+)?)\s*"
+    r"(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)?(?![a-z])",
     re.IGNORECASE,
 )
 _MODEL_PATTERN = re.compile(
@@ -56,7 +74,7 @@ _ABSOLUTE_DEADLINE_SECONDS = 300
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
     "403": FailureKind.AUTH,
-    "429": FailureKind.QUOTA,
+    "429": FailureKind.RATE_LIMIT,
     "404": FailureKind.MODEL_UNAVAILABLE,
     "400": FailureKind.INVALID_REQUEST,
 }
@@ -93,6 +111,8 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
     # not a dead credential. kimi 0.34 reports weekly limits that way.
     if _QUOTA_PATTERN.search(haystack):
         return FailureKind.QUOTA
+    if _RATE_LIMIT_PATTERN.search(haystack):
+        return FailureKind.RATE_LIMIT
     if bare_codes:
         for code, failure in _STATUS_CODES.items():
             if re.search(rf"\b{code}\b", haystack):
@@ -105,7 +125,7 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
         return FailureKind.TRANSPORT
     if _AUTH_PATTERN.search(haystack):
         return FailureKind.AUTH
-    if _QUOTA_PATTERN.search(haystack):
+    if _EXCEEDED_PATTERN.search(haystack):
         return FailureKind.QUOTA
     if _MODEL_PATTERN.search(haystack):
         return FailureKind.MODEL_UNAVAILABLE
@@ -127,6 +147,26 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
         if kind is not None:
             return kind
     return FailureKind.TASK_FAILURE
+
+
+def classify_http_failure(status: int, body: str) -> FailureKind:
+    """An HTTP status read with its body: a 429 that names the plan is quota."""
+    failure = failure_for_status(status)
+    if failure is FailureKind.RATE_LIMIT and _QUOTA_PATTERN.search(body):
+        return FailureKind.QUOTA
+    return failure or classify_failure(1, body, "")
+
+
+def retry_after_hint(*evidence: str) -> float | None:
+    """The vendor's own "retry after N s", in seconds, when it named one."""
+    for text in evidence:
+        match = _RETRY_AFTER_PATTERN.search(text)
+        if match:
+            unit = (match.group(2) or "s").lower()
+            if unit.startswith(("ms", "milli")):
+                return float(match.group(1)) / 1000
+            return float(match.group(1)) * (60 if unit.startswith("m") else 1)
+    return None
 
 
 def health_for_process_error(account_class: str, error: Exception) -> AdapterHealth:
@@ -206,10 +246,16 @@ class SubscriptionAdapter:
         raise NotImplementedError
 
     def _failed_result(
-        self, route: RouteSpec, failure: FailureKind, detail: str = ""
+        self,
+        route: RouteSpec,
+        failure: FailureKind,
+        detail: str = "",
+        *,
+        evidence: tuple[str, ...] = (),
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
-        # Diagnostics are not a public evidence channel, even after redaction.
+        # Diagnostics are not a public evidence channel, even after redaction;
+        # only a throttle's wait is read out of them.
         return InvocationResult(
             success=False,
             text=text,
@@ -217,6 +263,9 @@ class SubscriptionAdapter:
             model=route.model,
             billing_mode=route.billing_mode,
             failure=failure,
+            retry_after_seconds=retry_after_hint(*evidence)
+            if failure is FailureKind.RATE_LIMIT
+            else None,
         )
 
 
@@ -230,7 +279,9 @@ __all__ = [
     "build_adapter_registry",
     "build_assignment_prompt",
     "classify_failure",
+    "classify_http_failure",
     "health_for_process_error",
+    "retry_after_hint",
 ]
 
 

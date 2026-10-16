@@ -140,4 +140,6 @@ class ClaudeAdapter(SubscriptionAdapter):
         failure = classify_failure(
             evidence.returncode, evidence.stream, evidence.stderr
         )
-        return self._failed_result(route, failure)
+        return self._failed_result(
+            route, failure, evidence=(evidence.stderr, evidence.stream)
+        )

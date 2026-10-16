@@ -192,7 +192,9 @@ class OpenCodeAdapter(SubscriptionAdapter):
             failure = classify_failure(
                 evidence.returncode, evidence.stream, evidence.stderr
             )
-            return self._failed_result(route, failure)
+            return self._failed_result(
+                route, failure, evidence=(evidence.stderr, evidence.stream)
+            )
 
         parsed = parse_opencode_jsonl(evidence.stream)
         if parsed["terminal_valid"] and parsed["text"].strip():

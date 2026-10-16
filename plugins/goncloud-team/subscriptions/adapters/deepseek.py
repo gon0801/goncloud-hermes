@@ -12,7 +12,7 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
-from . import SubscriptionAdapter, build_assignment_prompt, classify_failure
+from . import SubscriptionAdapter, build_assignment_prompt, classify_http_failure
 from ._http import SubscriptionHttpError, failure_for_status, request_json
 from ._live_probe import PROBE_MAX_TOKENS, PROBE_PROMPT, minimal_http_probe
 
@@ -140,8 +140,8 @@ class DeepSeekAdapter(SubscriptionAdapter):
                 billing_mode=route.billing_mode,
                 session_id=parsed["id"],
             )
-        failure = failure_for_status(status) or classify_failure(1, body, "")
-        return self._failed_result(route, failure)
+        failure = classify_http_failure(status, body)
+        return self._failed_result(route, failure, evidence=(body,))
 
 
 def _parse_completion_body(body: str) -> dict:

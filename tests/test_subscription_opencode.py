@@ -323,7 +323,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         cases = [
             (1, "error: unauthorized subscription", FailureKind.AUTH),
             (1, "insufficient balance on plan", FailureKind.QUOTA),
-            (1, "rate limit exceeded, retry later", FailureKind.QUOTA),
+            (1, "rate limit exceeded, retry later", FailureKind.RATE_LIMIT),
             (1, "model mystery-x is not available", FailureKind.MODEL_UNAVAILABLE),
             (2, "invalid request payload", FailureKind.INVALID_REQUEST),
             (1, "agent could not finish", FailureKind.TASK_FAILURE),
@@ -400,6 +400,64 @@ class OpenCodeAdapterTests(unittest.TestCase):
             classify_failure(1, "", "HTTP 403 Forbidden"), FailureKind.AUTH
         )
 
+    def test_a_throttle_is_not_a_spent_plan(self):
+        # 2026-10-15: every throttle read as quota and benched the account
+        # for 15 minutes. These are the vendors' own words.
+        throttles = [
+            "429 Output token rate limit exceeded. Please retry after a brief wait.",
+            "Too Many Requests",
+            "Error: 429",
+            "server overloaded, try again in a moment",
+        ]
+        for text in throttles:
+            for stdout, stderr in ((text, ""), ("", text)):
+                with self.subTest(text=text, stderr=bool(stderr)):
+                    self.assertEqual(
+                        classify_failure(1, stdout, stderr), FailureKind.RATE_LIMIT
+                    )
+        spent = [
+            "The usage limit has been reached.",
+            "You've reached your weekly (7-day) usage limit.",
+            "Monthly request limit reached for this plan.",
+            # Both kinds of words: the spent plan wins.
+            "429 Too Many Requests: you exceeded your current quota",
+            "Rate limit: insufficient balance, top up to continue",
+            # No throttle cue: the old reading (advance as quota) stands.
+            "request limit exceeded",
+        ]
+        for text in spent:
+            with self.subTest(text=text):
+                self.assertEqual(classify_failure(1, "", text), FailureKind.QUOTA)
+
+    def test_a_throttle_carries_the_vendors_wait_and_nothing_else(self):
+        cases = [
+            ("Rate limit exceeded. Retry after 30 seconds. raw-secret", 30.0),
+            ("429 Too Many Requests; try again in 1.5s raw-secret", 1.5),
+            ("rate limited, retry-after: 2 minutes raw-secret", 120.0),
+            ("rate limit hit, retry after 500ms raw-secret", 0.5),
+            (
+                "429 Output token rate limit exceeded. "
+                "Please retry after a brief wait. raw-secret",
+                None,
+            ),
+        ]
+        for stderr, wait in cases:
+            with self.subTest(stderr=stderr):
+                result = OpenCodeAdapter(
+                    runner=FakeCliRunner(stderr=stderr, returncode=1)
+                ).invoke(request(self.workspace), route(0, "opencode_go", "muse"))
+                self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
+                self.assertEqual(result.retry_after_seconds, wait)
+                self.assertNotIn("raw-secret", repr(result))
+        spent = OpenCodeAdapter(
+            runner=FakeCliRunner(
+                stderr="quota spent; retry after 3600 seconds", returncode=1
+            )
+        ).invoke(request(self.workspace), route(0, "opencode_go", "muse"))
+        self.assertEqual(
+            (spent.failure, spent.retry_after_seconds), (FailureKind.QUOTA, None)
+        )
+
     def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
         # stderr is the vendor's error channel: a bare code there is real.
         # stdout is the model's generated text: a bare code there is a width,
@@ -413,7 +471,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
     def test_status_codes_in_http_context_still_classify(self):
         cases = [
             ("Error: 401 Unauthorized", FailureKind.AUTH),
-            ("request failed with status code 429", FailureKind.QUOTA),
+            ("request failed with status code 429", FailureKind.RATE_LIMIT),
             ("HTTP 403 Forbidden", FailureKind.AUTH),
             ("server returned 404 not found", FailureKind.MODEL_UNAVAILABLE),
             ("responded 400 bad request", FailureKind.INVALID_REQUEST),
