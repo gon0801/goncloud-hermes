@@ -97,8 +97,12 @@ esfuerzo `max` en `agents.defaults.models`; sonda de Wonder `PROBE_OK`;
 cadenas aplicadas a los 19 agentes. `claw_models.py check`: 0 diferencias y
 `id_overrides` vacio.
 
-Pendiente menor: `MODEL_API_KEY` en el `.env` de hermes sigue siendo la llave
-muerta; nadie la usa.
+Pendiente menor (hasta 2026-10-15): `MODEL_API_KEY` en el `.env` de hermes era la
+llave muerta; nadie la usaba. Desde #17, cada despliegue con un login legible la
+reemplaza por la llave de `muse login` en los perfiles con `meta-ai`. Medido el
+2026-10-15 antes de desplegar: el pool `meta-ai` de claw, amazon y eggbot estaba
+vacio (`resolve_runtime_provider` -> `AuthError`), asi que nada le gana a esa
+variable; si alguien agrega una entrada manual, ganaria ella.
 
 ## Claude 5.5 y Grok 4.7 en las cadenas de hermes
 

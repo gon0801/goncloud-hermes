@@ -2,6 +2,13 @@
 
 import os
 import time
+from pathlib import Path
+
+#: Every deploy under test reads this fake Muse login, never the owner's key.
+FAKE_MUSE_KEY = "FAKE-MUSE-LOGIN-KEY"
+os.environ["GONCLOUD_MUSE_LOGIN"] = str(
+    Path(__file__).parent / "fixtures" / "muse-login.json"
+)
 
 
 def cleanup_temp_directory(directory):

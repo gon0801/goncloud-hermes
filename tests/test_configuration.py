@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import FAKE_MUSE_KEY, cleanup_temp_directory  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
@@ -379,6 +380,9 @@ class ConfigurationTests(unittest.TestCase):
             module.refuse_regression({}, repo)
 
 
+SENTINEL_AND_MUSE_KEY = f"UNUSED_TEST_KEY=sentinel\nMODEL_API_KEY={FAKE_MUSE_KEY}\n"
+
+
 class DirectorNativeChainTests(unittest.TestCase):
     def table(self):
         # A frozen copy: the live table moves on its own to newer releases.
@@ -401,6 +405,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["fallback_providers"],
             [
                 {"provider": "anthropic", "model": "claude-opus-5-5"},
+                {"provider": "meta-ai", "model": "muse-wonder-1.0"},
                 {"provider": "xai-oauth", "model": "grok-4.7"},
                 {
                     "provider": "zai",
@@ -421,35 +426,34 @@ class DirectorNativeChainTests(unittest.TestCase):
             {
                 "reasoning_overrides": {
                     "claude-opus-5-5": "xhigh",
+                    "muse-wonder-1.0": "max",
                     "gpt-5.6-sol": "xhigh",
                 }
             },
         )
 
-    def test_muse_never_reaches_a_native_provider(self):
-        # Native meta-ai bills Meta's API; the owner pays only the Muse
-        # subscription, which the workers reach through the Muse CLI.
+    def test_the_specialists_reach_muse_on_meta_ai(self):
         table = self.table()
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-        # Only these rows run on native providers: the director's and the
-        # specialists'. The engineering rows go through the worker router.
-        for row in ("main", team["specialist_row"]):
-            config = module.native_config(table, row)
-            providers = [config["model"], *config["fallback_providers"]]
 
-            self.assertNotIn("meta-ai", [entry["provider"] for entry in providers])
-            self.assertNotIn("muse-wonder-1.0", config["agent"]["reasoning_overrides"])
+        config = module.native_config(table, team["specialist_row"])
+
+        self.assertIn(
+            {"provider": "meta-ai", "model": "muse-wonder-1.0"},
+            config["fallback_providers"],
+        )
+        self.assertTrue(module.uses_meta_ai(config))
 
     def test_reordering_the_table_reorders_the_chain(self):
         table = self.table()
         main = table["chains"]["main"]
-        main[2], main[4] = main[4], main[2]
+        main[3], main[4] = main[4], main[3]
 
         chain = module.director_native_config(table)["fallback_providers"]
 
         self.assertEqual(
             [entry["provider"] for entry in chain[:3]],
-            ["xai-oauth", "anthropic", "zai"],
+            ["anthropic", "xai-oauth", "meta-ai"],
         )
 
     def test_a_position_without_native_binding_fails_naming_the_label(self):
@@ -783,6 +787,11 @@ class DirectorNativeChainTests(unittest.TestCase):
                 (amazon / "plugins/goncloud-team/model-routing.source.json").is_file()
             )
             self.assertFalse((amazon / "skills").exists())
+            # Its chain has meta-ai, so it gets the Muse login key.
+            self.assertEqual(
+                (amazon / ".env").read_text(encoding="utf-8"),
+                f"MODEL_API_KEY={FAKE_MUSE_KEY}\n",
+            )
 
             again = run()
             self.assertEqual(again.returncode, 0, again.stderr)
@@ -799,7 +808,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertNotEqual(conflict.returncode, 0)
             self.assertIn("conflict", conflict.stderr)
 
-    def test_real_profiles_apply_twice_without_touching_credentials(self):
+    def test_real_profiles_apply_twice_keeping_other_credentials(self):
         import json
         import yaml
 
@@ -842,6 +851,13 @@ class DirectorNativeChainTests(unittest.TestCase):
                 )
                 self.assertFalse((profile / "plugins/model-providers").exists())
                 self.assertTrue((profile / "memories").is_dir())
+                if role != "claw":
+                    # Workers have no native chain: the key never reaches them.
+                    env_file = profile / ".env"
+                    self.assertFalse(
+                        env_file.exists()
+                        and "MODEL_API_KEY" in env_file.read_text(encoding="utf-8")
+                    )
             credentials = runtime / "profiles/claw/.env"
             loader = subprocess.run(
                 [
@@ -866,10 +882,37 @@ class DirectorNativeChainTests(unittest.TestCase):
                 command, capture_output=True, text=True, env=env, timeout=120
             )
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+            # The deploy owns one line there, the Muse login key for meta-ai.
+            self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
+            self.assertFalse(credentials.with_name(".env.goncloud-backup").exists())
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
+            # --check reads the key but writes nothing, even to a stale .env.
+            credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
+            checked = subprocess.run(
+                [*command, "--check"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertIn(
+                "Muse login key: would be written to 1 profiles", checked.stdout
+            )
+            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+            # An unreadable login leaves every .env as it is.
+            unreadable = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env={**env, "GONCLOUD_MUSE_LOGIN": str(Path(directory) / "none.json")},
+                timeout=120,
+            )
+            self.assertEqual(unreadable.returncode, 0, unreadable.stderr)
+            self.assertIn("Muse login key: unreadable", unreadable.stdout)
+            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
             # Runtime-only role instructions may evolve independently. An
             # explicit preserve flag must still deploy routing artifacts and
             # the owned director model without overwriting those instructions.
@@ -910,6 +953,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             claw = yaml.safe_load(claw_path.read_text(encoding="utf-8"))
             claw["model"] = {"provider": "test-provider", "default": "test-model"}
             claw_path.write_text(yaml.safe_dump(claw), encoding="utf-8")
+            credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
             third = subprocess.run(
                 command, capture_output=True, text=True, env=env, timeout=120
             )
@@ -918,7 +962,115 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertEqual(
                 yaml.safe_load(claw_path.read_text())["model"], claw["model"]
             )
+            # A refused deploy writes no .env either.
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+
+
+class Done:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode, self.stdout = returncode, stdout
+
+
+class MuseLoginKeyTests(unittest.TestCase):
+    LOGIN = json.dumps({"providers": {"meta": {"api_key": " LLM|k \n"}}})
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(module.MUSE_LOGIN_OVERRIDE, None)
+
+    def test_the_key_comes_from_the_login_file_in_wsl(self):
+        calls = []
+
+        def run(*command):
+            calls.append(command)
+            return Done(stdout=self.LOGIN)
+
+        self.assertEqual(module.muse_login_key(run), "LLM|k")
+        self.assertEqual(
+            calls,
+            [("wsl.exe", "-d", "Ubuntu", "--exec", "cat", module.MUSE_LOGIN)],
+        )
+
+    def test_an_override_file_replaces_wsl(self):
+        with tempfile.TemporaryDirectory() as directory:
+            login = Path(directory) / "auth.json"
+            login.write_text(self.LOGIN, encoding="utf-8")
+            os.environ[module.MUSE_LOGIN_OVERRIDE] = str(login)
+
+            self.assertEqual(module.muse_login_key(lambda *c: 1 / 0), "LLM|k")
+
+            os.environ[module.MUSE_LOGIN_OVERRIDE] = str(login) + ".missing"
+            self.assertIsNone(module.muse_login_key(lambda *c: 1 / 0))
+
+    def test_an_unreadable_login_is_no_key(self):
+        def missing(*command):
+            raise FileNotFoundError("wsl.exe")
+
+        def stalled(*command):
+            raise subprocess.TimeoutExpired(command, 120)
+
+        for run in (
+            lambda *c: Done(returncode=1),
+            lambda *c: Done(stdout="not json"),
+            lambda *c: Done(stdout=json.dumps({"providers": {}})),
+            lambda *c: Done(
+                stdout=json.dumps({"providers": {"meta": {"api_key": " "}}})
+            ),
+            lambda *c: Done(
+                stdout=json.dumps({"providers": {"meta": {"api_key": "k\nEVIL=1"}}})
+            ),
+            missing,
+            stalled,
+        ):
+            with self.subTest(run=run):
+                self.assertIsNone(module.muse_login_key(run))
+
+    def test_the_key_replaces_its_line_and_keeps_the_rest(self):
+        text = "GLM_API_KEY=g\nMETA_API_KEY=old\n# note\nMETA_API_KEY=dup\nKIMI=k\n"
+
+        self.assertEqual(
+            module.with_env_value(text, "META_API_KEY", "new"),
+            "GLM_API_KEY=g\nMETA_API_KEY=new\n# note\nKIMI=k\n",
+        )
+
+    def test_a_bom_or_export_line_is_still_the_same_key(self):
+        self.assertEqual(
+            module.with_env_value(
+                "\ufeffMODEL_API_KEY=old\nX=1\n", "MODEL_API_KEY", "n"
+            ),
+            "MODEL_API_KEY=n\nX=1\n",
+        )
+        self.assertEqual(
+            module.with_env_value("export MODEL_API_KEY=old\n", "MODEL_API_KEY", "n"),
+            "MODEL_API_KEY=n\n",
+        )
+
+    def test_a_missing_key_line_is_appended(self):
+        self.assertEqual(
+            module.with_env_value("GLM_API_KEY=g", "META_API_KEY", "new"),
+            "GLM_API_KEY=g\nMETA_API_KEY=new\n",
+        )
+        self.assertEqual(
+            module.with_env_value("", "META_API_KEY", "new"), "META_API_KEY=new\n"
+        )
+
+    def test_only_a_native_chain_with_meta_ai_takes_the_key(self):
+        self.assertFalse(module.uses_meta_ai({"plugins": {}}))
+        self.assertFalse(
+            module.uses_meta_ai(
+                {"model": {"provider": "opencode-go"}, "fallback_providers": []}
+            )
+        )
+        self.assertTrue(
+            module.uses_meta_ai(
+                {
+                    "model": {"provider": "opencode-go"},
+                    "fallback_providers": [{"provider": "meta-ai"}],
+                }
+            )
+        )
 
 
 class RootKanbanPolicyTests(unittest.TestCase):

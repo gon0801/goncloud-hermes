@@ -5,7 +5,7 @@ exactly as the table would, and the adapter is invoked directly, so nothing is
 written to ``subscription-router.db``: a failed probe cannot quarantine an
 adapter the way ``configure_subscriptions.py --live-probe-all`` does.
 
-    python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"
+    python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (high)"
 
 It spends a few tokens. Run it on the PC with the Hermes venv python.
 """
@@ -34,7 +34,7 @@ def scrub(text, limit=300):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("label", help='Table label, e.g. "meta/muse-wonder-1.0 (max)"')
+    parser.add_argument("label", help='Table label, e.g. "meta/muse-wonder-1.0 (high)"')
     parser.add_argument(
         "--position", type=int, required=True, help="Table position 0-7"
     )

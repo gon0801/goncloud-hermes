@@ -58,7 +58,7 @@ de suscripciones de esta pagina, sin cambio. Detalle en
 [spec](superpowers/specs/2026-09-28-director-native-chain-design.md).
 
 Los marcadores son politica de ejecucion, no texto decorativo: compilan a
-`agent.reasoning_overrides: {model: effort}` (Claude `xhigh`, Muse `max`,
+`agent.reasoning_overrides: {model: effort}` (Claude `xhigh`, Muse Wonder `high`,
 igual para el resto de la fila), que Hermes re-resuelve si un fallback se
 activa. Cualquier marcador desconocido bloquea la compilacion de la tabla.
 
