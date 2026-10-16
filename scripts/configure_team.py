@@ -1,7 +1,9 @@
 """Install versioned team configuration without cloning credentials or user state."""
 
 import argparse
+import collections
 import copy
+import csv
 import json
 import os
 from pathlib import Path
@@ -372,6 +374,142 @@ def write_changed(path, content):
     temporary.replace(path)
 
 
+#: One access control entry as ``icacls`` prints it: the principal and the
+#: flags inside its parentheses (``I``, ``OI``, ``CI``, ``F``, ``RX``, ``DENY``,
+#: or the specific rights of a ``(Rc,S,RA,...)`` list, one token each).
+Ace = collections.namedtuple("Ace", "principal flags")
+WindowsUser = collections.namedtuple("WindowsUser", "sid names")
+_ACE_LINE = re.compile(r"^(?P<principal>.*?):(?P<flags>(?:\([^()]*\))+)\s*$")
+#: Principals whose read+execute reaches the user's filtered token. Owner
+#: rights and Administrators are not here on purpose: the gateway task runs
+#: with the user's medium-integrity token, where Administrators is deny-only,
+#: and OWNER RIGHTS names BUILTIN\Administrators on the installed tools.
+_PUBLIC_PRINCIPALS = ("builtin\\users", "everyone", "nt authority\\authenticated users")
+_EXECUTE_FLAGS = frozenset({"F", "M", "RX"})
+
+
+def parse_icacls(text):
+    """The ACEs in ``icacls <path>`` output; the path on the first line is dropped."""
+    aces = []
+    for line in text.splitlines():
+        match = _ACE_LINE.match(line.strip())
+        if match is None:
+            continue
+        flags = frozenset(
+            token.strip()
+            for group in re.findall(r"\(([^()]*)\)", match.group("flags"))
+            for token in group.split(",")
+        )
+        aces.append(Ace(match.group("principal"), flags))
+    return aces
+
+
+def _names_user(principal, user):
+    """``principal`` denotes ``user``, allowing the path ``icacls`` prefixes to line 1."""
+    principal = principal.lower()
+    accepted = [user.sid.lower(), "*" + user.sid.lower(), *_PUBLIC_PRINCIPALS]
+    accepted += [name.lower() for name in user.names]
+    return any(principal == name or principal.endswith(" " + name) for name in accepted)
+
+
+def user_can_execute(aces, user):
+    """``user``'s own token may read and execute the directory and its children.
+
+    The grant must reach children (``OI`` and ``CI``, not ``NP``): the gateway
+    task fails on ``python.exe`` inside the directory, not on the directory.
+    """
+    for principal, flags in aces:
+        if "DENY" in flags or not _names_user(principal, user):
+            continue
+        if not {"OI", "CI"} <= flags or "NP" in flags:
+            continue
+        if _EXECUTE_FLAGS & flags or {"R", "X"} <= flags:
+            return True
+    return False
+
+
+def _run_windows(*command):
+    return subprocess.run(
+        list(command), capture_output=True, text=True, errors="replace", check=False
+    )
+
+
+def current_windows_user(run=_run_windows):
+    """The interactive user's SID and account names (``whoami`` plus env forms).
+
+    The SID is what the grant uses: a name resolved over ssh came back as
+    ``WORKGROUP\\user`` and ``icacls`` found no mapping for it (2026-10-15).
+    """
+    result = run("whoami", "/user", "/fo", "csv", "/nh")
+    if result.returncode != 0:
+        raise ValueError(f"whoami failed: {result.stderr.strip() or result.stdout}")
+    account, sid = next(csv.reader([result.stdout.strip()]))
+    user = account.rsplit("\\", 1)[-1]
+    names = {account}
+    for variable in ("COMPUTERNAME", "USERDOMAIN"):
+        if os.environ.get(variable):
+            names.add(f"{os.environ[variable]}\\{user}")
+    return WindowsUser(sid, sorted(names))
+
+
+def tools_without_user_access(tools_dir, user, run=_run_windows):
+    """The directories directly under ``tools_dir`` the user's token cannot execute.
+
+    Hermes installs each tool elevated with a protected ACL (SYSTEM,
+    Administrators and OWNER RIGHTS only, 2026-10-02). The ``Hermes_Gateway``
+    task then reports success while ``python.exe`` answers "Access is denied"
+    and no gateway starts. An unreadable ACL counts as no access.
+    """
+    lacking = []
+    for directory in sorted(p for p in tools_dir.iterdir() if p.is_dir()):
+        result = run("icacls", str(directory))
+        aces = parse_icacls(result.stdout) if result.returncode == 0 else []
+        if not user_can_execute(aces, user):
+            lacking.append(directory)
+    return lacking
+
+
+def grant_user_execute(directory, user, run=_run_windows):
+    """Give ``user`` read+execute on ``directory`` and everything under it."""
+    result = run(
+        "icacls",
+        str(directory),
+        "/grant",
+        f"*{user.sid}:(OI)(CI)RX",
+        "/T",
+        "/C",
+        "/Q",
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"icacls could not grant read/execute on {directory} "
+            f"(run elevated): {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def ensure_tools_executable(runtime_home, *, check_only, run=_run_windows):
+    """Keep every installed tool executable by the user; Windows only.
+
+    In check mode a tool the user cannot execute fails the check and is named,
+    so a reinstall or update that reset the ACLs cannot pass unnoticed.
+    """
+    tools_dir = runtime_home / "tools"
+    if os.name != "nt" or not tools_dir.is_dir():
+        return []
+    user = current_windows_user(run)
+    lacking = tools_without_user_access(tools_dir, user, run)
+    if check_only and lacking:
+        listed = "\n".join(f"  {directory}" for directory in lacking)
+        raise ValueError(
+            "Tools the user cannot execute (the Hermes_Gateway task will not "
+            f"start the gateway); apply elevated to grant read/execute:\n{listed}"
+        )
+    for directory in lacking:
+        grant_user_execute(directory, user, run)
+        print(f"Granted read/execute on {directory}")
+    return lacking
+
+
 DIRECTOR_SCRIPTS = (
     "model_watch.py",
     "model_lines.py",
@@ -599,7 +737,9 @@ def configure(
     root_config = contained(runtime_home / "config.yaml", runtime_home)
     root_text = root_config.read_bytes().decode("utf-8") if root_config.exists() else ""
     root_desired = apply_root_kanban(root_text, root_kanban_policy(team))
-    # Every profile validated above; nothing has been written yet.
+    # Every profile validated above; nothing has been written yet. The tools
+    # ACL goes here too: in check mode it fails the check, otherwise it grants.
+    ensure_tools_executable(runtime_home, check_only=check_only)
     if check_only:
         print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
         print(
