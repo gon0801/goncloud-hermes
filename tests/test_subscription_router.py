@@ -140,10 +140,12 @@ class RouterTestCase(unittest.TestCase):
         }
 
     def router(self):
+        self.sleeps = []
         router = SubscriptionRouter(
             adapters=self.fake_adapters,
             db_path=self.db_path,
             routing_source=SOURCE,
+            sleep=self.sleeps.append,
         )
         router.calls = []
         original_invoke = router._invoke_route
@@ -822,6 +824,18 @@ class FailoverTests(RouterTestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
+        self.assertEqual(router.calls, ["opencode_go"] * 3 + ["claude"])
+        self.assertEqual(self.sleeps, [20, 60])
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(
+            [(row["slot"], row["attempt"], row["failure"]) for row in attempts],
+            [
+                (0, 0, "rate_limit"),
+                (0, 1, "rate_limit"),
+                (0, 2, "rate_limit"),
+                (2, 0, None),
+            ],
+        )
         self.assertEqual(
             result.skipped_routes,
             (SkippedRoute(0, "opencode_go", FailureKind.RATE_LIMIT),),
@@ -842,6 +856,93 @@ class FailoverTests(RouterTestCase):
             (skipped["disposition"], skipped["failure"]), ("skipped", "rate_limit")
         )
 
+    def test_a_passing_throttle_is_retried_on_the_same_route(self):
+        router = self.router()
+        replies = iter(
+            [
+                failed(FailureKind.RATE_LIMIT, "opencode_go"),
+                completed("same route", "opencode_go"),
+            ]
+        )
+        self.fake_adapters["opencode_go"].result = lambda request, route: next(replies)
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual((result.text, result.slot), ("same route", 0))
+        self.assertEqual(result.skipped_routes, ())
+        self.assertEqual(router.calls, ["opencode_go", "opencode_go"])
+        self.assertEqual(self.sleeps, [20])
+        self.assertIsNone(router.store.cooldown_until("opencode_go"))
+        self.assertTrue(router.store.health("opencode_go")["ready"])
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual(
+            [(row["slot"], row["attempt"], row["failure"]) for row in attempts],
+            [(0, 0, "rate_limit"), (0, 1, None)],
+        )
+
+    def test_a_throttle_waits_as_long_as_the_vendor_asks_within_the_lease(self):
+        hint = replace(
+            failed(FailureKind.RATE_LIMIT, "opencode_go"), retry_after_seconds=7
+        )
+        self.fake_adapters["opencode_go"].result = hint
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+
+        router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(self.sleeps, [7, 7])
+        self.assertEqual(router.calls, ["opencode_go"] * 3 + ["claude"])
+
+    def test_a_throttle_wait_never_outlasts_the_stage_lease(self):
+        router = self.router()
+        lease_left = []
+
+        def lease_seconds():
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                (expires,) = conn.execute(
+                    "SELECT expires_at FROM subscription_stage_leases"
+                ).fetchone()
+            remaining = datetime.fromisoformat(expires) - datetime.now(timezone.utc)
+            return remaining.total_seconds()
+
+        def slow_throttle(request, route):
+            # A vendor call that used up all but 5 s of the lease.
+            with closing(sqlite3.connect(self.db_path)) as conn, conn:
+                conn.execute(
+                    "UPDATE subscription_stage_leases SET expires_at = ?",
+                    ((datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(),),
+                )
+            return failed(FailureKind.RATE_LIMIT, route.adapter)
+
+        self.fake_adapters["opencode_go"].result = slow_throttle
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router.sleep = lambda seconds: lease_left.append((seconds, lease_seconds()))
+
+        router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual([seconds for seconds, _ in lease_left], [20, 60])
+        for seconds, remaining in lease_left:
+            self.assertGreater(remaining, seconds)
+
+    def test_a_throttle_longer_than_the_lease_allows_advances_without_waiting(self):
+        # A wait must end well inside the stage lease renewed before it; a
+        # vendor asking for 15 minutes is a spent window in all but name.
+        self.fake_adapters["opencode_go"].result = replace(
+            failed(FailureKind.RATE_LIMIT, "opencode_go"), retry_after_seconds=900
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        before = datetime.now(timezone.utc)
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "claude")
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        bench = router.store.cooldown_until("opencode_go") - before
+        self.assertLess(bench, timedelta(minutes=2, seconds=30))
+
     def test_plan_exhaustion_advances_at_once_and_benches_the_account(self):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.QUOTA, adapter="opencode_go"
@@ -854,6 +955,7 @@ class FailoverTests(RouterTestCase):
 
         self.assertEqual(result.adapter, "claude")
         self.assertEqual(router.calls, ["opencode_go", "claude"])
+        self.assertEqual(self.sleeps, [])
         bench = router.store.cooldown_until("opencode_go") - before
         self.assertGreaterEqual(bench, timedelta(minutes=15))
         self.assertLess(bench, timedelta(minutes=15, seconds=30))
@@ -1043,6 +1145,34 @@ class MutationContinuationTests(RouterTestCase):
         self.assertEqual(evidence["changed_files"], ["changed.py"])
         self.assertEqual(
             evidence["end_revision"], self._run_git("rev-parse", "HEAD").stdout.strip()
+        )
+
+    def test_a_throttle_after_a_mutation_retries_the_route_as_a_continuation(self):
+        router = self.router()
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        def edit_then_throttle(request, route):
+            if request.mode == "start":
+                (request.workspace / "half-done.txt").write_text("x", encoding="utf-8")
+                return failed(FailureKind.RATE_LIMIT, route.adapter)
+            return completed("resumed", route.adapter)
+
+        self.fake_adapters["opencode_go"].result = edit_then_throttle
+        initial = replace(
+            request(self.git_repo), start_revision=start, current_revision=start
+        )
+
+        result = router.run(initial, routes_for_main())
+
+        self.assertEqual((result.text, result.slot), ("resumed", 0))
+        first, retry = self.fake_adapters["opencode_go"].requests
+        self.assertEqual(first.mode, "start")
+        self.assertEqual(retry.mode, "continue")
+        self.assertEqual(retry.changed_files, ("half-done.txt",))
+        self.assertEqual(retry.current_revision, start)
+        self.assertEqual(
+            [row["mode"] for row in router.store.stage_attempts("wf-6", "st-6")],
+            ["start", "continue"],
         )
 
     def test_empty_commit_advances_auth_as_continuation_and_survives_restart(self):

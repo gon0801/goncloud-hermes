@@ -94,6 +94,8 @@ class InvocationResult:
     route_label: str = ""
     reasoning_effort: Literal["high", "xhigh", "max"] | None = None
     skipped_routes: tuple[SkippedRoute, ...] = ()
+    #: The vendor's own "retry after N s" on a throttle, when it named one.
+    retry_after_seconds: float | None = None
 
     def __post_init__(self) -> None:
         for field_name in (

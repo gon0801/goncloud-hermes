@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 from uuid import uuid4
 
 from .adapters import build_adapter_registry
@@ -65,6 +67,21 @@ _QUARANTINE_RETRY_SECONDS = 3600
 # Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
 # cleanup grace, and the bounded Git evidence reads after invocation.
 _STAGE_LEASE_SECONDS = 600
+#: Waits before each same-route retry of a throttle; their count is the retry
+#: budget. OpenClaw recovers throttles on the same model the same way.
+_RATE_LIMIT_BACKOFF_SECONDS = (20, 60)
+# The lease is renewed right before a wait, so any wait under this bound ends
+# with most of the lease left. A vendor asking for longer than this is a spent
+# window in all but name: advance instead of holding the stage.
+_RATE_LIMIT_MAX_WAIT_SECONDS = 120
+
+
+def _throttle_wait(retries_spent: int, hint: Optional[float]) -> Optional[float]:
+    """Seconds to wait before retrying a throttled route, or None to advance."""
+    if retries_spent >= len(_RATE_LIMIT_BACKOFF_SECONDS):
+        return None
+    wait = _RATE_LIMIT_BACKOFF_SECONDS[retries_spent] if hint is None else hint
+    return wait if wait <= _RATE_LIMIT_MAX_WAIT_SECONDS else None
 
 
 def default_db_path() -> Path:
@@ -157,6 +174,7 @@ class SubscriptionRouter:
         routing_source: Optional[dict] = None,
         git: Optional[GitInspector] = None,
         health_ttl_seconds: int = 300,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.adapters = adapters if adapters is not None else build_adapter_registry()
         self.routing_source = (
@@ -170,6 +188,7 @@ class SubscriptionRouter:
         else:
             self.store = store
         self.health_ttl_seconds = health_ttl_seconds
+        self.sleep = sleep
 
     # -- execution --------------------------------------------------------
 
@@ -263,8 +282,11 @@ class SubscriptionRouter:
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
         skipped_routes: list[SkippedRoute] = []
+        pending = deque(routes)
+        throttle_retries: dict[int, int] = {}
 
-        for route in routes:
+        while pending:
+            route = pending.popleft()
             if not self.store.renew_stage(
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
@@ -494,6 +516,28 @@ class SubscriptionRouter:
                 return result
             if result.failure in _BLOCK_AFTER_MUTATION and mutated:
                 return result
+            if mutated:
+                request = replace(
+                    request,
+                    mode="continue",
+                    current_revision=revision or request.current_revision,
+                    changed_files=changed,
+                )
+            if result.failure is FailureKind.RATE_LIMIT:
+                retries = throttle_retries.get(route.slot, 0)
+                wait = _throttle_wait(retries, result.retry_after_seconds)
+                if wait is not None:
+                    if not self.store.renew_stage(
+                        request.workflow_id,
+                        request.stage_id,
+                        owner,
+                        _STAGE_LEASE_SECONDS,
+                    ):
+                        return self._stage_busy()
+                    self.sleep(wait)
+                    throttle_retries[route.slot] = retries + 1
+                    pending.appendleft(route)
+                    continue
             cooldown = _COOLDOWN_MINUTES.get(result.failure)
             if cooldown is not None:
                 self.store.set_cooldown(
@@ -507,13 +551,6 @@ class SubscriptionRouter:
                     result.failure or FailureKind.TASK_FAILURE,
                 )
             )
-            if mutated:
-                request = replace(
-                    request,
-                    mode="continue",
-                    current_revision=revision or request.current_revision,
-                    changed_files=changed,
-                )
 
         if not attempted_any:
             return InvocationResult(
