@@ -94,6 +94,20 @@ def _throttle_wait(
     return wait
 
 
+def _bench_for(result: InvocationResult) -> Optional[timedelta]:
+    """How long later stages skip the account after an advancing failure."""
+    minutes = _COOLDOWN_MINUTES.get(result.failure)
+    if minutes is None:
+        return None
+    bench = timedelta(minutes=minutes)
+    if result.retry_after_seconds is not None:
+        # A throttle that named a wait too long to sleep through: honor it,
+        # up to the quota window.
+        named = timedelta(seconds=result.retry_after_seconds)
+        bench = max(bench, min(named, timedelta(minutes=_QUOTA_COOLDOWN_MINUTES)))
+    return bench
+
+
 def default_db_path() -> Path:
     """Private, Git-ignored location shared by every profile process."""
     configured = os.environ.get("GONCLOUD_SUBSCRIPTION_DB")
@@ -552,11 +566,10 @@ class SubscriptionRouter:
                     throttle_retries[route.slot] = retries + 1
                     pending.appendleft(route)
                     continue
-            cooldown = _COOLDOWN_MINUTES.get(result.failure)
-            if cooldown is not None:
+            bench = _bench_for(result)
+            if bench is not None:
                 self.store.set_cooldown(
-                    route.adapter,
-                    until=datetime.now(timezone.utc) + timedelta(minutes=cooldown),
+                    route.adapter, until=datetime.now(timezone.utc) + bench
                 )
             skipped_routes.append(
                 SkippedRoute(

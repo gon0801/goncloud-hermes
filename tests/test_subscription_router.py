@@ -927,21 +927,32 @@ class FailoverTests(RouterTestCase):
 
     def test_a_throttle_longer_than_the_lease_allows_advances_without_waiting(self):
         # A wait must end well inside the stage lease renewed before it; a
-        # vendor asking for 15 minutes is a spent window in all but name.
-        self.fake_adapters["opencode_go"].result = replace(
-            failed(FailureKind.RATE_LIMIT, "opencode_go"), retry_after_seconds=900
-        )
-        self.fake_adapters["claude"].result = completed(adapter="claude")
-        router = self.router()
-        before = datetime.now(timezone.utc)
+        # vendor asking for minutes is a spent window in all but name. Later
+        # stages skip the account for the wait it named, up to the quota
+        # window, and the account stays ready.
+        for hint, expected in (
+            (300, timedelta(minutes=5)),
+            (7200, timedelta(minutes=15)),
+        ):
+            with self.subTest(hint=hint):
+                self.setUp()
+                self.fake_adapters["opencode_go"].result = replace(
+                    failed(FailureKind.RATE_LIMIT, "opencode_go"),
+                    retry_after_seconds=hint,
+                )
+                self.fake_adapters["claude"].result = completed(adapter="claude")
+                router = self.router()
+                before = datetime.now(timezone.utc)
 
-        result = router.run(request(self.workspace), routes_for_main())
+                result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertEqual(result.adapter, "claude")
-        self.assertEqual(self.sleeps, [])
-        self.assertEqual(router.calls, ["opencode_go", "claude"])
-        bench = router.store.cooldown_until("opencode_go") - before
-        self.assertLess(bench, timedelta(minutes=2, seconds=30))
+                self.assertEqual(result.adapter, "claude")
+                self.assertEqual(self.sleeps, [])
+                self.assertEqual(router.calls, ["opencode_go", "claude"])
+                bench = router.store.cooldown_until("opencode_go") - before
+                self.assertGreaterEqual(bench, expected)
+                self.assertLess(bench, expected + timedelta(seconds=30))
+                self.assertTrue(router.store.health("opencode_go")["ready"])
 
     def test_a_throttle_on_every_slot_stops_waiting_once_the_stage_budget_is_spent(
         self,
