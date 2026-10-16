@@ -450,6 +450,11 @@ class OpenCodeAdapterTests(unittest.TestCase):
             classify_failure(1, "The counter resets at midnight.", ""),
             FailureKind.TASK_FAILURE,
         )
+        # A reset seconds away is the throttle itself, not a spent window.
+        self.assertEqual(
+            classify_failure(1, "", "Rate limit exceeded, resets in 30 seconds"),
+            FailureKind.RATE_LIMIT,
+        )
 
     def test_a_throttle_carries_the_vendors_wait_and_nothing_else(self):
         cases = [

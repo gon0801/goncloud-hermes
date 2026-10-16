@@ -30,9 +30,12 @@ _QUOTA_PATTERN = re.compile(
 )
 #: A throttle that names the plan or a reset hours away ("Rate limit exceeded
 #: for your plan. Resets at 3:00 PM.") is the window spent in throttle words.
-#: It only re-reads a throttle: "resets at midnight" alone is the model's prose.
+#: It only re-reads a throttle: "resets at midnight" alone is the model's prose,
+#: and a reset seconds away is the throttle itself.
 _SPENT_WINDOW_PATTERN = re.compile(
-    r"\bresets?\b\s+(?:at|in)\b|billing (?:period|cycle)|"
+    r"\bresets?\s+at\b|"
+    r"\bresets?\s+in\b(?!\s+\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?)\b)|"
+    r"billing (?:period|cycle)|"
     r"for (?:your|this|the) (?:current )?plan|plan[ _-]?limit",
     re.IGNORECASE,
 )
