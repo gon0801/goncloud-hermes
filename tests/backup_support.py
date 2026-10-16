@@ -42,7 +42,8 @@ FAKE_SSH = textwrap.dedent(
 
 def write(path, text=""):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    # Bytes, not text mode: on Windows text mode turns "\n" into "\r\n".
+    path.write_bytes(text.encode("utf-8"))
     return path
 
 
