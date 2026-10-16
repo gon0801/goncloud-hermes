@@ -401,6 +401,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["fallback_providers"],
             [
                 {"provider": "anthropic", "model": "claude-opus-5-5"},
+                {"provider": "meta-ai", "model": "muse-wonder-1.0"},
                 {"provider": "xai-oauth", "model": "grok-4.7"},
                 {
                     "provider": "zai",
@@ -421,35 +422,34 @@ class DirectorNativeChainTests(unittest.TestCase):
             {
                 "reasoning_overrides": {
                     "claude-opus-5-5": "xhigh",
+                    "muse-wonder-1.0": "max",
                     "gpt-5.6-sol": "xhigh",
                 }
             },
         )
 
-    def test_muse_never_reaches_a_native_provider(self):
-        # Native meta-ai bills Meta's API; the owner pays only the Muse
-        # subscription, which the workers reach through the Muse CLI.
+    def test_the_specialists_reach_muse_on_meta_ai(self):
         table = self.table()
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-        # Only these rows run on native providers: the director's and the
-        # specialists'. The engineering rows go through the worker router.
-        for row in ("main", team["specialist_row"]):
-            config = module.native_config(table, row)
-            providers = [config["model"], *config["fallback_providers"]]
 
-            self.assertNotIn("meta-ai", [entry["provider"] for entry in providers])
-            self.assertNotIn("muse-wonder-1.0", config["agent"]["reasoning_overrides"])
+        config = module.native_config(table, team["specialist_row"])
+
+        self.assertIn(
+            {"provider": "meta-ai", "model": "muse-wonder-1.0"},
+            config["fallback_providers"],
+        )
+        self.assertTrue(module.uses_meta_ai(config))
 
     def test_reordering_the_table_reorders_the_chain(self):
         table = self.table()
         main = table["chains"]["main"]
-        main[2], main[4] = main[4], main[2]
+        main[3], main[4] = main[4], main[3]
 
         chain = module.director_native_config(table)["fallback_providers"]
 
         self.assertEqual(
             [entry["provider"] for entry in chain[:3]],
-            ["xai-oauth", "anthropic", "zai"],
+            ["anthropic", "xai-oauth", "meta-ai"],
         )
 
     def test_a_position_without_native_binding_fails_naming_the_label(self):
@@ -919,6 +919,77 @@ class DirectorNativeChainTests(unittest.TestCase):
                 yaml.safe_load(claw_path.read_text())["model"], claw["model"]
             )
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+
+
+class Done:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode, self.stdout = returncode, stdout
+
+
+class MuseLoginKeyTests(unittest.TestCase):
+    LOGIN = json.dumps({"providers": {"meta": {"api_key": " LLM|k \n"}}})
+
+    def test_the_key_comes_from_the_login_file_in_wsl(self):
+        calls = []
+
+        def run(*command):
+            calls.append(command)
+            return Done(stdout=self.LOGIN)
+
+        self.assertEqual(module.muse_login_key(run), "LLM|k")
+        self.assertEqual(
+            calls,
+            [("wsl.exe", "-d", "Ubuntu", "--exec", "cat", module.MUSE_LOGIN)],
+        )
+
+    def test_an_unreadable_login_is_no_key(self):
+        def missing(*command):
+            raise FileNotFoundError("wsl.exe")
+
+        for run in (
+            lambda *c: Done(returncode=1),
+            lambda *c: Done(stdout="not json"),
+            lambda *c: Done(stdout=json.dumps({"providers": {}})),
+            lambda *c: Done(
+                stdout=json.dumps({"providers": {"meta": {"api_key": " "}}})
+            ),
+            missing,
+        ):
+            with self.subTest(run=run):
+                self.assertIsNone(module.muse_login_key(run))
+
+    def test_the_key_replaces_its_line_and_keeps_the_rest(self):
+        text = "GLM_API_KEY=g\nMETA_API_KEY=old\n# note\nMETA_API_KEY=dup\nKIMI=k\n"
+
+        self.assertEqual(
+            module.with_env_value(text, "META_API_KEY", "new"),
+            "GLM_API_KEY=g\nMETA_API_KEY=new\n# note\nKIMI=k\n",
+        )
+
+    def test_a_missing_key_line_is_appended(self):
+        self.assertEqual(
+            module.with_env_value("GLM_API_KEY=g", "META_API_KEY", "new"),
+            "GLM_API_KEY=g\nMETA_API_KEY=new\n",
+        )
+        self.assertEqual(
+            module.with_env_value("", "META_API_KEY", "new"), "META_API_KEY=new\n"
+        )
+
+    def test_only_a_native_chain_with_meta_ai_takes_the_key(self):
+        self.assertFalse(module.uses_meta_ai({"plugins": {}}))
+        self.assertFalse(
+            module.uses_meta_ai(
+                {"model": {"provider": "opencode-go"}, "fallback_providers": []}
+            )
+        )
+        self.assertTrue(
+            module.uses_meta_ai(
+                {
+                    "model": {"provider": "opencode-go"},
+                    "fallback_providers": [{"provider": "meta-ai"}],
+                }
+            )
+        )
 
 
 class RootKanbanPolicyTests(unittest.TestCase):

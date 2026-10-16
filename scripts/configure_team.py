@@ -86,6 +86,7 @@ _NATIVE_PROVIDERS = {
     # provider; Hermes' credential pool rotates to it on 429/exhaustion.
     "opencode_go_2": {"provider": "opencode-go"},
     "claude": {"provider": "anthropic"},
+    "muse": {"provider": "meta-ai"},
     "grok": {"provider": "xai-oauth"},
     "opencode_zai": {"provider": "zai", "base_url": ZAI_CODING_URL},
     "codex": {"provider": "openai-codex"},
@@ -96,11 +97,13 @@ _NATIVE_PROVIDERS = {
     },
 }
 
-#: The owner's Muse subscription is reachable only through the Muse CLI (the
-#: worker router's ``muse`` adapter). The native ``meta-ai`` provider bills
-#: Meta's API, which the owner refused (2026-10-15), so native chains skip
-#: these positions instead of failing on them.
-_CLI_ONLY_ADAPTERS = frozenset({"muse"})
+#: ``muse login`` in WSL mints an inference key bound to the owner's Muse
+#: subscription; the Muse CLI itself sends it to api.meta.ai. Native
+#: ``meta-ai`` positions use that key, never a paid one from Meta's console
+#: (owner, 2026-10-15). It is copied into each profile that needs it on every
+#: deploy, so a new login reaches them on the next one.
+MUSE_LOGIN = "/home/goncloud/.config/muse/auth.json"
+MUSE_KEY_VARIABLE = "META_API_KEY"
 
 
 def director_native_config(source):
@@ -117,8 +120,6 @@ def native_config(source, role):
 
     entries, overrides = [], {}
     for route in compile_profile_routes(role, source):
-        if route.adapter in _CLI_ONLY_ADAPTERS:
-            continue
         binding = _NATIVE_PROVIDERS.get(route.adapter)
         if binding is None:
             raise ValueError(
@@ -592,6 +593,42 @@ def desired_profile_config(role, team, runtime_home):
     return desired
 
 
+def muse_login_key(run=_run_windows):
+    """The key ``muse login`` stored in WSL, or None when it cannot be read."""
+    try:
+        result = run("wsl.exe", "-d", "Ubuntu", "--exec", "cat", MUSE_LOGIN)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        key = json.loads(result.stdout)["providers"]["meta"]["api_key"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return key.strip() if isinstance(key, str) and key.strip() else None
+
+
+def uses_meta_ai(config):
+    """Whether a profile's native chain has a ``meta-ai`` position."""
+    chain = [config.get("model", {}), *config.get("fallback_providers", [])]
+    return any(entry.get("provider") == "meta-ai" for entry in chain)
+
+
+def with_env_value(text, name, value):
+    """A ``.env`` text with ``name`` set to ``value``; every other line kept."""
+    lines, placed = [], False
+    for line in text.splitlines():
+        if line.split("=", 1)[0].strip() == name:
+            if not placed:
+                lines.append(f"{name}={value}")
+                placed = True
+            continue
+        lines.append(line)
+    if not placed:
+        lines.append(f"{name}={value}")
+    return "\n".join(lines) + "\n"
+
+
 def configure(
     runtime_home,
     install_dir,
@@ -740,12 +777,38 @@ def configure(
     # Every profile validated above; nothing has been written yet. The tools
     # ACL goes here too: in check mode it fails the check, otherwise it grants.
     ensure_tools_executable(runtime_home, check_only=check_only)
+    keyed = [entry[0] for entry in prepared if uses_meta_ai(entry[5])]
+    key = muse_login_key() if keyed else None
+    env_files = {}
+    for profile in keyed if key else ():
+        env = contained(profile / ".env", runtime_home)
+        current = env.read_text(encoding="utf-8") if env.exists() else ""
+        env_files[env] = with_env_value(current, MUSE_KEY_VARIABLE, key)
+    if keyed and not key:
+        print(
+            f"Muse login key: unreadable at {MUSE_LOGIN} in WSL; meta-ai fails "
+            f"over in {len(keyed)} profiles until `muse login` is redone"
+        )
     if check_only:
         print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
         print(
             "Root dispatch allowlist: "
             + ("up to date" if root_desired == root_text else "would be written")
         )
+        if env_files:
+            stale = [
+                env
+                for env, text in env_files.items()
+                if not env.exists() or env.read_text(encoding="utf-8") != text
+            ]
+            print(
+                "Muse login key: "
+                + (
+                    f"would be written to {len(stale)} profiles"
+                    if stale
+                    else "up to date"
+                )
+            )
         return
     # The allowlist goes first: it is what keeps the gateway off stage cards.
     write_changed(root_config, root_desired.encode("utf-8"))
@@ -806,6 +869,10 @@ def configure(
                         f"Could not seed bundled skills for {profile.name}; reapply to retry"
                     )
         print(f"Configured {profile.name}: {profile}")
+    for env, text in env_files.items():
+        write_changed(env, text)
+    if env_files:
+        print(f"Muse login key: {MUSE_KEY_VARIABLE} set in {len(env_files)} profiles")
 
 
 def main():
