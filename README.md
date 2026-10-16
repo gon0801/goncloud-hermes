@@ -47,7 +47,7 @@ Despues de instalar ese commit con el instalador oficial de Windows, y despues d
 
 Antes de cada despliegue corre el mismo comando con `--check`: valida los nueve perfiles contra este checkout y sale sin escribir nada; si reporta un conflicto, no hay despliegue hasta reconciliarlo.
 
-El instalador de Hermes, al correr elevado, deja cada carpeta de `%LOCALAPPDATA%\hermes\tools\` (python, git, node, uv y las demas) con un ACL protegido que solo da acceso a SYSTEM, Administrators y OWNER RIGHTS. La tarea programada `Hermes_Gateway` corre con el token filtrado del usuario, donde Administrators no cuenta, asi que el usuario no puede ejecutar ese `python.exe` y el gateway nunca arranca tras un reinicio (2026-10-15). Por eso el configurador corre tambien despues de cada instalacion o actualizacion: revisa cada carpeta de `tools` con `icacls` y, si al usuario le falta lectura y ejecucion heredada a los hijos, se la concede por SID (`icacls <carpeta> /grant *<SID>:(OI)(CI)RX /T /C /Q`); las carpetas siguen sin ser escribibles por el usuario. Con `--check` solo las nombra y falla. Desde una sesion elevada todo parece funcionar, por eso el sintoma solo se ve en la tarea: ver [Hermes no contesta tras reiniciar](#hermes-no-contesta-tras-reiniciar).
+El instalador de Hermes, al correr elevado, deja cada carpeta de `%LOCALAPPDATA%\hermes\tools\` (python, git, node, uv y las demas) con un ACL protegido que solo da acceso a SYSTEM, Administrators y OWNER RIGHTS. La tarea programada `Hermes_Gateway` corre con el token filtrado del usuario, donde Administrators no cuenta, asi que el usuario no puede ejecutar ese `python.exe` y el gateway nunca arranca tras un reinicio (2026-10-15). Por eso el configurador corre tambien despues de cada instalacion o actualizacion: revisa cada carpeta de `tools` con `icacls` y, si al usuario le falta lectura y ejecucion heredada a los hijos, se la concede por SID (`icacls <carpeta> /grant "*<SID>:(OI)(CI)RX" /T /C /Q`); las carpetas siguen sin ser escribibles por el usuario. Con `--check` solo las nombra y falla. Desde una sesion elevada todo parece funcionar, por eso el sintoma solo se ve en la tarea: ver [Hermes no contesta tras reiniciar](#hermes-no-contesta-tras-reiniciar).
 
 Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_providers` que poseia, instala la fuente literal y el proveedor local en los nueve perfiles, y excluye Copilot. Conserva credenciales y opciones no administradas; ante conflictos se detiene para reconciliarlos. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
 
@@ -130,16 +130,16 @@ Cuando la primera corrida termine sin ERROR y el archivo aparezca en gonserver, 
 
 ### Hermes no contesta tras reiniciar
 
-Sintoma. Despues de reiniciar la PC la tarea `Hermes_Gateway` termina con exito (`schtasks /query /tn Hermes_Gateway /v`), pero `hermes -p claw gateway status` dice que no corre y `logs\gateway-exit-diag.log` no registra ningun `gateway.start`. Desde una sesion elevada (ssh o consola de administrador) el gateway arranca a mano, lo que esconde la causa.
+Sintoma. Despues de reiniciar la PC la tarea `Hermes_Gateway` termina con exito (`schtasks /query /tn Hermes_Gateway /v`), pero `hermes -p claw gateway status` dice que no corre y `%LOCALAPPDATA%\hermes\logs\gateway-exit-diag.log` no registra ningun `gateway.start`. Desde una sesion elevada (ssh o consola de administrador) el gateway arranca a mano, lo que esconde la causa.
 
 Revisa el ACL de las herramientas; si una carpeta solo lista SYSTEM, Administrators y OWNER RIGHTS, el token filtrado del usuario no puede ejecutarla:
 
 ```powershell
-icacls "$env:LOCALAPPDATA\hermes\tools\python-3.14.7+20260901-win32-x64"
+Get-ChildItem "$env:LOCALAPPDATA\hermes\tools" -Directory | % { icacls $_.FullName }
 & $python scripts/configure_team.py --check     # falla nombrando cada carpeta de tools sin acceso
 ```
 
-Arreglo. En una consola elevada, `& $python scripts/configure_team.py` sin `--check` concede lectura y ejecucion por SID a cada carpeta que falte. Despues `schtasks /run /tn Hermes_Gateway` y `hermes -p claw gateway status` debe decir que corre. Si `--check` pasa y aun no arranca, la causa es otra: revisa `logs\gateway-exit-diag.log` y el historial de la tarea.
+Arreglo. En una consola elevada, `& $python scripts/configure_team.py` sin `--check` concede lectura y ejecucion por SID a cada carpeta que falte. Despues `schtasks /run /tn Hermes_Gateway` y `hermes -p claw gateway status` debe decir que corre. Si `--check` pasa y aun no arranca, la causa es otra: revisa `%LOCALAPPDATA%\hermes\logs\gateway-exit-diag.log` y el historial de la tarea.
 
 ## Modelo y ejecucion continua
 
