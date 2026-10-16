@@ -21,6 +21,7 @@ from subscriptions.process import (  # noqa: E402
     _MAX_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
     run_cli,
 )
+from subscriptions import adapters  # noqa: E402
 from subscriptions.adapters import classify_failure  # noqa: E402
 from subscriptions.adapters.opencode import (  # noqa: E402
     OpenCodeAdapter,
@@ -450,10 +451,23 @@ class OpenCodeAdapterTests(unittest.TestCase):
             classify_failure(1, "The counter resets at midnight.", ""),
             FailureKind.TASK_FAILURE,
         )
-        # A reset seconds away is the throttle itself, not a spent window.
+        # A reset the router would wait for is the throttle itself; one past its
+        # wait cap is a spent window.
+        for text, kind in (
+            ("Rate limit exceeded, resets in 30 seconds", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 1 minute", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 2 min", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 3 minutes", FailureKind.QUOTA),
+            ("Rate limit exceeded, resets in 2 fortnights", FailureKind.QUOTA),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_failure(1, "", text), kind)
+
+    def test_the_short_throttle_cap_is_the_routers_wait_cap(self):
+        from subscriptions import router
+
         self.assertEqual(
-            classify_failure(1, "", "Rate limit exceeded, resets in 30 seconds"),
-            FailureKind.RATE_LIMIT,
+            router._RATE_LIMIT_MAX_WAIT_SECONDS, adapters.SHORT_THROTTLE_SECONDS
         )
 
     def test_a_throttle_carries_the_vendors_wait_and_nothing_else(self):

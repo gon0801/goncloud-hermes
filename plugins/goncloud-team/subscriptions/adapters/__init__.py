@@ -34,11 +34,18 @@ _QUOTA_PATTERN = re.compile(
 #: and a reset seconds away is the throttle itself.
 _SPENT_WINDOW_PATTERN = re.compile(
     r"\bresets?\s+at\b|"
-    r"\bresets?\s+in\b(?!\s+\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?)\b)|"
+    r"\bresets?\s+in\b(?!\s+\d)|"
     r"billing (?:period|cycle)|"
     r"for (?:your|this|the) (?:current )?plan|plan[ _-]?limit",
     re.IGNORECASE,
 )
+#: "resets in N <unit>": short enough for the router to wait is still a throttle.
+_RESETS_IN_PATTERN = re.compile(
+    r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*([a-z]*)", re.IGNORECASE
+)
+#: The longest wait the router treats as a throttle; the router's
+#: _RATE_LIMIT_MAX_WAIT_SECONDS must match (a test keeps them equal).
+SHORT_THROTTLE_SECONDS = 120
 #: A short throttle: OpenCode Go answers "429 Output token rate limit
 #: exceeded. Please retry after a brief wait." The same route works again in
 #: seconds, so the router retries it instead of benching the account.
@@ -179,10 +186,15 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
 
 def _spent_or(failure: FailureKind, text: str) -> FailureKind:
     """A throttle whose words name the plan or its reset is quota."""
-    if failure is FailureKind.RATE_LIMIT and (
-        _QUOTA_PATTERN.search(text) or _SPENT_WINDOW_PATTERN.search(text)
-    ):
+    if failure is not FailureKind.RATE_LIMIT:
+        return failure
+    if _QUOTA_PATTERN.search(text) or _SPENT_WINDOW_PATTERN.search(text):
         return FailureKind.QUOTA
+    reset = _RESETS_IN_PATTERN.search(text)
+    if reset:
+        scale = _RETRY_AFTER_UNITS.get(reset.group(2).lower())
+        if scale is None or float(reset.group(1)) * scale > SHORT_THROTTLE_SECONDS:
+            return FailureKind.QUOTA
     return failure
 
 
