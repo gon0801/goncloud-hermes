@@ -626,7 +626,10 @@ def muse_login_key(run=_run_wsl):
         key = json.loads(text)["providers"]["meta"]["api_key"]
     except (ValueError, KeyError, TypeError):
         return None
-    return key.strip() if isinstance(key, str) and key.strip() else None
+    # A key is one printable token: anything else would inject lines into a .env.
+    if not isinstance(key, str) or not re.fullmatch(r"[!-~]+", key.strip()):
+        return None
+    return key.strip()
 
 
 def uses_meta_ai(config):
@@ -638,8 +641,8 @@ def uses_meta_ai(config):
 def with_env_value(text, name, value):
     """A ``.env`` text with ``name`` set to ``value``; every other line kept."""
     lines, placed = [], False
-    for line in text.splitlines():
-        if line.split("=", 1)[0].strip() == name:
+    for line in text.lstrip("﻿").splitlines():
+        if line.split("=", 1)[0].removeprefix("export ").strip() == name:
             if not placed:
                 lines.append(f"{name}={value}")
                 placed = True
@@ -684,9 +687,10 @@ def configure(
     )
     prepared = []
     # Team profiles are created and fully shaped here. A specialist profile is
-    # the owner's: it is never created, and only its native model chain and
-    # its copy of the plugin are managed, so a card dispatched to it runs on a
-    # known chain instead of whatever its environment happens to select.
+    # the owner's: it is never created, and only its native model chain, its
+    # copy of the plugin and its Muse key line are managed, so a card
+    # dispatched to it runs on a known chain instead of whatever its
+    # environment happens to select.
     targets = [(role, text, True) for role, text in team["profiles"].items()] + [
         (role, None, False) for role in team["kanban"]["dispatch_profiles"]
     ]
@@ -795,9 +799,7 @@ def configure(
     root_config = contained(runtime_home / "config.yaml", runtime_home)
     root_text = root_config.read_bytes().decode("utf-8") if root_config.exists() else ""
     root_desired = apply_root_kanban(root_text, root_kanban_policy(team))
-    # Every profile validated above; nothing has been written yet. The tools
-    # ACL goes here too: in check mode it fails the check, otherwise it grants.
-    ensure_tools_executable(runtime_home, check_only=check_only)
+    # Every profile validated above; nothing has been written yet.
     keyed = [entry[0] for entry in prepared if uses_meta_ai(entry[5])]
     key = muse_login_key() if keyed else None
     env_files = {}
@@ -810,6 +812,8 @@ def configure(
             f"Muse login key: unreadable at {MUSE_LOGIN} in WSL; meta-ai fails "
             f"over in {len(keyed)} profiles until `muse login` is redone"
         )
+    # The tools ACL: in check mode it fails the check, otherwise it grants.
+    ensure_tools_executable(runtime_home, check_only=check_only)
     if check_only:
         print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
         print(

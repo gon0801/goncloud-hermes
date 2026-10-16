@@ -98,7 +98,8 @@ cadenas aplicadas a los 19 agentes. `claw_models.py check`: 0 diferencias y
 `id_overrides` vacio.
 
 Pendiente menor: `MODEL_API_KEY` en el `.env` de hermes sigue siendo la llave
-muerta; nadie la usa.
+muerta; nadie la usa. (2026-10-15: desde #17 `configure_team.py` escribe ahi la
+llave de `muse login` en cada perfil con `meta-ai`.)
 
 ## Claude 5.5 y Grok 4.7 en las cadenas de hermes
 
