@@ -39,13 +39,15 @@ La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing
 
 Windows: Hermes oficial v0.21.2, commit `3f86ed75dad1933036c52018e991dbd839837126`. Runtime instalado en `%LOCALAPPDATA%\hermes`, upstream en `hermes-agent`, perfiles en `profiles`. No se modifica upstream.
 
-Despues de instalar ese commit con el instalador oficial de Windows:
+Despues de instalar ese commit con el instalador oficial de Windows, y despues de cada instalacion o actualizacion de Hermes, en una consola elevada:
 
 ```powershell
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" scripts/configure_team.py
 ```
 
 Antes de cada despliegue corre el mismo comando con `--check`: valida los nueve perfiles contra este checkout y sale sin escribir nada; si reporta un conflicto, no hay despliegue hasta reconciliarlo.
+
+El instalador de Hermes, al correr elevado, deja cada carpeta de `%LOCALAPPDATA%\hermes\tools\` (python, git, node, uv y las demas) con un ACL protegido que solo da acceso a SYSTEM, Administrators y OWNER RIGHTS. La tarea programada `Hermes_Gateway` corre con el token filtrado del usuario, donde Administrators no cuenta, asi que el usuario no puede ejecutar ese `python.exe` y el gateway nunca arranca tras un reinicio (2026-10-15). Por eso el configurador corre tambien despues de cada instalacion o actualizacion: revisa cada carpeta de `tools` con `icacls` y, si al usuario le falta lectura y ejecucion heredada a los hijos, se la concede por SID (`icacls <carpeta> /grant *<SID>:(OI)(CI)RX /T /C /Q`); las carpetas siguen sin ser escribibles por el usuario. Con `--check` solo las nombra y falla. Desde una sesion elevada todo parece funcionar, por eso el sintoma solo se ve en la tarea: ver [Hermes no contesta tras reiniciar](#hermes-no-contesta-tras-reiniciar).
 
 Reaplicar es idempotente. El configurador retira solamente el `model`/`fallback_providers` que poseia, instala la fuente literal y el proveedor local en los nueve perfiles, y excluye Copilot. Conserva credenciales y opciones no administradas; ante conflictos se detiene para reconciliarlos. Guarda una copia `.goncloud-backup` antes del primer reemplazo. No borra perfiles.
 
@@ -106,7 +108,7 @@ Cuando la primera corrida termine sin ERROR y el archivo aparezca en gonserver, 
    ```
 
    `manifest.json` se queda fuera. Si el usuario de Windows ya no es `ehven`, busca rutas viejas: `Get-ChildItem "$env:LOCALAPPDATA\hermes" -Recurse -Include *.yaml,*.json | Select-String 'Users\\ehven'`.
-7. Corre `& $python scripts/configure_team.py --check` y despues sin `--check`. Reescribe los scripts del director y `autoupdate.json` con las rutas de esta PC.
+7. En una consola elevada corre `& $python scripts/configure_team.py --check` y despues sin `--check`. Reescribe los scripts del director y `autoupdate.json` con las rutas de esta PC, y concede al usuario lectura y ejecucion sobre `%LOCALAPPDATA%\hermes\tools\`, que el instalador deja solo para administradores (seccion "Instalacion reproducible"); sin eso la tarea `Hermes_Gateway` del paso 8 reporta exito y no arranca nada.
 8. Haz que el gateway arranque al iniciar sesion. En la PC vieja lo arranca la tarea programada `Hermes_Gateway`, configurada como "Interactive only" (corre solo con la sesion del usuario abierta). La PC nueva no la trae:
    - Si la PC vieja vive, exporta la tarea y creala igual: `schtasks /query /tn Hermes_Gateway /xml > C:\r\Hermes_Gateway.xml` en la vieja; `schtasks /create /tn Hermes_Gateway /xml C:\r\Hermes_Gateway.xml` en la nueva.
    - Si no, creala en el Programador de tareas con el nombre `Hermes_Gateway`, desencadenador "Al iniciar sesion" de tu usuario, "Ejecutar solo cuando el usuario haya iniciado sesion" y la accion que arranca el gateway del perfil `claw`. Revisa ademas la carpeta Startup del usuario: [estado](docs/status.md) registra una entrada de inicio ahi; deja una sola de las dos.
@@ -125,6 +127,19 @@ Cuando la primera corrida termine sin ERROR y el archivo aparezca en gonserver, 
     - Un turno real del director: `hermes -p claw chat -q "Responde solo: PONG" --oneshot -Q` responde `PONG`.
     - `hermes -p claw cron list` muestra `respaldo-diario-hermes` y `vigia-modelos`.
     - En Telegram, `/new` en la sesion del director.
+
+### Hermes no contesta tras reiniciar
+
+Sintoma. Despues de reiniciar la PC la tarea `Hermes_Gateway` termina con exito (`schtasks /query /tn Hermes_Gateway /v`), pero `hermes -p claw gateway status` dice que no corre y `logs\gateway-exit-diag.log` no registra ningun `gateway.start`. Desde una sesion elevada (ssh o consola de administrador) el gateway arranca a mano, lo que esconde la causa.
+
+Revisa el ACL de las herramientas; si una carpeta solo lista SYSTEM, Administrators y OWNER RIGHTS, el token filtrado del usuario no puede ejecutarla:
+
+```powershell
+icacls "$env:LOCALAPPDATA\hermes\tools\python-3.14.7+20260901-win32-x64"
+& $python scripts/configure_team.py --check     # falla nombrando cada carpeta de tools sin acceso
+```
+
+Arreglo. En una consola elevada, `& $python scripts/configure_team.py` sin `--check` concede lectura y ejecucion por SID a cada carpeta que falte. Despues `schtasks /run /tn Hermes_Gateway` y `hermes -p claw gateway status` debe decir que corre. Si `--check` pasa y aun no arranca, la causa es otra: revisa `logs\gateway-exit-diag.log` y el historial de la tarea.
 
 ## Modelo y ejecucion continua
 
