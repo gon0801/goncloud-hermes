@@ -861,7 +861,7 @@ class HttpAdapterTests(unittest.TestCase):
                 self.assertNotIn("sk-sensitive", repr(result))
             for status, failure in (
                 (401, FailureKind.AUTH),
-                (429, FailureKind.QUOTA),
+                (429, FailureKind.RATE_LIMIT),
                 (500, FailureKind.TRANSPORT),
             ):
                 with (
@@ -905,13 +905,14 @@ class HttpAdapterTests(unittest.TestCase):
                 self.assertEqual(endpoint.active, 0)
 
     def test_invalid_chunked_quota_response_cools_down_and_advances_both_adapters(self):
+        # 402 is the plan answering "spent"; a 429 is a throttle and retries.
         raw = "raw-private-fixture-not-a-chunk-size\r\n"
         for first_name in ("zai", "deepseek"):
             next_name = "deepseek" if first_name == "zai" else "zai"
             next_body = deepseek_ok_body() if next_name == "deepseek" else zai_ok_body()
             with (
                 self.subTest(adapter=first_name),
-                FakeEndpoint(status=429, body=raw, malformed_chunked=True) as broken,
+                FakeEndpoint(status=402, body=raw, malformed_chunked=True) as broken,
                 FakeEndpoint(body=next_body) as healthy,
             ):
                 urls = {first_name: broken.url, next_name: healthy.url}
@@ -1102,11 +1103,22 @@ class HttpAdapterTests(unittest.TestCase):
             ).invoke(request(self.workspace), route_for("zai", "glm-5.3"))
         self.assertEqual(result.failure, FailureKind.AUTH)
 
-        with FakeEndpoint(status=429, body="rate limit") as endpoint:
-            result = ZAIAdapter(
-                auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url
-            ).invoke(request(self.workspace), route_for("zai", "glm-5.3"))
-        self.assertEqual(result.failure, FailureKind.QUOTA)
+        for body, failure, wait in (
+            ("rate limit", FailureKind.RATE_LIMIT, None),
+            ("Rate limit reached, retry after 30 seconds", FailureKind.RATE_LIMIT, 30),
+            ('{"error":{"message":"Insufficient balance"}}', FailureKind.QUOTA, None),
+            ('{"error":{"message":"Limit resets in 5h 12m"}}', FailureKind.QUOTA, None),
+        ):
+            with (
+                self.subTest(body=body),
+                FakeEndpoint(status=429, body=body) as endpoint,
+            ):
+                result = ZAIAdapter(
+                    auth_token=ZAI_FIXTURE_TOKEN, base_url=endpoint.url
+                ).invoke(request(self.workspace), route_for("zai", "glm-5.3"))
+            self.assertEqual(
+                (result.failure, result.retry_after_seconds), (failure, wait)
+            )
 
     def test_unreachable_endpoint_is_task_failure_not_crash(self):
         adapter = DeepSeekAdapter(

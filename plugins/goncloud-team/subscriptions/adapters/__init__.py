@@ -12,6 +12,7 @@ from ..types import (
     InvocationResult,
     RouteSpec,
 )
+from ._http import failure_for_status
 
 _AUTH_PATTERN = re.compile(
     r"unauthorized|not authenticated|authentication|credential|"
@@ -20,11 +21,61 @@ _AUTH_PATTERN = re.compile(
     r"token (is )?(invalid|expired|missing)",
     re.IGNORECASE,
 )
+#: The plan's window is spent ("The usage limit has been reached", kimi's
+#: weekly limit). It outranks throttle wording when a message carries both.
 _QUOTA_PATTERN = re.compile(
-    r"\bquota\b|\bbalance\b|insufficient|rate[ _-]?limit|usage[ _-]?limit|"
-    r"\bexceeded\b|out of credit",
+    r"\bquota\b|\bbalance\b|insufficient|usage[ _-]?limit|out of credit|"
+    r"\b(?:daily|weekly|monthly)\b[^.\n]{0,24}\blimit",
     re.IGNORECASE,
 )
+#: A throttle that names the plan or a reset hours away ("Rate limit exceeded
+#: for your plan. Resets at 3:00 PM.") is the window spent in throttle words.
+#: It only re-reads a throttle: "resets at midnight" alone is the model's prose,
+#: and a reset seconds away is the throttle itself.
+_SPENT_WINDOW_PATTERN = re.compile(
+    r"\bresets?\s+at\b|"
+    r"\bresets?\s+in\b(?!\s+\d)|"
+    r"billing (?:period|cycle)|"
+    r"for (?:your|this|the) (?:current )?plan|plan[ _-]?limit",
+    re.IGNORECASE,
+)
+#: "resets in N <unit>": short enough for the router to wait is still a throttle.
+_RESETS_IN_PATTERN = re.compile(
+    r"\bresets?\s+in\s+(\d+(?:\.\d+)?)\s*([a-z]*)", re.IGNORECASE
+)
+#: The longest wait the router treats as a throttle; the router's
+#: _RATE_LIMIT_MAX_WAIT_SECONDS must match (a test keeps them equal).
+SHORT_THROTTLE_SECONDS = 120
+#: A short throttle: OpenCode Go answers "429 Output token rate limit
+#: exceeded. Please retry after a brief wait." The same route works again in
+#: seconds, so the router retries it instead of benching the account.
+_RATE_LIMIT_PATTERN = re.compile(
+    r"rate[ _-]?limit|too many requests|retry[ _-]?after|throttl|"
+    r"try again (?:later|in a (?:moment|bit|few))|slow down|overloaded",
+    re.IGNORECASE,
+)
+#: The model's own text (stdout) says "slow down" or "retry-after" about the
+#: task; only the vendor's error phrasing counts there, as a bare 429 counts
+#: there only in an HTTP context (2026-09-15).
+_STDOUT_RATE_LIMIT_PATTERN = re.compile(
+    r"rate[ _-]?limit(?:s)?[ _-](?:exceeded|reached)|rate_limit_error|"
+    r"too many requests",
+    re.IGNORECASE,
+)
+#: Older wording the router always advanced as quota; kept as a last resort.
+_EXCEEDED_PATTERN = re.compile(r"\bexceeded\b", re.IGNORECASE)
+_RETRY_AFTER_PATTERN = re.compile(
+    r"(?:retry[ _-]?after|try again in)[:\s]+(\d+(?:\.\d+)?)\s*([a-z]*)",
+    re.IGNORECASE,
+)
+#: Seconds per unit the vendor may name; a bare number is seconds, as in the
+#: HTTP Retry-After header. Any other word is not a wait we can read.
+_RETRY_AFTER_UNITS = {
+    **dict.fromkeys(("", "s", "sec", "secs", "second", "seconds"), 1.0),
+    **dict.fromkeys(("ms", "millisecond", "milliseconds"), 0.001),
+    **dict.fromkeys(("m", "min", "mins", "minute", "minutes"), 60.0),
+    **dict.fromkeys(("h", "hr", "hrs", "hour", "hours"), 3600.0),
+}
 _MODEL_PATTERN = re.compile(
     r"model (is )?not|unknown model|no such model|not available|"
     r"does not exist|deprecat",
@@ -56,7 +107,7 @@ _ABSOLUTE_DEADLINE_SECONDS = 300
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
     "403": FailureKind.AUTH,
-    "429": FailureKind.QUOTA,
+    "429": FailureKind.RATE_LIMIT,
     "404": FailureKind.MODEL_UNAVAILABLE,
     "400": FailureKind.INVALID_REQUEST,
 }
@@ -83,8 +134,9 @@ _STATUS_CODE_PATTERN = re.compile(
 
 def _classify_channel(haystack: str, *, bare_codes: bool):
     """Classify one output channel, or None. ``bare_codes`` trusts a status
-    number anywhere (the vendor's stderr); otherwise a number counts only in an
-    HTTP context (the model's stdout, where a width or a count is not a code)."""
+    number and any throttle wording (the vendor's stderr); otherwise a number
+    counts only in an HTTP context and a throttle only in the vendor's error
+    phrasing (the model's stdout, where a count or "slow down" is prose)."""
     # A disabled/unenabled model is a model-level answer; it outranks the
     # status code so its 401 is not misread as an account auth failure.
     if _MODEL_LEVEL_PATTERN.search(haystack):
@@ -93,6 +145,9 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
     # not a dead credential. kimi 0.34 reports weekly limits that way.
     if _QUOTA_PATTERN.search(haystack):
         return FailureKind.QUOTA
+    throttle = _RATE_LIMIT_PATTERN if bare_codes else _STDOUT_RATE_LIMIT_PATTERN
+    if throttle.search(haystack):
+        return FailureKind.RATE_LIMIT
     if bare_codes:
         for code, failure in _STATUS_CODES.items():
             if re.search(rf"\b{code}\b", haystack):
@@ -105,7 +160,7 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
         return FailureKind.TRANSPORT
     if _AUTH_PATTERN.search(haystack):
         return FailureKind.AUTH
-    if _QUOTA_PATTERN.search(haystack):
+    if _EXCEEDED_PATTERN.search(haystack):
         return FailureKind.QUOTA
     if _MODEL_PATTERN.search(haystack):
         return FailureKind.MODEL_UNAVAILABLE
@@ -125,8 +180,38 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
     for channel, bare_codes in ((stderr, True), (stdout, False)):
         kind = _classify_channel(channel.lower(), bare_codes=bare_codes)
         if kind is not None:
-            return kind
+            return _spent_or(kind, channel)
     return FailureKind.TASK_FAILURE
+
+
+def _spent_or(failure: FailureKind, text: str) -> FailureKind:
+    """A throttle whose words name the plan or its reset is quota."""
+    if failure is not FailureKind.RATE_LIMIT:
+        return failure
+    if _QUOTA_PATTERN.search(text) or _SPENT_WINDOW_PATTERN.search(text):
+        return FailureKind.QUOTA
+    reset = _RESETS_IN_PATTERN.search(text)
+    if reset:
+        scale = _RETRY_AFTER_UNITS.get(reset.group(2).lower())
+        if scale is None or float(reset.group(1)) * scale > SHORT_THROTTLE_SECONDS:
+            return FailureKind.QUOTA
+    return failure
+
+
+def classify_http_failure(status: int, body: str) -> FailureKind:
+    """An HTTP status read with its body: a 429 that names the plan is quota."""
+    failure = failure_for_status(status)
+    return _spent_or(failure, body) if failure else classify_failure(1, body, "")
+
+
+def retry_after_hint(*evidence: str) -> float | None:
+    """The vendor's own "retry after N s", in seconds, when it named one."""
+    for text in evidence:
+        match = _RETRY_AFTER_PATTERN.search(text)
+        if match:
+            scale = _RETRY_AFTER_UNITS.get(match.group(2).lower())
+            return None if scale is None else float(match.group(1)) * scale
+    return None
 
 
 def health_for_process_error(account_class: str, error: Exception) -> AdapterHealth:
@@ -206,10 +291,16 @@ class SubscriptionAdapter:
         raise NotImplementedError
 
     def _failed_result(
-        self, route: RouteSpec, failure: FailureKind, detail: str = ""
+        self,
+        route: RouteSpec,
+        failure: FailureKind,
+        detail: str = "",
+        *,
+        evidence: tuple[str, ...] = (),
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
-        # Diagnostics are not a public evidence channel, even after redaction.
+        # Diagnostics are not a public evidence channel, even after redaction;
+        # only a throttle's wait is read out of them.
         return InvocationResult(
             success=False,
             text=text,
@@ -217,6 +308,9 @@ class SubscriptionAdapter:
             model=route.model,
             billing_mode=route.billing_mode,
             failure=failure,
+            retry_after_seconds=retry_after_hint(*evidence)
+            if failure is FailureKind.RATE_LIMIT
+            else None,
         )
 
 
@@ -230,7 +324,9 @@ __all__ = [
     "build_adapter_registry",
     "build_assignment_prompt",
     "classify_failure",
+    "classify_http_failure",
     "health_for_process_error",
+    "retry_after_hint",
 ]
 
 

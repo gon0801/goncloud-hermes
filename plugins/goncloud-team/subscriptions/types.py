@@ -12,7 +12,11 @@ from .redaction import redact_text
 
 class FailureKind(StrEnum):
     AUTH = "auth"
+    #: The plan's usage window is spent; it will not come back for a while.
     QUOTA = "quota"
+    #: A short throttle ("rate limit exceeded, retry after a brief wait"). The
+    #: account is fine and the same route works again within seconds.
+    RATE_LIMIT = "rate_limit"
     MODEL_UNAVAILABLE = "model_unavailable"
     TIMEOUT = "timeout"
     TRANSPORT = "transport"
@@ -90,6 +94,8 @@ class InvocationResult:
     route_label: str = ""
     reasoning_effort: Literal["high", "xhigh", "max"] | None = None
     skipped_routes: tuple[SkippedRoute, ...] = ()
+    #: The vendor's own "retry after N s" on a throttle, when it named one.
+    retry_after_seconds: float | None = None
 
     def __post_init__(self) -> None:
         for field_name in (

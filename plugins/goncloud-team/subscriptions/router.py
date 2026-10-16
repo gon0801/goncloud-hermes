@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 from uuid import uuid4
 
 from .adapters import build_adapter_registry
@@ -32,6 +34,7 @@ from .types import (
 _ADVANCING_FAILURES = {
     FailureKind.AUTH,
     FailureKind.QUOTA,
+    FailureKind.RATE_LIMIT,
     FailureKind.MODEL_UNAVAILABLE,
     FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
@@ -46,6 +49,16 @@ _QUOTA_COOLDOWN_MINUTES = 15
 # slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
 # cooldown, not health, is what bridges it.
 _TIMEOUT_COOLDOWN_MINUTES = 15
+# A throttle clears in seconds to a minute. Benching the primary account for
+# the quota window on one throttle pushed every later stage onto weaker
+# fallbacks until the chain ran out (kanban 2026-09-14..10-12).
+_RATE_LIMIT_COOLDOWN_MINUTES = 2
+#: How long an advancing failure benches the account for later stages.
+_COOLDOWN_MINUTES = {
+    FailureKind.QUOTA: _QUOTA_COOLDOWN_MINUTES,
+    FailureKind.TIMEOUT: _TIMEOUT_COOLDOWN_MINUTES,
+    FailureKind.RATE_LIMIT: _RATE_LIMIT_COOLDOWN_MINUTES,
+}
 # Quota, connectivity and even credentials come back on their own, so a
 # quarantine is a verdict with a lifetime, not a permanent ban. After this
 # horizon the router may try the account again; only a successful real
@@ -54,6 +67,45 @@ _QUARANTINE_RETRY_SECONDS = 3600
 # Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
 # cleanup grace, and the bounded Git evidence reads after invocation.
 _STAGE_LEASE_SECONDS = 600
+#: Waits before each same-route retry of a throttle; their count is the retry
+#: budget. OpenClaw recovers throttles on the same model the same way.
+_RATE_LIMIT_BACKOFF_SECONDS = (20, 60)
+# The lease is renewed right before a wait, so any wait under this bound ends
+# with most of the lease left. A vendor asking for longer than this is a spent
+# window in all but name: advance instead of holding the stage.
+_RATE_LIMIT_MAX_WAIT_SECONDS = 120
+# The retry budget is per slot, so a throttle on every slot would hold the
+# stage 80 s per slot before the owner saw it blocked. Once a stage has slept
+# this long, a throttle advances without waiting.
+_RATE_LIMIT_STAGE_SLEEP_SECONDS = 180
+
+
+def _throttle_wait(
+    retries_spent: int, hint: Optional[float], stage_slept: float
+) -> Optional[float]:
+    """Seconds to wait before retrying a throttled route, or None to advance."""
+    if retries_spent >= len(_RATE_LIMIT_BACKOFF_SECONDS):
+        return None
+    wait = _RATE_LIMIT_BACKOFF_SECONDS[retries_spent] if hint is None else hint
+    if wait > _RATE_LIMIT_MAX_WAIT_SECONDS:
+        return None
+    if stage_slept + wait > _RATE_LIMIT_STAGE_SLEEP_SECONDS:
+        return None
+    return wait
+
+
+def _bench_for(result: InvocationResult) -> Optional[timedelta]:
+    """How long later stages skip the account after an advancing failure."""
+    minutes = _COOLDOWN_MINUTES.get(result.failure)
+    if minutes is None:
+        return None
+    bench = timedelta(minutes=minutes)
+    if result.retry_after_seconds is not None:
+        # A throttle that named a wait too long to sleep through: honor it,
+        # up to the quota window.
+        named = timedelta(seconds=result.retry_after_seconds)
+        bench = max(bench, min(named, timedelta(minutes=_QUOTA_COOLDOWN_MINUTES)))
+    return bench
 
 
 def default_db_path() -> Path:
@@ -146,6 +198,7 @@ class SubscriptionRouter:
         routing_source: Optional[dict] = None,
         git: Optional[GitInspector] = None,
         health_ttl_seconds: int = 300,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.adapters = adapters if adapters is not None else build_adapter_registry()
         self.routing_source = (
@@ -159,6 +212,7 @@ class SubscriptionRouter:
         else:
             self.store = store
         self.health_ttl_seconds = health_ttl_seconds
+        self.sleep = sleep
 
     # -- execution --------------------------------------------------------
 
@@ -252,8 +306,12 @@ class SubscriptionRouter:
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
         skipped_routes: list[SkippedRoute] = []
+        pending = deque(routes)
+        throttle_retries: dict[int, int] = {}
+        throttle_slept = 0.0
 
-        for route in routes:
+        while pending:
+            route = pending.popleft()
             if not self.store.renew_stage(
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
@@ -276,9 +334,10 @@ class SubscriptionRouter:
                 availability = AdapterHealth(
                     False,
                     route.adapter,
-                    FailureKind.TIMEOUT
-                    if reason == FailureKind.TIMEOUT.value
-                    else FailureKind.QUOTA,
+                    next(
+                        (kind for kind in _COOLDOWN_MINUTES if kind.value == reason),
+                        FailureKind.QUOTA,
+                    ),
                 )
             elif getattr(adapter, "probe_is_generative", False):
                 # Authorization runs outside OS locks: it may itself publish
@@ -482,17 +541,35 @@ class SubscriptionRouter:
                 return result
             if result.failure in _BLOCK_AFTER_MUTATION and mutated:
                 return result
-            if result.failure is FailureKind.QUOTA:
-                self.store.set_cooldown(
-                    route.adapter,
-                    until=datetime.now(timezone.utc)
-                    + timedelta(minutes=_QUOTA_COOLDOWN_MINUTES),
+            if mutated:
+                request = replace(
+                    request,
+                    mode="continue",
+                    current_revision=revision or request.current_revision,
+                    changed_files=changed,
                 )
-            elif result.failure is FailureKind.TIMEOUT:
+            if result.failure is FailureKind.RATE_LIMIT:
+                retries = throttle_retries.get(route.slot, 0)
+                wait = _throttle_wait(
+                    retries, result.retry_after_seconds, throttle_slept
+                )
+                if wait is not None:
+                    if not self.store.renew_stage(
+                        request.workflow_id,
+                        request.stage_id,
+                        owner,
+                        _STAGE_LEASE_SECONDS,
+                    ):
+                        return self._stage_busy()
+                    self.sleep(wait)
+                    throttle_slept += wait
+                    throttle_retries[route.slot] = retries + 1
+                    pending.appendleft(route)
+                    continue
+            bench = _bench_for(result)
+            if bench is not None:
                 self.store.set_cooldown(
-                    route.adapter,
-                    until=datetime.now(timezone.utc)
-                    + timedelta(minutes=_TIMEOUT_COOLDOWN_MINUTES),
+                    route.adapter, until=datetime.now(timezone.utc) + bench
                 )
             skipped_routes.append(
                 SkippedRoute(
@@ -501,13 +578,6 @@ class SubscriptionRouter:
                     result.failure or FailureKind.TASK_FAILURE,
                 )
             )
-            if mutated:
-                request = replace(
-                    request,
-                    mode="continue",
-                    current_revision=revision or request.current_revision,
-                    changed_files=changed,
-                )
 
         if not attempted_any:
             return InvocationResult(
@@ -752,6 +822,8 @@ class SubscriptionRouter:
             # uses a working model — how opencode_zen looked "dead" (2026-09-16).
             FailureKind.INVALID_TERMINAL,
             FailureKind.MODEL_UNAVAILABLE,
+            # A throttle is the vendor answering "not this minute".
+            FailureKind.RATE_LIMIT,
         }
         self.store.save_health(
             adapter,
@@ -760,8 +832,9 @@ class SubscriptionRouter:
             failure=failure.value if failure else None,
             detail="live attempt failed",
             # Whatever it looked like, it was not the successful inference an
-            # expired quarantine needs as proof: re-arm the clock.
-            attempt_failed=True,
+            # expired quarantine needs as proof: re-arm the clock. A throttle
+            # is the exception: the plan is serving, just not this minute.
+            attempt_failed=failure is not FailureKind.RATE_LIMIT,
         )
 
     # -- status -----------------------------------------------------------

@@ -66,7 +66,7 @@ _STATUS_FAILURES = {
     402: FailureKind.QUOTA,
     403: FailureKind.AUTH,
     404: FailureKind.MODEL_UNAVAILABLE,
-    429: FailureKind.QUOTA,
+    429: FailureKind.RATE_LIMIT,
 }
 
 

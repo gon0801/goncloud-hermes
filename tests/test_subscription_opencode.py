@@ -21,6 +21,7 @@ from subscriptions.process import (  # noqa: E402
     _MAX_OUTPUT_CHARS as MAX_OUTPUT_CHARS,
     run_cli,
 )
+from subscriptions import adapters  # noqa: E402
 from subscriptions.adapters import classify_failure  # noqa: E402
 from subscriptions.adapters.opencode import (  # noqa: E402
     OpenCodeAdapter,
@@ -323,7 +324,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         cases = [
             (1, "error: unauthorized subscription", FailureKind.AUTH),
             (1, "insufficient balance on plan", FailureKind.QUOTA),
-            (1, "rate limit exceeded, retry later", FailureKind.QUOTA),
+            (1, "rate limit exceeded, retry later", FailureKind.RATE_LIMIT),
             (1, "model mystery-x is not available", FailureKind.MODEL_UNAVAILABLE),
             (2, "invalid request payload", FailureKind.INVALID_REQUEST),
             (1, "agent could not finish", FailureKind.TASK_FAILURE),
@@ -400,6 +401,124 @@ class OpenCodeAdapterTests(unittest.TestCase):
             classify_failure(1, "", "HTTP 403 Forbidden"), FailureKind.AUTH
         )
 
+    def test_a_throttle_is_not_a_spent_plan(self):
+        # 2026-10-15: every throttle read as quota and benched the account
+        # for 15 minutes. These are the vendors' own words.
+        throttles = [
+            "429 Output token rate limit exceeded. Please retry after a brief wait.",
+            "Too Many Requests",
+            "Error: 429",
+        ]
+        for text in throttles:
+            for stdout, stderr in ((text, ""), ("", text)):
+                with self.subTest(text=text, stderr=bool(stderr)):
+                    self.assertEqual(
+                        classify_failure(1, stdout, stderr), FailureKind.RATE_LIMIT
+                    )
+        self.assertEqual(
+            classify_failure(1, "", "server overloaded, try again in a moment"),
+            FailureKind.RATE_LIMIT,
+        )
+        spent = [
+            "The usage limit has been reached.",
+            "You've reached your weekly (7-day) usage limit.",
+            "Monthly request limit reached for this plan.",
+            # Both kinds of words: the spent plan wins.
+            "429 Too Many Requests: you exceeded your current quota",
+            "Rate limit: insufficient balance, top up to continue",
+            # No throttle cue: the old reading (advance as quota) stands.
+            "request limit exceeded",
+        ]
+        for text in spent:
+            with self.subTest(text=text):
+                self.assertEqual(classify_failure(1, "", text), FailureKind.QUOTA)
+
+    def test_a_throttle_that_names_the_plans_reset_is_a_spent_plan(self):
+        # A limit that resets hours from now, or is the plan's own, is the
+        # window spent in throttle words: advance at once, bench 15 minutes.
+        for text in (
+            "Rate limit exceeded for your plan. Resets at 3:00 PM.",
+            "429 Too Many Requests: limit resets in 5h 12m",
+            "Error 429: try again next billing period",
+        ):
+            for stdout, stderr in ((text, ""), ("", text)):
+                with self.subTest(text=text, stderr=bool(stderr)):
+                    self.assertEqual(
+                        classify_failure(1, stdout, stderr), FailureKind.QUOTA
+                    )
+        # The reset words alone are not a vendor failure in the model's text.
+        self.assertEqual(
+            classify_failure(1, "The counter resets at midnight.", ""),
+            FailureKind.TASK_FAILURE,
+        )
+        # A reset the router would wait for is the throttle itself; one past its
+        # wait cap is a spent window.
+        for text, kind in (
+            ("Rate limit exceeded, resets in 30 seconds", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 1 minute", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 2 min", FailureKind.RATE_LIMIT),
+            ("Rate limit exceeded, resets in 3 minutes", FailureKind.QUOTA),
+            ("Rate limit exceeded, resets in 2 fortnights", FailureKind.QUOTA),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(classify_failure(1, "", text), kind)
+
+    def test_the_short_throttle_cap_is_the_routers_wait_cap(self):
+        from subscriptions import router
+
+        self.assertEqual(
+            router._RATE_LIMIT_MAX_WAIT_SECONDS, adapters.SHORT_THROTTLE_SECONDS
+        )
+
+    def test_a_throttle_carries_the_vendors_wait_and_nothing_else(self):
+        cases = [
+            ("Rate limit exceeded. Retry after 30 seconds. raw-secret", 30.0),
+            ("429 Too Many Requests; try again in 1.5s raw-secret", 1.5),
+            ("rate limited, retry-after: 2 minutes raw-secret", 120.0),
+            ("rate limit hit, retry after 500ms raw-secret", 0.5),
+            ("Rate limit exceeded, retry after 4 hours raw-secret", 14400.0),
+            ("Rate limit exceeded. Try again in 2 hours raw-secret", 7200.0),
+            ("rate limit exceeded, try again in 3h raw-secret", 10800.0),
+            ("rate limit exceeded, retry-after: 45; raw-secret", 45.0),
+            # A unit it cannot read is no wait at all, never seconds.
+            ("rate limit exceeded, retry after 3 attempts raw-secret", None),
+            (
+                "429 Output token rate limit exceeded. "
+                "Please retry after a brief wait. raw-secret",
+                None,
+            ),
+        ]
+        for stderr, wait in cases:
+            with self.subTest(stderr=stderr):
+                result = OpenCodeAdapter(
+                    runner=FakeCliRunner(stderr=stderr, returncode=1)
+                ).invoke(request(self.workspace), route(0, "opencode_go", "muse"))
+                self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
+                self.assertEqual(result.retry_after_seconds, wait)
+                self.assertNotIn("raw-secret", repr(result))
+        spent = OpenCodeAdapter(
+            runner=FakeCliRunner(
+                stderr="quota spent; retry after 3600 seconds", returncode=1
+            )
+        ).invoke(request(self.workspace), route(0, "opencode_go", "muse"))
+        self.assertEqual(
+            (spent.failure, spent.retry_after_seconds), (FailureKind.QUOTA, None)
+        )
+
+    def test_throttle_words_in_the_models_own_prose_are_not_a_throttle(self):
+        # stdout is the model talking: "slow down" or "retry-after" there is a
+        # sentence about the task, as a bare 429 there is a count (2026-09-15).
+        # The vendor's own channel keeps reading the same words as a throttle.
+        for prose in (
+            "I will slow down and re-check the failing test before continuing.",
+            "Added retry-after handling to the HTTP client as requested.",
+        ):
+            with self.subTest(prose=prose):
+                self.assertEqual(
+                    classify_failure(1, prose, ""), FailureKind.TASK_FAILURE
+                )
+                self.assertEqual(classify_failure(1, "", prose), FailureKind.RATE_LIMIT)
+
     def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
         # stderr is the vendor's error channel: a bare code there is real.
         # stdout is the model's generated text: a bare code there is a width,
@@ -413,7 +532,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
     def test_status_codes_in_http_context_still_classify(self):
         cases = [
             ("Error: 401 Unauthorized", FailureKind.AUTH),
-            ("request failed with status code 429", FailureKind.QUOTA),
+            ("request failed with status code 429", FailureKind.RATE_LIMIT),
             ("HTTP 403 Forbidden", FailureKind.AUTH),
             ("server returned 404 not found", FailureKind.MODEL_UNAVAILABLE),
             ("responded 400 bad request", FailureKind.INVALID_REQUEST),

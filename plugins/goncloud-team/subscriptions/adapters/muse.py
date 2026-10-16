@@ -78,12 +78,12 @@ class MuseAdapter(SubscriptionAdapter):
         if not isinstance(outcome.get("text"), str) or not outcome["text"].strip():
             return self._failed_result(route, FailureKind.TASK_FAILURE)
         if outcome.get("terminal") != "completed":
-            failure = classify_failure(
-                1,
-                str(outcome.get("text") or ""),
+            detail = (
                 str(outcome.get("terminal") or ""),
+                str(outcome.get("text") or ""),
             )
-            return self._failed_result(route, failure)
+            failure = classify_failure(1, detail[1], detail[0])
+            return self._failed_result(route, failure, evidence=detail)
         return InvocationResult(
             success=True,
             text=str(outcome.get("text") or ""),
