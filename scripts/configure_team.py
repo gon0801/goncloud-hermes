@@ -103,7 +103,8 @@ _NATIVE_PROVIDERS = {
 #: (owner, 2026-10-15). It is copied into each profile that needs it on every
 #: deploy, so a new login reaches them on the next one.
 MUSE_LOGIN = "/home/goncloud/.config/muse/auth.json"
-MUSE_KEY_VARIABLE = "META_API_KEY"
+#: The first variable Hermes' meta-ai provider reads, so no other one wins.
+MUSE_KEY_VARIABLE = "MODEL_API_KEY"
 #: A login file read instead of WSL's: the tests point it at a fake one so a
 #: deploy under test never copies the owner's key.
 MUSE_LOGIN_OVERRIDE = "GONCLOUD_MUSE_LOGIN"
@@ -357,7 +358,7 @@ def apply_root_kanban(text, policy):
     return newline.join([*lines[: start + 1], *added, *kept, *lines[end:]])
 
 
-def write_changed(path, content):
+def write_changed(path, content, *, backup=True):
     if path.exists() and (
         path.read_bytes() == content
         if isinstance(content, bytes)
@@ -366,7 +367,7 @@ def write_changed(path, content):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     # A recoverable copy; no credentials are included in the ownership manifest.
-    if path.exists():
+    if backup and path.exists():
         backup = path.with_name(path.name + ".goncloud-backup")
         if not backup.exists():
             backup.write_bytes(path.read_bytes())
@@ -596,7 +597,19 @@ def desired_profile_config(role, team, runtime_home):
     return desired
 
 
-def muse_login_key(run=_run_windows):
+def _run_wsl(*command):
+    # A WSL cold start can take well over a minute (the Muse adapter allows 120 s).
+    return subprocess.run(
+        list(command),
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=120,
+    )
+
+
+def muse_login_key(run=_run_wsl):
     """The key ``muse login`` stored in WSL, or None when it cannot be read."""
     override = os.environ.get(MUSE_LOGIN_OVERRIDE)
     try:
@@ -607,7 +620,7 @@ def muse_login_key(run=_run_windows):
             if result.returncode != 0:
                 return None
             text = result.stdout
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     try:
         key = json.loads(text)["providers"]["meta"]["api_key"]
@@ -878,7 +891,8 @@ def configure(
                     )
         print(f"Configured {profile.name}: {profile}")
     for env, text in env_files.items():
-        write_changed(env, text)
+        # No backup: it would leave a plaintext copy of the profile's credentials.
+        write_changed(env, text, backup=False)
     if env_files:
         print(f"Muse login key: {MUSE_KEY_VARIABLE} set in {len(env_files)} profiles")
 

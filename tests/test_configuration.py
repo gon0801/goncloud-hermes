@@ -380,7 +380,7 @@ class ConfigurationTests(unittest.TestCase):
             module.refuse_regression({}, repo)
 
 
-SENTINEL_AND_MUSE_KEY = f"UNUSED_TEST_KEY=sentinel\nMETA_API_KEY={FAKE_MUSE_KEY}\n"
+SENTINEL_AND_MUSE_KEY = f"UNUSED_TEST_KEY=sentinel\nMODEL_API_KEY={FAKE_MUSE_KEY}\n"
 
 
 class DirectorNativeChainTests(unittest.TestCase):
@@ -872,6 +872,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             # The deploy owns one line there, the Muse login key for meta-ai.
             self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
+            self.assertFalse(credentials.with_name(".env.goncloud-backup").exists())
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
@@ -925,6 +926,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
             # The deploy owns one line there, the Muse login key for meta-ai.
             self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
+            self.assertFalse(credentials.with_name(".env.goncloud-backup").exists())
 
 
 class Done:
@@ -969,6 +971,9 @@ class MuseLoginKeyTests(unittest.TestCase):
         def missing(*command):
             raise FileNotFoundError("wsl.exe")
 
+        def stalled(*command):
+            raise subprocess.TimeoutExpired(command, 120)
+
         for run in (
             lambda *c: Done(returncode=1),
             lambda *c: Done(stdout="not json"),
@@ -977,6 +982,7 @@ class MuseLoginKeyTests(unittest.TestCase):
                 stdout=json.dumps({"providers": {"meta": {"api_key": " "}}})
             ),
             missing,
+            stalled,
         ):
             with self.subTest(run=run):
                 self.assertIsNone(module.muse_login_key(run))
