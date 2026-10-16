@@ -110,19 +110,38 @@ bloquean siempre.
 `quota` y `rate_limit` son cosas distintas. `quota` es el plan agotado ("The
 usage limit has been reached.", el limite semanal de kimi, "insufficient
 balance"): avanza al instante, deja la cuenta 15 minutos fuera y la guarda como
-no lista. `rate_limit` es un freno de segundos ("429 Output token rate limit
-exceeded. Please retry after a brief wait." de OpenCode Go, "too many requests",
-"overloaded", un 429 sin palabras de plan): el router reintenta la misma
-posicion hasta dos veces, tras 20 s y luego 60 s, o tras la espera que el
-proveedor pida si no pasa de 120 s. Renueva el lease de la etapa antes de cada
-espera; si el proveedor pide mas, avanza sin esperar. Si el freno sigue, avanza
-con 2 minutos fuera en vez de 15. La cuenta queda lista en todo momento y el
-freno nunca arma ni renueva una cuarentena. Si un mensaje trae palabras de los dos tipos,
-gana `quota`. Un reintento despues de que el workspace cambio corre como
-continuacion, igual que el avance a otra posicion. Antes del 2026-10-15 todo
-freno contaba como cuota: la cuenta principal de OpenCode Go quedaba 15 minutos
-fuera por un freno de segundos y el trabajo caia en suplentes mas debiles hasta
-agotar la cadena (12 etapas bloqueadas en el historial del kanban).
+no lista. Un freno que nombra el plan o su reinicio tambien es `quota`: "Rate
+limit exceeded for your plan. Resets at 3:00 PM.", "429 Too Many Requests: limit
+resets in 5h 12m", "billing period". Si un mensaje trae palabras de los dos
+tipos, gana `quota`.
+
+`rate_limit` es un freno de segundos ("429 Output token rate limit exceeded.
+Please retry after a brief wait." de OpenCode Go, "too many requests",
+"overloaded", un 429 sin palabras de plan). En stderr, el canal del proveedor,
+cuenta cualquier palabra de freno. En stdout, donde escribe el modelo, solo
+cuentan la frase de error del proveedor ("rate limit exceeded", "too many
+requests") o un 429 en contexto HTTP: "I will slow down" o "Added retry-after
+handling" son prosa y siguen siendo `task_failure`.
+
+Ante un `rate_limit` el router reintenta la misma posicion hasta dos veces, tras
+20 s y luego 60 s, o tras la espera que el proveedor pida. La espera se lee con
+su unidad (ms, s, min, h; un numero solo son segundos) y una unidad desconocida
+no da espera. Renueva el lease de la etapa antes de cada espera. Si el proveedor
+pide mas de 120 s, avanza sin esperar. Una etapa duerme como mucho 180 s en
+frenos sumando todas sus posiciones; despues, un freno avanza sin esperar y la
+cadena termina con el resultado normal de posiciones agotadas. Al avanzar, la
+cuenta queda fuera 2 minutos, o la espera que el proveedor pidio hasta 15
+minutos. La cuenta queda lista en todo momento y el freno nunca arma ni renueva
+una cuarentena. Un reintento despues de que el workspace cambio corre como
+continuacion, igual que el avance a otra posicion. Si el proceso muere durante
+una espera, al reanudar la etapa sigue en la siguiente posicion y no vuelve a la
+que estaba frenada. Se acepta: es la misma reanudacion que deja cualquier fallo
+que avanza.
+
+Antes del 2026-10-15 todo freno contaba como cuota: la cuenta principal de
+OpenCode Go quedaba 15 minutos fuera por un freno de segundos y el trabajo caia
+en suplentes mas debiles hasta agotar la cadena (12 etapas bloqueadas en el
+historial del kanban).
 
 Dos reglas hacen que ese reparto funcione y las dos se violaron en `t_f1c90a69`:
 
