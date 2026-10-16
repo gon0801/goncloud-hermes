@@ -117,7 +117,7 @@ posicion hasta dos veces, tras 20 s y luego 60 s, o tras la espera que el
 proveedor pida si no pasa de 120 s. Renueva el lease de la etapa antes de cada
 espera; si el proveedor pide mas, avanza sin esperar. Si el freno sigue, avanza
 con 2 minutos fuera en vez de 15. La cuenta queda lista en todo momento y el
-freno nunca arma una cuarentena. Si un mensaje trae palabras de los dos tipos,
+freno nunca arma ni renueva una cuarentena. Si un mensaje trae palabras de los dos tipos,
 gana `quota`. Un reintento despues de que el workspace cambio corre como
 continuacion, igual que el avance a otra posicion. Antes del 2026-10-15 todo
 freno contaba como cuota: la cuenta principal de OpenCode Go quedaba 15 minutos

@@ -1951,6 +1951,27 @@ class QuarantineExpiryTests(RouterTestCase):
         self.assertFalse(health["quarantined"])
         self.assertIsNone(health["failure"])
 
+    def test_a_throttle_on_an_expired_quarantine_does_not_rearm_it(self):
+        from subscriptions.router import _QUARANTINE_RETRY_SECONDS
+
+        self.quarantine(
+            "opencode_go", "quota", age_seconds=_QUARANTINE_RETRY_SECONDS + 60
+        )
+        armed_at = SubscriptionStateStore(self.db_path).health("opencode_go")[
+            "quarantined_at"
+        ]
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.RATE_LIMIT, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+
+        result = router.run(request(self.workspace), primary_and_next())
+
+        self.assertEqual(result.adapter, "claude")
+        self.assertEqual(len(self.fake_adapters["opencode_go"].requests), 3)
+        self.assertEqual(router.store.health("opencode_go")["quarantined_at"], armed_at)
+
     def test_an_expired_quarantine_that_fails_again_is_rearmed(self):
         from subscriptions.router import _QUARANTINE_RETRY_SECONDS
 

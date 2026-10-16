@@ -805,8 +805,9 @@ class SubscriptionRouter:
             failure=failure.value if failure else None,
             detail="live attempt failed",
             # Whatever it looked like, it was not the successful inference an
-            # expired quarantine needs as proof: re-arm the clock.
-            attempt_failed=True,
+            # expired quarantine needs as proof: re-arm the clock. A throttle
+            # is the exception: the plan is serving, just not this minute.
+            attempt_failed=failure is not FailureKind.RATE_LIMIT,
         )
 
     # -- status -----------------------------------------------------------
