@@ -1107,6 +1107,7 @@ class HttpAdapterTests(unittest.TestCase):
             ("rate limit", FailureKind.RATE_LIMIT, None),
             ("Rate limit reached, retry after 30 seconds", FailureKind.RATE_LIMIT, 30),
             ('{"error":{"message":"Insufficient balance"}}', FailureKind.QUOTA, None),
+            ('{"error":{"message":"Limit resets in 5h 12m"}}', FailureKind.QUOTA, None),
         ):
             with (
                 self.subTest(body=body),

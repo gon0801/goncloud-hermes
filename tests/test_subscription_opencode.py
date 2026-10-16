@@ -432,6 +432,25 @@ class OpenCodeAdapterTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(classify_failure(1, "", text), FailureKind.QUOTA)
 
+    def test_a_throttle_that_names_the_plans_reset_is_a_spent_plan(self):
+        # A limit that resets hours from now, or is the plan's own, is the
+        # window spent in throttle words: advance at once, bench 15 minutes.
+        for text in (
+            "Rate limit exceeded for your plan. Resets at 3:00 PM.",
+            "429 Too Many Requests: limit resets in 5h 12m",
+            "Error 429: try again next billing period",
+        ):
+            for stdout, stderr in ((text, ""), ("", text)):
+                with self.subTest(text=text, stderr=bool(stderr)):
+                    self.assertEqual(
+                        classify_failure(1, stdout, stderr), FailureKind.QUOTA
+                    )
+        # The reset words alone are not a vendor failure in the model's text.
+        self.assertEqual(
+            classify_failure(1, "The counter resets at midnight.", ""),
+            FailureKind.TASK_FAILURE,
+        )
+
     def test_a_throttle_carries_the_vendors_wait_and_nothing_else(self):
         cases = [
             ("Rate limit exceeded. Retry after 30 seconds. raw-secret", 30.0),

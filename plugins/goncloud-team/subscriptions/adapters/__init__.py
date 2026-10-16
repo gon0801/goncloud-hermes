@@ -28,6 +28,14 @@ _QUOTA_PATTERN = re.compile(
     r"\b(?:daily|weekly|monthly)\b[^.\n]{0,24}\blimit",
     re.IGNORECASE,
 )
+#: A throttle that names the plan or a reset hours away ("Rate limit exceeded
+#: for your plan. Resets at 3:00 PM.") is the window spent in throttle words.
+#: It only re-reads a throttle: "resets at midnight" alone is the model's prose.
+_SPENT_WINDOW_PATTERN = re.compile(
+    r"\bresets?\b\s+(?:at|in)\b|billing (?:period|cycle)|"
+    r"for (?:your|this|the) (?:current )?plan|plan[ _-]?limit",
+    re.IGNORECASE,
+)
 #: A short throttle: OpenCode Go answers "429 Output token rate limit
 #: exceeded. Please retry after a brief wait." The same route works again in
 #: seconds, so the router retries it instead of benching the account.
@@ -155,16 +163,23 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> FailureKind:
     for channel, bare_codes in ((stderr, True), (stdout, False)):
         kind = _classify_channel(channel.lower(), bare_codes=bare_codes)
         if kind is not None:
-            return kind
+            return _spent_or(kind, channel)
     return FailureKind.TASK_FAILURE
+
+
+def _spent_or(failure: FailureKind, text: str) -> FailureKind:
+    """A throttle whose words name the plan or its reset is quota."""
+    if failure is FailureKind.RATE_LIMIT and (
+        _QUOTA_PATTERN.search(text) or _SPENT_WINDOW_PATTERN.search(text)
+    ):
+        return FailureKind.QUOTA
+    return failure
 
 
 def classify_http_failure(status: int, body: str) -> FailureKind:
     """An HTTP status read with its body: a 429 that names the plan is quota."""
     failure = failure_for_status(status)
-    if failure is FailureKind.RATE_LIMIT and _QUOTA_PATTERN.search(body):
-        return FailureKind.QUOTA
-    return failure or classify_failure(1, body, "")
+    return _spent_or(failure, body) if failure else classify_failure(1, body, "")
 
 
 def retry_after_hint(*evidence: str) -> float | None:
