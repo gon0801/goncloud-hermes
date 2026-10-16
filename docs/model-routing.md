@@ -101,10 +101,28 @@ cuenta ni una inferencia basada en la existencia de credenciales.
 | grok | ready | subscription | no | 14.88 s |
 | deepseek | ready | api | no | 2.48 s |
 
-Los fallos que avanzan de slot son `auth`, `quota`, `model_unavailable`,
-`timeout`, `transport` e `invalid_terminal` (el proveedor respondio pero fuera
-del contrato terminal); `transport` e `invalid_terminal` bloquean en cuanto el
-workspace cambio. `task_failure` e `invalid_request` bloquean siempre.
+Los fallos que avanzan de slot son `auth`, `quota`, `rate_limit`,
+`model_unavailable`, `timeout`, `transport` e `invalid_terminal` (el proveedor
+respondio pero fuera del contrato terminal); `transport` e `invalid_terminal`
+bloquean en cuanto el workspace cambio. `task_failure` e `invalid_request`
+bloquean siempre.
+
+`quota` y `rate_limit` son cosas distintas. `quota` es el plan agotado ("The
+usage limit has been reached.", el limite semanal de kimi, "insufficient
+balance"): avanza al instante, deja la cuenta 15 minutos fuera y la guarda como
+no lista. `rate_limit` es un freno de segundos ("429 Output token rate limit
+exceeded. Please retry after a brief wait." de OpenCode Go, "too many requests",
+"overloaded", un 429 sin palabras de plan): el router reintenta la misma
+posicion hasta dos veces, tras 20 s y luego 60 s, o tras la espera que el
+proveedor pida si no pasa de 120 s. Renueva el lease de la etapa antes de cada
+espera; si el proveedor pide mas, avanza sin esperar. Si el freno sigue, avanza
+con 2 minutos fuera en vez de 15. La cuenta queda lista en todo momento y el
+freno nunca arma una cuarentena. Si un mensaje trae palabras de los dos tipos,
+gana `quota`. Un reintento despues de que el workspace cambio corre como
+continuacion, igual que el avance a otra posicion. Antes del 2026-10-15 todo
+freno contaba como cuota: la cuenta principal de OpenCode Go quedaba 15 minutos
+fuera por un freno de segundos y el trabajo caia en suplentes mas debiles hasta
+agotar la cadena (12 etapas bloqueadas en el historial del kanban).
 
 Dos reglas hacen que ese reparto funcione y las dos se violaron en `t_f1c90a69`:
 
