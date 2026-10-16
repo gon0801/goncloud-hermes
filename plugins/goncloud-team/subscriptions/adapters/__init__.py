@@ -36,6 +36,14 @@ _RATE_LIMIT_PATTERN = re.compile(
     r"try again (?:later|in a (?:moment|bit|few))|slow down|overloaded",
     re.IGNORECASE,
 )
+#: The model's own text (stdout) says "slow down" or "retry-after" about the
+#: task; only the vendor's error phrasing counts there, as a bare 429 counts
+#: there only in an HTTP context (2026-09-15).
+_STDOUT_RATE_LIMIT_PATTERN = re.compile(
+    r"rate[ _-]?limit(?:s)?[ _-](?:exceeded|reached)|rate_limit_error|"
+    r"too many requests",
+    re.IGNORECASE,
+)
 #: Older wording the router always advanced as quota; kept as a last resort.
 _EXCEEDED_PATTERN = re.compile(r"\bexceeded\b", re.IGNORECASE)
 _RETRY_AFTER_PATTERN = re.compile(
@@ -101,8 +109,9 @@ _STATUS_CODE_PATTERN = re.compile(
 
 def _classify_channel(haystack: str, *, bare_codes: bool):
     """Classify one output channel, or None. ``bare_codes`` trusts a status
-    number anywhere (the vendor's stderr); otherwise a number counts only in an
-    HTTP context (the model's stdout, where a width or a count is not a code)."""
+    number and any throttle wording (the vendor's stderr); otherwise a number
+    counts only in an HTTP context and a throttle only in the vendor's error
+    phrasing (the model's stdout, where a count or "slow down" is prose)."""
     # A disabled/unenabled model is a model-level answer; it outranks the
     # status code so its 401 is not misread as an account auth failure.
     if _MODEL_LEVEL_PATTERN.search(haystack):
@@ -111,7 +120,8 @@ def _classify_channel(haystack: str, *, bare_codes: bool):
     # not a dead credential. kimi 0.34 reports weekly limits that way.
     if _QUOTA_PATTERN.search(haystack):
         return FailureKind.QUOTA
-    if _RATE_LIMIT_PATTERN.search(haystack):
+    throttle = _RATE_LIMIT_PATTERN if bare_codes else _STDOUT_RATE_LIMIT_PATTERN
+    if throttle.search(haystack):
         return FailureKind.RATE_LIMIT
     if bare_codes:
         for code, failure in _STATUS_CODES.items():

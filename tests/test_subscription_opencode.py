@@ -407,7 +407,6 @@ class OpenCodeAdapterTests(unittest.TestCase):
             "429 Output token rate limit exceeded. Please retry after a brief wait.",
             "Too Many Requests",
             "Error: 429",
-            "server overloaded, try again in a moment",
         ]
         for text in throttles:
             for stdout, stderr in ((text, ""), ("", text)):
@@ -415,6 +414,10 @@ class OpenCodeAdapterTests(unittest.TestCase):
                     self.assertEqual(
                         classify_failure(1, stdout, stderr), FailureKind.RATE_LIMIT
                     )
+        self.assertEqual(
+            classify_failure(1, "", "server overloaded, try again in a moment"),
+            FailureKind.RATE_LIMIT,
+        )
         spent = [
             "The usage limit has been reached.",
             "You've reached your weekly (7-day) usage limit.",
@@ -457,6 +460,20 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(
             (spent.failure, spent.retry_after_seconds), (FailureKind.QUOTA, None)
         )
+
+    def test_throttle_words_in_the_models_own_prose_are_not_a_throttle(self):
+        # stdout is the model talking: "slow down" or "retry-after" there is a
+        # sentence about the task, as a bare 429 there is a count (2026-09-15).
+        # The vendor's own channel keeps reading the same words as a throttle.
+        for prose in (
+            "I will slow down and re-check the failing test before continuing.",
+            "Added retry-after handling to the HTTP client as requested.",
+        ):
+            with self.subTest(prose=prose):
+                self.assertEqual(
+                    classify_failure(1, prose, ""), FailureKind.TASK_FAILURE
+                )
+                self.assertEqual(classify_failure(1, "", prose), FailureKind.RATE_LIMIT)
 
     def test_bare_status_number_signals_in_stderr_but_not_in_stdout(self):
         # stderr is the vendor's error channel: a bare code there is real.
