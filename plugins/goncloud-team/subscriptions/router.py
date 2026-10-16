@@ -32,6 +32,7 @@ from .types import (
 _ADVANCING_FAILURES = {
     FailureKind.AUTH,
     FailureKind.QUOTA,
+    FailureKind.RATE_LIMIT,
     FailureKind.MODEL_UNAVAILABLE,
     FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
@@ -46,6 +47,16 @@ _QUOTA_COOLDOWN_MINUTES = 15
 # slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
 # cooldown, not health, is what bridges it.
 _TIMEOUT_COOLDOWN_MINUTES = 15
+# A throttle clears in seconds to a minute. Benching the primary account for
+# the quota window on one throttle pushed every later stage onto weaker
+# fallbacks until the chain ran out (kanban 2026-09-14..10-12).
+_RATE_LIMIT_COOLDOWN_MINUTES = 2
+#: How long an advancing failure benches the account for later stages.
+_COOLDOWN_MINUTES = {
+    FailureKind.QUOTA: _QUOTA_COOLDOWN_MINUTES,
+    FailureKind.TIMEOUT: _TIMEOUT_COOLDOWN_MINUTES,
+    FailureKind.RATE_LIMIT: _RATE_LIMIT_COOLDOWN_MINUTES,
+}
 # Quota, connectivity and even credentials come back on their own, so a
 # quarantine is a verdict with a lifetime, not a permanent ban. After this
 # horizon the router may try the account again; only a successful real
@@ -276,9 +287,10 @@ class SubscriptionRouter:
                 availability = AdapterHealth(
                     False,
                     route.adapter,
-                    FailureKind.TIMEOUT
-                    if reason == FailureKind.TIMEOUT.value
-                    else FailureKind.QUOTA,
+                    next(
+                        (kind for kind in _COOLDOWN_MINUTES if kind.value == reason),
+                        FailureKind.QUOTA,
+                    ),
                 )
             elif getattr(adapter, "probe_is_generative", False):
                 # Authorization runs outside OS locks: it may itself publish
@@ -482,17 +494,11 @@ class SubscriptionRouter:
                 return result
             if result.failure in _BLOCK_AFTER_MUTATION and mutated:
                 return result
-            if result.failure is FailureKind.QUOTA:
+            cooldown = _COOLDOWN_MINUTES.get(result.failure)
+            if cooldown is not None:
                 self.store.set_cooldown(
                     route.adapter,
-                    until=datetime.now(timezone.utc)
-                    + timedelta(minutes=_QUOTA_COOLDOWN_MINUTES),
-                )
-            elif result.failure is FailureKind.TIMEOUT:
-                self.store.set_cooldown(
-                    route.adapter,
-                    until=datetime.now(timezone.utc)
-                    + timedelta(minutes=_TIMEOUT_COOLDOWN_MINUTES),
+                    until=datetime.now(timezone.utc) + timedelta(minutes=cooldown),
                 )
             skipped_routes.append(
                 SkippedRoute(
@@ -752,6 +758,8 @@ class SubscriptionRouter:
             # uses a working model — how opencode_zen looked "dead" (2026-09-16).
             FailureKind.INVALID_TERMINAL,
             FailureKind.MODEL_UNAVAILABLE,
+            # A throttle is the vendor answering "not this minute".
+            FailureKind.RATE_LIMIT,
         }
         self.store.save_health(
             adapter,

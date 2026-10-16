@@ -805,6 +805,61 @@ class FailoverTests(RouterTestCase):
         until = router.store.cooldown_until("opencode_go")
         self.assertGreaterEqual(until - before, timedelta(minutes=14))
 
+    def test_a_persistent_throttle_benches_the_account_briefly_and_keeps_it_ready(
+        self,
+    ):
+        # 2026-10-15: a few-second OpenCode Go throttle was read as quota, so
+        # the primary account sat out 15 minutes of later stages and the work
+        # fell through weaker fallbacks until the chain ran out.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.RATE_LIMIT, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        before = datetime.now(timezone.utc)
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.adapter, "claude")
+        self.assertEqual(
+            result.skipped_routes,
+            (SkippedRoute(0, "opencode_go", FailureKind.RATE_LIMIT),),
+        )
+        bench = router.store.cooldown_until("opencode_go") - before
+        self.assertGreaterEqual(bench, timedelta(minutes=2))
+        self.assertLess(bench, timedelta(minutes=2, seconds=30))
+        health = router.store.health("opencode_go")
+        self.assertEqual((health["ready"], health["failure"]), (True, "rate_limit"))
+        self.assertFalse(health["quarantined"])
+
+        router.run(
+            replace(request(self.workspace), workflow_id="wf-7", stage_id="st-7"),
+            routes_for_main(),
+        )
+        skipped = router.store.stage_attempts("wf-7", "st-7")[0]
+        self.assertEqual(
+            (skipped["disposition"], skipped["failure"]), ("skipped", "rate_limit")
+        )
+
+    def test_plan_exhaustion_advances_at_once_and_benches_the_account(self):
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.QUOTA, adapter="opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed(adapter="claude")
+        router = self.router()
+        before = datetime.now(timezone.utc)
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(result.adapter, "claude")
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        bench = router.store.cooldown_until("opencode_go") - before
+        self.assertGreaterEqual(bench, timedelta(minutes=15))
+        self.assertLess(bench, timedelta(minutes=15, seconds=30))
+        health = router.store.health("opencode_go")
+        self.assertEqual((health["ready"], health["failure"]), (False, "quota"))
+
     def test_ordinary_cooldown_is_recorded_with_quota_and_exact_duplicate_positions(
         self,
     ):
