@@ -655,7 +655,24 @@ class DirectorNativeChainTests(unittest.TestCase):
                 (watcher.parent / "pinned-models.json").read_text(encoding="utf-8"),
                 (ROOT / "scripts/pinned-models.json").read_text(encoding="utf-8"),
             )
-            for name in ("model_lines.py", "hermes_autoupdate.py", "promote_model.py"):
+            self.assertEqual(
+                sorted(path.name for path in watcher.parent.iterdir()),
+                [
+                    "autoupdate.json",
+                    "backup_hermes.py",
+                    "hermes_autoupdate.py",
+                    "model_lines.py",
+                    "model_watch.py",
+                    "pinned-models.json",
+                    "promote_model.py",
+                ],
+            )
+            for name in (
+                "model_lines.py",
+                "hermes_autoupdate.py",
+                "promote_model.py",
+                "backup_hermes.py",
+            ):
                 self.assertEqual(
                     (watcher.parent / name).read_text(encoding="utf-8"),
                     (ROOT / "scripts" / name).read_text(encoding="utf-8"),

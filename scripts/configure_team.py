@@ -372,11 +372,12 @@ def write_changed(path, content):
     temporary.replace(path)
 
 
-WATCHER_MODULES = (
+DIRECTOR_SCRIPTS = (
     "model_watch.py",
     "model_lines.py",
     "hermes_autoupdate.py",
     "promote_model.py",
+    "backup_hermes.py",
 )
 
 
@@ -547,11 +548,12 @@ def configure(
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
             ] = source.read_text(encoding="utf-8")
         if role == team["director"]:
-            # The daily model watcher is a no_agent cron script of the
-            # director's gateway; cron resolves it under <profile>/scripts.
-            # It moves the table to newer releases through the modules beside
-            # it, working in this checkout with this Python.
-            for name in WATCHER_MODULES:
+            # The daily model watcher and the daily full backup are no_agent
+            # cron scripts of the director's gateway; cron resolves them under
+            # <profile>/scripts. The watcher moves the table to newer releases
+            # through the modules beside it, working in this checkout with
+            # this Python.
+            for name in DIRECTOR_SCRIPTS:
                 files[f"scripts/{name}"] = (ROOT / "scripts" / name).read_text(
                     encoding="utf-8"
                 )
