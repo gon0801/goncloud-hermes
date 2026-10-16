@@ -457,6 +457,12 @@ class OpenCodeAdapterTests(unittest.TestCase):
             ("429 Too Many Requests; try again in 1.5s raw-secret", 1.5),
             ("rate limited, retry-after: 2 minutes raw-secret", 120.0),
             ("rate limit hit, retry after 500ms raw-secret", 0.5),
+            ("Rate limit exceeded, retry after 4 hours raw-secret", 14400.0),
+            ("Rate limit exceeded. Try again in 2 hours raw-secret", 7200.0),
+            ("rate limit exceeded, try again in 3h raw-secret", 10800.0),
+            ("rate limit exceeded, retry-after: 45; raw-secret", 45.0),
+            # A unit it cannot read is no wait at all, never seconds.
+            ("rate limit exceeded, retry after 3 attempts raw-secret", None),
             (
                 "429 Output token rate limit exceeded. "
                 "Please retry after a brief wait. raw-secret",

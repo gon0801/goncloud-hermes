@@ -55,10 +55,17 @@ _STDOUT_RATE_LIMIT_PATTERN = re.compile(
 #: Older wording the router always advanced as quota; kept as a last resort.
 _EXCEEDED_PATTERN = re.compile(r"\bexceeded\b", re.IGNORECASE)
 _RETRY_AFTER_PATTERN = re.compile(
-    r"(?:retry[ _-]?after|try again in)[:\s]+(\d+(?:\.\d+)?)\s*"
-    r"(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)?(?![a-z])",
+    r"(?:retry[ _-]?after|try again in)[:\s]+(\d+(?:\.\d+)?)\s*([a-z]*)",
     re.IGNORECASE,
 )
+#: Seconds per unit the vendor may name; a bare number is seconds, as in the
+#: HTTP Retry-After header. Any other word is not a wait we can read.
+_RETRY_AFTER_UNITS = {
+    **dict.fromkeys(("", "s", "sec", "secs", "second", "seconds"), 1.0),
+    **dict.fromkeys(("ms", "millisecond", "milliseconds"), 0.001),
+    **dict.fromkeys(("m", "min", "mins", "minute", "minutes"), 60.0),
+    **dict.fromkeys(("h", "hr", "hrs", "hour", "hours"), 3600.0),
+}
 _MODEL_PATTERN = re.compile(
     r"model (is )?not|unknown model|no such model|not available|"
     r"does not exist|deprecat",
@@ -187,10 +194,8 @@ def retry_after_hint(*evidence: str) -> float | None:
     for text in evidence:
         match = _RETRY_AFTER_PATTERN.search(text)
         if match:
-            unit = (match.group(2) or "s").lower()
-            if unit.startswith(("ms", "milli")):
-                return float(match.group(1)) / 1000
-            return float(match.group(1)) * (60 if unit.startswith("m") else 1)
+            scale = _RETRY_AFTER_UNITS.get(match.group(2).lower())
+            return None if scale is None else float(match.group(1)) * scale
     return None
 
 
