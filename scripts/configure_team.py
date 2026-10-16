@@ -104,6 +104,9 @@ _NATIVE_PROVIDERS = {
 #: deploy, so a new login reaches them on the next one.
 MUSE_LOGIN = "/home/goncloud/.config/muse/auth.json"
 MUSE_KEY_VARIABLE = "META_API_KEY"
+#: A login file read instead of WSL's: the tests point it at a fake one so a
+#: deploy under test never copies the owner's key.
+MUSE_LOGIN_OVERRIDE = "GONCLOUD_MUSE_LOGIN"
 
 
 def director_native_config(source):
@@ -595,14 +598,19 @@ def desired_profile_config(role, team, runtime_home):
 
 def muse_login_key(run=_run_windows):
     """The key ``muse login`` stored in WSL, or None when it cannot be read."""
+    override = os.environ.get(MUSE_LOGIN_OVERRIDE)
     try:
-        result = run("wsl.exe", "-d", "Ubuntu", "--exec", "cat", MUSE_LOGIN)
+        if override:
+            text = Path(override).read_text(encoding="utf-8")
+        else:
+            result = run("wsl.exe", "-d", "Ubuntu", "--exec", "cat", MUSE_LOGIN)
+            if result.returncode != 0:
+                return None
+            text = result.stdout
     except OSError:
         return None
-    if result.returncode != 0:
-        return None
     try:
-        key = json.loads(result.stdout)["providers"]["meta"]["api_key"]
+        key = json.loads(text)["providers"]["meta"]["api_key"]
     except (ValueError, KeyError, TypeError):
         return None
     return key.strip() if isinstance(key, str) and key.strip() else None

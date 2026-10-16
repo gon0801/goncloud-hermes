@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import FAKE_MUSE_KEY, cleanup_temp_directory  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
@@ -377,6 +378,9 @@ class ConfigurationTests(unittest.TestCase):
             self.assertTrue(module.tree_contains(deployed, repo))
             module.refuse_regression({"source_revision": deployed}, repo)
             module.refuse_regression({}, repo)
+
+
+SENTINEL_AND_MUSE_KEY = f"UNUSED_TEST_KEY=sentinel\nMETA_API_KEY={FAKE_MUSE_KEY}\n"
 
 
 class DirectorNativeChainTests(unittest.TestCase):
@@ -866,7 +870,8 @@ class DirectorNativeChainTests(unittest.TestCase):
                 command, capture_output=True, text=True, env=env, timeout=120
             )
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+            # The deploy owns one line there, the Muse login key for meta-ai.
+            self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
@@ -918,7 +923,8 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertEqual(
                 yaml.safe_load(claw_path.read_text())["model"], claw["model"]
             )
-            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
+            # The deploy owns one line there, the Muse login key for meta-ai.
+            self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
 
 
 class Done:
@@ -928,6 +934,12 @@ class Done:
 
 class MuseLoginKeyTests(unittest.TestCase):
     LOGIN = json.dumps({"providers": {"meta": {"api_key": " LLM|k \n"}}})
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(module.MUSE_LOGIN_OVERRIDE, None)
 
     def test_the_key_comes_from_the_login_file_in_wsl(self):
         calls = []
@@ -941,6 +953,17 @@ class MuseLoginKeyTests(unittest.TestCase):
             calls,
             [("wsl.exe", "-d", "Ubuntu", "--exec", "cat", module.MUSE_LOGIN)],
         )
+
+    def test_an_override_file_replaces_wsl(self):
+        with tempfile.TemporaryDirectory() as directory:
+            login = Path(directory) / "auth.json"
+            login.write_text(self.LOGIN, encoding="utf-8")
+            os.environ[module.MUSE_LOGIN_OVERRIDE] = str(login)
+
+            self.assertEqual(module.muse_login_key(lambda *c: 1 / 0), "LLM|k")
+
+            os.environ[module.MUSE_LOGIN_OVERRIDE] = str(login) + ".missing"
+            self.assertIsNone(module.muse_login_key(lambda *c: 1 / 0))
 
     def test_an_unreadable_login_is_no_key(self):
         def missing(*command):
