@@ -184,6 +184,22 @@ class RestoreDrillTest(unittest.TestCase):
         )
         self.assertNotIn("secreto", line)
 
+    def test_a_powershell_env_with_bom_is_fine_and_utf16_is_named(self):
+        (self.home / "profiles/claw/.env").write_bytes(b"\xef\xbb\xbfA=1\n")
+        (self.home / "profiles/scout/.env").write_bytes("A=1\n".encode("utf-16"))
+        self.backup()
+
+        code, line = self.drill()
+
+        self.assertEqual(
+            (code, line),
+            (
+                1,
+                f"ERROR restauracion de prueba {ARCHIVE}: 1 problemas: "
+                "home/profiles/scout/.env: no es UTF-8\n",
+            ),
+        )
+
     @unittest.skipIf(os.name == "nt", "chmod 0 does not deny reads on Windows")
     def test_a_file_the_backup_could_not_read_fails_the_drill(self):
         memory = self.home / "profiles/claw/memories/MEMORY.md"

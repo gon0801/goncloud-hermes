@@ -85,7 +85,12 @@ def _integrity(path):
 
 
 def _env_problem(path):
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    # utf-8-sig: PowerShell can save a .env with a BOM.
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except UnicodeDecodeError:
+        return "no es UTF-8"
+    for number, line in enumerate(lines, 1):
         text = line.strip()
         if text and not text.startswith("#") and not ENV_LINE.match(text):
             return f"linea {number} no es CLAVE=valor"

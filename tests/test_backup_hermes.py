@@ -475,6 +475,25 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(list(self.out.iterdir()), [])
         self.assertEqual(calls(receiver), [])
 
+    def test_a_write_error_aborts_instead_of_passing_as_unreadable(self):
+        real, added = backup_hermes._add, []
+
+        def disk_full_on_second(*args, **kwargs):
+            added.append(args[1])
+            if len(added) == 2:
+                raise OSError(28, "No space left on device")
+            return real(*args, **kwargs)
+
+        receiver = make_receiver(self.base)
+        with mock.patch.object(backup_hermes, "_add", disk_full_on_second):
+            code, line = self.backup(receiver)
+
+        self.assertEqual(code, 1)
+        self.assertIn("No space left on device", line)
+        self.assertNotIn("sin leer", line)
+        self.assertEqual(sorted(path.name for path in self.out.glob("*.tar.gz*")), [])
+        self.assertEqual(calls(receiver), [])
+
     def test_leftovers_of_a_killed_run_are_removed(self):
         self.out.mkdir()
         (self.out / "hermes-backup-20261014.tar.gz.tmp").write_bytes(b"partial")

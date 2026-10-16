@@ -508,23 +508,23 @@ def write_archive(selection, destination, meta, work, deadline):
                 # A live file can change while it is read; spooling it first
                 # gives the tar entry a size that matches its bytes.
                 digest = hashlib.sha256()
-                try:
-                    mtime = int(item.path.stat().st_mtime)
-                    with (
-                        source.open("rb") as handle,
-                        tempfile.SpooledTemporaryFile(32 << 20, dir=work) as spool,
-                    ):
-                        for block in iter(lambda: handle.read(1 << 20), b""):
-                            digest.update(block)
-                            spool.write(block)
+                with tempfile.SpooledTemporaryFile(32 << 20, dir=work) as spool:
+                    try:
+                        mtime = int(item.path.stat().st_mtime)
+                        with source.open("rb") as handle:
+                            for block in iter(lambda: handle.read(1 << 20), b""):
+                                digest.update(block)
+                                spool.write(block)
                         size = spool.tell()
-                        _add(tar, item.arcname, spool, size, mtime)
-                except OSError as error:
-                    selection.cannot_read(item.arcname, item.path, error)
-                    continue
-                finally:
-                    if item.sqlite:
-                        source.unlink(missing_ok=True)
+                    except OSError as error:
+                        selection.cannot_read(item.arcname, item.path, error)
+                        continue
+                    finally:
+                        if item.sqlite:
+                            source.unlink(missing_ok=True)
+                    # Outside the read's try: a write error (disk full) must abort
+                    # the run, not pass as an unreadable source and ship a broken tar.
+                    _add(tar, item.arcname, spool, size, mtime)
                 files.append(
                     {
                         "path": item.arcname,
