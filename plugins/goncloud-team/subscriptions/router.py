@@ -74,14 +74,24 @@ _RATE_LIMIT_BACKOFF_SECONDS = (20, 60)
 # with most of the lease left. A vendor asking for longer than this is a spent
 # window in all but name: advance instead of holding the stage.
 _RATE_LIMIT_MAX_WAIT_SECONDS = 120
+# The retry budget is per slot, so a throttle on every slot would hold the
+# stage 80 s per slot before the owner saw it blocked. Once a stage has slept
+# this long, a throttle advances without waiting.
+_RATE_LIMIT_STAGE_SLEEP_SECONDS = 180
 
 
-def _throttle_wait(retries_spent: int, hint: Optional[float]) -> Optional[float]:
+def _throttle_wait(
+    retries_spent: int, hint: Optional[float], stage_slept: float
+) -> Optional[float]:
     """Seconds to wait before retrying a throttled route, or None to advance."""
     if retries_spent >= len(_RATE_LIMIT_BACKOFF_SECONDS):
         return None
     wait = _RATE_LIMIT_BACKOFF_SECONDS[retries_spent] if hint is None else hint
-    return wait if wait <= _RATE_LIMIT_MAX_WAIT_SECONDS else None
+    if wait > _RATE_LIMIT_MAX_WAIT_SECONDS:
+        return None
+    if stage_slept + wait > _RATE_LIMIT_STAGE_SLEEP_SECONDS:
+        return None
+    return wait
 
 
 def default_db_path() -> Path:
@@ -284,6 +294,7 @@ class SubscriptionRouter:
         skipped_routes: list[SkippedRoute] = []
         pending = deque(routes)
         throttle_retries: dict[int, int] = {}
+        throttle_slept = 0.0
 
         while pending:
             route = pending.popleft()
@@ -525,7 +536,9 @@ class SubscriptionRouter:
                 )
             if result.failure is FailureKind.RATE_LIMIT:
                 retries = throttle_retries.get(route.slot, 0)
-                wait = _throttle_wait(retries, result.retry_after_seconds)
+                wait = _throttle_wait(
+                    retries, result.retry_after_seconds, throttle_slept
+                )
                 if wait is not None:
                     if not self.store.renew_stage(
                         request.workflow_id,
@@ -535,6 +548,7 @@ class SubscriptionRouter:
                     ):
                         return self._stage_busy()
                     self.sleep(wait)
+                    throttle_slept += wait
                     throttle_retries[route.slot] = retries + 1
                     pending.appendleft(route)
                     continue

@@ -943,6 +943,29 @@ class FailoverTests(RouterTestCase):
         bench = router.store.cooldown_until("opencode_go") - before
         self.assertLess(bench, timedelta(minutes=2, seconds=30))
 
+    def test_a_throttle_on_every_slot_stops_waiting_once_the_stage_budget_is_spent(
+        self,
+    ):
+        # Per-slot retries alone held a stage 80 s per throttled slot (480 s
+        # on this chain) before the owner saw it blocked.
+        for name in ("opencode_go", "claude", "muse", "grok", "opencode_zai", "codex"):
+            self.fake_adapters[name].result = failed(FailureKind.RATE_LIMIT, name)
+        router = self.router()
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertEqual(self.sleeps, [20, 60, 20, 60, 20])
+        self.assertEqual(
+            router.calls,
+            ["opencode_go"] * 3
+            + ["claude"] * 3
+            + ["muse"] * 2
+            + ["grok", "opencode_zai", "codex"],
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
+        self.assertIn("all 8 slots primary..f7 are exhausted", result.text.lower())
+
     def test_plan_exhaustion_advances_at_once_and_benches_the_account(self):
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.QUOTA, adapter="opencode_go"
