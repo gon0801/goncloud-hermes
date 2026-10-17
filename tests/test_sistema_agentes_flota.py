@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
@@ -18,6 +19,7 @@ from conexiones import rastrear_conexiones  # noqa: E402
 
 compartido = importlib.import_module("raices.compartido")
 contrato = compartido.contrato
+flota = importlib.import_module("raices.flota")
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
 kanban_port = importlib.import_module("raices.kanban_port")
@@ -30,6 +32,43 @@ RAIZ = "root-flota"
 DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
 FLOTA_DIR = compartido.G_DIR / "scripts/tests/fixtures/sistema-agentes/flota"
+
+
+class YamlDePrueba:
+    """El PyYAML del runtime de Hermes, representado en la Mac: el subset que
+    configure_team escribe (bloques anidados, mapa en flujo) y YAML roto."""
+
+    @staticmethod
+    def safe_load(texto):
+        if "[" in texto and "]" not in texto:
+            raise ValueError("yaml roto")
+        datos: dict = {}
+        bloque = None
+        for linea in texto.splitlines():
+            if not linea.strip() or linea.strip().startswith("#"):
+                continue
+            if linea[:1].isspace():
+                if bloque is None:
+                    continue
+                clave, _, valor = linea.strip().partition(":")
+                datos[bloque][clave.strip()] = valor.strip()
+            else:
+                clave, _, valor = linea.partition(":")
+                clave, valor = clave.strip(), valor.strip()
+                if valor == "":
+                    datos[clave] = {}
+                    bloque = clave
+                elif valor.startswith("{") and valor.endswith("}"):
+                    mapa = {}
+                    for par in valor[1:-1].split(","):
+                        k, _, v = par.partition(":")
+                        mapa[k.strip()] = v.strip()
+                    datos[clave] = mapa
+                    bloque = None
+                else:
+                    datos[clave] = valor
+                    bloque = None
+        return datos
 
 
 def permisos_de_prueba():
@@ -102,11 +141,11 @@ def meta_de():
     }
 
 
-def asignacion(adapter="codex"):
+def asignacion(adapter="codex", contract="review.v1"):
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
         "instructionRef": {"ref": f"artifact:inst-{adapter}", "digest": DIGEST},
-        "resultContract": "review.v1",
+        "resultContract": contract,
         "inputRevision": {
             "kind": "code",
             "repository": "owner-01/repo-a",
@@ -176,6 +215,9 @@ class EscenarioBase(unittest.TestCase):
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de())
         self.kanban = DobleKanban()
+        parche = mock.patch.object(flota, "yaml", YamlDePrueba, create=True)
+        parche.start()
+        self.addCleanup(parche.stop)
 
     def ligar_a(self, adapter="codex"):
         resultado = self.tienda.aplicar(
@@ -310,6 +352,70 @@ class ModeloDelPerfil(EscenarioBase):
                 valido = contrato.validar(documento) == []
                 self.assertEqual(valido, "invalida" not in fixture.name)
 
+    def test_clave_default_anidada_mas_adentro_no_se_confunde(self):
+        """Una `default` bajo otra clave del config no es el modelo del perfil."""
+        escribir_perfil(
+            self.home,
+            "codex",
+            gestionado={"source_revision": "abc123"},
+        )
+        perfil = self.home / "profiles" / "codex"
+        (perfil / "config.yaml").write_text(
+            "model:\n  provider: proveedor-01\n  extras:\n    default: z\n",
+            encoding="utf-8",
+        )
+        self.ligar_a()
+        self.vuelta()
+        doc = self.flota_de_vista()
+        self.assertIsNone(doc["model"]["id"], "el default ajeno no es el modelo")
+        self.assertEqual(contrato.validar(doc), [])
+
+    def test_la_forma_en_flujo_se_lee(self):
+        escribir_perfil(
+            self.home,
+            "codex",
+            gestionado={"source_revision": "abc123"},
+        )
+        perfil = self.home / "profiles" / "codex"
+        (perfil / "config.yaml").write_text(
+            "model: {provider: proveedor-01, default: modelo-a}\n",
+            encoding="utf-8",
+        )
+        self.ligar_a()
+        self.vuelta()
+        doc = self.flota_de_vista()
+        self.assertEqual(doc["model"], {"id": "proveedor-01/modelo-a"})
+
+    def test_yaml_roto_da_razon(self):
+        escribir_perfil(
+            self.home,
+            "codex",
+            gestionado={"source_revision": "abc123"},
+        )
+        perfil = self.home / "profiles" / "codex"
+        (perfil / "config.yaml").write_text(
+            "model: [proveedor-01, modelo-a\n", encoding="utf-8"
+        )
+        self.ligar_a()
+        self.vuelta()
+        doc = self.flota_de_vista()
+        self.assertIsNone(doc["model"]["id"])
+        self.assertEqual(doc["model"]["reason"], "config-ilegible")
+
+    def test_sin_yaml_disponible_da_razon(self):
+        escribir_perfil(
+            self.home,
+            "codex",
+            config={"provider": "proveedor-01", "default": "modelo-a"},
+            gestionado={"source_revision": "abc123"},
+        )
+        with mock.patch.object(flota, "yaml", None):
+            self.ligar_a()
+            self.vuelta()
+        doc = self.flota_de_vista()
+        self.assertIsNone(doc["model"]["id"])
+        self.assertTrue(doc["model"]["reason"])
+
 
 class Advisor(EscenarioBase):
     def test_perfil_sin_eventos_declara_cobertura_y_read_la_muestra(self):
@@ -350,14 +456,33 @@ class Advisor(EscenarioBase):
         self.assertEqual(informe.tarjetas_creadas, 1)
         tarjeta = self.kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
         self.kanban.crear_hecha(tarjeta.clave, {})
-        informe2 = self.vuelta()
-        self.assertEqual(informe2.tarjetas_creadas, 0, "la muerte no crea tareas")
+        self.vuelta()
         vista = self.tienda.leer_vista(RAIZ, hechos_de_raiz())
         estado_a = [u["state"] for u in vista["unidades"] if u["unitId"] == "a"]
         tarjeta_b = self.kanban.por_clave(clave_de_tarjeta(RAIZ, "b", 1))
         self.assertEqual(vista["resultados"], [], "sin resultado no hay veredicto")
         self.assertNotIn("accepted", estado_a)
         self.assertIsNone(tarjeta_b, "la unidad dependiente no se despacha")
+
+
+class MuerteSinResultado(EscenarioBase):
+    def test_una_implementacion_muerta_sin_resultado_se_reintenta(self):
+        """La muerte sin resultado reintenta el mismo intento como cualquier
+        incidencia de transporte (mismo tope que invalid-result): el kind
+        result-missing distingue en la evidencia, no cambia la política."""
+        self.ligar_a(adapter="codex", contract="implement.v1")
+        informe = self.vuelta()
+        self.assertEqual(informe.tarjetas_creadas, 1)
+        tarjeta = self.kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        self.kanban.crear_hecha(tarjeta.clave, {})
+        informe2 = self.vuelta()
+        self.assertEqual(
+            informe2.tarjetas_creadas,
+            1,
+            "la muerte sin resultado se reintenta como antes",
+        )
+        tarjeta_2 = self.kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 2))
+        self.assertIsNotNone(tarjeta_2)
 
 
 if __name__ == "__main__":
