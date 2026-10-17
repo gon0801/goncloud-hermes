@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 
 store = importlib.import_module("raices.store")
+decidir = importlib.import_module("raices.decidir")
 ticker = importlib.import_module("raices.ticker")
 kanban_port = importlib.import_module("raices.kanban_port")
 
@@ -430,6 +431,76 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             e for e in vista["excepciones"] if e["type"] == "EVIDENCIA_INCIERTA"
         ][0]
         self.assertIsNotNone(conciliada["appliedBy"])
+
+    def _unidad_aceptada_con_hecho_relay(self, nombre):
+        hechos_raiz = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_raiz["asignaciones"] = [
+            {"unitId": "a", "assignment": asignacion(), "relay": True},
+            {"unitId": "a", "assignment": asignacion(), "relay": False},
+        ]
+        informe, tienda = self.dirigir(
+            nombre,
+            [unidad("a", rol="verifier")],
+            {"a": ["accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            hechos_raiz=hechos_raiz,
+        )
+        return informe, tienda, hechos_raiz
+
+    def _responder_tardia(self, tienda, hechos_raiz, tipo, opciones, opcion):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            tipo,
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            list(opciones),
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        aplicada = tienda.aplicar(RAIZ, dec, f"dec-exc-{tipo}-{opcion}")
+        self.assertIsInstance(aplicada, store.Ok, getattr(aplicada, "detalle", None))
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, borrador["exceptionId"], opcion, ["david"]
+            ),
+            store.Ok,
+        )
+        kanban = kanban_port.DobleKanban()
+        vueltas = []
+        for _ in range(3):
+            vuelta = ticker.vuelta(
+                tienda, kanban, {RAIZ: hechos_raiz}, **ARGUMENTOS_DE_VUELTA
+            )
+            self.assertEqual(vuelta.conflictos, (), (tipo, opcion))
+            self.assertEqual(vuelta.estado, "done", (tipo, opcion))
+            vueltas.append(vuelta)
+        vista = tienda.leer_vista(RAIZ, hechos_raiz)
+        religadas = [
+            d for d in vista["unidades"] if d["unitId"] == "a" and d["attempt"] > 1
+        ]
+        self.assertEqual(religadas, [], (tipo, opcion))
+        return vista
+
+    def test_la_respuesta_tardia_sobre_unidad_aceptada_no_religa(self):
+        informe, tienda, hechos_raiz = self._unidad_aceptada_con_hecho_relay("tardia")
+        vista = self._responder_tardia(
+            tienda,
+            hechos_raiz,
+            "INESPERADO",
+            ["seguir", "omitir", "cancelar"],
+            "seguir",
+        )
+        fila = [e for e in vista["excepciones"]][0]
+        self.assertIsNotNone(fila["appliedBy"])
+
+    def test_toda_opcion_respondida_sobre_unidad_terminada_no_tumba(self):
+        for tipo, opciones in sorted(decidir.CLASES_DE_EXCEPCION.items()):
+            for opcion in opciones:
+                with self.subTest(tipo=tipo, opcion=opcion):
+                    informe, tienda, hechos_raiz = (
+                        self._unidad_aceptada_con_hecho_relay(f"sweep-{tipo}-{opcion}")
+                    )
+                    self._responder_tardia(tienda, hechos_raiz, tipo, opciones, opcion)
 
 
 if __name__ == "__main__":

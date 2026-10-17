@@ -371,7 +371,7 @@ def decidir(
 
     def reintentar(unit_id):
         ultimo = ultimo_de(unit_id)
-        if not ultimo or unit_id in ligadas or cerrada(unit_id):
+        if not ultimo or unit_id in ligadas or aceptada(unit_id) or cerrada(unit_id):
             return
         terminar(ultimo, "failed")
         ligar(unit_id, ultimo["assignment"])
@@ -541,7 +541,12 @@ def decidir(
             ):
                 reintentar(unidad_sujeta)
         elif opcion == "relevo":
-            if not unidad_sujeta or cerrada(unidad_sujeta) or unidad_sujeta in ligadas:
+            if (
+                not unidad_sujeta
+                or aceptada(unidad_sujeta)
+                or cerrada(unidad_sujeta)
+                or unidad_sujeta in ligadas
+            ):
                 pass
             else:
                 hecho = tomar_hecho(unidad_sujeta, True)
