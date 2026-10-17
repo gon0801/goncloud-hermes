@@ -278,6 +278,8 @@ class I05Control(AlmacenDePrueba):
         estado = self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "tarde")
         self.assertIsInstance(estado, store.Conflicto)
         self.assertEqual(self.tienda.intenciones_pendientes(), [])
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(sorted(d["state"] for d in vista["unidades"]), ["cancelled"])
 
     def test_el_documento_de_control_se_valida_en_la_frontera(self):
         malo = self.tienda.control(
@@ -516,6 +518,46 @@ class I12LinajeEnElStore(AlmacenDePrueba):
         vista_de_set_up = self.tienda.leer_vista(RAIZ, hechos_vacios())
         self.assertEqual(vista_de_set_up["politica"]["roundsPerImplementer"], 5)
         self.assertTrue(vista_de_set_up["politica"]["revisorExcluyeAutores"])
+        asignacion_relevo = {
+            "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+            "instructionRef": {"ref": "artifact:inst-codex", "digest": DIGEST},
+            "resultContract": "review.v1",
+            "continuation": {"kind": "requester"},
+        }
+        vista_lenta = tienda.leer_vista(
+            "root-lenta",
+            {
+                "principal": ["david"],
+                "asignaciones": [
+                    {"unitId": "l", "assignment": asignacion_relevo, "relay": True}
+                ],
+                "claims": [],
+                "efectos": [],
+            },
+        )
+        vista_lenta["unidades"] = [
+            {
+                "schema": "sistema-agentes.unidad.v1",
+                "rootId": "root-lenta",
+                "planRevision": 1,
+                "unitId": "l",
+                "attempt": 3,
+                "taskId": "task-l-3",
+                "assignment": asignacion_relevo,
+                "state": "failed",
+                "controlEpoch": 1,
+            }
+        ]
+        vista_lenta["contadores"] = {"rondas:l": 2}
+        propuesta = decidir.decidir(vista_lenta)
+        self.assertEqual(len(propuesta.decision["bindings"]), 1)
+        self.assertEqual(
+            propuesta.decision["bindings"][0]["assignment"], asignacion_relevo
+        )
+        self.assertEqual(
+            propuesta.decision["contadores"],
+            [{"counter": "rondas:l", "expected": 2}],
+        )
 
     def test_abrir_raiz_rechaza_una_politica_que_no_esta_en_el_pin(self):
         malo = self.tienda.abrir_raiz(

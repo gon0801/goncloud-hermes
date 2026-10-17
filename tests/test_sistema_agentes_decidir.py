@@ -324,6 +324,18 @@ class I12Politica(unittest.TestCase):
                 necesidad, (decidir.NecesidadAsignacion, decidir.NecesidadVerificacion)
             )
             self.assertFalse(hasattr(necesidad, "revisor_segundo"))
+        razones = [
+            n.razon
+            for n in propuesta.necesidades
+            if isinstance(n, decidir.NecesidadAsignacion)
+        ]
+        self.assertEqual(razones, ["correction"])
+        verificadas = [
+            tuple(n.criterios)
+            for n in propuesta.necesidades
+            if isinstance(n, decidir.NecesidadVerificacion)
+        ]
+        self.assertEqual(verificadas, [])
         self.assertEqual(
             set(propuesta.decision),
             {
@@ -385,6 +397,23 @@ class I12Politica(unittest.TestCase):
             sin_regla.decision["outcomes"],
             [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
         )
+
+        relevo = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[
+                    intento("a", 5, "failed", {"kind": "agent", "agentId": "impl-1"}),
+                    intento("a", 6, "reported", {"kind": "agent", "agentId": "impl-2"}),
+                ],
+                evidencia=[
+                    claim("a", 6, "a1", "passed", principal=["impl-1"], rol="reviewer")
+                ],
+                resultados=[resultado("a", 6, veredicto="approved", ref="artifact:ok")],
+            )
+        )
+        tipos_de_relevo = [e["type"] for e in relevo.decision["excepciones"]]
+        self.assertIn("SIN_REVISOR", tipos_de_relevo)
+        self.assertEqual(relevo.decision["outcomes"], [])
 
 
 class I13Aceptacion(unittest.TestCase):
