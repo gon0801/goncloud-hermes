@@ -42,7 +42,11 @@ class Espejo(unittest.TestCase):
         en_disco = {
             ruta.relative_to(self.g_dir).as_posix()
             for ruta in self.g_dir.rglob("*")
-            if ruta.is_file() and ruta.name != ".DS_Store"
+            if ruta.is_file()
+            and ruta.name != ".DS_Store"
+            # __pycache__ ajeno: un import desde otro arbol no cuenta como
+            # contenido del espejo, igual que .DS_Store.
+            and "__pycache__" not in ruta.parts
         }
         self.assertEqual(en_disco, set(self.pin["files"]))
 
