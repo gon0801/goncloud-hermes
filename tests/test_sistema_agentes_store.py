@@ -569,6 +569,42 @@ class EntradasDelMundo(AlmacenDePrueba):
             "payload": {"evidenceRef": REF},
         }
 
+    def excepcion_abierta(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {"kind": "rounds", "unitId": "a", "block": 0},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        return borrador
+
+    def test_la_respuesta_del_dueno_queda_y_se_reconoce(self):
+        borrador = self.excepcion_abierta()
+        primera = self.tienda.responder_excepcion(
+            RAIZ, borrador["exceptionId"], "seguir", ["david"]
+        )
+        self.assertIsInstance(primera, store.Ok)
+        repetida = self.tienda.responder_excepcion(
+            RAIZ, borrador["exceptionId"], "seguir", ["david"]
+        )
+        self.assertEqual(repetida.codigo, "exception-answered")
+        otra_opcion = self.tienda.responder_excepcion(
+            RAIZ, "exception-desconocida", "seguir", ["david"]
+        )
+        self.assertEqual(otra_opcion.codigo, "exception-unknown")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(vista["excepciones"][0]["response"]["optionId"], "seguir")
+
+    def test_una_opcion_no_ofrecida_se_rechaza(self):
+        borrador = self.excepcion_abierta()
+        negada = self.tienda.responder_excepcion(
+            RAIZ, borrador["exceptionId"], "autorizar", ["david"]
+        )
+        self.assertEqual(negada.codigo, "option-not-offered")
+
     def test_reportar_resultado_pone_reported_en_su_misma_transaccion(self):
         self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
         self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
