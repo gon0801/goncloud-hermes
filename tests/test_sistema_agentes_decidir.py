@@ -472,6 +472,58 @@ class I13Aceptacion(unittest.TestCase):
         self.assertEqual(propuesta.necesidades[0].attempt, 2)
 
 
+class RespuestasSobreEfectos(unittest.TestCase):
+    def test_el_cancel_de_un_efecto_alcanza_a_su_unidad(self):
+        excepcion = {
+            "exceptionId": "e1",
+            "rootId": RAIZ,
+            "unitId": None,
+            "type": "EVIDENCIA_INCIERTA",
+            "subject": {"kind": "effect", "effectId": "effect-01"},
+            "options": ["conciliar", "omitir", "cancelar"],
+            "evidenceRef": None,
+            "raisedAt": "2026-10-17T11:00:00Z",
+            "noticedAt": "2026-10-17T11:00:00Z",
+            "renoticeAfterMs": 3600000,
+            "response": {
+                "optionId": "cancelar",
+                "by": ["david"],
+                "at": "2026-10-17T11:30:00Z",
+            },
+            "appliedBy": None,
+        }
+        efecto = {
+            "effectId": "effect-01",
+            "state": "uncertain",
+            "startId": "s1",
+            "startedEpoch": 1,
+            "intent": {
+                "effectId": "effect-01",
+                "action": "push",
+                "unitId": "a",
+                "destination": "d",
+                "cancellable": False,
+            },
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "running")],
+                excepciones=[excepcion],
+                efectos=[efecto],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "cancelled"}],
+        )
+        self.assertEqual(
+            propuesta.decision["contadores"],
+            [{"counter": "cerradas:a", "expected": 0}],
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], ["e1"])
+
+
 class I01Borradores(unittest.TestCase):
     def test_el_id_es_determinista_y_las_opciones_siguen_el_orden_de_la_clase(self):
         sujeto = {"kind": "rounds", "unitId": "a", "block": 0}
