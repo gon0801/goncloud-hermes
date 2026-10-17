@@ -11,6 +11,7 @@ F10, F12, CR2) y que así sale en la Mac antes que el bot.
 """
 
 import importlib
+import inspect
 import sys
 import tempfile
 import unittest
@@ -27,12 +28,31 @@ RAIZ = "root-prop"
 DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
 
+PERMISOS_DE_PRUEBA = {
+    "acciones": ["read", "implement", "review"],
+    "toolsets": {"codex": ["read", "write"]},
+    "comandos": ["git", "python3"],
+}
+
+# Las ramas sin gate de H no aceptan permisos_h; con gate, falla cerrado
+# sin ellos y ningún escenario despacharía.
+ARGUMENTOS_DE_VUELTA = (
+    {"permisos_h": PERMISOS_DE_PRUEBA}
+    if "permisos_h" in inspect.signature(ticker.vuelta).parameters
+    else {}
+)
+
 
 def asignacion():
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
         "instructionRef": {"ref": "artifact:inst-codex", "digest": DIGEST},
         "resultContract": "review.v1",
+        "inputRevision": {
+            "kind": "code",
+            "repository": "owner-01/repo-a",
+            "sha": "0" * 40,
+        },
         "continuation": {"kind": "requester"},
     }
 
@@ -223,7 +243,9 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             self.responder(tienda, politica)
             if prepara is not None:
                 prepara(tienda)
-            informe = ticker.vuelta(tienda, kanban, {RAIZ: hechos_raiz})
+            informe = ticker.vuelta(
+                tienda, kanban, {RAIZ: hechos_raiz}, **ARGUMENTOS_DE_VUELTA
+            )
             self.assertEqual(
                 informe.conflictos,
                 (),
