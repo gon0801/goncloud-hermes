@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Certifica el par (version, code_sha) de Hermes vivo en esta PC (SUA-07 H4a).
 
-Nunca toca el HERMES_HOME original: copia a un directororio temporal, corre
-la bateria del kanban real contra esa copia y, si pasa (ultima linea OK
-exacta y al menos tres pruebas), imprime la candidata para
-certificadas.json. Con --escribir la agrega al archivo del plugin tras
-validar la forma y rechazar duplicados; el par entra al repo por PR.
+Nunca copia el HERMES_HOME: el par vivo se lee del entorno con los lectores
+de la puerta (un json chico del home) y la bateria del kanban real corre en
+un home temporal VACIO. Si pasa (ultima linea OK exacta y al menos tres
+pruebas), imprime la candidata para certificadas.json. Con --escribir la
+agrega al archivo del plugin tras validar la forma y rechazar duplicados;
+el par entra al repo por PR.
 
-Uso: python certificar.py [--escribir] [--home RUTA]
+Uso: python certificar.py [--escribir]
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import importlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,16 +62,12 @@ def _leer_par_vivo():
     return abierta, causa, par
 
 
-def _copiar_home(home, destino):
-    shutil.copytree(home, destino)
-
-
-def _correr_pruebas(home_copia, repo, python=sys.executable) -> str:
+def _correr_pruebas(home_temporal, repo, python=sys.executable) -> str:
     entorno = dict(os.environ)
     entorno.update(
         {
-            "HERMES_HOME": str(home_copia),
-            "HERMES_KANBAN_DB": str(Path(home_copia) / "kanban.db"),
+            "HERMES_HOME": str(home_temporal),
+            "HERMES_KANBAN_DB": str(Path(home_temporal) / "kanban.db"),
             "PYTHONPATH": f"{repo}/plugins/goncloud-team:{repo}/tests",
         }
     )
@@ -112,7 +108,6 @@ def main(
     argv=None,
     *,
     leer_par=_leer_par_vivo,
-    copiar_home=_copiar_home,
     correr_pruebas=_correr_pruebas,
     ruta_certificados=None,
 ) -> int:
@@ -124,11 +119,7 @@ def main(
         action="store_true",
         help="agrega la candidata a certificadas.json (sin esta bandera solo imprime)",
     )
-    analizador.add_argument(
-        "--home", default=None, help="HERMES_HOME a copiar (por defecto, el del env)"
-    )
     argumentos = analizador.parse_args(argv)
-    home = argumentos.home or os.environ.get("HERMES_HOME", "")
 
     abierta, causa, par = leer_par()
     if abierta:
@@ -139,9 +130,7 @@ def main(
         return 1
 
     with tempfile.TemporaryDirectory() as temporal:
-        copia = Path(temporal) / "hermes"
-        copiar_home(home, copia)
-        salida = correr_pruebas(copia, REPO)
+        salida = correr_pruebas(Path(temporal), REPO)
     resumen = _paso_la_bateria(salida)
     if resumen is None:
         print(salida)

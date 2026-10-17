@@ -37,7 +37,7 @@ La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing
 
 ## Instalacion reproducible
 
-Windows: la versión vigente de H se acredita por pares (versión, code_sha) certificados en `plugins/goncloud-team/raices/certificadas.json`; H se actualiza solo y ninguna versión se fija a mano. Tras cada subida de Hermes se certifica el par vivo con `plugins/goncloud-team/raices/certificar.py` en la PC (copia el home, corre las pruebas del kanban real y valida la candidata) y el par entra al repo por PR. Runtime instalado en `%LOCALAPPDATA%\hermes`, upstream en `hermes-agent`, perfiles en `profiles`. No se modifica upstream.
+Windows: la versión vigente de H se acredita por pares (versión, code_sha) certificados en `plugins/goncloud-team/raices/certificadas.json`; H se actualiza solo y ninguna versión se fija a mano. Tras cada subida de Hermes se certifica el par vivo con `plugins/goncloud-team/raices/certificar.py` en la PC (corre las pruebas del kanban real en un home temporal vacío y valida la candidata) y el par entra al repo por PR. Runtime instalado en `%LOCALAPPDATA%\hermes`, upstream en `hermes-agent`, perfiles en `profiles`. No se modifica upstream.
 
 Despues de instalar ese commit con el instalador oficial de Windows, y despues de cada instalacion o actualizacion de Hermes, en una consola elevada:
 

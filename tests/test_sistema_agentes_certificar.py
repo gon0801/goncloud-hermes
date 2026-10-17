@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """certificar.py con todas las piezas inyectadas: la candidata solo sale de
-una batería que pasó en la COPIA del home (el original nunca se toca) y el
-archivo de certificados solo cambia con --escribir."""
+una batería que pasó en un home temporal VACÍO (el home vivo solo se lee,
+nunca se copia) y el archivo de certificados solo cambia con --escribir."""
 
 import importlib
 import json
+import os
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
@@ -50,17 +52,13 @@ class Certificar(unittest.TestCase):
         self.addCleanup(self.directorio.cleanup)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir()
-        (self.home / "kanban.db").write_text("db", encoding="utf-8")
         self.ruta = Path(self.directorio.name) / "certificadas.json"
-        self.copiadas: list = []
         self.pruebas: list = []
-
-    def copiar(self, origen, destino):
-        self.copiadas.append((str(origen), str(destino)))
 
     def correr_pruebas(self, salida=SALIDA_VERDE):
         def correr(home_copia, repo, python=sys.executable):
-            self.pruebas.append((str(home_copia), str(repo), python))
+            contenidos = sorted(via.name for via in Path(home_copia).iterdir())
+            self.pruebas.append((str(home_copia), str(repo), contenidos))
             return salida
 
         return correr
@@ -74,18 +72,18 @@ class Certificar(unittest.TestCase):
     ):
         lector = leer_par or (lambda: (False, "version-no-certificada", PAR))
         bufer = StringIO()
-        with redirect_stdout(bufer):
+        entorno = mock.patch.dict(os.environ, {"HERMES_HOME": str(self.home)})
+        with redirect_stdout(bufer), entorno:
             codigo = certificar.main(
                 argv,
                 leer_par=lector,
-                copiar_home=self.copiar,
                 correr_pruebas=self.correr_pruebas(salida),
                 ruta_certificados=ruta or self.ruta,
             )
         return codigo, bufer.getvalue()
 
     def argv(self, *banderas):
-        return ["--home", str(self.home), *banderas]
+        return list(banderas)
 
     def test_el_par_vivo_nuevo_imprime_la_candidata_y_sale_cero(self):
         codigo, salida = self.certificar(self.argv())
@@ -103,13 +101,26 @@ class Certificar(unittest.TestCase):
             candidata["certificadoEn"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
         )
         self.assertIn("corridoEn", candidata["evidencia"])
-        # La copia recibió el home original y las pruebas corrieron sobre la
-        # copia, nunca sobre el original.
-        self.assertEqual(len(self.copiadas), 1)
-        self.assertEqual(self.copiadas[0][0], str(self.home))
-        self.assertEqual(self.pruebas[0][0], self.copiadas[0][1])
+        # Las pruebas corrieron en un home temporal vacío, nunca en el vivo.
+        self.assertEqual(len(self.pruebas), 1)
         self.assertNotEqual(self.pruebas[0][0], str(self.home))
-        self.assertTrue((self.home / "kanban.db").exists())
+        self.assertEqual(self.pruebas[0][2], [])
+
+    def test_corre_en_un_home_temporal_vacio_y_el_home_vivo_queda_igual(self):
+        (self.home / "backup-key").write_text("llave-secreta", encoding="utf-8")
+        grande = self.home / "memories.bin"
+        grande.write_bytes(b"\0" * 4096)
+        codigo, _ = self.certificar(self.argv())
+        self.assertEqual(codigo, 0)
+        recibido, _, contenidos = self.pruebas[0]
+        self.assertNotEqual(recibido, str(self.home))
+        self.assertNotIn("backup-key", contenidos)
+        self.assertNotIn("memories.bin", contenidos)
+        self.assertEqual(contenidos, [])
+        self.assertEqual(
+            (self.home / "backup-key").read_text(encoding="utf-8"), "llave-secreta"
+        )
+        self.assertEqual(grande.read_bytes(), b"\0" * 4096)
 
     def test_el_par_ya_certificado_sale_cero_sin_copiar_nada(self):
         codigo, salida = self.certificar(
@@ -117,7 +128,6 @@ class Certificar(unittest.TestCase):
         )
         self.assertEqual(codigo, 0)
         self.assertIn("ya", salida)
-        self.assertEqual(self.copiadas, [])
         self.assertEqual(self.pruebas, [])
 
     def test_una_bateria_que_no_pasa_no_deja_candidata(self):
@@ -161,7 +171,7 @@ class Certificar(unittest.TestCase):
         )
         self.assertEqual(codigo, 1)
         self.assertEqual(salida.strip(), "par-incierto")
-        self.assertEqual(self.copiadas, [])
+        self.assertEqual(self.pruebas, [])
 
 
 if __name__ == "__main__":
