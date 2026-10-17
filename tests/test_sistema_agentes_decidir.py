@@ -904,6 +904,10 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
                 "cancellable": False,
             },
         ]
+
+        def admite(_intent):
+            return None
+
         propuesta = decidir.decidir(
             vista(
                 [unidad("a")],
@@ -913,7 +917,8 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
                     "claims": [],
                     "efectos": efectos,
                 },
-            )
+            ),
+            admite,
         )
         self.assertIsInstance(propuesta, decidir.Propuesta)
         self.assertEqual(len(propuesta.decision["efectos"]), 1)
