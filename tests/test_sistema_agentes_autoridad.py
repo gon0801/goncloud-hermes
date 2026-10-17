@@ -208,6 +208,7 @@ class I07SinPermisos(TiendaCerrada, unittest.TestCase):
         self.tienda = store.Store(self.ruta)
         self.addCleanup(self._verificar_cierre)
         self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
     def test_none_niega_todo_con_razon_propia(self):
@@ -263,6 +264,7 @@ class I07Efecto(TiendaCerrada, unittest.TestCase):
         )
         self.addCleanup(self._verificar_cierre)
         self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
     def test_la_autoridad_admite_y_h_niega_el_efecto_no_corre(self):
@@ -340,6 +342,7 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         self.tienda = store.Store(Path(self.directorio.name) / "db.sqlite")
         self.addCleanup(self._verificar_cierre)
         self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1"), unidad("b", "b1")]))
         self.kanban = kanban_port.DobleKanban()
         self.hechos = {
