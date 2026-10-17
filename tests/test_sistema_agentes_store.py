@@ -1178,6 +1178,56 @@ class ElReplayDeAplicarDaElMismoRecibo(AlmacenDePrueba):
         self.assertEqual(replay.valor, primera.valor)
 
 
+class LaGuardaValidaLosClaimsDeLaDecision(AlmacenDePrueba):
+    """F16: los claims de la decisión se validan contra el contrato ANTES de
+    la guarda de aceptación; uno sin forma es documento-invalido, no una
+    excepción dentro de la transacción (I13)."""
+
+    def _intento_reportado(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_un_claim_sin_expires_at_ni_verifier_es_documento_invalido(self):
+        self._intento_reportado()
+        incompleto = {
+            k: v
+            for k, v in claim("a", 1, "a1").items()
+            if k not in ("expiresAt", "verifier", "schema")
+        }
+        negada = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[incompleto],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-malo",
+        )
+        self.assertIsInstance(negada, store.Conflicto)
+        self.assertEqual(negada.codigo, "documento-invalido")
+        vista = self.tienda.leer_vista(RAIZ, hechos_vacios())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["reported"])
+        self.assertEqual(vista["evidencia"], [])
+
+
 class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
     """F7: la guarda de aceptación del store aplica revisorExcluyeAutores."""
 

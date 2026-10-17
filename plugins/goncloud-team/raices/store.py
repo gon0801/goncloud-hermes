@@ -618,6 +618,27 @@ class Store:
                     (root_id, revision),
                 )
             }
+            # Los claims de la decisión se validan antes de la guarda de
+            # aceptación: uno sin forma es documento-invalido, no un KeyError
+            # dentro de la transacción (F16, I13).
+            documentos_de_claims = []
+            for claim_nuevo in decision["claims"]:
+                documento = {
+                    **claim_nuevo,
+                    "schema": "sistema-agentes.evidencia.v1",
+                }
+                if documento.get("rootId") != root_id:
+                    self._rollback()
+                    return Conflicto(
+                        "claim-ajeno", {"evidenceId": documento.get("evidenceId")}
+                    )
+                hallazgos = contrato.validar(documento)
+                if hallazgos:
+                    self._rollback()
+                    return Conflicto(
+                        "documento-invalido", {"hallazgos": _a_json(hallazgos)}
+                    )
+                documentos_de_claims.append(documento)
             # Guarda de borde: una aceptación exige claims passed por cada criterio
             # vigente, aunque la propuesta no venga de decidir (I13). El orden es el
             # mismo de decidir: evidencia guardada primero y la decisión después,
@@ -850,22 +871,7 @@ class Store:
                 intentos_nuevos.append(
                     {"unitId": unit_id, "attempt": attempt, "clave": clave}
                 )
-            for claim_nuevo in decision["claims"]:
-                documento = {
-                    **claim_nuevo,
-                    "schema": "sistema-agentes.evidencia.v1",
-                }
-                if documento.get("rootId") != root_id:
-                    self._rollback()
-                    return Conflicto(
-                        "claim-ajeno", {"evidenceId": documento.get("evidenceId")}
-                    )
-                hallazgos = contrato.validar(documento)
-                if hallazgos:
-                    self._rollback()
-                    return Conflicto(
-                        "documento-invalido", {"hallazgos": _a_json(hallazgos)}
-                    )
+            for documento in documentos_de_claims:
                 self._conexion.execute(
                     "INSERT OR IGNORE INTO evidencia VALUES (?,?,?,?)",
                     (root_id, documento["evidenceId"], _a_json(documento), ahora),
