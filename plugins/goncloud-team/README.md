@@ -1,6 +1,6 @@
 # Goncloud team plugin
 
-This native Hermes plugin registers five tools in the `goncloud_team` toolset:
+This native Hermes plugin registers these tools in the `goncloud_team` toolset:
 
 - `goncloud_engineering_start` creates an idempotent director root and the
   `scout -> ingenieria -> implementer -> verifier -> adversary -> reviewer -> entrega`
@@ -47,6 +47,38 @@ pointed at the same directory do not share this mutex (the default deployment
 uses one board). Prompts still
 carry behavioral duties such as evidence quality and respecting external-action
 authority; the plugin cannot prove that a model's prose is truthful.
+
+## Raices del sistema de agentes (SUA-07)
+
+Las herramientas `goncloud_root_submit`, `goncloud_root_read`,
+`goncloud_root_control` y `goncloud_root_resolve` son solo para el perfil claw
+y hablan con los nombres de campo del contrato `sistema-agentes.v1`: submit
+abre la raiz con el documento `meta.v1` (reintentos con el mismo plan devuelven
+el recibo original), read devuelve el snapshot de la raiz, control entrega el
+recibo de `control.v1` (un reintento exacto devuelve el original con
+`replayed: true`) y resolve guarda la respuesta del dueno en la `excepcion.v1`.
+
+El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
+concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
+salida. El script es `raices/cron_ticker.py` de este plugin (queda copiado en
+`profiles/claw/plugins/goncloud-team/raices/`); se registra como trabajo sin
+agente de claw:
+
+```powershell
+hermes -p claw cron create "* * * * *" --name ticker-raices --script
+  profiles/claw/plugins/goncloud-team/raices/cron_ticker.py --no-agent
+```
+
+La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
+bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
+raices cerrada (el par de Hermes sin certificar, H4) no corre y sale 0. El
+store es `%HERMES_HOME%\sistema-agentes.db`; el kanban, `HERMES_KANBAN_DB` o
+`%HERMES_HOME%\kanban.db`, y solo se abre si hay algo que despachar. La
+expresion `* * * * *` es el cada minuto estandar de cron; la referencia 0.21.5
+copiada fuera del repo solo trae `kanban_db*`, no el planificador del cron, asi
+que en H5 el coordinador confirma en la PC que el cron acepta cada minuto (si
+no, se baja la frecuencia: la vuelta es idempotente y dos tickers a la vez no
+duplican tarjetas).
 
 ## Local execution
 
