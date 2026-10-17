@@ -111,6 +111,8 @@ class DespliegueReal(unittest.TestCase):
                 env={
                     "PATH": "/usr/bin:/bin",
                     "HOME": str(Path(directorio) / "home"),
+                    # Path.home() en Windows lee USERPROFILE, no HOME.
+                    "USERPROFILE": str(Path(directorio) / "home"),
                     "LOCALAPPDATA": str(Path(directorio) / "local"),
                     "PYTHONUTF8": "1",
                 },
