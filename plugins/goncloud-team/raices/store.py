@@ -291,8 +291,25 @@ class Store:
         self._conexion.execute("ROLLBACK")
 
     def _criterio_cubierto(
-        self, claims, unit_id, attempt, criterion_id, revision, ahora
+        self, root_id, claims, unit_id, attempt, criterion_id, revision, ahora
     ) -> bool:
+        excluye = None
+        autores: set = set()
+        politica = json.loads(
+            self._una_fila(
+                "SELECT politica_json FROM raices WHERE root_id = ?", (root_id,)
+            )["politica_json"]
+        )
+        if politica.get("revisorExcluyeAutores"):
+            for fila in self._conexion.execute(
+                "SELECT assignment_json FROM intentos"
+                " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+                (root_id, unit_id, attempt),
+            ):
+                documento = json.loads(fila["assignment_json"])
+                if isinstance(documento, dict):
+                    autores.add(_perfil_de(documento))
+            excluye = autores
         vigente = None
         for c in reversed(claims):
             if (
@@ -300,6 +317,12 @@ class Store:
                 and c["attempt"] == attempt
                 and c["criterionId"] == criterion_id
             ):
+                if (
+                    excluye
+                    and c["verifier"]["role"] == "reviewer"
+                    and autores.intersection(c["verifier"]["principal"])
+                ):
+                    continue
                 vigente = c
                 break
         if vigente is None or vigente["outcome"] != "passed":
@@ -630,6 +653,7 @@ class Store:
                     )
                 for criterio in unidad_plan["criteria"]:
                     cubierto = self._criterio_cubierto(
+                        root_id,
                         claims,
                         desenlace["unitId"],
                         desenlace["attempt"],
