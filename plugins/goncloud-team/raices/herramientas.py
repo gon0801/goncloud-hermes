@@ -89,6 +89,19 @@ def leer_raiz(argumentos, perfil, home=None):
         tienda.cerrar()
     if snapshot is None:
         return {"error": "raiz-desconocida", "detalle": {"rootId": root_id}}
+    permisos = hogar.leer_permisos(home) or {}
+    cobertura = permisos.get("cobertura")
+    if not isinstance(cobertura, dict):
+        cobertura = {}
+    for unidad in snapshot["unidades"]:
+        assignment = unidad.get("assignment") or {}
+        if assignment.get("resultContract") != "review.v1":
+            continue
+        target = assignment.get("target") or {}
+        specialist = str(
+            target.get("agentId") or target.get("adapterId") or "sin-perfil"
+        )
+        unidad["cobertura"] = cobertura.get(specialist, "unknown")
     return snapshot
 
 

@@ -19,6 +19,7 @@ decidir = importlib.import_module("raices.decidir")
 kanban_port = importlib.import_module("raices.kanban_port")
 store_module = importlib.import_module("raices.store")
 autoridad = importlib.import_module("raices.autoridad")
+flota = importlib.import_module("raices.flota")
 
 CaidaInyectada = kanban_port.CaidaInyectada
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -52,11 +53,13 @@ def cargar_politicas() -> dict:
 
 
 def vuelta(
-    tienda, puerto, hechos_por_raiz=None, permisos_h=None, ruta_abierta=True
+    tienda, puerto, hechos_por_raiz=None, permisos_h=None, ruta_abierta=True, home=None
 ) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
     muerte del proceso, y la vuelta siguiente recupera desde las filas.
     `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo.
+    `home` es el %HERMES_HOME% de los perfiles: con él el despacho congela el
+    documento flota.v1 del intento que admite (I09).
     Con `ruta_abierta=False` (H4a) la puerta de capacidades está cerrada: bloquea
     y concilia igual (un intento abierto conserva su snapshot), pero no decide, no
     despacha ni levanta el gate de arranque."""
@@ -118,19 +121,31 @@ def vuelta(
             if hasattr(reclamo, "codigo"):
                 continue
             target = intencion.assignment.get("target") or {}
+            specialist = str(
+                target.get("agentId") or target.get("adapterId") or "sin-perfil"
+            )
             spec = SpecDeTarjeta(
                 f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
                 str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
-                str(target.get("agentId") or target.get("adapterId") or "sin-perfil"),
+                specialist,
             )
             tarjeta = kanban_port.asegurar_tarjeta(
                 puerto, intencion.idempotency_key, spec
+            )
+            documento = flota.construir(
+                intencion.root_id,
+                intencion.unit_id,
+                intencion.attempt,
+                specialist,
+                home,
+                permisos_h,
             )
             tienda.admitir_intento(
                 intencion.root_id,
                 intencion.unit_id,
                 intencion.attempt,
                 tarjeta.id,
+                flota=documento,
             )
 
     return Informe(
@@ -317,23 +332,31 @@ def _documento_de_resultado(carga, intento, tarjeta, ahora):
 
 def _incidencia_invalida(tienda, intento, tarjeta, carga=None) -> None:
     """El episodeId es el canónico de R (managed-task.worker.ts): el digest del
-    resultado si lo trajo, o el de schema-invalid sobre lo que llegó."""
-    identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
-    if not isinstance(identidad, str) or not identidad:
-        identidad = digesto(
-            [
-                "schema-invalid",
-                carga if isinstance(carga, str) else "structured-result",
-            ]
-        )
+    resultado si lo trajo, o el de schema-invalid sobre lo que llegó. Una
+    tarjeta completada sin resultado alguno es un hijo que murió sin decir
+    nada: su incidencia no reintenta sola (la muerte no crea tareas, I18),
+    pregunta al dueño."""
+    if not carga:
+        kind = "result-missing"
+        identidad = digesto(["schema-invalid", "sin-resultado"])
+    else:
+        kind = "invalid-result"
+        identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
+        if not isinstance(identidad, str) or not identidad:
+            identidad = digesto(
+                [
+                    "schema-invalid",
+                    carga if isinstance(carga, str) else "structured-result",
+                ]
+            )
     tienda.registrar_incidencia(
         intento["rootId"],
         intento["unitId"],
         intento["attempt"],
-        f"invalid-result:{tarjeta.id}",
+        f"{kind}:{tarjeta.id}",
         {
-            "kind": "invalid-result",
-            "episodeId": f"invalid-result:{digesto([tarjeta.id, identidad])}",
+            "kind": kind,
+            "episodeId": f"{kind}:{digesto([tarjeta.id, identidad])}",
             "evidenceRef": tarjeta.id,
         },
     )

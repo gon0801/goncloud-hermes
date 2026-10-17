@@ -218,7 +218,7 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     try:
         puerto = kanban.KanbanHermes(ruta_del_kanban(base))
         try:
-            ticker.vuelta(tienda, puerto, permisos_h=permisos)
+            ticker.vuelta(tienda, puerto, permisos_h=permisos, home=base)
         finally:
             puerto.cerrar()
         _pasada_del_emisor(tienda, base, enviar or emisor_de_telegram(base))
