@@ -955,6 +955,74 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
         self.assertEqual(propuesta.decision["claims"], [])
 
 
+class ElEscritorAjenoDifiereElLigado(unittest.TestCase):
+    """F18: el repo que otra raíz tiene tomado no se liga; decide lo mismo
+    que el store juzga con writer-held."""
+
+    @staticmethod
+    def con_repo(etiqueta):
+        return {
+            **asignacion(etiqueta),
+            "inputRevision": {
+                "kind": "code",
+                "repository": "owner-01/repo-a",
+                "sha": "0" * 40,
+            },
+        }
+
+    @staticmethod
+    def escritores(root_id):
+        return [
+            {
+                "resourceRef": "repo:owner-01/repo-a",
+                "unitId": "z",
+                "rootId": root_id,
+            }
+        ]
+
+    @staticmethod
+    def hechos(assignment):
+        return {
+            "principal": ["david"],
+            "asignaciones": [{"unitId": "a", "assignment": assignment, "relay": False}],
+            "claims": [],
+            "efectos": [],
+        }
+
+    def test_no_liga_un_recurso_que_otra_raiz_tiene_tomado(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                hechos=self.hechos(self.con_repo("a-1")),
+                escritores=self.escritores("root-otra"),
+            )
+        )
+        self.assertEqual(propuesta.decision["bindings"], [])
+        self.assertEqual(necesitaciones(propuesta), ["first"])
+
+    def test_la_correccion_tampoco_liga_recurso_ajeno(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "failed")],
+                hechos=self.hechos(self.con_repo("a-2")),
+                escritores=self.escritores("root-otra"),
+            )
+        )
+        self.assertEqual(propuesta.decision["bindings"], [])
+        self.assertEqual(necesitaciones(propuesta), ["correction"])
+
+    def test_el_escritor_de_la_propia_raiz_no_bloquea(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                hechos=self.hechos(self.con_repo("a-1")),
+                escritores=self.escritores(RAIZ),
+            )
+        )
+        self.assertEqual(len(propuesta.decision["bindings"]), 1)
+
+
 class I01Borradores(unittest.TestCase):
     def test_el_id_es_determinista_y_las_opciones_siguen_el_orden_de_la_clase(self):
         sujeto = {"kind": "rounds", "unitId": "a", "block": 0}

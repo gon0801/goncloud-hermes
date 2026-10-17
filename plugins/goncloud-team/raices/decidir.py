@@ -228,6 +228,16 @@ def _target_de(assignment):
     return {}
 
 
+def _repo_de(assignment):
+    if isinstance(assignment, Mapping):
+        revision = assignment.get("inputRevision")
+        if isinstance(revision, Mapping):
+            repo = revision.get("repository")
+            if repo:
+                return f"repo:{repo}"
+    return None
+
+
 def _decision_vacia(revision: int, epoch: int) -> dict:
     return {
         "expected_plan_revision": revision,
@@ -780,6 +790,19 @@ def decidir(
         )
         return cabe
 
+    def recurso_tomado(assignment):
+        """El repo del assignment lo tiene tomado OTRA raíz: el store lo
+        exigiría global (writer-held), así que aquí se difiere el ligado y
+        la unidad queda esperando, como una plaza ocupada (F18)."""
+        recurso = _repo_de(assignment)
+        if recurso is None:
+            return False
+        return any(
+            escritor.get("resourceRef") == recurso
+            and escritor.get("rootId") not in (None, root_id)
+            for escritor in vista["escritores"]
+        )
+
     for unidad_plan in plan_unidades:
         unit_id = unidad_plan["unitId"]
         ultimo = ultimo_de(unit_id)
@@ -812,7 +835,9 @@ def decidir(
                 )
             )
             continue
-        if not caben_en_plazas(hecho["assignment"], len(decision["bindings"])):
+        if not caben_en_plazas(
+            hecho["assignment"], len(decision["bindings"])
+        ) or recurso_tomado(hecho["assignment"]):
             soltar_hecho(hecho)
             necesidades.append(
                 NecesidadAsignacion(
@@ -842,7 +867,9 @@ def decidir(
             necesidades.append(NecesidadAsignacion(unit_id, "first", None, []))
             continue
         indice, hecho = hallado
-        if not caben_en_plazas(hecho["assignment"], len(decision["bindings"])):
+        if not caben_en_plazas(
+            hecho["assignment"], len(decision["bindings"])
+        ) or recurso_tomado(hecho["assignment"]):
             necesidades.append(NecesidadAsignacion(unit_id, "first", None, []))
             continue
         hechos_usados.add(indice)

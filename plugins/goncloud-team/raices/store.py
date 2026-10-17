@@ -1584,10 +1584,14 @@ class Store:
             )
         }
         escritores = [
-            {"resourceRef": f["resource_ref"], "unitId": f["unit_id"]}
+            {
+                "resourceRef": f["resource_ref"],
+                "unitId": f["unit_id"],
+                "rootId": f["root_id"],
+            }
             for f in self._conexion.execute(
-                "SELECT resource_ref, unit_id FROM escritores WHERE root_id = ?",
-                (root_id,),
+                "SELECT root_id, resource_ref, unit_id FROM escritores"
+                " ORDER BY root_id, resource_ref"
             )
         ]
         fallos_con_hallazgo = {

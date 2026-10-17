@@ -502,6 +502,46 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
                     )
                     self._responder_tardia(tienda, hechos_raiz, tipo, opciones, opcion)
 
+    def test_dos_raices_sobre_el_mismo_repo_alternan_sin_conflicto(self):
+        RAIZ_B = "root-prop-b"
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        tienda = store.Store(self.directorio.name + "/dos-raices.db")
+        self.addCleanup(tienda.cerrar)
+        self.assertIsInstance(
+            tienda.abrir_raiz(meta([unidad("a", rol="verifier")])), store.Ok
+        )
+        meta_b = {**meta([unidad("b", rol="verifier")]), "rootId": RAIZ_B}
+        self.assertIsInstance(tienda.abrir_raiz(meta_b), store.Ok)
+        hechos_a = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_b = hechos(
+            ("b",),
+            claims=[{**claim_de_hecho("b", 1, "b1", "passed"), "rootId": RAIZ_B}],
+        )
+        kanbans = (kanban_port.DobleKanban(), kanban_port.DobleKanban())
+        estados = {}
+        for _ in range(self.TOPE):
+            for kanban in kanbans:
+                self.cargar(tienda, kanban, carga_aprobada)
+                informe = ticker.vuelta(
+                    tienda,
+                    kanban,
+                    {RAIZ: hechos_a, RAIZ_B: hechos_b},
+                    **ARGUMENTOS_DE_VUELTA,
+                )
+                self.assertEqual(
+                    informe.conflictos,
+                    (),
+                    "decidir propuso algo que la guarda del store rechazó",
+                )
+            estados = {}
+            for raiz, hechos_raiz in ((RAIZ, hechos_a), (RAIZ_B, hechos_b)):
+                for documento in tienda.leer_vista(raiz, hechos_raiz)["unidades"]:
+                    estados.setdefault(raiz, []).append(documento["state"])
+            if estados == {RAIZ: ["accepted"], RAIZ_B: ["accepted"]}:
+                return
+        self.fail(f"no convergió: {estados}")
+
 
 if __name__ == "__main__":
     unittest.main()
