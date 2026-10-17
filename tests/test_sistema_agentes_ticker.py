@@ -329,6 +329,32 @@ class I04Ticker(Escenario):
         )
         self.assertEqual(vista["resultados"], [])
 
+    def test_una_tarjeta_archivada_es_un_intento_muerto_con_incidencia(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        kanban.crear_archivada(tarjeta.clave)
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        unidad = [d for d in vista["unidades"] if d["unitId"] == "a"][0]
+        self.assertEqual(unidad["state"], "cancelled")
+        self.assertEqual(
+            [(i["unitId"], i["incident"]) for i in vista["incidencias"]],
+            [
+                (
+                    "a",
+                    {
+                        "kind": "recovery-transport-failure",
+                        "evidenceRef": tarjeta.id,
+                    },
+                )
+            ],
+        )
+        self.assertEqual(vista["resultados"], [])
+        clave_dos = clave_de_tarjeta(RAIZ, "a", 2)
+        self.assertIn(clave_dos, kanban.creaciones)
+        self.assertIsNotNone(kanban.por_clave(clave_dos))
+
     def test_tras_las_caidas_el_plan_termina_y_sigue(self):
         tienda, kanban = self.frescar()
         self.vuelta(tienda, kanban)
