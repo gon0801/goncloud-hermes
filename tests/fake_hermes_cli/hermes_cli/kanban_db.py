@@ -320,3 +320,45 @@ def archive_task(conn, task_id, *, signal_fn=None):
             (task_id,),
         )
         return cursor.rowcount == 1
+
+
+def add_comment(conn, task_id, author, body):
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (task_id, author, body, int(time.time())),
+        )
+
+
+def list_comments(conn, task_id):
+    return [
+        dict(f)
+        for f in conn.execute(
+            "SELECT * FROM task_comments WHERE task_id = ? ORDER BY id", (task_id,)
+        ).fetchall()
+    ]
+
+
+def list_events(conn, task_id):
+    return [
+        dict(f)
+        for f in conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
+        ).fetchall()
+    ]
+
+
+def list_runs(conn, task_id):
+    """El doble no lleva runs: ninguna prueba de raices los mira."""
+    del conn, task_id
+    return []
+
+
+def parent_ids(conn, task_id):
+    return [
+        f["parent_id"]
+        for f in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?", (task_id,)
+        ).fetchall()
+    ]

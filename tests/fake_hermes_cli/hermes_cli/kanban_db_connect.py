@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS task_events (
   payload_json TEXT,
   created_at   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_comments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    TEXT NOT NULL,
+  author     TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
   ON tasks (idempotency_key);
 """
