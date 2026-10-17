@@ -421,7 +421,19 @@ def decidir(
         if not respuesta or excepcion.get("appliedBy") is not None:
             continue
         sujeto = excepcion["subject"]
-        unidad_sujeta = sujeto.get("unitId") if sujeto.get("kind") != "root" else None
+        if sujeto.get("kind") == "effect":
+            unidad_sujeta = next(
+                (
+                    e["intent"].get("unitId")
+                    for e in vista["efectos"]
+                    if e["effectId"] == sujeto["effectId"]
+                ),
+                None,
+            )
+        elif sujeto.get("kind") == "root":
+            unidad_sujeta = None
+        else:
+            unidad_sujeta = sujeto.get("unitId")
         vivo = vivo_de(unidad_sujeta) if unidad_sujeta else None
         opcion = respuesta["optionId"]
         aplicada = True
