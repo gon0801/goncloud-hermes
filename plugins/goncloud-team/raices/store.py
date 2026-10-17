@@ -411,7 +411,7 @@ class Store:
         contenido = {
             k: v
             for k, v in comando.items()
-            if k not in ("schema", "commandId", "receipt")
+            if k not in ("schema", "commandId", "receipt", "issuedAt")
         }
         digest = digesto(contenido)
         ahora = self.reloj()
