@@ -476,96 +476,103 @@ class Store:
             if state not in admite[orden]:
                 self._rollback()
                 return Conflicto("transition-refused", {"state": state})
-            committed = self._conexion.execute(
-                "SELECT effect_id, intent_json, state"
-                " FROM efectos WHERE root_id = ? AND state IN ('started','uncertain')"
-                " ORDER BY created_at, effect_id",
-                (root_id,),
-            ).fetchall()
-            efectos_comprometidos = []
-            for fila in committed:
-                intent = json.loads(fila["intent_json"])
-                efectos_comprometidos.append(
-                    {
-                        "effectId": fila["effect_id"],
-                        "destination": intent.get("destination") or intent["action"],
-                        "state": fila["state"],
-                        "cancellable": bool(intent.get("cancellable", True)),
-                    }
-                )
-            nueva_epoch = epoch + 1
+            efectos_comprometidos = self._efectos_comprometidos(root_id)
             if orden == "cancel":
-                vivos = self._conexion.execute(
-                    "SELECT unit_id, attempt, card_id FROM intentos"
-                    " WHERE root_id = ? AND outcome_ref IS NULL",
-                    (root_id,),
-                ).fetchall()
-                for fila in vivos:
-                    self._conexion.execute(
-                        "UPDATE intentos SET state = 'cancelled', outcome_ref = ?,"
-                        " updated_at = ? WHERE root_id = ? AND unit_id = ?"
-                        " AND attempt = ? AND outcome_ref IS NULL",
-                        (
-                            f"control:{command_id}",
-                            ahora,
-                            root_id,
-                            fila["unit_id"],
-                            fila["attempt"],
-                        ),
-                    )
-                    if fila["card_id"] is not None:
-                        self._conexion.execute(
-                            "INSERT OR IGNORE INTO bloqueos VALUES (?,?,?,NULL)",
-                            (root_id, fila["card_id"], f"cancel:{command_id}"),
-                        )
-                self._conexion.execute(
-                    "DELETE FROM escritores WHERE root_id = ?", (root_id,)
-                )
-                self._conexion.execute(
-                    "UPDATE bandeja SET state = 'anulada', fulfilled_at = ?"
-                    " WHERE root_id = ? AND state = 'pendiente'",
-                    (ahora, root_id),
-                )
-            self._conexion.execute(
-                "INSERT INTO controles VALUES (?,?,?,?,?)",
-                (
-                    root_id,
-                    nueva_epoch,
-                    {"pause": "paused", "resume": "active", "cancel": "cancelled"}[
-                        orden
-                    ],
-                    comando.get("reason"),
-                    command_id,
-                ),
-            )
-            recibo = ReciboControl(
-                nueva_epoch,
-                {"pause": "paused", "resume": "active", "cancel": "cancelled"}[orden],
-                False,
+                self._cancelar_intentos(root_id, command_id, ahora)
+            recibo = self._asentar_control(
+                root_id,
+                orden,
+                epoch,
+                command_id,
+                comando.get("reason"),
+                ahora,
                 efectos_comprometidos,
-            )
-            self._conexion.execute(
-                "INSERT INTO comandos_de_control VALUES (?,?,?,?,?)",
-                (
-                    root_id,
-                    command_id,
-                    digest,
-                    _a_json(
-                        {
-                            "controlEpoch": recibo.control_epoch,
-                            "state": recibo.state,
-                            "replayed": False,
-                            "committedEffects": recibo.committed_effects,
-                        }
-                    ),
-                    ahora,
-                ),
+                digest,
             )
             self._commit()
         except Exception:
             self._rollback()
             raise
         return Ok(recibo)
+
+    def _efectos_comprometidos(self, root_id) -> list:
+        committed = self._conexion.execute(
+            "SELECT effect_id, intent_json, state"
+            " FROM efectos WHERE root_id = ? AND state IN ('started','uncertain')"
+            " ORDER BY created_at, effect_id",
+            (root_id,),
+        ).fetchall()
+        efectos = []
+        for fila in committed:
+            intent = json.loads(fila["intent_json"])
+            efectos.append(
+                {
+                    "effectId": fila["effect_id"],
+                    "destination": intent.get("destination") or intent["action"],
+                    "state": fila["state"],
+                    "cancellable": bool(intent.get("cancellable", True)),
+                }
+            )
+        return efectos
+
+    def _cancelar_intentos(self, root_id, command_id, ahora) -> None:
+        vivos = self._conexion.execute(
+            "SELECT unit_id, attempt, card_id FROM intentos"
+            " WHERE root_id = ? AND outcome_ref IS NULL",
+            (root_id,),
+        ).fetchall()
+        for fila in vivos:
+            self._conexion.execute(
+                "UPDATE intentos SET state = 'cancelled', outcome_ref = ?,"
+                " updated_at = ? WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ? AND outcome_ref IS NULL",
+                (
+                    f"control:{command_id}",
+                    ahora,
+                    root_id,
+                    fila["unit_id"],
+                    fila["attempt"],
+                ),
+            )
+            if fila["card_id"] is not None:
+                self._conexion.execute(
+                    "INSERT OR IGNORE INTO bloqueos VALUES (?,?,?,NULL)",
+                    (root_id, fila["card_id"], f"cancel:{command_id}"),
+                )
+        self._conexion.execute("DELETE FROM escritores WHERE root_id = ?", (root_id,))
+        self._conexion.execute(
+            "UPDATE bandeja SET state = 'anulada', fulfilled_at = ?"
+            " WHERE root_id = ? AND state = 'pendiente'",
+            (ahora, root_id),
+        )
+
+    def _asentar_control(
+        self, root_id, orden, epoch, command_id, reason, ahora, efectos, digest
+    ) -> ReciboControl:
+        estado = {"pause": "paused", "resume": "active", "cancel": "cancelled"}[orden]
+        self._conexion.execute(
+            "INSERT INTO controles VALUES (?,?,?,?,?)",
+            (root_id, epoch + 1, estado, reason, command_id),
+        )
+        recibo = ReciboControl(epoch + 1, estado, False, efectos)
+        self._conexion.execute(
+            "INSERT INTO comandos_de_control VALUES (?,?,?,?,?)",
+            (
+                root_id,
+                command_id,
+                digest,
+                _a_json(
+                    {
+                        "controlEpoch": recibo.control_epoch,
+                        "state": recibo.state,
+                        "replayed": False,
+                        "committedEffects": recibo.committed_effects,
+                    }
+                ),
+                ahora,
+            ),
+        )
+        return recibo
 
     # -- decisión ---------------------------------------------------------
 
@@ -605,7 +612,7 @@ class Store:
                 self._rollback()
                 return Conflicto("stale-plan-revision", {"actual": revision})
             hay_trabajo = any(
-                decision[llave]
+                decision.get(llave)
                 for llave in (
                     "consumidos",
                     "claims",
@@ -615,6 +622,7 @@ class Store:
                     "contadores",
                     "excepciones",
                     "respuestas_aplicadas",
+                    "control",
                 )
             )
             if hay_trabajo and state != "active":
@@ -976,6 +984,20 @@ class Store:
                     "UPDATE excepciones SET applied_by = ? WHERE exception_id = ?"
                     " AND response_json IS NOT NULL AND applied_by IS NULL",
                     (decision_id, exception_id),
+                )
+            control = decision.get("control")
+            if control and control.get("command") == "cancel":
+                command_id = f"dec:{decision_id}"
+                self._cancelar_intentos(root_id, command_id, ahora)
+                self._asentar_control(
+                    root_id,
+                    "cancel",
+                    epoch,
+                    command_id,
+                    control.get("reason"),
+                    ahora,
+                    self._efectos_comprometidos(root_id),
+                    digesto(control),
                 )
             for task_id in decision["consumidos"]:
                 intento = self._una_fila(

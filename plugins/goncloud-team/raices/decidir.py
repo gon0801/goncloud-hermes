@@ -199,6 +199,7 @@ def _decision_vacia(revision: int, epoch: int) -> dict:
         "contadores": [],
         "excepciones": [],
         "respuestas_aplicadas": [],
+        "control": {},
     }
 
 
@@ -540,6 +541,9 @@ def decidir(
         if aplicada:
             decision["respuestas_aplicadas"].append(excepcion["exceptionId"])
 
+    if parar_raiz and meta["control"]["state"] != "cancelled":
+        decision["control"] = {"command": "cancel", "reason": "owner:cancelar"}
+
     for pendiente in vista["resultados"]:
         documento = documento_de_tarea(pendiente["taskId"])
         if documento is None or estado_de(documento) in TERMINALES:
@@ -825,6 +829,7 @@ def decidir(
             "contadores",
             "excepciones",
             "respuestas_aplicadas",
+            "control",
         )
     )
     if parar_raiz:

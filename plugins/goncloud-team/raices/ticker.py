@@ -32,6 +32,7 @@ LLAVES_DE_DECISION = (
     "contadores",
     "excepciones",
     "respuestas_aplicadas",
+    "control",
 )
 
 
