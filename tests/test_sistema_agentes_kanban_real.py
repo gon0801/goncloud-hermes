@@ -18,6 +18,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+# Como tests/test_workflow.py: hermes_cli importa módulos de la raíz del runtime (hermes_yaml).
+sys.path.insert(0, str(Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent"))
 
 kanban_port = importlib.import_module("raices.kanban_port")
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
