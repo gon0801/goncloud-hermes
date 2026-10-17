@@ -355,6 +355,11 @@ def decidir(
                 hecho.get("assignment"), Mapping
             ):
                 continue
+            assignment = hecho["assignment"]
+            if not isinstance(assignment.get("target"), Mapping) or not isinstance(
+                assignment.get("instructionRef"), Mapping
+            ):
+                continue
             if hecho.get("unitId") == unit_id and (
                 relevo is None or hecho.get("relay") == relevo
             ):
