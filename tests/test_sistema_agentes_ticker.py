@@ -618,6 +618,10 @@ class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
 
     def test_un_conflicto_de_aplicar_no_bloquea_el_renotice(self):
         tienda, kanban = self.frescar()
+        # El reloj se fija desde el arranque: la primera notificación marca
+        # noticed_at con la hora de la tienda y el renotice vence a la hora
+        # simulada, no contra el reloj de pared (que caduca el caso).
+        tienda.reloj = lambda: "2026-10-17T10:00:00Z"
         self.vuelta(tienda, kanban)
         borrador = decidir.borrador_excepcion(
             RAIZ,
