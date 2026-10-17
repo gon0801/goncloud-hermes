@@ -86,6 +86,8 @@ class KanbanReal(unittest.TestCase):
             except BaseException as exc:
                 errores.append(exc)
             finally:
+                # La conexión nace en este hilo y sqlite solo deja cerrarla aquí.
+                puerto_a.cerrar()
                 salieron.set()
 
         def corrida_b():
@@ -94,6 +96,7 @@ class KanbanReal(unittest.TestCase):
             except BaseException as exc:
                 errores.append(exc)
             finally:
+                puerto_b.cerrar()
                 salieron.set()
 
         hilo_a = threading.Thread(target=corrida_a)
