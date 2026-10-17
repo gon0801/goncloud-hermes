@@ -310,11 +310,9 @@ class Store:
                     autores.add(_perfil_de(documento))
             excluye = autores
         vigente = decidir.claim_vigente(
-            claims, unit_id, attempt, criterion_id, ahora, excluye
+            claims, root_id, revision, unit_id, attempt, criterion_id, ahora, excluye
         )
         if vigente is None or vigente["outcome"] != "passed":
-            return False
-        if vigente.get("planRevision") != revision:
             return False
         if vigente["verifier"]["role"] == "owner":
             ref = (vigente.get("artifactRef") or {}).get("ref") or ""
@@ -857,6 +855,11 @@ class Store:
                     **claim_nuevo,
                     "schema": "sistema-agentes.evidencia.v1",
                 }
+                if documento.get("rootId") != root_id:
+                    self._rollback()
+                    return Conflicto(
+                        "claim-ajeno", {"evidenceId": documento.get("evidenceId")}
+                    )
                 hallazgos = contrato.validar(documento)
                 if hallazgos:
                     self._rollback()

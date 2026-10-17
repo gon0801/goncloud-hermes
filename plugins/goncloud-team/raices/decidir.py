@@ -160,15 +160,19 @@ def instante(texto: str) -> datetime:
     return datetime(*(int(parte) for parte in enteros), micros, tzinfo=timezone.utc)
 
 
-def claim_vigente(claims, unit_id, attempt, criterion_id, ahora, excluir=None):
-    """El claim más nuevo por orden de llegada que sigue en pie: sin vencer y,
-    si toca, fuera del conjunto de autores. La usa decidir y la guarda de
-    aceptación del store con la misma función, para que no vuelvan a divergir
-    (F10)."""
+def claim_vigente(
+    claims, root_id, revision, unit_id, attempt, criterion_id, ahora, excluir=None
+):
+    """El claim más nuevo por orden de llegada que sigue en pie para esta raíz
+    y esta revisión del plan: suyo, vigente, sin vencer y, si toca, fuera del
+    conjunto de autores. La usa decidir y la guarda de aceptación del store
+    con la misma función, para que no vuelvan a divergir (F10, F14)."""
     momento = instante(ahora)
     for fila in reversed(claims):
         if (
-            fila["unitId"] != unit_id
+            fila.get("rootId") != root_id
+            or fila.get("planRevision") != revision
+            or fila["unitId"] != unit_id
             or fila["attempt"] != attempt
             or fila["criterionId"] != criterion_id
         ):
@@ -414,7 +418,14 @@ def decidir(
 
     def ultimo_claim(unit_id, attempt, criterion_id, excluir=None):
         return claim_vigente(
-            claims, unit_id, attempt, criterion_id, vista["ahora"], excluir
+            claims,
+            root_id,
+            revision,
+            unit_id,
+            attempt,
+            criterion_id,
+            vista["ahora"],
+            excluir,
         )
 
     def falla_el_resultado(pendiente):
@@ -439,6 +450,11 @@ def decidir(
         if any(
             clave not in claim_hecho
             for clave in ("unitId", "attempt", "criterionId", "outcome")
+        ):
+            continue
+        if (
+            claim_hecho.get("rootId") != root_id
+            or claim_hecho.get("planRevision") != revision
         ):
             continue
         artifact_ref = claim_hecho.get("artifactRef")
@@ -612,19 +628,17 @@ def decidir(
             else None
         )
         for criterio in unidad_plan["criteria"]:
-            claim_vigente = ultimo_claim(
+            prueba = ultimo_claim(
                 documento["unitId"],
                 documento["attempt"],
                 criterio["criterionId"],
                 excluir,
             )
-            if claim_vigente is not None and claim_vigente["outcome"] == "failed":
+            if prueba is not None and prueba["outcome"] == "failed":
                 terminar(documento, "failed")
-                fallo_por_resultado[documento["unitId"]] = claim_vigente["artifactRef"][
-                    "ref"
-                ]
+                fallo_por_resultado[documento["unitId"]] = prueba["artifactRef"]["ref"]
                 return
-            if claim_vigente is not None and claim_vigente["outcome"] == "passed":
+            if prueba is not None and prueba["outcome"] == "passed":
                 continue
             abierto = True
             sujeto_base = {
@@ -632,7 +646,7 @@ def decidir(
                 "unitId": documento["unitId"],
                 "attempt": documento["attempt"],
             }
-            if claim_vigente is not None and claim_vigente["outcome"] == "unknown":
+            if prueba is not None and prueba["outcome"] == "unknown":
                 levantar(
                     "EVIDENCIA_INCIERTA",
                     {**sujeto_base, "cause": f"claim:{criterio['criterionId']}"},

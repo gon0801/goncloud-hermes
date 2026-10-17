@@ -829,6 +829,70 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
         self.assertEqual(len(propuesta.decision["claims"]), 1)
         self.assertEqual(propuesta.decision["claims"][0].get("planRevision"), 1)
 
+    def test_un_claim_de_otra_raiz_no_se_siembra(self):
+        ajeno = {
+            "rootId": "root-otra",
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "planRevision": 1,
+            "artifactRef": {"ref": "artifact:check", "digest": DIGEST},
+            "environment": {"host": "host-01", "versions": {}},
+            "role": "verifier",
+            "procedure": "pytest",
+            "outcome": "passed",
+            "at": "2026-10-17T11:00:00Z",
+            "expiresAt": None,
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [ajeno],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(propuesta.decision["claims"], [])
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
+
+    def test_un_claim_de_otra_revision_de_plan_no_se_siembra(self):
+        obsoleto = {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "planRevision": 2,
+            "artifactRef": {"ref": "artifact:check", "digest": DIGEST},
+            "environment": {"host": "host-01", "versions": {}},
+            "role": "verifier",
+            "procedure": "pytest",
+            "outcome": "passed",
+            "at": "2026-10-17T11:00:00Z",
+            "expiresAt": None,
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [obsoleto],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(propuesta.decision["claims"], [])
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
+
     def test_un_hecho_de_claim_con_outcome_fuera_del_enum_se_aisla(self):
         raro = {
             "rootId": RAIZ,

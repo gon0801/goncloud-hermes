@@ -1330,7 +1330,10 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
             ),
             store.Ok,
         )
-        autor = claim("l", 1, "l1", rol="reviewer", principal=["codex"])
+        autor = {
+            **claim("l", 1, "l1", rol="reviewer", principal=["codex"]),
+            "rootId": "root-lenta",
+        }
         recibo = self.tienda.aplicar(
             "root-lenta",
             decision(

@@ -332,6 +332,46 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             prepara=registrar_incidencias(vistas),
         )
 
+    def test_el_claim_de_otra_revision_no_bloquea_la_aceptacion(self):
+        claims = [
+            claim_de_hecho("a", 1, "a1", "passed"),
+            {**claim_de_hecho("a", 1, "a1", "passed"), "planRevision": 2},
+        ]
+        self.dirigir(
+            "revision",
+            [unidad("a", rol="verifier")],
+            {"a": ["accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            hechos_raiz=hechos(("a",), claims=claims),
+        )
+
+    def test_el_claim_de_otra_raiz_no_fabrica_cobertura(self):
+        claims = [
+            {
+                **claim_de_hecho("a", 1, "a1", "passed"),
+                "rootId": "root-otra",
+            }
+        ]
+        informe, tienda = self.dirigir(
+            "ajena",
+            [unidad("a", rol="verifier")],
+            {"a": ["reported"]},
+            carga_aprobada,
+            politica_dueno,
+            hechos_raiz=hechos(("a",), claims=claims),
+            hasta_done=False,
+            ademas=lambda tienda: all(
+                c["rootId"] == RAIZ
+                for c in tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))[
+                    "evidencia"
+                ]
+            ),
+        )
+        self.assertEqual(informe.conflictos, ())
+        vista = tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))
+        self.assertEqual(vista["evidencia"], [])
+
     def test_la_evidencia_incierta_concilia_y_la_guarda_no_objeta(self):
         claims = [claim_de_hecho("a", 1, "a1", "unknown")]
         informe, tienda = self.dirigir(
