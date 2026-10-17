@@ -869,7 +869,7 @@ class Store:
                         borrador["subject"].get("unitId"),
                         borrador["type"],
                         _a_json(borrador["subject"]),
-                        _a_json(borrador["options"]),
+                        _a_json(documento_excepcion["options"]),
                         _a_json(borrador["evidenceRef"])
                         if borrador.get("evidenceRef")
                         else None,
