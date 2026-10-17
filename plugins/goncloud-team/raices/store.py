@@ -896,35 +896,43 @@ class Store:
     def iniciar_efecto(
         self, root_id: str, effect_id: str, start_id: str, expected_epoch: int
     ) -> object:
-        fila = self._una_fila(
-            "SELECT state, start_id, started_epoch FROM efectos"
-            " WHERE root_id = ? AND effect_id = ?",
-            (root_id, effect_id),
-        )
-        if fila is None:
-            return Conflicto("effect-unknown", {"effectId": effect_id})
-        if fila["state"] != "prepared":
-            if fila["start_id"] == start_id:
-                return Ok(
-                    ReciboEfecto(
-                        effect_id,
-                        fila["state"],
-                        fila["start_id"],
-                        fila["started_epoch"],
-                    ),
-                    True,
-                )
-            return Conflicto("effect-refused", {"state": fila["state"]})
-        vigente = self._una_fila(
-            "SELECT epoch, state FROM controles WHERE root_id = ?"
-            " ORDER BY epoch DESC LIMIT 1",
-            (root_id,),
-        )
-        if expected_epoch != vigente["epoch"]:
-            return Conflicto("stale-control-epoch", {"actual": vigente["epoch"]})
-        ahora = self.reloj()
         self._begin()
         try:
+            fila = self._una_fila(
+                "SELECT state, start_id, started_epoch FROM efectos"
+                " WHERE root_id = ? AND effect_id = ?",
+                (root_id, effect_id),
+            )
+            if fila is None:
+                self._rollback()
+                return Conflicto("effect-unknown", {"effectId": effect_id})
+            if fila["state"] != "prepared":
+                if fila["start_id"] == start_id:
+                    recibo = Ok(
+                        ReciboEfecto(
+                            effect_id,
+                            fila["state"],
+                            fila["start_id"],
+                            fila["started_epoch"],
+                        ),
+                        True,
+                    )
+                    self._rollback()
+                    return recibo
+                self._rollback()
+                return Conflicto("effect-refused", {"state": fila["state"]})
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente["state"] in ("paused", "cancelled"):
+                self._rollback()
+                return Conflicto("root-not-active", {"state": vigente["state"]})
+            if expected_epoch != vigente["epoch"]:
+                self._rollback()
+                return Conflicto("stale-control-epoch", {"actual": vigente["epoch"]})
+            ahora = self.reloj()
             self._conexion.execute(
                 "UPDATE efectos SET state = 'started', start_id = ?,"
                 " started_epoch = ?, updated_at = ?"
