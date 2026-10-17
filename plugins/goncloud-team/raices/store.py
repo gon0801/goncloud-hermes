@@ -1111,6 +1111,14 @@ class Store:
                 if previo["result_digest"] != digest:
                     return Conflicto("operation-conflict")
                 return Ok(True, True)
+            fila_intento = self._una_fila(
+                "SELECT state FROM intentos"
+                " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+                (documento["rootId"], documento["unitId"], documento["attempt"]),
+            )
+            if fila_intento is None:
+                self._rollback()
+                return Conflicto("intento-desconocido", {"unitId": documento["unitId"]})
             self._conexion.execute(
                 "INSERT INTO resultados VALUES (?,?,?,?,?,?,?)",
                 (
@@ -1123,12 +1131,18 @@ class Store:
                     ahora,
                 ),
             )
-            self._conexion.execute(
+            cambio = self._conexion.execute(
                 "UPDATE intentos SET state = 'reported', updated_at = ?"
                 " WHERE root_id = ? AND unit_id = ? AND attempt = ?"
                 " AND state = 'running'",
                 (ahora, documento["rootId"], documento["unitId"], documento["attempt"]),
             )
+            if cambio.rowcount != 1:
+                self._rollback()
+                return Conflicto(
+                    "transition-refused",
+                    {"state": fila_intento["state"], "nuevo": "reported"},
+                )
             self._commit()
         except Exception:
             self._rollback()
@@ -1184,14 +1198,18 @@ class Store:
             raise
         return Ok(True)
 
-    def notificar(self, root_id, exception_ids) -> Ok:
+    def notificar(self, root_id, exception_ids) -> object:
         self._begin()
         try:
             for exception_id in exception_ids:
-                self._conexion.execute(
-                    "UPDATE excepciones SET noticed_at = ? WHERE exception_id = ?",
-                    (self.reloj(), exception_id),
+                cambio = self._conexion.execute(
+                    "UPDATE excepciones SET noticed_at = ?"
+                    " WHERE exception_id = ? AND root_id = ?",
+                    (self.reloj(), exception_id, root_id),
                 )
+                if cambio.rowcount != 1:
+                    self._rollback()
+                    return Conflicto("exception-unknown", {"exceptionId": exception_id})
             self._commit()
         except Exception:
             self._rollback()
