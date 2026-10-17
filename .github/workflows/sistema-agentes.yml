@@ -1,0 +1,25 @@
+name: sistema-agentes
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  espejo-de-g:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Pruebas del espejo, el contrato, derivar y el recorrido de ensayos
+        run: python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py" -v
+      - name: El espejo coincide byte a byte con G en el commit fijado
+        run: |
+          COMMIT=$(python3 -c "import json; print(json.load(open('shared/sistema-agentes/pin.json'))['commit'])")
+          python3 scripts/verificar_pin_g.py --fuente "https://raw.githubusercontent.com/gon0801/goncloud-openclaw/${COMMIT}/"
