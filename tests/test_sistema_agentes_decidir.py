@@ -349,6 +349,7 @@ class I12Politica(unittest.TestCase):
                 "contadores",
                 "excepciones",
                 "respuestas_aplicadas",
+                "control",
             },
         )
 
@@ -635,6 +636,84 @@ class RespuestasSobreEfectos(unittest.TestCase):
             [{"counter": "cerradas:a", "expected": 0}],
         )
         self.assertEqual(propuesta.decision["respuestas_aplicadas"], ["e1"])
+
+
+class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
+    """F8: decidir es total con hechos mal formados; el hecho inválido se
+    aísla y la vuelta sigue."""
+
+    def test_una_asignacion_sin_target_en_la_unidad_no_reventa(self):
+        sin_target = {
+            "instructionRef": {"ref": "artifact:a-1", "digest": DIGEST},
+            "resultContract": "review.v1",
+            "continuation": {"kind": "requester"},
+        }
+        documento = intento("a", 1, "reported")
+        documento["assignment"] = sin_target
+        propuesta = decidir.decidir(vista([unidad("a")], intentos=[documento]))
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
+
+    def test_un_hecho_de_claim_sin_artifact_ref_se_aisla(self):
+        malo = {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "outcome": "passed",
+            "expiresAt": None,
+        }
+        bueno = {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "planRevision": 1,
+            "artifactRef": {"ref": "artifact:check", "digest": DIGEST},
+            "environment": {"host": "host-01", "versions": {}},
+            "role": "verifier",
+            "procedure": "pytest",
+            "outcome": "passed",
+            "at": "2026-10-17T11:00:00Z",
+            "expiresAt": None,
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [malo, bueno],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(len(propuesta.decision["claims"]), 1)
+        self.assertIsNotNone(propuesta.decision["claims"][0].get("evidenceId"))
+
+    def test_un_hecho_de_asignacion_sin_target_no_reventa_al_ligar(self):
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {
+                    "unitId": "a",
+                    "assignment": {"resultContract": "review.v1"},
+                    "relay": False,
+                }
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        propuesta = decidir.decidir(vista([unidad("a")], hechos=hechos))
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(propuesta.necesidades, [])
+        self.assertEqual(len(propuesta.decision["bindings"]), 1)
+        self.assertEqual(
+            propuesta.decision["bindings"][0]["assignment"],
+            {"resultContract": "review.v1"},
+        )
 
 
 class I01Borradores(unittest.TestCase):

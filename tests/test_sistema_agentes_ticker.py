@@ -481,6 +481,134 @@ class ElCancelYLaBandeja(Escenario):
         self.assertEqual(tienda.intenciones_pendientes(), [])
 
 
+class ElCierreRojoYElCancelDelDueno(Escenario):
+    """B15: el cancelar del dueño sobre CIERRE_ROJO cancela la raíz."""
+
+    @staticmethod
+    def meta_de_cierre():
+        meta = meta_de()
+        meta["plan"]["units"] = [
+            {
+                "unitId": "a",
+                "title": "Unidad a",
+                "dependsOn": [],
+                "criteria": [
+                    {"criterionId": "a1", "text": "a1", "verifier": "verifier"}
+                ],
+                "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"},
+            },
+            {
+                "unitId": "b",
+                "title": "Unidad b",
+                "dependsOn": ["a"],
+                "criteria": [
+                    {"criterionId": "b1", "text": "b1", "verifier": "verifier"}
+                ],
+                "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"},
+            },
+        ]
+        return meta
+
+    def frescar_cierre(self):
+        self.escenarios += 1
+        tienda = store.Store(self.directorio.name + f"/{self.escenarios}.db")
+        self.addCleanup(tienda.cerrar)
+        tienda.abrir_raiz(self.meta_de_cierre())
+        return tienda, DobleKanban()
+
+    def test_cancelar_sobre_cierre_rojo_cancela_la_raiz(self):
+        tienda, kanban = self.frescar_cierre()
+        self.vuelta(tienda, kanban)
+        kanban.crear_corriendo(clave_de_tarjeta(RAIZ, "a", 1))
+        self.vuelta(tienda, kanban)
+        bloqueante = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {
+                "kind": "attempt",
+                "unitId": "a",
+                "attempt": 1,
+                "cause": "incident:x",
+            },
+            ["seguir", "omitir", "cancelar"],
+        )
+        pregunta = decidir._decision_vacia(1, 1)
+        pregunta["excepciones"] = [bloqueante]
+        self.assertIsInstance(tienda.aplicar(RAIZ, pregunta, "dec-bloq"), store.Ok)
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, bloqueante["exceptionId"], "omitir", ["david"]
+            ),
+            store.Ok,
+        )
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        cierre = [
+            e
+            for e in vista["excepciones"]
+            if e["type"] == "CIERRE_ROJO" and e["subject"]["kind"] == "root"
+        ]
+        self.assertEqual(len(cierre), 1)
+        self.assertIsNone(cierre[0]["appliedBy"])
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, cierre[0]["exceptionId"], "cancelar", ["david"]
+            ),
+            store.Ok,
+        )
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        cierre = [
+            e
+            for e in vista["excepciones"]
+            if e["type"] == "CIERRE_ROJO" and e["subject"]["kind"] == "root"
+        ]
+        self.assertIsNotNone(cierre[0]["appliedBy"])
+        self.assertEqual(tienda.estado_de_control(RAIZ), "cancelled")
+        tranquilidad = self.vuelta(tienda, kanban)
+        self.assertEqual(tranquilidad.aplicadas, 0)
+        self.assertEqual(tranquilidad.tarjetas_creadas, 0)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        self.assertEqual(
+            [e["type"] for e in vista["excepciones"]].count("CIERRE_ROJO"), 1
+        )
+        self.assertEqual(tienda.estado_de_control(RAIZ), "cancelled")
+
+
+class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
+    """F8: un hecho inválido se aísla; la vuelta entera no cae."""
+
+    def test_la_vuelta_sobrevive_a_un_hecho_mal_formado(self):
+        tienda, kanban = self.frescar()
+        hechos = hechos_de_raiz()
+        hechos["claims"].append(
+            {
+                "rootId": RAIZ,
+                "unitId": "a",
+                "attempt": 1,
+                "criterionId": "a1",
+                "outcome": "passed",
+                "expiresAt": None,
+            }
+        )
+        hechos["asignaciones"].insert(
+            0,
+            {
+                "unitId": "a",
+                "assignment": {"resultContract": "review.v1"},
+                "relay": False,
+            },
+        )
+        informe = self.vuelta(tienda, kanban, hechos)
+        self.assertEqual(informe.aplicadas, 1)
+        self.assertEqual(
+            kanban.creaciones,
+            [clave_de_tarjeta(RAIZ, "a", 1), clave_de_tarjeta(RAIZ, "b", 1)],
+        )
+        otra = self.vuelta(tienda, kanban, hechos)
+        self.assertEqual(otra.tarjetas_creadas, 0)
+
+
 class I12PoliticaDelTicker(unittest.TestCase):
     def test_la_politica_sale_de_la_copia_fijada_con_la_decision_de_david(self):
         politicas = ticker.cargar_politicas()

@@ -6,6 +6,7 @@ durable se fijan aquí contra la semántica de control.v1 del contrato.
 """
 
 import importlib
+import json
 import sys
 import tempfile
 import unittest
@@ -138,6 +139,7 @@ def decision(bindings=(), outcomes=(), claims=(), contadores=(), efectos=()):
         "contadores": list(contadores),
         "excepciones": [],
         "respuestas_aplicadas": [],
+        "control": {},
     }
 
 
@@ -1098,6 +1100,331 @@ class LaVerificacionTardia(AlmacenDePrueba):
         vista = self.tienda.leer_vista("root-ci", EntradasDelMundo.hechos_nulos())
         self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
         self.assertEqual(vista["resultados"], [])
+
+
+class ElCancelDelDuenoDesdeLaPropuesta(AlmacenDePrueba):
+    """B15: el store aplica el cancel que trae la propuesta en la MISMA
+    transacción que marca la respuesta aplicada, como un control normal."""
+
+    def _intento_con_tarjeta(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.assertIsInstance(self.tienda.reclamar_intencion(RAIZ, "a", 1), store.Ok)
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "t-1"), store.Ok
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+
+    def test_el_cancel_de_la_propuesta_cancela_como_un_control_normal(self):
+        self._intento_con_tarjeta()
+        dec = decidir._decision_vacia(1, 1)
+        dec["control"] = {"command": "cancel", "reason": "owner:cancelar"}
+        recibo = self.tienda.aplicar(RAIZ, dec, "dec-cancel-1")
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+        self.assertEqual(self.tienda.estado_de_control(RAIZ), "cancelled")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["cancelled"])
+        fila = self.tienda._una_fila(
+            "SELECT outcome_ref, card_id FROM intentos"
+            " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+            (RAIZ, "a", 1),
+        )
+        self.assertEqual(fila["outcome_ref"], "control:dec:dec-cancel-1")
+        bloqueo = self.tienda._una_fila(
+            "SELECT motivo FROM bloqueos WHERE root_id = ? AND card_id = ?",
+            (RAIZ, "t-1"),
+        )
+        self.assertEqual(bloqueo["motivo"], "cancel:dec:dec-cancel-1")
+        recibo_guardado = self.tienda._una_fila(
+            "SELECT receipt_json FROM comandos_de_control"
+            " WHERE root_id = ? AND command_id = ?",
+            (RAIZ, "dec:dec-cancel-1"),
+        )
+        self.assertIsNotNone(recibo_guardado)
+        detalle = json.loads(recibo_guardado["receipt_json"])
+        self.assertEqual(detalle["state"], "cancelled")
+        self.assertEqual(detalle["controlEpoch"], 2)
+        self.assertEqual(self.tienda.intenciones_pendientes(), [])
+        escritores = self.tienda._conexion.execute(
+            "SELECT COUNT(*) AS n FROM escritores"
+        ).fetchone()["n"]
+        self.assertEqual(escritores, 0)
+
+    def test_el_replay_de_la_propuesta_no_repite_el_cancel(self):
+        dec = decidir._decision_vacia(1, 1)
+        dec["control"] = {"command": "cancel", "reason": "owner:cancelar"}
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-cancel-1"), store.Ok)
+        otra_vez = self.tienda.aplicar(RAIZ, dec, "dec-cancel-1")
+        self.assertTrue(otra_vez.replayed)
+        tope = self.tienda._una_fila(
+            "SELECT MAX(epoch) AS epoch FROM controles WHERE root_id = ?", (RAIZ,)
+        )
+        self.assertEqual(tope["epoch"], 2)
+
+
+class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
+    """F7: la guarda de aceptación del store aplica revisorExcluyeAutores."""
+
+    def _intento_reportado(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_un_claim_de_revisor_autor_del_intento_no_acepta(self):
+        self._intento_reportado()
+        autor = claim("a", 1, "a1", rol="reviewer", principal=["codex"])
+        negada = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[autor],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-autor",
+        )
+        self.assertEqual(negada.codigo, "criteria-unproven")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(vista["unidades"][0]["state"], "reported")
+
+    def test_un_claim_de_revisor_ajeno_acepta(self):
+        self._intento_reportado()
+        ajeno = claim("a", 1, "a1", rol="reviewer", principal=["revis-1"])
+        recibo = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[ajeno],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-ajeno",
+        )
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+
+    def test_un_claim_de_verificador_autor_sigue_aceptando(self):
+        self._intento_reportado()
+        verificador = claim("a", 1, "a1", rol="verifier", principal=["codex"])
+        recibo = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[verificador],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-verif",
+        )
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+
+    def test_con_la_politica_apagada_el_revisor_autor_acepta(self):
+        tendera = politica_regla4(revisorExcluyeAutores=False)
+        self.tienda.abrir_raiz(
+            {**meta_de([unidad("l", "l1")]), "rootId": "root-lenta"},
+            politicas={"quality-kit.regla4": tendera},
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                "root-lenta",
+                decision(bindings=[binding("l", repo="owner-01/repo-l")]),
+                "dec-l0",
+            ),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento("root-lenta", "l", 1, "admitted", "t-l")
+        self.tienda.transicionar_intento("root-lenta", "l", 1, "running", "t-l")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": "root-lenta",
+                    "unitId": "l",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-l"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        autor = claim("l", 1, "l1", rol="reviewer", principal=["codex"])
+        recibo = self.tienda.aplicar(
+            "root-lenta",
+            decision(
+                claims=[autor],
+                outcomes=[{"unitId": "l", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-l1",
+        )
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+
+
+class LosUpdatesExigenSuFila(AlmacenDePrueba):
+    """F3: reportar_resultado y notificar comprueban el rowcount."""
+
+    def test_reportar_un_intento_que_no_corre_es_conflicto_y_no_guarda(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        temprano = self.tienda.reportar_resultado(
+            {
+                "rootId": RAIZ,
+                "unitId": "a",
+                "attempt": 1,
+                "resultContract": "ready.v1",
+                "resultDigest": DIGEST,
+                "reportedAt": "2026-10-17T11:00:00Z",
+                "reportedBy": {"kind": "native", "taskId": "t-1"},
+                "payload": {"evidenceRef": REF},
+            }
+        )
+        self.assertIsInstance(temprano, store.Conflicto)
+        self.assertEqual(temprano.codigo, "transition-refused")
+        guardado = self.tienda._una_fila(
+            "SELECT COUNT(*) AS n FROM resultados WHERE root_id = ?", (RAIZ,)
+        )
+        self.assertEqual(guardado["n"], 0)
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_reportar_un_intento_desconocido_es_conflicto(self):
+        fantasma = self.tienda.reportar_resultado(
+            {
+                "rootId": RAIZ,
+                "unitId": "nadie",
+                "attempt": 1,
+                "resultContract": "ready.v1",
+                "resultDigest": DIGEST,
+                "reportedAt": "2026-10-17T11:00:00Z",
+                "reportedBy": {"kind": "native", "taskId": "t-x"},
+                "payload": {"evidenceRef": REF},
+            }
+        )
+        self.assertEqual(fantasma.codigo, "intento-desconocido")
+
+    def test_notificar_una_excepcion_desconocida_es_conflicto(self):
+        respuesta = self.tienda.notificar(RAIZ, ["exception-fantasma"])
+        self.assertEqual(respuesta.codigo, "exception-unknown")
+
+    def test_notificar_en_lote_es_atomico_y_respeta_la_raiz(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        lote = self.tienda.notificar(
+            RAIZ, [borrador["exceptionId"], "exception-fantasma"]
+        )
+        self.assertEqual(lote.codigo, "exception-unknown")
+        fila = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertIsNone(fila["noticed_at"])
+        ajena = self.tienda.notificar("root-ajeno", [borrador["exceptionId"]])
+        self.assertEqual(ajena.codigo, "exception-unknown")
+        buena = self.tienda.notificar(RAIZ, [borrador["exceptionId"]])
+        self.assertIsInstance(buena, store.Ok)
+        fila = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertIsNotNone(fila["noticed_at"])
+
+
+class LaEvidenciaSeLeeEnOrdenDeLlegada(AlmacenDePrueba):
+    """cr-4301779626: con reloj de un segundo, el empate de created_at se
+    rompe por orden de llegada (rowid), no por hash del evidence_id."""
+
+    def _claims_empatados(self):
+        incierto = claim("a", 1, "a1", "unknown")
+        incierto["evidenceId"] = "evid-z-incierto"
+        aprobado = claim("a", 1, "a1", "passed")
+        aprobado["evidenceId"] = "evid-a-aprobado"
+        return incierto, aprobado
+
+    def test_el_ultimo_claim_por_llegada_gana_en_la_vista_y_en_la_guarda(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.assertIsInstance(self.tienda.reclamar_intencion(RAIZ, "a", 1), store.Ok)
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "t-1"), store.Ok
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        incierto, aprobado = self._claims_empatados()
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(claims=[incierto, aprobado]), "dec-empate"
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        orden = [e["evidenceId"] for e in vista["evidencia"]]
+        self.assertEqual(orden, ["evid-z-incierto", "evid-a-aprobado"])
+        propuesta = decidir.decidir(vista)
+        tipos = [e["type"] for e in propuesta.decision["excepciones"]]
+        self.assertNotIn("EVIDENCIA_INCIERTA", tipos)
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+        recibo = self.tienda.aplicar(RAIZ, propuesta.decision, "dec-cierre")
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
 
 
 if __name__ == "__main__":
