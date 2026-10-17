@@ -313,8 +313,8 @@ def avisar_capacidad_incierta(ruta_estado, causa, ahora, enviar) -> dict:
     """El aviso de ruta cerrada (H4a): una vez por cambio de causa. El
     checkpoint es el estado en disco y solo avanza con un messageId entero
     positivo, así la vuelta siguiente reintenta hasta que el aviso salga.
-    No crea directorios: en producción %HERMES_HOME%/raices ya existe, y un
-    home sin raices/ no es asunto de esta pasada."""
+    Al escribir crea el directorio padre si falta: un home nuevo sin
+    raices/ no repite el aviso en cada vuelta. Si algo falla, no lanza."""
     try:
         estado = json.loads(Path(ruta_estado).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -340,6 +340,7 @@ def avisar_capacidad_incierta(ruta_estado, causa, ahora, enviar) -> dict:
     }
     try:
         ruta = Path(ruta_estado)
+        ruta.parent.mkdir(parents=True, exist_ok=True)
         temporal = ruta.with_name(f".{ruta.name}.{os.getpid()}.tmp")
         temporal.write_text(
             json.dumps(documento, ensure_ascii=False, sort_keys=True, indent=1),
