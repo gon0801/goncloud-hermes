@@ -5,6 +5,7 @@ antes de cada efecto. La autoridad admite y H niega no ejecuta nada."""
 
 import importlib
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -186,15 +187,27 @@ class I07Contrato(unittest.TestCase):
                 self.assertEqual(negar(caso["efecto"]), esperado)
 
 
-class I07SinPermisos(unittest.TestCase):
+class TiendaCerrada:
+    """Sonda del arreglo de Windows (WinError 32): al terminar la prueba, la
+    conexión del Store quedó cerrada antes de que se borre el temporal. El
+    chequeo se registra primero para que corra al final (LIFO), después del
+    cierre de la tienda y del borrado del directorio."""
+
+    def _verificar_cierre(self):
+        with self.assertRaises(sqlite3.ProgrammingError):
+            self.tienda._conexion.execute("SELECT 1")
+
+
+class I07SinPermisos(TiendaCerrada, unittest.TestCase):
     """Sin permisos de H (None, el valor por omisión) el gate falla cerrado:
     acción, perfil y comando se niegan con la razón propia sin-permisos."""
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta)
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
     def test_none_niega_todo_con_razon_propia(self):
@@ -238,17 +251,18 @@ class I07SinPermisos(unittest.TestCase):
         self.assertIn("permiso-h:sin-permisos", causas)
 
 
-class I07Efecto(unittest.TestCase):
+class I07Efecto(TiendaCerrada, unittest.TestCase):
     """Punto 3: antes de cada efecto en iniciar_efecto."""
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(
             self.ruta,
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
     def test_la_autoridad_admite_y_h_niega_el_efecto_no_corre(self):
@@ -318,13 +332,14 @@ class I07Efecto(unittest.TestCase):
         return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
 
 
-class I07Arranque(unittest.TestCase):
+class I07Arranque(TiendaCerrada, unittest.TestCase):
     """Punto 1: al arrancar una unidad, en el despacho del ticker."""
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
         self.tienda = store.Store(Path(self.directorio.name) / "db.sqlite")
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1"), unidad("b", "b1")]))
         self.kanban = kanban_port.DobleKanban()
         self.hechos = {
@@ -363,6 +378,7 @@ class I07Arranque(unittest.TestCase):
 
     def test_el_contrato_niega_el_arranque_por_modo(self):
         tienda = store.Store(Path(self.directorio.name) / "modo.db")
+        self.addCleanup(tienda.cerrar)
         meta = meta_de([unidad("p", "p1", modo="publish")])
         meta["rootId"] = "root-modo"
         tienda.abrir_raiz(meta)
