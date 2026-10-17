@@ -160,6 +160,31 @@ def instante(texto: str) -> datetime:
     return datetime(*(int(parte) for parte in enteros), micros, tzinfo=timezone.utc)
 
 
+def claim_vigente(claims, unit_id, attempt, criterion_id, ahora, excluir=None):
+    """El claim más nuevo por orden de llegada que sigue en pie: sin vencer y,
+    si toca, fuera del conjunto de autores. La usa decidir y la guarda de
+    aceptación del store con la misma función, para que no vuelvan a divergir
+    (F10)."""
+    momento = instante(ahora)
+    for fila in reversed(claims):
+        if (
+            fila["unitId"] != unit_id
+            or fila["attempt"] != attempt
+            or fila["criterionId"] != criterion_id
+        ):
+            continue
+        if fila["expiresAt"] is not None and instante(fila["expiresAt"]) <= momento:
+            continue
+        if (
+            excluir
+            and fila["verifier"]["role"] == "reviewer"
+            and excluir.intersection(fila["verifier"]["principal"])
+        ):
+            continue
+        return fila
+    return None
+
+
 def borrador_excepcion(
     root_id: str,
     tipo: str,
@@ -388,23 +413,9 @@ def decidir(
         claims.append(claim_nuevo)
 
     def ultimo_claim(unit_id, attempt, criterion_id, excluir=None):
-        for fila in reversed(claims):
-            if (
-                fila["unitId"] != unit_id
-                or fila["attempt"] != attempt
-                or fila["criterionId"] != criterion_id
-            ):
-                continue
-            if fila["expiresAt"] is not None and instante(fila["expiresAt"]) <= ahora:
-                continue
-            if (
-                excluir
-                and fila["verifier"]["role"] == "reviewer"
-                and excluir.intersection(fila["verifier"]["principal"])
-            ):
-                continue
-            return fila
-        return None
+        return claim_vigente(
+            claims, unit_id, attempt, criterion_id, vista["ahora"], excluir
+        )
 
     def falla_el_resultado(pendiente):
         return pendiente["kind"] != "produced" or (

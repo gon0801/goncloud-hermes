@@ -25,7 +25,6 @@ decidir = importlib.import_module("raices.decidir")
 RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
 digesto = decidir.digesto
-instante = decidir.instante
 
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS raices (
@@ -303,35 +302,19 @@ class Store:
         if politica.get("revisorExcluyeAutores"):
             for fila in self._conexion.execute(
                 "SELECT assignment_json FROM intentos"
-                " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
-                (root_id, unit_id, attempt),
+                " WHERE root_id = ? AND unit_id = ?",
+                (root_id, unit_id),
             ):
                 documento = json.loads(fila["assignment_json"])
                 if isinstance(documento, dict):
                     autores.add(_perfil_de(documento))
             excluye = autores
-        vigente = None
-        for c in reversed(claims):
-            if (
-                c["unitId"] == unit_id
-                and c["attempt"] == attempt
-                and c["criterionId"] == criterion_id
-            ):
-                if (
-                    excluye
-                    and c["verifier"]["role"] == "reviewer"
-                    and autores.intersection(c["verifier"]["principal"])
-                ):
-                    continue
-                vigente = c
-                break
+        vigente = decidir.claim_vigente(
+            claims, unit_id, attempt, criterion_id, ahora, excluye
+        )
         if vigente is None or vigente["outcome"] != "passed":
             return False
         if vigente.get("planRevision") != revision:
-            return False
-        if vigente["expiresAt"] is not None and instante(
-            vigente["expiresAt"]
-        ) <= instante(ahora):
             return False
         if vigente["verifier"]["role"] == "owner":
             ref = (vigente.get("artifactRef") or {}).get("ref") or ""
