@@ -2,12 +2,15 @@
 """El instalador y la reversa de la ruta de raíces de Hermes (SUA-07 H4b3).
 
 --aplicar deja el ticker andando en el perfil DEFAULT: el envoltorio que
-delega en raices/cron_ticker.py del plugin en profiles/default/scripts/ y
-el cron "ticker-raices" cada minuto, sin agente y con entrega local.
-Default es obligatorio: el scheduler de Hermes le pone HERMES_HOME = home
-del PERFIL al cron de script y gateway_state.json (la puerta de H4a) vive
-en la raíz; en cualquier otro perfil la ruta queda cerrada por
-par-incierto.
+delega en raices/cron_ticker.py del plugin en <home>/scripts/ticker-raices.py
+y el cron "ticker-raices" cada minuto, sin agente y con entrega local. En
+Hermes el perfil default ES la raíz del home (medido en la Gon-pc:
+profiles/default no existe y los scripts de sus crones viven en
+%HERMES_HOME%\\scripts, junto a backup-claw.sh; el help de `hermes cron
+create` dice "--script Path to a script under ~/.hermes/scripts/"), y el
+cron sin -p corre con el HERMES_HOME de esa raíz, donde gateway_state.json
+(vivo la puerta de H4a) espera estar. El instalador nunca crea
+profiles/default ni toca scripts ajenos de scripts/.
 
 --revertir quita SOLO lo instalado aquí (cron, envoltorio, archivo de
 estado) y deja la ruta cerrada: sistema-agentes.db, kanban.db,
@@ -33,8 +36,7 @@ import sys
 from pathlib import Path
 
 NOMBRE_DEL_CRON = "ticker-raices"
-PERFIL_DEFAULT = "default"
-ENVOLTORIO = f"profiles/{PERFIL_DEFAULT}/scripts/ticker-raices.py"
+ENVOLTORIO = "scripts/ticker-raices.py"
 RUTA_DE_ESTADO = "raices/instalacion.json"
 PLANTILLA_DE_PERMISOS = {
     "acciones": [],
@@ -43,8 +45,8 @@ PLANTILLA_DE_PERMISOS = {
     "cobertura": {},
 }
 
-ENVOLTORIO_TEXTO = f'''#!/usr/bin/env python3
-"""El ticker de raíces como script del cron del perfil {PERFIL_DEFAULT}.
+ENVOLTORIO_TEXTO = '''#!/usr/bin/env python3
+"""El ticker de raíces como script del cron del perfil default.
 
 Lo escribe scripts/instalar_raices.py; delega en el cron_ticker del
 plugin goncloud-team. La ruta del plugin queda fija aquí abajo porque el
@@ -52,7 +54,7 @@ instalador corre desde el checkout que la tiene.
 """
 import sys
 
-PLUGIN = {{!r}}
+PLUGIN = {plugin!r}
 if PLUGIN not in sys.path:
     sys.path.insert(0, PLUGIN)
 
@@ -85,7 +87,10 @@ def _crons(corredor):
 def _escribir_envoltorio(home: Path, plugin: Path) -> None:
     destino = home / ENVOLTORIO
     destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(ENVOLTORIO_TEXTO.format(str(plugin.resolve())), encoding="utf-8")
+    destino.write_text(
+        ENVOLTORIO_TEXTO.format(plugin=str(plugin.resolve())),
+        encoding="utf-8",
+    )
 
 
 def _registrar_estado(home: Path, con_plantilla: bool) -> None:
@@ -179,7 +184,7 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
     _escribir_envoltorio(home, plugin)
     _registrar_estado(home, con_plantilla)
     print(
-        f"instalar-raices: cron {NOMBRE_DEL_CRON} en {PERFIL_DEFAULT}, envoltorio en {ENVOLTORIO}"
+        f"instalar-raices: cron {NOMBRE_DEL_CRON} en default, envoltorio en {ENVOLTORIO}"
     )
     return 0
 

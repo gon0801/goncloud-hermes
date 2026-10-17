@@ -80,6 +80,10 @@ class InstaladorDeRaices(unittest.TestCase):
         (self.home / "kanban.db").write_bytes(b"kanban de datos")
         (self.home / "raices" / "proyecciones").mkdir()
         (self.home / "raices" / "proyecciones" / "root.json").write_text("{}", "utf-8")
+        (self.home / "scripts").mkdir(exist_ok=True)
+        (self.home / "scripts" / "backup-claw.sh").write_text(
+            "#!/bin/sh\nexit 0\n", encoding="utf-8"
+        )
 
     def test_el_check_no_escribe_nada(self):
         self.crear_datos_del_operador()
@@ -114,19 +118,24 @@ class InstaladorDeRaices(unittest.TestCase):
                 "--name",
                 "ticker-raices",
                 "--script",
-                "profiles/default/scripts/ticker-raices.py",
+                "scripts/ticker-raices.py",
                 "--no-agent",
                 "--deliver",
                 "local",
             ],
         )
-        envoltorio = self.home / "profiles/default/scripts/ticker-raices.py"
+        envoltorio = self.home / "scripts" / "ticker-raices.py"
         self.assertTrue(envoltorio.exists())
         self.assertIn("cron_ticker", envoltorio.read_text(encoding="utf-8"))
+        self.assertFalse(
+            (self.home / "profiles").exists(),
+            "default es la raíz del home: nunca se crea profiles/default",
+        )
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
         self.assertEqual(estado["cron"], "ticker-raices")
+        self.assertEqual(estado["envoltorio"], "scripts/ticker-raices.py")
 
     def test_doble_aplicar_no_duplica_el_cron(self):
         self.assertEqual(self.aplicar(), 0)
@@ -172,8 +181,11 @@ class InstaladorDeRaices(unittest.TestCase):
             if llamada[:2] == ["cron", "remove"]
         ]
         self.assertEqual(removes, [["cron", "remove", "ticker-raices"]])
-        self.assertFalse(
-            (self.home / "profiles/default/scripts/ticker-raices.py").exists()
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertEqual(
+            (self.home / "scripts" / "backup-claw.sh").read_text(encoding="utf-8"),
+            "#!/bin/sh\nexit 0\n",
+            "un script ajeno de scripts/ nunca se toca",
         )
         self.assertFalse((self.home / "raices" / "instalacion.json").exists())
         self.assertTrue((self.home / "sistema-agentes.db").exists())
