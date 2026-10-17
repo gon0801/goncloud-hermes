@@ -12,6 +12,7 @@ import importlib.util
 import sys
 import tempfile
 import threading
+from contextlib import closing
 import time
 import unittest
 from pathlib import Path
@@ -49,7 +50,7 @@ class KanbanReal(unittest.TestCase):
         return puerto
 
     def filas_por_clave(self, clave):
-        with self.connect(self.ruta_db) as conexion:
+        with closing(self.connect(self.ruta_db)) as conexion:
             return conexion.execute(
                 "SELECT * FROM tasks WHERE idempotency_key = ?", (clave,)
             ).fetchall()
@@ -60,7 +61,7 @@ class KanbanReal(unittest.TestCase):
         primera = asegurar_tarjeta(puerto, clave, SPEC)
         self.assertEqual(asegurar_tarjeta(puerto, clave, SPEC).id, primera.id)
         self.assertEqual(puerto.creaciones, [clave])
-        with self.connect(self.ruta_db) as conexion:
+        with closing(self.connect(self.ruta_db)) as conexion:
             self.assertTrue(self.kanban_db.archive_task(conexion, primera.id))
         hallada = asegurar_tarjeta(puerto, clave, SPEC)
         self.assertEqual(hallada.id, primera.id)
@@ -127,7 +128,7 @@ class KanbanReal(unittest.TestCase):
         self.assertEqual(filas[clave_a]["status"], "done")
         self.assertIn("approved", filas[clave_a]["result"])
         self.assertEqual(filas[clave_b]["status"], "blocked")
-        with self.connect(self.ruta_db) as conexion:
+        with closing(self.connect(self.ruta_db)) as conexion:
             vinculo = conexion.execute(
                 "SELECT parent_id FROM task_links WHERE child_id = ?", (tarjeta_b.id,)
             ).fetchone()
