@@ -270,10 +270,16 @@ class CapacidadIncierta(unittest.TestCase):
         informe = self.avisar()
         self.assertEqual(informe, {"avisada": True, "messageId": 7})
 
-    def test_nunca_lanza_cuando_el_directorio_no_existe(self):
+    def test_crea_el_directorio_del_checkpoint_y_avisa_una_sola_vez(self):
         ruta = Path(self.directorio.name) / "no-existe" / "capacidad-incierta.json"
         informe = self.avisar(ruta=ruta)
+        self.assertEqual(informe, {"avisada": True, "messageId": 7})
+        self.assertTrue(ruta.parent.is_dir())
+        estado = json.loads(ruta.read_text(encoding="utf-8"))
+        self.assertEqual(estado["causa"], "version-no-certificada")
+        informe = self.avisar(ruta=ruta)
         self.assertEqual(informe, {"avisada": False})
+        self.assertEqual(len(self.textos), 1)
 
 
 if __name__ == "__main__":
