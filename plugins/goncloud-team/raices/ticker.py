@@ -177,27 +177,22 @@ def _conciliar_uno(tienda, puerto, intento) -> bool:
         _reportar(tienda, intento, tarjeta, ahora)
         return True
     if tarjeta.estado == "bloqueada" and intento["state"] in ("admitted", "running"):
-        tienda.registrar_incidencia(
-            root_id,
-            unit_id,
-            attempt,
-            f"tarjeta:{tarjeta.id}",
-            {"kind": "recovery-transport-failure", "evidenceRef": tarjeta.id},
-        )
+        _transporte_caido(tienda, intento, tarjeta)
         return True
     if tarjeta.estado == "archivada" and intento["state"] in ("admitted", "running"):
-        # Intento muerto: la tarjeta no va a producir resultado. La incidencia
-        # pide el reintento automatico (decidir: recovery-transport-failure);
-        # el reintento abre intento n+1 con su propia tarjeta.
-        tienda.registrar_incidencia(
-            root_id,
-            unit_id,
-            attempt,
-            f"tarjeta:{tarjeta.id}",
-            {"kind": "recovery-transport-failure", "evidenceRef": tarjeta.id},
-        )
+        _transporte_caido(tienda, intento, tarjeta)
         return True
     return False
+
+
+def _transporte_caido(tienda, intento, tarjeta) -> None:
+    tienda.registrar_incidencia(
+        intento["rootId"],
+        intento["unitId"],
+        intento["attempt"],
+        f"tarjeta:{tarjeta.id}",
+        {"kind": "recovery-transport-failure", "evidenceRef": tarjeta.id},
+    )
 
 
 def _reportar(tienda, intento, tarjeta, ahora) -> None:

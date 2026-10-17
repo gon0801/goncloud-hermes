@@ -26,9 +26,6 @@ from .workflow import WorkflowService
 
 
 def _raiz_handler(ctx, funcion):
-    """Handler for the goncloud_root_* tools; raices imports lazily so a
-    broken raices package never blocks the whole plugin load."""
-
     def handle(args: dict, **kwargs) -> str:
         del kwargs
         try:

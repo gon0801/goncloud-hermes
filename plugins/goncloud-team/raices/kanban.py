@@ -157,8 +157,6 @@ class _EscrituraReal:
 
 
 class KanbanHermes:
-    """El KanbanPort de H1 sobre la base viva del kanban."""
-
     def __init__(self, ruta_db):
         self.ruta_db = Path(ruta_db)
         self.creaciones = []
