@@ -607,13 +607,17 @@ class Store:
                 )
             }
             # Guarda de borde: una aceptación exige claims passed por cada criterio
-            # vigente, aunque la propuesta no venga de decidir (I13).
-            claims = list(decision["claims"])
-            for fila in self._conexion.execute(
-                "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY created_at",
-                (root_id,),
-            ):
-                claims.append(json.loads(fila["evidence_json"]))
+            # vigente, aunque la propuesta no venga de decidir (I13). El orden es el
+            # mismo de decidir: evidencia guardada primero y la decisión después,
+            # así gana el claim más nuevo (B13).
+            claims = [
+                json.loads(fila["evidence_json"])
+                for fila in self._conexion.execute(
+                    "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY created_at",
+                    (root_id,),
+                )
+            ]
+            claims.extend(decision["claims"])
             for desenlace in decision["outcomes"]:
                 if desenlace["outcome"] != "accepted":
                     continue
