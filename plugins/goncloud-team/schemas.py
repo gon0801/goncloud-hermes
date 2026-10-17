@@ -388,6 +388,10 @@ ROOT_RESOLVE = {
     "parameters": {
         "type": "object",
         "properties": {
+            "rootId": {
+                "type": "string",
+                "description": "Root the exception belongs to.",
+            },
             "exceptionId": {"type": "string", "description": "Exception id."},
             "optionId": {
                 "type": "string",
@@ -402,6 +406,6 @@ ROOT_RESOLVE = {
                 ),
             },
         },
-        "required": ["exceptionId", "optionId", "by"],
+        "required": ["rootId", "exceptionId", "optionId", "by"],
     },
 }

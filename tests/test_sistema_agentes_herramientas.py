@@ -339,7 +339,12 @@ class Resolucion(Base):
         exception_id = self.preparar_excepcion()
         respuesta = self.llamar(
             "goncloud_root_resolve",
-            {"exceptionId": exception_id, "optionId": "listo", "by": ["david"]},
+            {
+                "rootId": RAIZ,
+                "exceptionId": exception_id,
+                "optionId": "listo",
+                "by": ["david"],
+            },
         )
         self.assertNotIn("error", respuesta)
         snapshot = self.llamar("goncloud_root_read", {"rootId": RAIZ})
@@ -347,11 +352,26 @@ class Resolucion(Base):
         self.assertEqual(guerdada["response"]["optionId"], "listo")
         self.assertEqual(guerdada["response"]["by"], ["david"])
 
+    def test_sin_root_id_no_responde(self):
+        exception_id = self.preparar_excepcion()
+        respuesta = self.llamar(
+            "goncloud_root_resolve",
+            {"exceptionId": exception_id, "optionId": "listo", "by": ["david"]},
+        )
+        self.assertEqual(respuesta["error"], "root-id-requerido")
+        snapshot = self.llamar("goncloud_root_read", {"rootId": RAIZ})
+        self.assertIsNone(snapshot["excepciones"][0]["response"])
+
     def test_una_opcion_no_ofrecida_se_rechaza(self):
         exception_id = self.preparar_excepcion()
         respuesta = self.llamar(
             "goncloud_root_resolve",
-            {"exceptionId": exception_id, "optionId": "otra", "by": ["david"]},
+            {
+                "rootId": RAIZ,
+                "exceptionId": exception_id,
+                "optionId": "otra",
+                "by": ["david"],
+            },
         )
         self.assertEqual(respuesta["error"], "option-not-offered")
 
@@ -359,19 +379,34 @@ class Resolucion(Base):
         exception_id = self.preparar_excepcion()
         primera = self.llamar(
             "goncloud_root_resolve",
-            {"exceptionId": exception_id, "optionId": "listo", "by": ["david"]},
+            {
+                "rootId": RAIZ,
+                "exceptionId": exception_id,
+                "optionId": "listo",
+                "by": ["david"],
+            },
         )
         self.assertNotIn("error", primera)
         segunda = self.llamar(
             "goncloud_root_resolve",
-            {"exceptionId": exception_id, "optionId": "omitir", "by": ["david"]},
+            {
+                "rootId": RAIZ,
+                "exceptionId": exception_id,
+                "optionId": "omitir",
+                "by": ["david"],
+            },
         )
         self.assertEqual(segunda["error"], "exception-answered")
 
     def test_una_excepcion_desconocida_da_error(self):
         respuesta = self.llamar(
             "goncloud_root_resolve",
-            {"exceptionId": "ex-nadie", "optionId": "listo", "by": ["david"]},
+            {
+                "rootId": RAIZ,
+                "exceptionId": "ex-nadie",
+                "optionId": "listo",
+                "by": ["david"],
+            },
         )
         self.assertEqual(respuesta["error"], "exception-unknown")
 
