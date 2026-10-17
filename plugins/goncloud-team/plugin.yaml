@@ -15,5 +15,9 @@ provides_tools:
   - goncloud_subscription_status
   - goncloud_local_run
   - goncloud_local_status
+  - goncloud_root_submit
+  - goncloud_root_read
+  - goncloud_root_control
+  - goncloud_root_resolve
 provides_hooks:
   - pre_tool_call
