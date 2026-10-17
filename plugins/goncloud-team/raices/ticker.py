@@ -51,10 +51,15 @@ def cargar_politicas() -> dict:
     return store_module.leer_politicas()
 
 
-def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
+def vuelta(
+    tienda, puerto, hechos_por_raiz=None, permisos_h=None, ruta_abierta=True
+) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
     muerte del proceso, y la vuelta siguiente recupera desde las filas.
-    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo."""
+    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo.
+    Con `ruta_abierta=False` (H4a) la puerta de capacidades está cerrada: bloquea
+    y concilia igual (un intento abierto conserva su snapshot), pero no decide, no
+    despacha ni levanta el gate de arranque."""
     hechos_por_raiz = hechos_por_raiz or {}
     permisos = autoridad.PermisosH(permisos_h)
     conciliadas = 0
@@ -62,7 +67,6 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
     conflictos: list = []
     creadas_antes = len(puerto.creaciones)
     estado: str | None = None
-    vistas: dict = {}
 
     for bloqueo in tienda.bloqueos_pendientes():
         with puerto.write_txn() as escritura:
@@ -73,62 +77,66 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
         if _conciliar_uno(tienda, puerto, intento):
             conciliadas += 1
 
-    for raiz in tienda.raices():
-        root_id = raiz["rootId"]
-        vista = tienda.leer_vista(
-            root_id, hechos_por_raiz.get(root_id) or _hechos_vacios()
-        )
-        if vista is None:
-            continue
-        vistas[root_id] = vista
-        propuesta = decidir.decidir(vista)
-        decision = propuesta.decision
-        resultado = None
-        if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
-            resultado = tienda.aplicar(
-                root_id, decision, _decision_id(vista, propuesta)
+    if ruta_abierta:
+        vistas: dict = {}
+        for raiz in tienda.raices():
+            root_id = raiz["rootId"]
+            vista = tienda.leer_vista(
+                root_id, hechos_por_raiz.get(root_id) or _hechos_vacios()
             )
-            if hasattr(resultado, "codigo"):
-                conflictos.append((root_id, resultado.codigo))
-            else:
-                aplicadas += 1
-        # Con aplicar en conflicto, las excepciones nuevas no están en la base (F13).
-        avisar = propuesta.avisar
-        if hasattr(resultado, "codigo"):
-            nuevas = {e["exceptionId"] for e in decision["excepciones"]}
-            avisar = [x for x in avisar if x not in nuevas]
-        if avisar:
-            aviso = tienda.notificar(root_id, avisar)
-            if hasattr(aviso, "codigo"):
-                conflictos.append((root_id, aviso.codigo))
-        if propuesta.estado == "done":
-            estado = "done"
-
-    for intencion in tienda.intenciones_pendientes():
-        vista_de = vistas.get(intencion.root_id)
-        if vista_de is not None:
-            razon = _negar_arranque(vista_de, permisos, intencion)
-            if razon is not None:
-                _levantar_arranque(tienda, vista_de, intencion, razon)
+            if vista is None:
                 continue
-        reclamo = tienda.reclamar_intencion(
-            intencion.root_id, intencion.unit_id, intencion.attempt
-        )
-        if hasattr(reclamo, "codigo"):
-            continue
-        target = intencion.assignment.get("target") or {}
-        spec = SpecDeTarjeta(
-            f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
-            str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
-            str(target.get("agentId") or target.get("adapterId") or "sin-perfil"),
-        )
-        tarjeta = kanban_port.asegurar_tarjeta(puerto, intencion.idempotency_key, spec)
-        tienda.admitir_intento(
-            intencion.root_id,
-            intencion.unit_id,
-            intencion.attempt,
-            tarjeta.id,
-        )
+            vistas[root_id] = vista
+            propuesta = decidir.decidir(vista)
+            decision = propuesta.decision
+            resultado = None
+            if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
+                resultado = tienda.aplicar(
+                    root_id, decision, _decision_id(vista, propuesta)
+                )
+                if hasattr(resultado, "codigo"):
+                    conflictos.append((root_id, resultado.codigo))
+                else:
+                    aplicadas += 1
+            # Con aplicar en conflicto, las excepciones nuevas no están en la base (F13).
+            avisar = propuesta.avisar
+            if hasattr(resultado, "codigo"):
+                nuevas = {e["exceptionId"] for e in decision["excepciones"]}
+                avisar = [x for x in avisar if x not in nuevas]
+            if avisar:
+                aviso = tienda.notificar(root_id, avisar)
+                if hasattr(aviso, "codigo"):
+                    conflictos.append((root_id, aviso.codigo))
+            if propuesta.estado == "done":
+                estado = "done"
+
+        for intencion in tienda.intenciones_pendientes():
+            vista_de = vistas.get(intencion.root_id)
+            if vista_de is not None:
+                razon = _negar_arranque(vista_de, permisos, intencion)
+                if razon is not None:
+                    _levantar_arranque(tienda, vista_de, intencion, razon)
+                    continue
+            reclamo = tienda.reclamar_intencion(
+                intencion.root_id, intencion.unit_id, intencion.attempt
+            )
+            if hasattr(reclamo, "codigo"):
+                continue
+            target = intencion.assignment.get("target") or {}
+            spec = SpecDeTarjeta(
+                f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
+                str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
+                str(target.get("agentId") or target.get("adapterId") or "sin-perfil"),
+            )
+            tarjeta = kanban_port.asegurar_tarjeta(
+                puerto, intencion.idempotency_key, spec
+            )
+            tienda.admitir_intento(
+                intencion.root_id,
+                intencion.unit_id,
+                intencion.attempt,
+                tarjeta.id,
+            )
 
     return Informe(
         conciliadas,

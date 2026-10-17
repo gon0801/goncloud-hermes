@@ -157,7 +157,9 @@ class Script(Base):
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
         with redirect_stdout(salida):
-            codigo = cron.correr()
+            # La puerta real cierra en la Mac (no hay gateway vivo): la
+            # inyección deja la vuelta como era antes de H4a.
+            codigo = cron.correr(ruta_abierta=lambda: (True, None))
         self.assertEqual(codigo, 0)
         self.assertEqual(salida.getvalue(), "")
 
@@ -181,19 +183,68 @@ class Script(Base):
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
         with redirect_stdout(salida):
+            codigo = cron.correr(
+                ruta_abierta=lambda: (False, "capacidad-faltante:write_txn")
+            )
+        self.assertEqual(codigo, 0)
+        texto = salida.getvalue()
+        self.assertIn("ruta de raices cerrada (capacidad-faltante:write_txn)", texto)
+        self.assertIn("CAPACIDAD_INCIERTA (capacidad-faltante:write_txn)", texto)
+        self.assertFalse((self.home / "sistema-agentes.db").exists())
+
+    def test_la_ruta_cerrada_por_version_concilia_sin_despachar(self):
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        self.instalar_permisos()
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        tienda.abrir_raiz(META)
+        hecho = {
+            "principal": [],
+            "asignaciones": [
+                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        self.assertFalse(hasattr(dictamen, "codigo"))
+        intenciones = tienda.intenciones_pendientes()
+        self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
+        tienda.cerrar()
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida = StringIO()
+        with redirect_stdout(salida):
             codigo = cron.correr(ruta_abierta=lambda: (False, "version-no-certificada"))
         self.assertEqual(codigo, 0)
-        self.assertIn(
-            "ruta de raices cerrada (version-no-certificada)", salida.getvalue()
+        texto = salida.getvalue()
+        self.assertIn("CAPACIDAD_INCIERTA (version-no-certificada)", texto)
+        self.assertIn("ruta de raices cerrada (version-no-certificada)", texto)
+        self.assertTrue((self.home / "sistema-agentes.db").exists())
+
+        kanban = importlib.import_module("raices.kanban")
+        puerto = kanban.KanbanHermes(self.home / "kanban.db")
+        self.addCleanup(puerto.cerrar)
+        self.assertIsNone(puerto.leer_estado(f"sa:{RAIZ}:a:1"))
+        tienda2 = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda2.cerrar)
+        self.assertEqual(
+            [(i.unit_id, i.attempt) for i in tienda2.intenciones_pendientes()],
+            [("a", 1)],
         )
-        self.assertFalse((self.home / "sistema-agentes.db").exists())
 
     def test_un_fallo_de_la_vuelta_sale_en_error(self):
         cron = importlib.import_module("raices.cron_ticker")
         (self.home / "sistema-agentes.db").mkdir()
-        salida = StringIO()
-        with redirect_stdout(salida):
-            codigo = cron.main()
+        # La puerta real cerraría antes de tocar el store: con la puerta
+        # abierta la vuelta llega al store roto y main lo reporta.
+        with mock.patch.object(
+            cron, "ruta_de_raices_abierta", return_value=(True, None)
+        ):
+            salida = StringIO()
+            with redirect_stdout(salida):
+                codigo = cron.main()
         self.assertEqual(codigo, 1)
         self.assertIn("ERROR ticker raices:", salida.getvalue())
 
@@ -227,9 +278,13 @@ class Arranque(Base):
         )
 
     def test_el_script_arranca_solo_con_el_doble_en_el_pythonpath(self):
+        # Sin gateway vivo la puerta real cierra por par-incierto: el script
+        # igual recorre todo (capacidades del doble, aviso, store, vuelta
+        # cerrada) y sale 0 sin crear tarjetas.
         proceso = self.probar_subprocess()
         self.assertEqual(proceso.returncode, 0, proceso.stderr)
-        self.assertEqual(proceso.stdout, "")
+        self.assertIn("CAPACIDAD_INCIERTA (par-incierto)", proceso.stdout)
+        self.assertIn("ruta de raices cerrada (par-incierto)", proceso.stdout)
         self.assertTrue((self.home / "sistema-agentes.db").exists())
 
     def test_el_script_sin_hermes_home_dice_error_y_sale_1(self):
