@@ -277,7 +277,7 @@
    "ensayo": "I11",
    "clausula": "I11.2",
    "texto": "un perfil incompleto se ve",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_permisos.ToolsetsEfectivos.test_un_perfil_sin_config_queda_sin_toolsets",
    "rebanada": "H4"
   },
   {
