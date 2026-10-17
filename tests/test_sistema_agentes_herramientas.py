@@ -234,6 +234,52 @@ class Control(Base):
         repetido = self.llamar("goncloud_root_control", orden)
         self.assertEqual(repetido, {**recibo, "replayed": True})
 
+    def test_el_replay_no_depende_del_reloj(self):
+        """El mismo commandId con los mismos campos es replay aunque las dos
+        llamadas crucen un segundo: el instante de emisión no es identidad."""
+        self.abrir_raiz()
+        orden = {
+            "rootId": RAIZ,
+            "command": "pause",
+            "commandId": "cmd-01",
+            "expectedControlEpoch": 1,
+        }
+        with mock.patch(
+            "raices.store.ahora_utc",
+            side_effect=["2026-10-17T00:00:05Z", "2026-10-17T00:01:35Z"],
+        ):
+            recibo = self.llamar("goncloud_root_control", orden)
+            repetido = self.llamar("goncloud_root_control", orden)
+        self.assertEqual(recibo["controlEpoch"], 2)
+        self.assertEqual(recibo["state"], "paused")
+        self.assertIs(recibo["replayed"], False)
+        self.assertEqual(repetido, {**recibo, "replayed": True})
+
+    def test_otro_campo_con_el_mismo_command_id_sigue_en_conflicto(self):
+        self.abrir_raiz()
+        primera = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "pause",
+                "commandId": "cmd-01",
+                "expectedControlEpoch": 1,
+                "reason": "mantenimiento",
+            },
+        )
+        self.assertEqual(primera["state"], "paused")
+        respuesta = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "pause",
+                "commandId": "cmd-01",
+                "expectedControlEpoch": 1,
+                "reason": "otro-motivo",
+            },
+        )
+        self.assertEqual(respuesta["error"], "operation-conflict")
+
     def test_resume_con_epoca_vieja_se_rechaza(self):
         self.abrir_raiz()
         pausa = self.llamar(
