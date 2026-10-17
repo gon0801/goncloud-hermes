@@ -538,6 +538,70 @@ class I13Aceptacion(unittest.TestCase):
         )
 
 
+class ElSeguirSobreCierreRojoRespetaLasPlazas(unittest.TestCase):
+    """F9: 'seguir' sobre CIERRE_ROJO reabre las cerradas; las ligaduras pasan
+    por las plazas como cualquier corrección, no se ligan en bloque."""
+
+    @staticmethod
+    def cierre_rojo_seguido():
+        return {
+            "exceptionId": "e-cierre",
+            "rootId": RAIZ,
+            "unitId": None,
+            "type": "CIERRE_ROJO",
+            "subject": {"kind": "root", "cause": "cierre:2"},
+            "options": ["seguir", "cancelar"],
+            "evidenceRef": None,
+            "raisedAt": "2026-10-17T11:00:00Z",
+            "noticedAt": "2026-10-17T11:00:00Z",
+            "renoticeAfterMs": 3600000,
+            "response": {
+                "optionId": "seguir",
+                "by": ["david"],
+                "at": "2026-10-17T11:30:00Z",
+            },
+            "appliedBy": None,
+        }
+
+    def test_no_liga_por_encima_de_las_plazas_y_reabre_las_cerradas(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a"), unidad("b")],
+                intentos=[intento("a", 1, "failed"), intento("b", 1, "failed")],
+                excepciones=[self.cierre_rojo_seguido()],
+                contadores={"cerradas:a": 1, "cerradas:b": 1},
+                plazas={
+                    "raiz": 1,
+                    "global": 1,
+                    "por_perfil": {"codex": 8, "claude": 8},
+                },
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [
+                        {
+                            "unitId": "a",
+                            "assignment": asignacion("a-2"),
+                            "relay": False,
+                        },
+                        {
+                            "unitId": "b",
+                            "assignment": asignacion("b-2"),
+                            "relay": False,
+                        },
+                    ],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertLessEqual(len(propuesta.decision["bindings"]), 1)
+        self.assertEqual(
+            [c["counter"] for c in propuesta.decision["contadores"]],
+            ["reabiertas:a", "reabiertas:b", "rondas:a"],
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], ["e-cierre"])
+
+
 class HechosYRoles(unittest.TestCase):
     @staticmethod
     def hechos_con(claim_hecho):
@@ -693,7 +757,7 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
         self.assertEqual(len(propuesta.decision["claims"]), 1)
         self.assertIsNotNone(propuesta.decision["claims"][0].get("evidenceId"))
 
-    def test_un_hecho_de_asignacion_sin_target_no_reventa_al_ligar(self):
+    def test_un_hecho_de_asignacion_sin_target_no_se_liga(self):
         hechos = {
             "principal": ["david"],
             "asignaciones": [
@@ -708,12 +772,92 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
         }
         propuesta = decidir.decidir(vista([unidad("a")], hechos=hechos))
         self.assertIsInstance(propuesta, decidir.Propuesta)
-        self.assertEqual(propuesta.necesidades, [])
+        self.assertEqual(propuesta.decision["bindings"], [])
+        self.assertEqual(necesitaciones(propuesta), ["first"])
+
+    def test_un_hecho_de_asignacion_mal_formado_deja_pasar_al_valido(self):
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {
+                    "unitId": "a",
+                    "assignment": {"resultContract": "review.v1"},
+                    "relay": False,
+                },
+                {"unitId": "a", "assignment": asignacion("a-1"), "relay": False},
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        propuesta = decidir.decidir(vista([unidad("a")], hechos=hechos))
         self.assertEqual(len(propuesta.decision["bindings"]), 1)
         self.assertEqual(
-            propuesta.decision["bindings"][0]["assignment"],
-            {"resultContract": "review.v1"},
+            propuesta.decision["bindings"][0]["assignment"], asignacion("a-1")
         )
+
+    def test_un_hecho_de_claim_sin_plan_revision_se_aisla(self):
+        incompleto = {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "artifactRef": {"ref": "artifact:check", "digest": DIGEST},
+            "role": "verifier",
+            "procedure": "pytest",
+            "outcome": "passed",
+            "at": "2026-10-17T11:00:00Z",
+            "expiresAt": None,
+        }
+        bueno = {
+            **incompleto,
+            "planRevision": 1,
+            "environment": {"host": "host-01", "versions": {}},
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [incompleto, bueno],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(len(propuesta.decision["claims"]), 1)
+        self.assertEqual(propuesta.decision["claims"][0].get("planRevision"), 1)
+
+    def test_un_hecho_de_claim_con_outcome_fuera_del_enum_se_aisla(self):
+        raro = {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "planRevision": 1,
+            "artifactRef": {"ref": "artifact:check", "digest": DIGEST},
+            "environment": {"host": "host-01", "versions": {}},
+            "role": "verifier",
+            "procedure": "pytest",
+            "outcome": "casi",
+            "at": "2026-10-17T11:00:00Z",
+            "expiresAt": None,
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [raro],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(propuesta.decision["claims"], [])
 
 
 class I01Borradores(unittest.TestCase):

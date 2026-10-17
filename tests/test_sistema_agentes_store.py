@@ -1231,6 +1231,74 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
         )
         self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
 
+    def test_el_revisor_autor_de_otro_intento_del_relevo_no_acepta(self):
+        """CR2: los autores de la guarda son los de TODOS los intentos de la
+        unidad, como autores_de en decidir; el caso relevo de I12."""
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(bindings=[binding("a", adapter="impl-1")]), "dec-0"
+            ),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(outcomes=[{"unitId": "a", "attempt": 1, "outcome": "failed"}]),
+                "dec-1",
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(bindings=[binding("a", adapter="impl-2")]), "dec-2"
+            ),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 2, "admitted", "t-2")
+        self.tienda.transicionar_intento(RAIZ, "a", 2, "running", "t-2")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 2,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:10:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-2"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        autor_previo = claim("a", 2, "a1", rol="reviewer", principal=["impl-1"])
+        negada = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[autor_previo],
+                outcomes=[{"unitId": "a", "attempt": 2, "outcome": "accepted"}],
+            ),
+            "dec-relevo",
+        )
+        self.assertEqual(negada.codigo, "criteria-unproven")
+
     def test_con_la_politica_apagada_el_revisor_autor_acepta(self):
         tendera = politica_regla4(revisorExcluyeAutores=False)
         self.tienda.abrir_raiz(
@@ -1272,6 +1340,61 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
             "dec-l1",
         )
         self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+
+
+class LaGuardaSaltaLosClaimsVencidos(AlmacenDePrueba):
+    """F10: la guarda elige el claim vigente con la MISMA selección que decidir:
+    si el más nuevo venció mira el siguiente, y no veta en bucle una aceptación
+    que decidir propone."""
+
+    def _intento_reportado(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.assertIsInstance(self.tienda.reclamar_intencion(RAIZ, "a", 1), store.Ok)
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "t-1"), store.Ok
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_un_claim_vencido_no_tapa_al_vigente_anterior(self):
+        self._intento_reportado()
+        viejo = claim("a", 1, "a1", "passed")
+        viejo["evidenceId"] = "evid-viejo"
+        vencido = claim("a", 1, "a1", "passed")
+        vencido["evidenceId"] = "evid-vencido"
+        vencido["expiresAt"] = "2026-10-16T00:00:00Z"
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(claims=[viejo, vencido]), "dec-claims"),
+            store.Ok,
+        )
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        propuesta = decidir.decidir(vista)
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+        recibo = self.tienda.aplicar(RAIZ, propuesta.decision, "dec-cierre")
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
 
 
 class LosUpdatesExigenSuFila(AlmacenDePrueba):
@@ -1365,6 +1488,32 @@ class LosUpdatesExigenSuFila(AlmacenDePrueba):
             (borrador["exceptionId"],),
         )
         self.assertIsNotNone(fila["noticed_at"])
+
+
+class LaAdmisionIdempotenteCierraSuTransaccion(AlmacenDePrueba):
+    """F11: toda salida de admitir_intento cierra su transacción. Tras un
+    replay de admisión, otro Store sobre el mismo archivo escribe de inmediato."""
+
+    def _admitido(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.assertIsInstance(self.tienda.reclamar_intencion(RAIZ, "a", 1), store.Ok)
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "t-1"), store.Ok
+        )
+
+    def test_tras_un_replay_de_admision_ambos_stores_escriben(self):
+        self._admitido()
+        repetida = self.tienda.admitir_intento(RAIZ, "a", 1, "t-1")
+        self.assertTrue(repetida.replayed)
+        self.assertIsInstance(
+            self.tienda.reclamar_intencion(RAIZ, "a", 1), store.Conflicto
+        )
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        self.assertIsInstance(otro.reclamar_intencion(RAIZ, "a", 1), store.Conflicto)
 
 
 class LaEvidenciaSeLeeEnOrdenDeLlegada(AlmacenDePrueba):

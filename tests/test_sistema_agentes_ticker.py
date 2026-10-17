@@ -605,8 +605,54 @@ class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
             kanban.creaciones,
             [clave_de_tarjeta(RAIZ, "a", 1), clave_de_tarjeta(RAIZ, "b", 1)],
         )
+        vista = tienda.leer_vista(RAIZ, hechos)
+        ligada_a = [d["assignment"] for d in vista["unidades"] if d["unitId"] == "a"]
+        self.assertEqual(ligada_a, [asignacion()])
         otra = self.vuelta(tienda, kanban, hechos)
         self.assertEqual(otra.tarjetas_creadas, 0)
+
+
+class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
+    """F13: si aplicar devuelve conflicto, los avisos de excepciones ya
+    guardadas igual salen y el conflicto queda registrado en el informe."""
+
+    def test_un_conflicto_de_aplicar_no_bloquea_el_renotice(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        self.assertIsInstance(
+            tienda.notificar(RAIZ, [borrador["exceptionId"]]), store.Ok
+        )
+        tienda.reloj = lambda: "2026-10-18T00:00:00Z"
+        tienda.registrar_incidencia(
+            RAIZ,
+            "a",
+            1,
+            "inc-capacidad",
+            {"kind": "transport-unavailable", "episodeId": "launch-refused"},
+        )
+        original = tienda.aplicar
+
+        def aplicar_en_conflicto(root_id, decision, decision_id):
+            tienda.aplicar = original
+            return store.Conflicto("root-not-active", {"state": "cancelled"})
+
+        tienda.aplicar = aplicar_en_conflicto
+        informe = self.vuelta(tienda, kanban)
+        self.assertIn((RAIZ, "root-not-active"), informe.conflictos)
+        fila = tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertEqual(fila["noticed_at"], "2026-10-18T00:00:00Z")
 
 
 class I12PoliticaDelTicker(unittest.TestCase):
