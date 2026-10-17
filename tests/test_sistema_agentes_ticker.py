@@ -34,6 +34,16 @@ DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
 
 
+def permisos_de_prueba():
+    """Los permisos de H del escenario, explícitos: el None de producción
+    niega (fail-closed), así que ningún test depende del omisión."""
+    return {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"codex": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+
 def asignacion(adapter="codex", repo="owner-01/repo-a"):
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
@@ -180,7 +190,12 @@ class Escenario(unittest.TestCase):
         return tienda, kanban
 
     def vuelta(self, tienda, kanban, hechos=None):
-        return ticker.vuelta(tienda, kanban, {RAIZ: hechos or hechos_de_raiz()})
+        return ticker.vuelta(
+            tienda,
+            kanban,
+            {RAIZ: hechos or hechos_de_raiz()},
+            permisos_h=permisos_de_prueba(),
+        )
 
     def terminar_a_y_b(self, tienda, kanban, hechos=None):
         self.vuelta(tienda, kanban, hechos)

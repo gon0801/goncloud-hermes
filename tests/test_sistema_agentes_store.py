@@ -26,6 +26,16 @@ DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
 
 
+def permisos_de_prueba():
+    """Los permisos de H del escenario, explícitos: el None de producción
+    niega (fail-closed), así que ningún test depende del omisión."""
+    return {
+        "acciones": ["read", "implement", "review", "push"],
+        "toolsets": {"codex": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+
 def asignacion(adapter="codex", repo="owner-01/repo-a"):
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
@@ -190,7 +200,7 @@ class AlmacenDePrueba(unittest.TestCase):
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
-        self.tienda = store.Store(self.ruta)
+        self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(
             meta_de([unidad("a", "a1"), unidad("c", "c1", ["a"]), unidad("d", "d1")])

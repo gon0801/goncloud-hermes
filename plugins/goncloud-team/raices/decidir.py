@@ -141,8 +141,7 @@ class Propuesta(NamedTuple):
 
 def _autoridad_de_vista(vista: Vista) -> Callable[[Mapping], str | None]:
     modulo = importlib.import_module("raices.autoridad")
-    datos = vista.get("permisos_h")
-    permisos = modulo.PermisosH(datos) if datos is not None else None
+    permisos = modulo.PermisosH(vista.get("permisos_h"))
     return modulo.interseccion(
         vista["meta"].get("authority") or {}, permisos, vista["ahora"]
     )

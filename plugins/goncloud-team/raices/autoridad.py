@@ -10,6 +10,8 @@ Un prompt no amplía ninguna de las dos.
 Los permisos de H son datos inyectables; su lector real del config de la PC es
 H2. Aquí entran como dict: acciones que la matriz de PERMISOS.md permite sin
 preguntar, toolsets del perfil que corre la unidad y allowlist de comandos.
+Sin datos (None) el gate falla cerrado: se niega todo con la razón propia
+sin-permisos, igual que un dict vacío niega con las suyas.
 """
 
 from __future__ import annotations
@@ -29,9 +31,11 @@ HERRAMIENTA_POR_MODO = {
 
 
 class PermisosH:
-    """Los permisos de H como datos. Ninguna entrada amplía la autoridad."""
+    """Los permisos de H como datos. Ninguna entrada amplía la autoridad.
+    Sin datos (None) se niega todo con la razón propia sin-permisos."""
 
     def __init__(self, datos: dict | None = None):
+        self.sin_datos = datos is None
         datos = datos or {}
         self.acciones = frozenset(datos.get("acciones") or ())
         self.toolsets = {
@@ -41,11 +45,15 @@ class PermisosH:
         self.comandos = frozenset(datos.get("comandos") or ())
 
     def niega_accion(self, accion: object) -> str | None:
+        if self.sin_datos:
+            return "sin-permisos"
         if accion in self.acciones:
             return None
         return "accion-preguntar"
 
     def niega_perfil(self, perfil: str, modo: str) -> str | None:
+        if self.sin_datos:
+            return "sin-permisos"
         toolsets = self.toolsets.get(perfil)
         if toolsets is None:
             return "perfil-sin-toolset"
@@ -55,6 +63,8 @@ class PermisosH:
         return None
 
     def niega_comando(self, comando: str) -> str | None:
+        if self.sin_datos:
+            return "sin-permisos"
         if comando in self.comandos:
             return None
         return "comando-fuera-de-allowlist"
@@ -70,7 +80,7 @@ def interseccion(
         if razon is not None:
             return razon
         if permisos is None:
-            return None
+            return "sin-permisos"
         return permisos.niega_accion(efecto.get("action"))
 
     return negar
@@ -104,11 +114,16 @@ def negar_arranque(
     if razon is not None:
         return razon
     if permisos is None:
-        return None
+        return "sin-permisos"
     return permisos.niega_perfil(perfil_de(assignment), efecto["mode"])
 
 
 def causa_de(razon: str) -> str:
-    if razon in ("accion-preguntar", "perfil-sin-toolset", "toolset-faltante"):
+    if razon in (
+        "sin-permisos",
+        "accion-preguntar",
+        "perfil-sin-toolset",
+        "toolset-faltante",
+    ):
         return f"permiso-h:{razon}"
     return f"autoridad:{razon}"

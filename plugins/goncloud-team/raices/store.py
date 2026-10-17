@@ -274,9 +274,7 @@ class Store:
         self.cupos = Cupos(cupos.global_max, dict(cupos.por_perfil or {}))
         self.reloj = reloj
         self.permisos_h_datos = permisos_h
-        self.permisos_h = (
-            autoridad.PermisosH(permisos_h) if permisos_h is not None else None
-        )
+        self.permisos_h = autoridad.PermisosH(permisos_h)
         self._conexion = sqlite3.connect(
             self.ruta,
             isolation_level=None,
@@ -413,7 +411,7 @@ class Store:
             )["authority_json"]
         )
         razon = contrato.efecto_admisible(autoridad_meta, efecto, ahora)
-        if razon is None and self.permisos_h is not None:
+        if razon is None:
             razon = self.permisos_h.niega_accion(efecto.get("action"))
         return razon
 
@@ -435,7 +433,7 @@ class Store:
         ):
             intent = json.loads(fila["intent_json"])
             razon = contrato.efecto_admisible(autoridad_meta, intent, ahora)
-            if razon is None and self.permisos_h is not None:
+            if razon is None:
                 razon = self.permisos_h.niega_accion(intent.get("action"))
             if razon is not None:
                 self._levantar_excepcion(
