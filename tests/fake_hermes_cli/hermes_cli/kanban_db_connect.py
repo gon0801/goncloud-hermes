@@ -58,12 +58,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
 
 
 def connect(db_path=None, *, board=None):
-    """Abre (e inicializa si hace falta) el kanban. Referencia :668."""
+    """Abre (e inicializa si hace falta) el kanban. Referencia :668.
+    check_same_thread=False como el Store de H1: un puerto se abre y se cierra
+    donde quiera que su dueño decida, y un cierre entre hilos no deja el
+    archivo agarrado (WinError 32 en Windows)."""
     if db_path is None:
         raise ValueError("el doble exige una ruta explicita")
     ruta = Path(db_path)
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(ruta), isolation_level=None, timeout=5)
+    conn = sqlite3.connect(
+        str(ruta), isolation_level=None, timeout=5, check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(ESQUEMA)

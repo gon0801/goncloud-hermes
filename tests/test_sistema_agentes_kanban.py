@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
+from conexiones import rastrear_conexiones  # noqa: E402
 
 kanban_port = importlib.import_module("raices.kanban_port")
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -42,6 +44,7 @@ SPEC = SpecDeTarjeta("root/unit#1", "instrucciones", "codex")
 
 class BaseDeAdaptador(unittest.TestCase):
     def setUp(self):
+        rastrear_conexiones(self)
         import raices.kanban as kanban
 
         self.kanban = kanban
@@ -57,7 +60,7 @@ class BaseDeAdaptador(unittest.TestCase):
     def filas_por_clave(self, clave):
         from hermes_cli.kanban_db_connect import connect
 
-        with connect(self.ruta_db) as conexion:
+        with closing(connect(self.ruta_db)) as conexion:
             return conexion.execute(
                 "SELECT * FROM tasks WHERE idempotency_key = ?", (clave,)
             ).fetchall()
@@ -65,7 +68,7 @@ class BaseDeAdaptador(unittest.TestCase):
     def fijar_estado(self, clave, estado, resultado=None):
         from hermes_cli.kanban_db_connect import connect
 
-        with connect(self.ruta_db) as conexion:
+        with closing(connect(self.ruta_db)) as conexion:
             conexion.execute(
                 "UPDATE tasks SET status = ?, result = ? WHERE idempotency_key = ?",
                 (estado, resultado, clave),
@@ -91,7 +94,7 @@ class BuscarOCrear(BaseDeAdaptador):
         puerto = self.adaptador()
         clave = clave_de_tarjeta("root-1", "unit-c", 1)
         tarjeta = asegurar_tarjeta(puerto, clave, SPEC)
-        with connect(self.ruta_db) as conexion:
+        with closing(connect(self.ruta_db)) as conexion:
             self.assertTrue(kanban_db.archive_task(conexion, tarjeta.id))
         hallada = asegurar_tarjeta(puerto, clave, SPEC)
         self.assertEqual(hallada.id, tarjeta.id)
@@ -143,6 +146,8 @@ class Exclusividad(BaseDeAdaptador):
             except BaseException as exc:
                 errores.append(exc)
             finally:
+                # La conexion nace en este hilo y sqlite solo deja cerrarla aqui.
+                puerto_a.cerrar()
                 salio_a.set()
 
         def corrida_b():
@@ -151,6 +156,7 @@ class Exclusividad(BaseDeAdaptador):
             except BaseException as exc:
                 errores.append(exc)
             finally:
+                puerto_b.cerrar()
                 salio_b.set()
 
         hilo_a = threading.Thread(target=corrida_a)
@@ -253,7 +259,7 @@ class Escrituras(BaseDeAdaptador):
         self.assertEqual(estado_b["status"], "blocked")
         from hermes_cli.kanban_db_connect import connect
 
-        with connect(self.ruta_db) as conexion:
+        with closing(connect(self.ruta_db)) as conexion:
             vinculo = conexion.execute(
                 "SELECT parent_id FROM task_links WHERE child_id = ?", (tarjeta_b.id,)
             ).fetchone()
@@ -283,7 +289,7 @@ class Escrituras(BaseDeAdaptador):
         tarjeta = asegurar_tarjeta(puerto, clave, SPEC)
         with puerto.write_txn() as escritura:
             escritura.bloquear(tarjeta.id, "dependencia caida")
-        with connect(self.ruta_db) as conexion:
+        with closing(connect(self.ruta_db)) as conexion:
             fila = conexion.execute(
                 "SELECT status FROM tasks WHERE id = ?", (tarjeta.id,)
             ).fetchone()

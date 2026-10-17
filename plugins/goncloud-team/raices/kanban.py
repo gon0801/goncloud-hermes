@@ -163,10 +163,16 @@ class KanbanHermes:
         self._conexion = None
 
     def cerrar(self):
-        if self._conexion is not None:
-            with suppress(sqlite3.Error):
-                self._conexion.close()
-            self._conexion = None
+        conexion = self._conexion
+        if conexion is None:
+            return
+        try:
+            conexion.close()
+        except sqlite3.ProgrammingError:
+            # Nacio en otro hilo: solo ese hilo puede cerrarla. Queda
+            # referenciada para que su dueño la cierre; no se disimula.
+            return
+        self._conexion = None
 
     def _conexion_viva(self):
         if self._conexion is None:
