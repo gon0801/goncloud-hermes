@@ -157,7 +157,6 @@ def _conciliar_uno(tienda, puerto, intento) -> bool:
             tienda.transicionar_intento(
                 root_id, unit_id, attempt, "running", tarjeta.id
             )
-        tienda.transicionar_intento(root_id, unit_id, attempt, "reported", tarjeta.id)
         _reportar(tienda, intento, tarjeta, ahora)
         return True
     if tarjeta.estado == "bloqueada" and intento["state"] in ("admitted", "running"):
@@ -174,28 +173,59 @@ def _conciliar_uno(tienda, puerto, intento) -> bool:
 
 def _reportar(tienda, intento, tarjeta, ahora) -> None:
     carga = tarjeta.resultado or {}
-    contrato_resultado = carga.get("resultContract", "review.v1")
+    documento = _documento_de_resultado(carga, intento, tarjeta, ahora)
+    if documento is None:
+        _incidencia_invalida(tienda, intento, tarjeta)
+        return
+    respuesta = tienda.reportar_resultado(documento)
+    if hasattr(respuesta, "codigo"):
+        _incidencia_invalida(tienda, intento, tarjeta)
+
+
+def _documento_de_resultado(carga, intento, tarjeta, ahora):
+    contrato_resultado = carga.get("resultContract")
+    digest = carga.get("resultDigest")
+    if not isinstance(contrato_resultado, str) or not contrato_resultado:
+        return None
+    if not isinstance(digest, str) or not digest:
+        return None
     documento = {
         "rootId": intento["rootId"],
         "unitId": intento["unitId"],
         "attempt": intento["attempt"],
         "resultContract": contrato_resultado,
-        "resultDigest": carga.get("resultDigest", "sha256:" + "0" * 64),
+        "resultDigest": digest,
         "reportedAt": ahora,
         "reportedBy": {"kind": "native", "taskId": tarjeta.id},
     }
     if contrato_resultado == "review.v1":
-        veredicto = carga.get("verdict", "approved")
+        veredicto = carga.get("verdict")
         if veredicto == "changes":
-            documento["payload"] = {
-                "verdict": "changes",
-                "findingsRef": carga.get("findingsRef") or carga.get("evidenceRef"),
-            }
-        else:
+            hallazgo = carga.get("findingsRef") or carga.get("evidenceRef")
+            if not hallazgo:
+                return None
+            documento["payload"] = {"verdict": "changes", "findingsRef": hallazgo}
+        elif veredicto == "approved":
+            if not carga.get("evidenceRef"):
+                return None
             documento["payload"] = {
                 "verdict": "approved",
-                "evidenceRef": carga.get("evidenceRef"),
+                "evidenceRef": carga["evidenceRef"],
             }
+        else:
+            return None
     else:
-        documento["payload"] = {"evidenceRef": carga.get("evidenceRef")}
-    tienda.reportar_resultado(documento)
+        if not carga.get("evidenceRef"):
+            return None
+        documento["payload"] = {"evidenceRef": carga["evidenceRef"]}
+    return documento
+
+
+def _incidencia_invalida(tienda, intento, tarjeta) -> None:
+    tienda.registrar_incidencia(
+        intento["rootId"],
+        intento["unitId"],
+        intento["attempt"],
+        f"invalid-result:{tarjeta.id}",
+        {"kind": "invalid-result", "evidenceRef": tarjeta.id},
+    )

@@ -984,17 +984,21 @@ class Store:
         if hallazgos:
             return Conflicto("documento-invalido", {"hallazgos": _a_json(hallazgos)})
         digest = documento["resultDigest"]
-        previo = self._una_fila(
-            "SELECT result_digest FROM resultados WHERE root_id = ? AND unit_id = ? AND attempt = ?",
-            (documento["rootId"], documento["unitId"], documento["attempt"]),
-        )
-        if previo is not None:
-            return Ok(previo["result_digest"] == digest, True)
         ahora = self.reloj()
         self._begin()
         try:
+            previo = self._una_fila(
+                "SELECT result_digest FROM resultados"
+                " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+                (documento["rootId"], documento["unitId"], documento["attempt"]),
+            )
+            if previo is not None:
+                self._rollback()
+                if previo["result_digest"] != digest:
+                    return Conflicto("operation-conflict")
+                return Ok(True, True)
             self._conexion.execute(
-                "INSERT OR IGNORE INTO resultados VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO resultados VALUES (?,?,?,?,?,?,?)",
                 (
                     documento["rootId"],
                     documento["unitId"],

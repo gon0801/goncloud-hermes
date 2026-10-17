@@ -533,6 +533,8 @@ def decidir(
             pendiente["ref"] if pendiente["kind"] == "produced" else None
         )
 
+    resultados_por_tarea = {r["taskId"] for r in vista["resultados"]}
+
     def juzgar_criterios(unidad_plan, documento):
         sin_cubrir: list = []
         abierto = False
@@ -587,7 +589,8 @@ def decidir(
                 )
             )
         if not abierto:
-            terminar(documento, "accepted")
+            if documento["taskId"] in resultados_por_tarea:
+                terminar(documento, "accepted")
 
     for unidad_plan in plan_unidades:
         documento = vivo_de(unidad_plan["unitId"])

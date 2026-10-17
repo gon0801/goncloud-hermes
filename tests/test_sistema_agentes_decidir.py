@@ -362,6 +362,7 @@ class I12Politica(unittest.TestCase):
                 evidencia=[
                     claim("a", 1, "a1", "passed", principal=["rev-1"], rol="reviewer")
                 ],
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
             )
         )
         self.assertEqual(
@@ -377,6 +378,7 @@ class I12Politica(unittest.TestCase):
                     claim("a", 1, "a1", "passed", principal=["impl-1"], rol="reviewer")
                 ],
                 politica=politica(revisorExcluyeAutores=False),
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
             )
         )
         self.assertEqual(
