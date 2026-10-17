@@ -430,8 +430,7 @@ def decidir(
 
     # Los claims de los hechos entran primero: los resultados de abajo se juzgan con
     # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo) y cada
-    # uno pasa contrato.validar antes de sembrarse: el inválido se aísla y el store
-    # nunca rechaza la decisión entera por su forma (F12).
+    # claim pasa contrato.validar antes de sembrarse (F12).
     for claim_hecho in vista["hechos"]["claims"]:
         if not isinstance(claim_hecho, Mapping):
             continue

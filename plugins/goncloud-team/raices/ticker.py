@@ -87,10 +87,7 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
                 conflictos.append((root_id, resultado.codigo))
             else:
                 aplicadas += 1
-        # Si aplicar devolvió conflicto, las excepciones nuevas de esta decisión
-        # no entraron a la base: avisarlas tumba el lote entero (F13). Los ids
-        # que ya estaban guardados siguen su renotice, y un conflicto del propio
-        # notificar no se descarta.
+        # Con aplicar en conflicto, las excepciones nuevas no están en la base (F13).
         avisar = propuesta.avisar
         if hasattr(resultado, "codigo"):
             nuevas = {e["exceptionId"] for e in decision["excepciones"]}
