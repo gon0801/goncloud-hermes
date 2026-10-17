@@ -27,8 +27,6 @@ if str(PLUGIN) not in sys.path:
 
 
 def ruta_de_raices_abierta():
-    """El hueco de capacidades.py (H4): hoy la ruta de raices esta siempre
-    abierta. Devuelve (abierta, causa)."""
     return True, None
 
 

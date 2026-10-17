@@ -48,7 +48,6 @@ def _task_row(conn, task_id):
 
 
 def initial_task_state(conn, parents, initial_status, triage, tenant):
-    """Referencia kanban_db_graph: el estado de entrada de una tarjeta."""
     del initial_status, tenant
     if triage:
         return "triage", None

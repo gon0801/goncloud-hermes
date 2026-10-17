@@ -29,8 +29,6 @@ clave_de_tarjeta = kanban_port.clave_de_tarjeta
 
 
 def con_hermes_falso(clase):
-    """Decora una prueba para que corra con el doble instalado y limpio al salir."""
-
     def prueba(self):
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
