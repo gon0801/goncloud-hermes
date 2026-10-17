@@ -28,9 +28,12 @@ def cargar_instalador():
 
 class CorredorFalso:
     """El CLI hermes representado: cron list --json, cron create, cron
-    remove. Registra cada llamada para que los tests afirmen los argv."""
+    remove. El create resuelve --script como Hermes (relativo contra
+    <home>/scripts, y el archivo debe existir ahí: hermes_cli/cron.py
+    604-618 del runtime de la Gon-pc). Registra cada llamada."""
 
-    def __init__(self, crons=None):
+    def __init__(self, home, crons=None):
+        self.home = Path(home)
         self.llamadas = []
         self.crons = list(crons or [])
 
@@ -39,6 +42,15 @@ class CorredorFalso:
         if argv[:3] == ["cron", "list", "--json"]:
             return 0, json.dumps([{"name": nombre} for nombre in self.crons])
         if argv[:2] == ["cron", "create"]:
+            raw = Path(argv[argv.index("--script") + 1])
+            scripts_dir = self.home / "scripts"
+            ruta = raw.resolve() if raw.is_absolute() else (scripts_dir / raw)
+            try:
+                ruta.relative_to(scripts_dir)
+            except ValueError:
+                return 1, f"script fuera de scripts/: {raw}"
+            if not ruta.exists():
+                return 1, f"script not found: {ruta}"
             nombre = argv[argv.index("--name") + 1]
             self.crons.append(nombre)
             return 0, f"created {nombre}"
@@ -58,7 +70,7 @@ class InstaladorDeRaices(unittest.TestCase):
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir(parents=True)
         self.modulo = cargar_instalador()
-        self.corredor = CorredorFalso()
+        self.corredor = CorredorFalso(self.home)
 
     def aplicar(self):
         return self.modulo.main(
@@ -118,7 +130,7 @@ class InstaladorDeRaices(unittest.TestCase):
                 "--name",
                 "ticker-raices",
                 "--script",
-                "scripts/ticker-raices.py",
+                "ticker-raices.py",
                 "--no-agent",
                 "--deliver",
                 "local",
@@ -136,6 +148,7 @@ class InstaladorDeRaices(unittest.TestCase):
         )
         self.assertEqual(estado["cron"], "ticker-raices")
         self.assertEqual(estado["envoltorio"], "scripts/ticker-raices.py")
+        self.assertEqual(estado["script_del_cron"], "ticker-raices.py")
 
     def test_doble_aplicar_no_duplica_el_cron(self):
         self.assertEqual(self.aplicar(), 0)
@@ -160,7 +173,10 @@ class InstaladorDeRaices(unittest.TestCase):
         self.addCleanup(otro.cleanup)
         home2 = Path(otro.name) / "hermes"
         home2.mkdir()
-        self.modulo.main(["--aplicar", "--home", str(home2)], corredor=self.corredor)
+        self.modulo.main(
+            ["--aplicar", "--home", str(home2)],
+            corredor=CorredorFalso(home2),
+        )
         plantilla = json.loads(
             (home2 / "raices" / "permisos.json").read_text(encoding="utf-8")
         )

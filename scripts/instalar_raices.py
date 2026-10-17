@@ -37,6 +37,10 @@ from pathlib import Path
 
 NOMBRE_DEL_CRON = "ticker-raices"
 ENVOLTORIO = "scripts/ticker-raices.py"
+# El argumento del cron es relativo al directorio de scripts, no al home:
+# Hermes resuelve --script contra <home>/scripts (hermes_cli/cron.py
+# 604-618) y los crons vivos citan el nombre pelado ("model_watch.py").
+SCRIPT_DEL_CRON = "ticker-raices.py"
 RUTA_DE_ESTADO = "raices/instalacion.json"
 PLANTILLA_DE_PERMISOS = {
     "acciones": [],
@@ -102,6 +106,7 @@ def _registrar_estado(home: Path, con_plantilla: bool) -> None:
                 "version": 1,
                 "cron": NOMBRE_DEL_CRON,
                 "envoltorio": ENVOLTORIO,
+                "script_del_cron": SCRIPT_DEL_CRON,
                 "permisos_de_plantilla": con_plantilla,
             },
             indent=2,
@@ -155,6 +160,7 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
         print("instalar-raices: no pude leer `hermes cron list --json`; nada que hace")
         return 1
     con_plantilla = False
+    _escribir_envoltorio(home, plugin)
     if NOMBRE_DEL_CRON not in crons:
         codigo, _ = corredor(
             [
@@ -164,13 +170,14 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
                 "--name",
                 NOMBRE_DEL_CRON,
                 "--script",
-                ENVOLTORIO,
+                SCRIPT_DEL_CRON,
                 "--no-agent",
                 "--deliver",
                 "local",
             ]
         )
         if codigo != 0:
+            (home / ENVOLTORIO).unlink(missing_ok=True)
             print(f"instalar-raices: hermes rechazó el cron (código {codigo})")
             return 1
     permisos = home / "raices" / "permisos.json"
@@ -181,7 +188,6 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
             encoding="utf-8",
         )
         con_plantilla = True
-    _escribir_envoltorio(home, plugin)
     _registrar_estado(home, con_plantilla)
     print(
         f"instalar-raices: cron {NOMBRE_DEL_CRON} en default, envoltorio en {ENVOLTORIO}"
