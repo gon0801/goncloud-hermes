@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
+from conexiones import rastrear_conexiones  # noqa: E402
 
 PLUGIN = REPO / "plugins/goncloud-team"
 
@@ -109,6 +110,7 @@ def cargar_plugin():
 
 class Base(unittest.TestCase):
     def setUp(self):
+        rastrear_conexiones(self)
         self.plugin = cargar_plugin()
         self.addCleanup(hermes_falso.desinstalar)
         self.temporal = tempfile.TemporaryDirectory()

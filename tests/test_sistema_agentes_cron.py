@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
+from conexiones import rastrear_conexiones  # noqa: E402
 
 SCRIPT = REPO / "plugins/goncloud-team/raices/cron_ticker.py"
 PLUGIN = REPO / "plugins/goncloud-team"
@@ -102,6 +103,7 @@ def decidir_dictamen(tienda, root_id, hecho):
 
 class Base(unittest.TestCase):
     def setUp(self):
+        rastrear_conexiones(self)
         self.temporal = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporal.cleanup)
         self.home = Path(self.temporal.name) / "hermes"

@@ -16,6 +16,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+
+from conexiones import rastrear_conexiones  # noqa: E402
 
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
@@ -162,6 +165,7 @@ class Escenario(unittest.TestCase):
             kanban.crear_hecha(tarjeta.clave, resultado_aprobado())
 
     def setUp(self):
+        rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
         self.escenarios = 0
