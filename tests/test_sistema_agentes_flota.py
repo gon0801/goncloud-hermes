@@ -36,7 +36,8 @@ FLOTA_DIR = compartido.G_DIR / "scripts/tests/fixtures/sistema-agentes/flota"
 
 class YamlDePrueba:
     """El PyYAML del runtime de Hermes, representado en la Mac: el subset que
-    configure_team escribe (bloques anidados, mapa en flujo) y YAML roto."""
+    configure_team escribe (bloques anidados de dos niveles, mapa en flujo)
+    y YAML roto."""
 
     @staticmethod
     def safe_load(texto):
@@ -44,31 +45,45 @@ class YamlDePrueba:
             raise ValueError("yaml roto")
         datos: dict = {}
         bloque = None
+        subbloque = None
         for linea in texto.splitlines():
             if not linea.strip() or linea.strip().startswith("#"):
                 continue
-            if linea[:1].isspace():
-                if bloque is None:
-                    continue
-                clave, _, valor = linea.strip().partition(":")
-                datos[bloque][clave.strip()] = valor.strip()
-            else:
-                clave, _, valor = linea.partition(":")
-                clave, valor = clave.strip(), valor.strip()
+            sangria = len(linea) - len(linea.lstrip())
+            limpia = linea.strip()
+            clave, _, valor = limpia.partition(":")
+            clave, valor = clave.strip(), valor.strip()
+            if sangria == 0:
                 if valor == "":
                     datos[clave] = {}
-                    bloque = clave
+                    bloque, subbloque = clave, None
                 elif valor.startswith("{") and valor.endswith("}"):
-                    mapa = {}
-                    for par in valor[1:-1].split(","):
-                        k, _, v = par.partition(":")
-                        mapa[k.strip()] = v.strip()
-                    datos[clave] = mapa
-                    bloque = None
+                    datos[clave] = YamlDePrueba._flujo(valor[1:-1])
+                    bloque, subbloque = None, None
                 else:
                     datos[clave] = valor
-                    bloque = None
+                    bloque, subbloque = None, None
+            elif sangria <= 2:
+                if bloque is None:
+                    continue
+                if valor == "":
+                    datos[bloque][clave] = {}
+                    subbloque = clave
+                else:
+                    datos[bloque][clave] = valor
+            else:
+                if subbloque is None:
+                    continue
+                datos[bloque][subbloque][clave] = valor
         return datos
+
+    @staticmethod
+    def _flujo(interior):
+        mapa = {}
+        for par in interior.split(","):
+            clave, _, valor = par.partition(":")
+            mapa[clave.strip()] = valor.strip()
+        return mapa
 
 
 def permisos_de_prueba():
@@ -219,10 +234,10 @@ class EscenarioBase(unittest.TestCase):
         parche.start()
         self.addCleanup(parche.stop)
 
-    def ligar_a(self, adapter="codex"):
+    def ligar_a(self, adapter="codex", contract="review.v1"):
         resultado = self.tienda.aplicar(
             RAIZ,
-            decision([{"unitId": "a", "assignment": asignacion(adapter)}]),
+            decision([{"unitId": "a", "assignment": asignacion(adapter, contract)}]),
             "dec-1",
         )
         self.assertIsInstance(resultado, store.Ok)

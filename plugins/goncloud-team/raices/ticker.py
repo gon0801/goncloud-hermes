@@ -334,8 +334,9 @@ def _incidencia_invalida(tienda, intento, tarjeta, carga=None) -> None:
     """El episodeId es el canónico de R (managed-task.worker.ts): el digest del
     resultado si lo trajo, o el de schema-invalid sobre lo que llegó. Una
     tarjeta completada sin resultado alguno es un hijo que murió sin decir
-    nada: su incidencia no reintenta sola (la muerte no crea tareas, I18),
-    pregunta al dueño."""
+    nada: reintenta con el mismo tope que invalid-result y el kind distingue
+    la muerte en la evidencia (I18 sigue: sin resultado válido no hay
+    veredicto, aceptación ni despacho de dependientes)."""
     if not carga:
         kind = "result-missing"
         identidad = digesto(["schema-invalid", "sin-resultado"])

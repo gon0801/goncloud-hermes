@@ -16,6 +16,11 @@ import importlib
 import json
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:  # el runtime de Hermes trae PyYAML; sin él, null con razón
+    yaml = None
+
 compartido = importlib.import_module("raices.compartido")
 contrato = compartido.contrato
 
@@ -26,45 +31,30 @@ EXECUTOR = "cli"
 SIN_GENERACION = 1
 
 
-def _sin_comillas(valor: str) -> str:
-    valor = valor.strip()
-    if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "'\"":
-        return valor[1:-1]
-    return valor
-
-
-def _pares_del_bloque_model(lineas: list[str]) -> dict[str, str]:
-    """Las claves anidadas del bloque `model:` que abre en columna 0, sin yaml."""
-    pares: dict[str, str] = {}
-    dentro = False
-    for linea in lineas:
-        if not linea.strip():
-            continue
-        if not linea[0].isspace():
-            if dentro:
-                break
-            dentro = linea.rstrip() == "model:"
-            continue
-        if not dentro or ":" not in linea:
-            continue
-        clave, _, valor = linea.strip().partition(":")
-        if clave in ("provider", "default"):
-            pares[clave] = _sin_comillas(valor)
-    return pares
-
-
 def modelo_de(perfil: Path) -> dict:
-    """model.id del config.yaml del perfil, o {"id": None, "reason": causa}."""
+    """model.id del config.yaml del perfil (primer nivel), o {"id": None,
+    "reason": causa}. PyYAML lee; una `default` anidada bajo otra clave no
+    es el modelo del perfil."""
+    if yaml is None:
+        return {"id": None, "reason": "yaml-ausente"}
     config = Path(perfil) / "config.yaml"
     try:
-        texto = config.read_text(encoding="utf-8")
+        datos = yaml.safe_load(config.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {"id": None, "reason": "sin-config"}
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError, ValueError):
         return {"id": None, "reason": "config-ilegible"}
-    pares = _pares_del_bloque_model(texto.splitlines())
-    proveedor, defecto = pares.get("provider", ""), pares.get("default", "")
-    if proveedor and defecto:
+    bloque = datos.get("model") if isinstance(datos, dict) else None
+    if not isinstance(bloque, dict):
+        return {"id": None, "reason": "modelo-incompleto"}
+    proveedor = bloque.get("provider")
+    defecto = bloque.get("default")
+    if (
+        isinstance(proveedor, str)
+        and proveedor
+        and isinstance(defecto, str)
+        and defecto
+    ):
         return {"id": f"{proveedor}/{defecto}"}
     return {"id": None, "reason": "modelo-incompleto"}
 

@@ -819,7 +819,12 @@ def decidir(
         clase = incidencia.get("kind")
         if clase == "permission-required":
             return "permission"
-        if clase in ("deadline-missed", "invalid-result", "recovery-transport-failure"):
+        if clase in (
+            "deadline-missed",
+            "invalid-result",
+            "recovery-transport-failure",
+            "result-missing",
+        ):
             return "retry"
         if clase == "transport-unavailable":
             if incidencia.get("episodeId") == "launch-refused":
