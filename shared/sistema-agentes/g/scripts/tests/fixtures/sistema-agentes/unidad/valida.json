@@ -1,0 +1,24 @@
+{
+  "schema": "sistema-agentes.unidad.v1",
+  "rootId": "root-03",
+  "planRevision": 1,
+  "unitId": "unit-c",
+  "attempt": 1,
+  "taskId": null,
+  "assignment": {
+    "target": {
+      "kind": "agent",
+      "agentId": "agent-02"
+    },
+    "instructionRef": {
+      "ref": "artifact:instruccion-01",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "resultContract": "review.v1",
+    "continuation": {
+      "kind": "requester"
+    }
+  },
+  "state": "ready",
+  "controlEpoch": 1
+}

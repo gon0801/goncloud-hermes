@@ -1,0 +1,20 @@
+{
+  "schema": "sistema-agentes.resultado.v1",
+  "rootId": "root-03",
+  "unitId": "unit-c",
+  "attempt": 1,
+  "resultContract": "review.v1",
+  "payload": {
+    "verdict": "changes",
+    "findingsRef": {
+      "ref": "artifact:hallazgos-01",
+      "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    }
+  },
+  "resultDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "reportedAt": "2026-10-13T10:00:00Z",
+  "reportedBy": {
+    "kind": "native",
+    "taskId": "task-01"
+  }
+}

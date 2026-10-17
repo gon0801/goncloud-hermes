@@ -1,0 +1,204 @@
+{
+  "meta": {
+    "schema": "sistema-agentes.meta.v1",
+    "rootId": "root-excepciones",
+    "requester": {
+      "principal": ["telegram", "owner-01"],
+      "agentId": "agent-01"
+    },
+    "authority": {
+      "schema": "sistema-agentes.autoridad.v1",
+      "authorityRef": "P0003",
+      "grantedBy": "David",
+      "grantedAt": "2026-10-16T09:00:00Z",
+      "actions": ["implement"],
+      "repos": ["owner-01/repo-a"],
+      "accounts": ["cuenta-01"],
+      "destinations": ["dest-a"],
+      "deadline": "2027-01-01T00:00:00Z",
+      "mode": "implement"
+    },
+    "budget": {
+      "maxConcurrentTasks": 2,
+      "maxDepth": 2,
+      "maxChildren": 4,
+      "maxModelCalls": 40,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 40000,
+      "maxCacheReadTokens": 800000,
+      "maxContextTokens": 200000,
+      "maxTreeTokens": 1200000,
+      "maxAutomaticRecoveryCalls": 2
+    },
+    "plan": {
+      "revision": 1,
+      "planDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "requestDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "units": [
+        {
+          "unitId": "unit-a",
+          "title": "Unidad A",
+          "dependsOn": [],
+          "criteria": [
+            {"criterionId": "crit-a-1", "text": "La unidad A cumple su criterio.", "verifier": "reviewer"}
+          ],
+          "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"}
+        },
+        {
+          "unitId": "unit-b",
+          "title": "Unidad B",
+          "dependsOn": [],
+          "criteria": [
+            {"criterionId": "crit-b-1", "text": "La unidad B cumple su criterio.", "verifier": "ci"}
+          ],
+          "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"}
+        },
+        {
+          "unitId": "unit-c",
+          "title": "Unidad C",
+          "dependsOn": [],
+          "criteria": [
+            {"criterionId": "crit-c-1", "text": "La unidad C cumple su criterio.", "verifier": "owner"}
+          ],
+          "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"}
+        }
+      ],
+      "assumptions": []
+    },
+    "controlEpoch": 1,
+    "control": {"state": "active", "epoch": 1, "reason": null},
+    "qualityPolicy": {"version": "quality-kit.regla4"},
+    "createdAt": "2026-10-16T09:05:00Z"
+  },
+  "units": [
+    {
+      "schema": "sistema-agentes.unidad.v1",
+      "rootId": "root-excepciones",
+      "planRevision": 1,
+      "unitId": "unit-a",
+      "attempt": 1,
+      "taskId": "task-a1",
+      "assignment": {
+        "target": {"kind": "agent", "agentId": "agent-a"},
+        "instructionRef": {"ref": "artifact:instruccion-a", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+        "resultContract": "ready.v1",
+        "continuation": {"kind": "requester"}
+      },
+      "state": "running",
+      "controlEpoch": 1
+    },
+    {
+      "schema": "sistema-agentes.unidad.v1",
+      "rootId": "root-excepciones",
+      "planRevision": 1,
+      "unitId": "unit-b",
+      "attempt": 1,
+      "taskId": "task-b1",
+      "assignment": {
+        "target": {"kind": "agent", "agentId": "agent-b"},
+        "instructionRef": {"ref": "artifact:instruccion-b", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"},
+        "resultContract": "ready.v1",
+        "continuation": {"kind": "requester"}
+      },
+      "state": "running",
+      "controlEpoch": 1
+    },
+    {
+      "schema": "sistema-agentes.unidad.v1",
+      "rootId": "root-excepciones",
+      "planRevision": 1,
+      "unitId": "unit-c",
+      "attempt": 1,
+      "taskId": "task-c1",
+      "assignment": {
+        "target": {"kind": "agent", "agentId": "agent-c"},
+        "instructionRef": {"ref": "artifact:instruccion-c", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"},
+        "resultContract": "ready.v1",
+        "continuation": {"kind": "requester"}
+      },
+      "state": "running",
+      "controlEpoch": 1
+    }
+  ],
+  "unbound": [],
+  "evidence": [],
+  "effects": [],
+  "budget": {},
+  "pendingResults": [],
+  "counters": {},
+  "writers": [],
+  "requesterGeneration": 1,
+  "incidents": [],
+  "exceptions": [
+    {
+      "schema": "sistema-agentes.excepcion.v1",
+      "exceptionId": "exc-00-raiz",
+      "rootId": "root-excepciones",
+      "unitId": null,
+      "type": "CONFIRMAR_PLAN",
+      "options": [{"optionId": "seguir", "text": "Seguir con el plan."}],
+      "evidenceRef": null,
+      "recipient": {"channel": "telegram", "principal": ["telegram", "owner-01"]},
+      "raisedAt": "2026-10-16T11:00:00Z",
+      "renoticeAfterMs": 3600000,
+      "response": null
+    },
+    {
+      "schema": "sistema-agentes.excepcion.v1",
+      "exceptionId": "exc-01",
+      "rootId": "root-excepciones",
+      "unitId": "unit-a",
+      "type": "NECESITA_DAVID",
+      "options": [
+        {"optionId": "seguir", "text": "Seguir con el plan."},
+        {"optionId": "cancelar", "text": "Cancelar."}
+      ],
+      "evidenceRef": null,
+      "recipient": {"channel": "telegram", "principal": ["telegram", "owner-01"]},
+      "raisedAt": "2026-10-16T11:20:00Z",
+      "renoticeAfterMs": 3600000,
+      "response": null
+    },
+    {
+      "schema": "sistema-agentes.excepcion.v1",
+      "exceptionId": "exc-02",
+      "rootId": "root-excepciones",
+      "unitId": "unit-b",
+      "type": "SIN_REVISOR",
+      "options": [{"optionId": "esperar", "text": "Esperar un revisor."}],
+      "evidenceRef": null,
+      "recipient": {"channel": "telegram", "principal": ["telegram", "owner-01"]},
+      "raisedAt": "2026-10-16T11:50:00Z",
+      "renoticeAfterMs": 7200000,
+      "response": null
+    },
+    {
+      "schema": "sistema-agentes.excepcion.v1",
+      "exceptionId": "exc-03",
+      "rootId": "root-excepciones",
+      "unitId": "unit-c",
+      "type": "CI_ROJO",
+      "options": [{"optionId": "reintentar", "text": "Reintentar."}],
+      "evidenceRef": null,
+      "recipient": {"channel": "telegram", "principal": ["telegram", "owner-01"]},
+      "raisedAt": "2026-10-16T10:00:00Z",
+      "renoticeAfterMs": 3600000,
+      "response": {"optionId": "reintentar", "by": ["telegram", "owner-01"], "at": "2026-10-16T10:10:00Z"}
+    }
+  ],
+  "authority": {
+    "revision": 1,
+    "authority": {
+      "schema": "sistema-agentes.autoridad.v1",
+      "authorityRef": "P0003",
+      "grantedBy": "David",
+      "grantedAt": "2026-10-16T09:00:00Z",
+      "actions": ["implement"],
+      "repos": ["owner-01/repo-a"],
+      "accounts": ["cuenta-01"],
+      "destinations": ["dest-a"],
+      "deadline": "2027-01-01T00:00:00Z",
+      "mode": "implement"
+    }
+  }
+}

@@ -1,0 +1,105 @@
+[
+  {
+    "type": "SIN_REVISOR",
+    "options": [
+      "seguir",
+      "relevo",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "SIN_CUOTA",
+    "options": [
+      "seguir",
+      "relevo",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "AUTH_VENCIDA",
+    "options": [
+      "listo",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "CI_ROJO",
+    "options": [
+      "seguir",
+      "omitir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "BOT_CALLADO",
+    "options": [
+      "seguir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "CONFIRMAR_PLAN",
+    "options": [
+      "si",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "NECESITA_DAVID",
+    "options": [
+      "autorizar",
+      "listo",
+      "omitir",
+      "cancelar",
+      "aceptar",
+      "rechazar",
+      "seguir"
+    ]
+  },
+  {
+    "type": "BLOQUEANTE_REPETIDO",
+    "options": [
+      "omitir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "DEPLOY_FALLO",
+    "options": [
+      "seguir",
+      "listo",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "CIERRE_ROJO",
+    "options": [
+      "seguir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "INESPERADO",
+    "options": [
+      "seguir",
+      "omitir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "EVIDENCIA_INCIERTA",
+    "options": [
+      "conciliar",
+      "omitir",
+      "cancelar"
+    ]
+  },
+  {
+    "type": "CAPACIDAD_INCIERTA",
+    "options": [
+      "seguir",
+      "relevo",
+      "cancelar"
+    ]
+  }
+]

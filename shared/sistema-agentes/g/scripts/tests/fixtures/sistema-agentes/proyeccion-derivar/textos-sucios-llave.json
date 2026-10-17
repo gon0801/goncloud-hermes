@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "schema": "sistema-agentes.meta.v1",
+    "rootId": "root-sucia",
+    "requester": {"principal": ["telegram", "owner-01"], "agentId": "agent-01"},
+    "authority": {
+      "schema": "sistema-agentes.autoridad.v1",
+      "authorityRef": "P0004",
+      "grantedBy": "David",
+      "grantedAt": "2026-10-16T09:00:00Z",
+      "actions": ["implement"],
+      "repos": ["owner-01/repo-a"],
+      "accounts": ["cuenta-01"],
+      "destinations": ["dest-a"],
+      "deadline": null,
+      "mode": "implement"
+    },
+    "budget": {
+      "maxConcurrentTasks": 1,
+      "maxDepth": 1,
+      "maxChildren": 2,
+      "maxModelCalls": 10,
+      "maxInputTokens": 100000,
+      "maxOutputTokens": 10000,
+      "maxCacheReadTokens": 200000,
+      "maxContextTokens": 100000,
+      "maxTreeTokens": 300000,
+      "maxAutomaticRecoveryCalls": 1
+    },
+    "plan": {
+      "revision": 1,
+      "planDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "requestDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "units": [
+        {
+          "unitId": "unit-a",
+          "title": "Unidad A",
+          "dependsOn": [],
+          "criteria": [
+            {"criterionId": "crit-a-1", "text": "La unidad cumple su criterio.", "verifier": "reviewer"}
+          ],
+          "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"}
+        }
+      ],
+      "assumptions": []
+    },
+    "controlEpoch": 1,
+    "control": {"state": "active", "epoch": 1, "reason": null},
+    "qualityPolicy": {"version": "quality-kit.regla4"},
+    "createdAt": "2026-10-16T09:05:00Z"
+  },
+  "units": [
+    {
+      "schema": "sistema-agentes.unidad.v1",
+      "rootId": "root-sucia",
+      "planRevision": 1,
+      "unitId": "unit-a",
+      "attempt": 1,
+      "taskId": "task-a1",
+      "assignment": {
+        "target": {"kind": "cli", "hostId": "mac-local", "adapterId": "sk-llavefalsa123456"},
+        "instructionRef": {"ref": "artifact:instruccion-a", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+        "resultContract": "ready.v1",
+        "continuation": {"kind": "requester"}
+      },
+      "state": "reported",
+      "controlEpoch": 1
+    }
+  ],
+  "unbound": [],
+  "evidence": [],
+  "effects": [],
+  "budget": {},
+  "pendingResults": [],
+  "counters": {},
+  "writers": [],
+  "requesterGeneration": 1,
+  "incidents": [],
+  "exceptions": [],
+  "authority": {"revision": 1, "authority": {}}
+}

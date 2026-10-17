@@ -1,0 +1,322 @@
+[
+  {
+    "desde": "pending",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "ready",
+    "permitida": true
+  },
+  {
+    "desde": "pending",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "pending",
+    "hasta": "cancelled",
+    "permitida": true
+  },
+  {
+    "desde": "ready",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "admitted",
+    "permitida": true
+  },
+  {
+    "desde": "ready",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "ready",
+    "hasta": "cancelled",
+    "permitida": true
+  },
+  {
+    "desde": "admitted",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "running",
+    "permitida": true
+  },
+  {
+    "desde": "admitted",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "admitted",
+    "hasta": "cancelled",
+    "permitida": true
+  },
+  {
+    "desde": "running",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "running",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "running",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "running",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "running",
+    "hasta": "reported",
+    "permitida": true
+  },
+  {
+    "desde": "running",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "running",
+    "hasta": "failed",
+    "permitida": true
+  },
+  {
+    "desde": "running",
+    "hasta": "cancelled",
+    "permitida": true
+  },
+  {
+    "desde": "reported",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "reported",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "reported",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "reported",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "reported",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "reported",
+    "hasta": "accepted",
+    "permitida": true
+  },
+  {
+    "desde": "reported",
+    "hasta": "failed",
+    "permitida": true
+  },
+  {
+    "desde": "reported",
+    "hasta": "cancelled",
+    "permitida": true
+  },
+  {
+    "desde": "accepted",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "accepted",
+    "hasta": "cancelled",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "failed",
+    "hasta": "cancelled",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "pending",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "ready",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "admitted",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "running",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "reported",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "accepted",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "failed",
+    "permitida": false
+  },
+  {
+    "desde": "cancelled",
+    "hasta": "cancelled",
+    "permitida": false
+  }
+]

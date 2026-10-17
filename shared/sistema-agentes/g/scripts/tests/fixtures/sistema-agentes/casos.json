@@ -1,0 +1,410 @@
+[
+  {
+    "archivo": "autoridad/valida.json",
+    "esquema": "sistema-agentes.autoridad.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I07"
+  },
+  {
+    "archivo": "autoridad/valida-sin-plazo.json",
+    "esquema": "sistema-agentes.autoridad.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I07"
+  },
+  {
+    "archivo": "autoridad/invalida-accion-desconocida.json",
+    "esquema": "sistema-agentes.autoridad.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "actions[1]",
+    "ensayo": "I07"
+  },
+  {
+    "archivo": "autoridad/invalida-repo-sin-owner.json",
+    "esquema": "sistema-agentes.autoridad.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "repos[0]",
+    "ensayo": "I07"
+  },
+  {
+    "archivo": "planes/validos/pedido-chico.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I01"
+  },
+  {
+    "archivo": "planes/validos/fila-importada.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I01"
+  },
+  {
+    "archivo": "planes/validos/pedido-compuesto.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I01"
+  },
+  {
+    "archivo": "planes/invalidos/ciclo.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "ciclo",
+    "ruta": "plan.units[1].dependsOn[0]",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/auto-dependencia.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "ciclo",
+    "ruta": "plan.units[0].dependsOn[0]",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/id-duplicado.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "id-duplicado",
+    "ruta": "plan.units[1].unitId",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/criterio-duplicado.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "id-duplicado",
+    "ruta": "plan.units[1].criteria[0].criterionId",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/dependencia-faltante.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "dependencia-faltante",
+    "ruta": "plan.units[1].dependsOn[0]",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/criterio-faltante.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "criterio-faltante",
+    "ruta": "plan.units[0].criteria",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/campo-prohibido.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "campo-prohibido",
+    "ruta": "plan.units[0].session_key",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "planes/invalidos/schema-ajeno.json",
+    "esquema": "sistema-agentes.meta.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "schema",
+    "ensayo": "I02"
+  },
+  {
+    "archivo": "unidad/valida.json",
+    "esquema": "sistema-agentes.unidad.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I03"
+  },
+  {
+    "archivo": "unidad/invalida-estado-desconocido.json",
+    "esquema": "sistema-agentes.unidad.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "state",
+    "ensayo": "I03"
+  },
+  {
+    "archivo": "unidad/invalida-unit-id-vacio.json",
+    "esquema": "sistema-agentes.unidad.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "unitId",
+    "ensayo": "I03"
+  },
+  {
+    "archivo": "unidad/invalida-asignacion-en-texto.json",
+    "esquema": "sistema-agentes.unidad.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "assignment",
+    "ensayo": "I03"
+  },
+  {
+    "archivo": "resultados/review-approved.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "resultados/review-changes.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "resultados/ready.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "resultados/invalido-contrato-desconocido.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "resultContract",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "resultados/invalido-sin-result-digest.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "resultDigest",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "resultados/invalido-changes-sin-findings.json",
+    "esquema": "sistema-agentes.resultado.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "payload.findingsRef",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/claim-passed.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/invalida-outcome-fuera-del-enum.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "outcome",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/invalida-fecha-sin-z.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "at",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/invalida-procedimiento-null.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "procedure",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/invalida-version-numerica.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "environment.versions.node",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "evidencia/invalida-versiones-en-lista.json",
+    "esquema": "sistema-agentes.evidencia.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "environment.versions",
+    "ensayo": "I13"
+  },
+  {
+    "archivo": "control/pause-con-recibo.json",
+    "esquema": "sistema-agentes.control.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I05"
+  },
+  {
+    "archivo": "control/invalida-comando-desconocido.json",
+    "esquema": "sistema-agentes.control.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "command",
+    "ensayo": "I05"
+  },
+  {
+    "archivo": "control/invalida-epoca-en-texto.json",
+    "esquema": "sistema-agentes.control.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "expectedControlEpoch",
+    "ensayo": "I05"
+  },
+  {
+    "archivo": "flota/modelo-exacto.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/modelo-desconocido-con-razon.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/invalida-executor-fuera-del-enum.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "executor",
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/invalida-modelo-desconocido-sin-razon.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "model.reason",
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/invalida-generacion-booleana.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "generation",
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/invalida-digest-corto.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "attestations[0].digest",
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/modelo-exacto-con-hijos.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "flota/invalida-hijo-sin-modelo.json",
+    "esquema": "sistema-agentes.flota.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "children[0].model",
+    "ensayo": "I09"
+  },
+  {
+    "archivo": "excepcion/necesita-david.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "excepcion/necesita-david-respondida.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "excepcion/invalida-respuesta-fuera-de-opciones.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "invalido",
+    "regla": "opcion-no-ofrecida",
+    "ruta": "response.optionId",
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "excepcion/invalida-sin-opciones.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "options",
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "excepcion/invalida-reaviso-corto.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "renoticeAfterMs",
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "excepcion/invalida-opciones-en-texto.json",
+    "esquema": "sistema-agentes.excepcion.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "options",
+    "ensayo": "I12"
+  },
+  {
+    "archivo": "proyeccion/valida.json",
+    "esquema": "sistema-agentes.proyeccion.v1",
+    "veredicto": "valido",
+    "regla": null,
+    "ruta": null,
+    "ensayo": "I14"
+  },
+  {
+    "archivo": "proyeccion/invalida-campo-extra-argv.json",
+    "esquema": "sistema-agentes.proyeccion.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "argv",
+    "ensayo": "I17"
+  },
+  {
+    "archivo": "proyeccion/invalida-progreso-mayor-a-100.json",
+    "esquema": "sistema-agentes.proyeccion.v1",
+    "veredicto": "invalido",
+    "regla": "schema",
+    "ruta": "progress.declared",
+    "ensayo": "I14"
+  }
+]

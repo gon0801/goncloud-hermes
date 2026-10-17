@@ -1,0 +1,11 @@
+{
+  "schema": "sistema-agentes.unidad.v1",
+  "rootId": "root-03",
+  "planRevision": 1,
+  "unitId": "unit-c",
+  "attempt": 1,
+  "taskId": null,
+  "assignment": "agent-02",
+  "state": "ready",
+  "controlEpoch": 1
+}

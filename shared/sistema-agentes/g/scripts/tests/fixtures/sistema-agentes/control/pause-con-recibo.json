@@ -1,0 +1,22 @@
+{
+  "schema": "sistema-agentes.control.v1",
+  "rootId": "root-03",
+  "command": "pause",
+  "commandId": "cmd-01",
+  "expectedControlEpoch": 1,
+  "reason": "El propietario pidió detener.",
+  "issuedAt": "2026-10-13T11:00:00Z",
+  "receipt": {
+    "controlEpoch": 2,
+    "state": "paused",
+    "replayed": false,
+    "committedEffects": [
+      {
+        "effectId": "effect-01",
+        "destination": "dest-a",
+        "state": "started",
+        "cancellable": false
+      }
+    ]
+  }
+}

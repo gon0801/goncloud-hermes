@@ -247,6 +247,14 @@ Candados: higiene, JSON/YAML, lint y formato Python. Nunca usar `--no-verify`. E
 
 En esta computadora, pre-commit esta instalado en `C:\Python314\python.exe`; se puede usar ese ejecutable en lugar de `python`. La bateria usa el Python del runtime Hermes, que contiene las dependencias nativas del tablero.
 
+## Contrato compartido con G
+
+`shared/sistema-agentes/g/` es una copia en espejo de parte de `gon0801/goncloud-openclaw` (G): los modulos `scripts/sistema_agentes/contrato.py`, `derivar.py` y `__init__.py`, todos los fixtures de `scripts/tests/fixtures/sistema-agentes/` y `docs/evidence/agent-work/politica-calidad.json`, con las mismas rutas que en G. `shared/sistema-agentes/pin.json` fija el commit de G y el sha256 de cada archivo copiado. La copia es byte-exacta: nada del espejo se edita a mano y los hooks de pre-commit no la reformatean.
+
+La prueba `tests/test_sistema_agentes_pin.py` recalcula los digests y exige que el espejo no traiga ni un archivo de mas ni de menos. La CI (`.github/workflows/sistema-agentes.yml`) baja cada archivo del pin desde `raw.githubusercontent.com` en el commit fijado (`scripts/verificar_pin_g.py`) y lo compara byte a byte, ademas de correr `python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py"`.
+
+Para actualizar la copia (por ejemplo, cuando G mueve el contrato): un solo PR que cambia `pin.json` y los archivos juntos, sin ediciones de por medio. `tests/ensayos-h.json` y su recorrido (`tests/test_sistema_agentes_ensayos.py`) llevan la cuenta de que cada clausula de los ensayos del bloque SUA-07 tenga su prueba antes de cerrar su rebanada.
+
 ## Alcance de autonomia
 
 Resolver detalles tecnicos y consultar entre roles entra en una orden autorizada. Gastos, mensajes externos, secretos, borrados amplios o despliegues fuera del alcance requieren tu decision. La politica y el plugin no son una sandbox: un proceso con tus permisos Windows puede usar terminal y acceder a tus archivos. No se promete inmunidad a instrucciones maliciosas ni correccion matematica de una revision por IA.

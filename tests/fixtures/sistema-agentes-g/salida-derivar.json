@@ -1,0 +1,134 @@
+{
+  "excepciones.json": {
+    "controlEpoch": 1,
+    "freshness": {
+      "staleAfterMs": 300000
+    },
+    "generatedAt": "2026-10-16T12:00:00Z",
+    "planRevision": 1,
+    "progress": {
+      "accepted": 0,
+      "declared": 0,
+      "observed": 0
+    },
+    "rootId": "root-excepciones",
+    "schema": "sistema-agentes.proyeccion.v1",
+    "units": [
+      {
+        "error": null,
+        "executor": "agent:agent-a",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:30:00Z",
+        "state": "running",
+        "unitId": "unit-a"
+      },
+      {
+        "error": null,
+        "executor": "agent:agent-b",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:00:00Z",
+        "state": "running",
+        "unitId": "unit-b"
+      },
+      {
+        "error": null,
+        "executor": "agent:agent-c",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "running",
+        "unitId": "unit-c"
+      }
+    ]
+  },
+  "raiz-estados.json": {
+    "controlEpoch": 1,
+    "freshness": {
+      "staleAfterMs": 300000
+    },
+    "generatedAt": "2026-10-16T12:00:00Z",
+    "planRevision": 1,
+    "progress": {
+      "accepted": 33,
+      "declared": 66,
+      "observed": 66
+    },
+    "rootId": "root-estados",
+    "schema": "sistema-agentes.proyeccion.v1",
+    "units": [
+      {
+        "error": null,
+        "executor": "cli:banco-cli",
+        "host": "mac-local",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "reported",
+        "unitId": "unit-a"
+      },
+      {
+        "error": "transport-unavailable",
+        "executor": "agent:agent-b",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "running",
+        "unitId": "unit-b"
+      },
+      {
+        "error": null,
+        "executor": "cli:verif-cli",
+        "host": "mini-local",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "accepted",
+        "unitId": "unit-c"
+      }
+    ]
+  },
+  "raiz-sin-criterios.json": {
+    "controlEpoch": 1,
+    "freshness": {
+      "staleAfterMs": 300000
+    },
+    "generatedAt": "2026-10-16T12:00:00Z",
+    "planRevision": 1,
+    "progress": {
+      "accepted": null,
+      "declared": null,
+      "observed": null
+    },
+    "rootId": "root-sin-criterios",
+    "schema": "sistema-agentes.proyeccion.v1",
+    "units": [
+      {
+        "error": null,
+        "executor": "sin-asignar",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "pending",
+        "unitId": "unit-a"
+      },
+      {
+        "error": null,
+        "executor": "sin-asignar",
+        "host": "gateway-1",
+        "modelId": null,
+        "nextCheckAt": "2026-10-16T12:05:00Z",
+        "state": "ready",
+        "unitId": "unit-b"
+      }
+    ]
+  },
+  "textos-sucios-llave.json": {
+    "ValueError": "units[] (unitId unit-a) assignment.target.adapterId parece un secreto y no puede entrar a la proyección"
+  },
+  "textos-sucios-ruta.json": {
+    "ValueError": "units[] (unitId unit-a) assignment.target.adapterId fuera de la allowlist [A-Za-z0-9._-]{1,80}: '/ruta/absoluta'"
+  },
+  "textos-sucios-script.json": {
+    "ValueError": "meta.plan.units[0].unitId fuera de la allowlist [A-Za-z0-9._-]{1,80}: '<script>alert(1)</script>'"
+  }
+}
