@@ -200,12 +200,38 @@ class AlmacenDePrueba(unittest.TestCase):
 
 class I05Control(AlmacenDePrueba):
     def test_la_pausa_enumerara_los_efectos_comprometidos(self):
-        self.preparar_efecto()
+        self.tienda.aplicar(
+            RAIZ,
+            decision(efectos=[efecto(), efecto("effect-02")]),
+            "dec-efectos",
+        )
+        self.tienda.iniciar_efecto(RAIZ, "effect-01", "start-1", 1)
         recibo = self.tienda.control(comando("pause", "cmd-01", 1, "detener")).valor
         self.assertEqual(recibo.state, "paused")
         self.assertEqual(recibo.committed_effects[0]["effectId"], "effect-01")
         self.assertEqual(recibo.committed_effects[0]["state"], "started")
         self.assertFalse(recibo.committed_effects[0]["cancellable"])
+        denegado = self.tienda.iniciar_efecto(RAIZ, "effect-02", "start-2", 2)
+        self.assertIsInstance(denegado, store.Conflicto)
+        self.assertEqual(denegado.codigo, "root-not-active")
+        self.assertEqual(denegado.detalle["state"], "paused")
+
+    def test_el_cancel_enumerara_los_efectos_comprometidos_y_no_arranca_nuevos(self):
+        self.tienda.aplicar(
+            RAIZ,
+            decision(efectos=[efecto(), efecto("effect-02")]),
+            "dec-efectos",
+        )
+        self.tienda.iniciar_efecto(RAIZ, "effect-01", "start-1", 1)
+        recibo = self.tienda.control(comando("cancel", "cmd-01", 1)).valor
+        self.assertEqual(recibo.state, "cancelled")
+        self.assertEqual(
+            [e["effectId"] for e in recibo.committed_effects], ["effect-01"]
+        )
+        denegado = self.tienda.iniciar_efecto(RAIZ, "effect-02", "start-2", 2)
+        self.assertIsInstance(denegado, store.Conflicto)
+        self.assertEqual(denegado.codigo, "root-not-active")
+        self.assertEqual(denegado.detalle["state"], "cancelled")
 
     def test_envio_posterior_al_ack_sigue_y_el_recibo_queda_congelado(self):
         self.preparar_efecto()
