@@ -40,6 +40,9 @@ def modelo_de(perfil: Path) -> dict:
     config = Path(perfil) / "config.yaml"
     try:
         datos = yaml.safe_load(config.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        # El error de parseo del PyYAML real no hereda de ValueError.
+        return {"id": None, "reason": "config-ilegible"}
     except FileNotFoundError:
         return {"id": None, "reason": "sin-config"}
     except (OSError, UnicodeDecodeError, ValueError):
