@@ -41,7 +41,9 @@ RUTA_CERTIFICADAS = Path(__file__).with_name("certificadas.json")
 _FORMA_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _FORMA_SHA = re.compile(r"^[0-9a-f]{40}$")
 _FORMA_INSTANTE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-_VERSION_CLI = re.compile(r"Hermes Agent v(\d+\.\d+\.\d+)(?:\+\d+\.g([0-9a-f]+))?")
+# Sin el tramo "+N.g<sha>" no hay comprobación cruzada contra code_sha: un
+# texto así no parsea a par vivo y la puerta queda cerrada por par-incierto.
+_VERSION_CLI = re.compile(r"Hermes Agent v(\d+\.\d+\.\d+)\+\d+\.g([0-9a-f]+)")
 
 
 class VersionCLI(NamedTuple):
@@ -90,7 +92,7 @@ def leer_version(runner=None) -> VersionCLI | None:
     hallado = _VERSION_CLI.search(texto)
     if hallado is None:
         return None
-    return VersionCLI(hallado.group(1), hallado.group(2) or "")
+    return VersionCLI(hallado.group(1), hallado.group(2))
 
 
 def leer_gateway(home) -> ParGateway | None:

@@ -131,6 +131,11 @@ class LeerVersion(unittest.TestCase):
     def test_un_runner_que_no_trae_texto_da_none(self):
         self.assertIsNone(capacidades.leer_version(lambda: None))
 
+    def test_una_version_sin_sufijo_g_no_da_par(self):
+        self.assertIsNone(
+            capacidades.leer_version(lambda: "Hermes Agent v0.21.5 (2026.9.24)")
+        )
+
 
 class LeerGateway(unittest.TestCase):
     def setUp(self):
