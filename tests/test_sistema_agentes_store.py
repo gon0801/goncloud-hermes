@@ -268,6 +268,49 @@ class I05Control(AlmacenDePrueba):
         self.assertEqual(malo.codigo, "documento-invalido")
 
 
+class CarrerasDeUnaTransaccion(AlmacenDePrueba):
+    def test_el_cancel_de_otro_proceso_cierra_la_ventana_de_aplicar(self):
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        original = self.tienda._begin
+
+        def begin_con_cancel_intercalado():
+            otro.control(comando("cancel", "cmd-x", 1))
+            self.tienda._begin = original
+            original()
+
+        self.tienda._begin = begin_con_cancel_intercalado
+        resultado = self.tienda.aplicar(
+            RAIZ, decision(bindings=[binding("a")]), "dec-1"
+        )
+        self.assertIsInstance(resultado, store.Conflicto)
+        self.assertEqual(resultado.codigo, "root-not-active")
+        self.assertEqual(self.tienda.ocupacion()["global"], 0)
+        self.assertEqual(self.tienda.intenciones_pendientes(), [])
+        escritores = self.tienda._conexion.execute(
+            "SELECT COUNT(*) AS n FROM escritores"
+        ).fetchone()["n"]
+        self.assertEqual(escritores, 0)
+
+    def test_el_replay_concurrente_da_el_recibo_original(self):
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        original = self.tienda._begin
+        visto = []
+
+        def begin_con_pausa_intercalada():
+            visto.append(otro.control(comando("pause", "cmd-01", 1)).valor.state)
+            self.tienda._begin = original
+            original()
+
+        self.tienda._begin = begin_con_pausa_intercalada
+        recibo = self.tienda.control(comando("pause", "cmd-01", 1))
+        self.assertEqual(visto, ["paused"])
+        self.assertIsInstance(recibo, store.Ok)
+        self.assertTrue(recibo.replayed)
+        self.assertEqual(recibo.valor.state, "paused")
+
+
 class I06Efectos(AlmacenDePrueba):
     def test_un_confirmado_no_se_repite(self):
         self.preparar_efecto()
