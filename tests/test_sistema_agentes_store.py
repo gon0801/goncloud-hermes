@@ -483,21 +483,28 @@ class I20Cupos(AlmacenDePrueba):
 
 
 class I12LinajeEnElStore(AlmacenDePrueba):
+    def _correr_y_fallar(self, attempt):
+        self.tienda.transicionar_intento(RAIZ, "a", attempt, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", attempt, "running", "t-1")
+
     def test_el_contador_de_rondas_sube_por_linaje_y_no_se_reinicia(self):
         ligadura = decision(bindings=[binding("a")])
         self.assertIsInstance(self.tienda.aplicar(RAIZ, ligadura, "dec-0"), store.Ok)
+        self._correr_y_fallar(1)
         primera = decision(
             outcomes=[{"unitId": "a", "attempt": 1, "outcome": "failed"}],
             bindings=[binding("a")],
             contadores=[{"counter": "rondas:a", "expected": 0}],
         )
         self.assertIsInstance(self.tienda.aplicar(RAIZ, primera, "dec-1"), store.Ok)
+        self._correr_y_fallar(2)
         segunda = decision(
             outcomes=[{"unitId": "a", "attempt": 2, "outcome": "failed"}],
             bindings=[binding("a")],
             contadores=[{"counter": "rondas:a", "expected": 1}],
         )
         self.assertIsInstance(self.tienda.aplicar(RAIZ, segunda, "dec-2"), store.Ok)
+        self._correr_y_fallar(3)
         tercera = decision(
             outcomes=[{"unitId": "a", "attempt": 3, "outcome": "failed"}],
             contadores=[{"counter": "rondas:a", "expected": 1}],
@@ -584,9 +591,39 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         vista = self.tienda.leer_vista(RAIZ, hechos_vacios())
         self.assertEqual(sorted(d["state"] for d in vista["unidades"]), ["ready"])
 
+    def test_una_aceptacion_directa_desde_ready_se_rechaza(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        directa = decision(
+            claims=[claim("a", 1, "a1")],
+            outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+        negada = self.tienda.aplicar(RAIZ, directa, "dec-1")
+        self.assertEqual(negada.codigo, "outcome-refused")
+        self.assertEqual(negada.detalle["state"], "ready")
+
     def test_una_aceptacion_con_claims_vigentes_entra(self):
         self.assertIsInstance(
             self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
             store.Ok,
         )
         intento = decision(
@@ -596,6 +633,13 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         self.assertIsInstance(self.tienda.aplicar(RAIZ, intento, "dec-1"), store.Ok)
         vista = self.tienda.leer_vista(RAIZ, hechos_vacios())
         self.assertEqual(sorted(d["state"] for d in vista["unidades"]), ["accepted"])
+
+    def test_abrir_raiz_con_otro_plan_no_es_replay(self):
+        self.assertTrue(self.tienda.abrir_raiz(meta_de([unidad("a", "a1")])).replayed)
+        otra = meta_de([unidad("z", "z1")])
+        otra["plan"]["planDigest"] = "sha256:" + "b" * 64
+        distinta = self.tienda.abrir_raiz(otra)
+        self.assertEqual(distinta.codigo, "operation-conflict")
 
 
 class EntradasDelMundo(AlmacenDePrueba):

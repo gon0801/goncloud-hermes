@@ -144,14 +144,7 @@ class DobleKanban:
         self._disparar(PuntoDeCaida.ABRIR_TXN)
         with self._lock:
             overlay: dict = {}
-            try:
-                yield _EscrituraDoble(self, overlay)
-            except CaidaInyectada as caida:
-                if caida.punto is PuntoDeCaida.DESPUES_DE_TXN:
-                    self._asentar(overlay)
-                raise
-            except Exception:
-                raise
+            yield _EscrituraDoble(self, overlay)
             self._asentar(overlay)
         self._disparar(PuntoDeCaida.DESPUES_DE_TXN)
 

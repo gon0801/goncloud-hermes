@@ -500,6 +500,42 @@ class I13Aceptacion(unittest.TestCase):
         self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
         self.assertEqual(propuesta.necesidades[0].attempt, 2)
 
+    def test_omitir_una_unidad_sin_lanzar_la_cancela(self):
+        excepcion = {
+            "exceptionId": "e1",
+            "rootId": RAIZ,
+            "unitId": "a",
+            "type": "INESPERADO",
+            "subject": {
+                "kind": "attempt",
+                "unitId": "a",
+                "attempt": 1,
+                "cause": "incident:x",
+            },
+            "options": ["seguir", "omitir", "cancelar"],
+            "evidenceRef": None,
+            "raisedAt": "2026-10-17T11:00:00Z",
+            "noticedAt": None,
+            "renoticeAfterMs": 3600000,
+            "response": {
+                "optionId": "omitir",
+                "by": ["david"],
+                "at": "2026-10-17T11:30:00Z",
+            },
+            "appliedBy": None,
+        }
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "ready")],
+                excepciones=[excepcion],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "cancelled"}],
+        )
+
 
 class HechosYRoles(unittest.TestCase):
     @staticmethod

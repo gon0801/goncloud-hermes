@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -27,8 +26,6 @@ RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
 digesto = decidir.digesto
 instante = decidir.instante
-
-TERMINALES = ("accepted", "failed", "cancelled")
 
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS raices (
@@ -280,13 +277,9 @@ class Store:
         self._conexion.execute("PRAGMA busy_timeout=10000")
         self._conexion.execute("PRAGMA foreign_keys=ON")
         self._conexion.executescript(ESQUEMA)
-        self._escritura = threading.Lock()
 
     def cerrar(self):
         self._conexion.close()
-
-    def _txn(self):
-        return self._conexion
 
     def _begin(self):
         self._conexion.execute("BEGIN IMMEDIATE")
@@ -342,14 +335,22 @@ class Store:
         hallazgos = contrato.validar_plan(meta)
         if hallazgos:
             return Conflicto("documento-invalido", {"hallazgos": _a_json(hallazgos)})
-        existente = self._una_fila(
-            "SELECT root_id FROM raices WHERE root_id = ?", (meta["rootId"],)
-        )
-        if existente is not None:
-            return Ok(ReciboRaiz(meta["rootId"], meta["plan"]["revision"], 1), True)
         ahora = self.reloj()
         self._begin()
         try:
+            existente = self._una_fila(
+                "SELECT plan_digest FROM raices r JOIN revisiones v"
+                " ON v.root_id = r.root_id"
+                " WHERE r.root_id = ? ORDER BY v.revision DESC LIMIT 1",
+                (meta["rootId"],),
+            )
+            if existente is not None:
+                self._rollback()
+                if existente["plan_digest"] == meta["plan"]["planDigest"]:
+                    return Ok(
+                        ReciboRaiz(meta["rootId"], meta["plan"]["revision"], 1), True
+                    )
+                return Conflicto("operation-conflict")
             self._conexion.execute(
                 "INSERT INTO raices VALUES (?,?,?,?,?,?,?)",
                 (
@@ -642,6 +643,22 @@ class Store:
                             },
                         )
             for desenlace in decision["outcomes"]:
+                fila_intento = self._una_fila(
+                    "SELECT state FROM intentos"
+                    " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+                    (root_id, desenlace["unitId"], desenlace["attempt"]),
+                )
+                if fila_intento is None or not contrato.transicion_permitida(
+                    fila_intento["state"], desenlace["outcome"]
+                ):
+                    self._rollback()
+                    return Conflicto(
+                        "outcome-refused",
+                        {
+                            "unitId": desenlace["unitId"],
+                            "state": (fila_intento["state"] if fila_intento else None),
+                        },
+                    )
                 cambio = self._conexion.execute(
                     "UPDATE intentos SET state = ?, outcome_ref = ?, updated_at = ?"
                     " WHERE root_id = ? AND unit_id = ? AND attempt = ?"
@@ -1501,13 +1518,9 @@ class Store:
         ocupacion = self.ocupacion()
         presupuesto = json.loads(raiz["budget_json"])
         plazas_por_perfil = {
-            perfil: self.cupos.por_perfil.get(perfil, 0) - ocupados
-            for perfil, ocupados in ocupacion["por_perfil"].items()
+            perfil: tope - ocupacion["por_perfil"].get(perfil, 0)
+            for perfil, tope in self.cupos.por_perfil.items()
         }
-        for perfil, tope in self.cupos.por_perfil.items():
-            plazas_por_perfil.setdefault(
-                perfil, tope - ocupacion["por_perfil"].get(perfil, 0)
-            )
         plazas = {
             "raiz": presupuesto["maxConcurrentTasks"]
             - ocupacion["por_raiz"].get(root_id, 0),

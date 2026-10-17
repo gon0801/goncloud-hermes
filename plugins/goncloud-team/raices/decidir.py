@@ -306,7 +306,11 @@ def decidir(
         llave = (documento["unitId"], documento["attempt"])
         if llave in terminados or documento["state"] in TERMINALES:
             return
-        if desenlace == "failed" and documento["state"] in ("pending", "admitted"):
+        if desenlace == "failed" and documento["state"] in (
+            "pending",
+            "ready",
+            "admitted",
+        ):
             desenlace = "cancelled"
         terminados[llave] = desenlace
         decision["outcomes"].append(

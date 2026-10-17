@@ -155,6 +155,12 @@ def resultado_aprobado():
 class Escenario(unittest.TestCase):
     """A+B→C: dos vueltas deuran a y b, la tercera liga y despacha a c."""
 
+    @staticmethod
+    def completar_a_y_b(kanban):
+        for unit_id in ("a", "b"):
+            tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, unit_id, 1))
+            kanban.crear_hecha(tarjeta.clave, resultado_aprobado())
+
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
@@ -183,7 +189,8 @@ class Escenario(unittest.TestCase):
 class I03Ticker(Escenario):
     def test_dos_tickers_y_el_ack_perdido_crea_exactamente_una_c(self):
         tienda, kanban = self.frescar()
-        self.terminar_a_y_b(tienda, kanban)
+        self.vuelta(tienda, kanban)
+        self.completar_a_y_b(kanban)
         clave_c = clave_de_tarjeta(RAIZ, "c", 1)
         kanban.caer_en(PuntoDeCaida.DESPUES_DE_TXN)
         with self.assertRaises(kanban_port.CaidaInyectada):
@@ -238,7 +245,8 @@ class I03Ticker(Escenario):
         ):
             with self.subTest(punto=punto):
                 tienda, kanban = self.frescar()
-                self.terminar_a_y_b(tienda, kanban)
+                self.vuelta(tienda, kanban)
+                self.completar_a_y_b(kanban)
                 clave_c = clave_de_tarjeta(RAIZ, "c", 1)
                 self.assertIsNone(kanban.por_clave(clave_c))
                 kanban.caer_en(punto)
@@ -254,7 +262,8 @@ class I03Ticker(Escenario):
 class I04Ticker(Escenario):
     def test_caida_entre_el_commit_y_la_admision(self):
         tienda, kanban = self.frescar()
-        self.terminar_a_y_b(tienda, kanban)
+        self.vuelta(tienda, kanban)
+        self.completar_a_y_b(kanban)
         clave_c = clave_de_tarjeta(RAIZ, "c", 1)
         kanban.caer_en(PuntoDeCaida.ABRIR_TXN)
         with self.assertRaises(kanban_port.CaidaInyectada):
@@ -322,7 +331,8 @@ class I04Ticker(Escenario):
 
     def test_tras_las_caidas_el_plan_termina_y_sigue(self):
         tienda, kanban = self.frescar()
-        self.terminar_a_y_b(tienda, kanban)
+        self.vuelta(tienda, kanban)
+        self.completar_a_y_b(kanban)
         clave_c = clave_de_tarjeta(RAIZ, "c", 1)
         kanban.caer_en(PuntoDeCaida.DESPUES_DE_CREAR)
         with self.assertRaises(kanban_port.CaidaInyectada):
@@ -337,6 +347,48 @@ class I04Ticker(Escenario):
             sorted(d["state"] for d in vista["unidades"]),
             ["accepted", "accepted", "accepted"],
         )
+
+    def test_las_plazas_por_perfil_sin_tope_no_salen_negativas(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        kanban.crear_hecha(
+            tarjeta.clave,
+            {
+                "resultContract": "review.v1",
+                "verdict": "changes",
+                "findingsRef": REF,
+                "resultDigest": DIGEST,
+            },
+        )
+        informe = self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        self.assertEqual(vista["plazas"]["por_perfil"], {})
+        self.assertEqual(informe.tarjetas_creadas, 1)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        estados = [d["state"] for d in vista["unidades"] if d["unitId"] == "a"]
+        self.assertEqual(estados, ["failed", "admitted"])
+
+    def test_una_raiz_en_pausa_no_despacha(self):
+        tienda, kanban = self.frescar()
+        kanban.caer_en(PuntoDeCaida.ABRIR_TXN)
+        with self.assertRaises(kanban_port.CaidaInyectada):
+            self.vuelta(tienda, kanban)
+        kanban.quitar_caida(PuntoDeCaida.ABRIR_TXN)
+        tienda.control(
+            {
+                "schema": "sistema-agentes.control.v1",
+                "rootId": RAIZ,
+                "command": "pause",
+                "commandId": "cmd-01",
+                "expectedControlEpoch": 1,
+                "reason": None,
+                "issuedAt": "2026-10-17T11:00:00Z",
+            }
+        )
+        informe = self.vuelta(tienda, kanban)
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        self.assertEqual(len(tienda.intenciones_pendientes()), 2)
 
 
 class ElCancelYLaBandeja(Escenario):
