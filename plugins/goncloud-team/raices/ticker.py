@@ -54,9 +54,9 @@ def cargar_politicas() -> dict:
 def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
     muerte del proceso, y la vuelta siguiente recupera desde las filas.
-    `permisos_h` es el dict de permisos de H (I07): None deja solo el contrato."""
+    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo."""
     hechos_por_raiz = hechos_por_raiz or {}
-    permisos = autoridad.PermisosH(permisos_h) if permisos_h is not None else None
+    permisos = autoridad.PermisosH(permisos_h)
     conciliadas = 0
     aplicadas = 0
     conflictos: list = []

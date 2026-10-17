@@ -37,6 +37,24 @@ def permisos(**cambios):
     return base
 
 
+class PermisosDePrueba(autoridad.PermisosH):
+    """Permite todo lo que el contrato ya admita. Solo para pruebas: el None
+    de producción niega (fail-closed), así que quien quiera "solo el contrato"
+    en un test pasa esta clase, nunca None."""
+
+    def __init__(self):
+        super().__init__({})
+
+    def niega_accion(self, accion):
+        return None
+
+    def niega_perfil(self, perfil, modo):
+        return None
+
+    def niega_comando(self, comando):
+        return None
+
+
 def asignacion(adapter="codex", repo="owner-01/repo-a"):
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
@@ -161,7 +179,9 @@ class I07Contrato(unittest.TestCase):
         for caso in casos:
             with self.subTest(nombre=caso["nombre"]):
                 autoridad_doc = json.loads((FIXTURES / caso["autoridad"]).read_text())
-                negar = autoridad.interseccion(autoridad_doc, None, caso["ahora"])
+                negar = autoridad.interseccion(
+                    autoridad_doc, PermisosDePrueba(), caso["ahora"]
+                )
                 esperado = None if caso["esperado"] == "admisible" else caso["esperado"]
                 self.assertEqual(negar(caso["efecto"]), esperado)
 
