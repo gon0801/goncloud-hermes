@@ -48,7 +48,7 @@ def _de_ok(respuesta, documento):
     return {**documento(respuesta.valor), "replayed": bool(respuesta.replayed)}
 
 
-def enviar_raiz(argumentos, perfil, home=None):
+def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
     _exigir_claw(perfil)
     plan = (argumentos or {}).get("plan")
     if not isinstance(plan, dict):
@@ -56,6 +56,14 @@ def enviar_raiz(argumentos, perfil, home=None):
             "error": "documento-invalido",
             "detalle": {"regla": "el cuerpo trae el documento meta.v1 en plan"},
         }
+    # submit crea trabajo nuevo y la puerta de capacidades (H4a) lo niega con
+    # la ruta cerrada, sin abrir la tienda; el dueño sigue leyendo y frenando
+    # con read, control y resolve.
+    capacidades = importlib.import_module("raices.capacidades")
+    puerta = ruta_abierta or (lambda: capacidades.abrir_ruta(home=home))
+    abierta, causa = puerta()
+    if not abierta:
+        return {"error": "ruta-cerrada", "detalle": {"causa": causa}}
     tienda = abrir_tienda(home)
     try:
         respuesta = tienda.abrir_raiz(plan)

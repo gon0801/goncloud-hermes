@@ -118,6 +118,12 @@ class Base(unittest.TestCase):
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": self.temporal.name})
         parche.start()
         self.addCleanup(parche.stop)
+        # La puerta real de H4a cierra en la Mac (no hay gateway vivo): las
+        # pruebas de comportamiento la inyectan abierta y la clase de la
+        # puerta la cierra a propósito.
+        puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
+        puerta.start()
+        self.addCleanup(puerta.stop)
         self.ctx = CtxFalso()
         self.plugin.register(self.ctx)
 
@@ -554,6 +560,38 @@ class CargaComoPaquete(unittest.TestCase):
                 (Path(temporal.name) / "sistema-agentes.db").exists(),
                 "el store se abre en el temporal, no en el home vivo",
             )
+
+
+class PuertaDeCapacidades(Base):
+    def test_cerrada_rechaza_el_submit_con_la_causa_y_sin_abrir_tienda(self):
+        with mock.patch(
+            "raices.capacidades.abrir_ruta",
+            return_value=(False, "version-no-certificada"),
+        ):
+            respuesta = self.llamar("goncloud_root_submit", {"plan": meta_de()})
+        self.assertEqual(
+            respuesta,
+            {"error": "ruta-cerrada", "detalle": {"causa": "version-no-certificada"}},
+        )
+        self.assertFalse((Path(self.temporal.name) / "sistema-agentes.db").exists())
+
+    def test_abierta_inyectada_el_submit_fluye_normal(self):
+        herramientas = importlib.import_module("raices.herramientas")
+        respuesta = herramientas.enviar_raiz(
+            {"plan": meta_de()},
+            "claw",
+            home=self.temporal.name,
+            ruta_abierta=lambda: (True, None),
+        )
+        self.assertEqual(respuesta["rootId"], RAIZ)
+        self.assertFalse(respuesta["replayed"])
+
+    def test_la_lectura_no_consulta_la_puerta(self):
+        puerta = mock.MagicMock(return_value=(False, "version-no-certificada"))
+        with mock.patch("raices.capacidades.abrir_ruta", puerta):
+            respuesta = self.llamar("goncloud_root_read", {"rootId": "root-nadie"})
+        self.assertEqual(respuesta["error"], "raiz-desconocida")
+        puerta.assert_not_called()
 
 
 if __name__ == "__main__":
