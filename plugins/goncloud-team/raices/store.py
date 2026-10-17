@@ -22,6 +22,7 @@ compartido = importlib.import_module("raices.compartido")
 contrato = compartido.contrato
 kanban_port = importlib.import_module("raices.kanban_port")
 decidir = importlib.import_module("raices.decidir")
+autoridad = importlib.import_module("raices.autoridad")
 
 RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
@@ -261,11 +262,21 @@ class Store:
     """Una conexión escritora a sistema-agentes.db. Varios Store sobre el mismo
     archivo se serializan con BEGIN IMMEDIATE (dos tickers, I03/I20)."""
 
-    def __init__(self, ruta, cupos: Cupos | None = None, reloj=ahora_utc):
+    def __init__(
+        self,
+        ruta,
+        cupos: Cupos | None = None,
+        reloj=ahora_utc,
+        permisos_h: dict | None = None,
+    ):
         self.ruta = Path(ruta)
         cupos = cupos or Cupos()
         self.cupos = Cupos(cupos.global_max, dict(cupos.por_perfil or {}))
         self.reloj = reloj
+        self.permisos_h_datos = permisos_h
+        self.permisos_h = (
+            autoridad.PermisosH(permisos_h) if permisos_h is not None else None
+        )
         self._conexion = sqlite3.connect(
             self.ruta,
             isolation_level=None,
@@ -329,6 +340,148 @@ class Store:
 
     def _una_fila(self, sql, parametros=()):
         return self._conexion.execute(sql, parametros).fetchone()
+
+    def _documento_excepcion(self, root_id: str, borrador: dict, ahora: str) -> dict:
+        requester = json.loads(
+            self._una_fila(
+                "SELECT requester_json FROM raices WHERE root_id = ?", (root_id,)
+            )["requester_json"]
+        )
+        return {
+            "schema": "sistema-agentes.excepcion.v1",
+            "exceptionId": borrador["exceptionId"],
+            "rootId": root_id,
+            "unitId": borrador["subject"].get("unitId"),
+            "type": borrador["type"],
+            "options": [
+                {"optionId": opcion, "text": TEXTO_DE_OPCION[opcion]}
+                for opcion in borrador["options"]
+            ],
+            "evidenceRef": borrador.get("evidenceRef"),
+            "recipient": {
+                "channel": "telegram",
+                "principal": requester.get("principal", []),
+            },
+            "raisedAt": ahora,
+            "renoticeAfterMs": RENOTICE_MS,
+            "response": None,
+        }
+
+    def _insertar_excepcion(
+        self, root_id: str, borrador: dict, documento: dict, ahora: str
+    ):
+        self._conexion.execute(
+            "INSERT OR IGNORE INTO excepciones"
+            " (exception_id, root_id, unit_id, type, subject_json, options_json,"
+            "  evidence_ref_json, recipient_json, raised_at, renotice_after_ms,"
+            "  noticed_at, response_json, applied_by)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)",
+            (
+                borrador["exceptionId"],
+                root_id,
+                documento["unitId"],
+                documento["type"],
+                _a_json(borrador["subject"]),
+                _a_json(documento["options"]),
+                _a_json(borrador["evidenceRef"])
+                if borrador.get("evidenceRef")
+                else None,
+                _a_json(documento["recipient"]),
+                ahora,
+                RENOTICE_MS,
+            ),
+        )
+
+    def _levantar_excepcion(
+        self, root_id: str, tipo: str, sujeto: dict, opciones: list, ahora: str
+    ) -> str:
+        """La excepción de un gate propio del store (autoridad/permisos de H).
+        Va dentro de la transacción del llamante y deduplica por exceptionId."""
+        borrador = decidir.borrador_excepcion(root_id, tipo, sujeto, opciones)
+        documento = self._documento_excepcion(root_id, borrador, ahora)
+        hallazgos = contrato.validar(documento)
+        if hallazgos:
+            raise ValueError(f"excepción interna inválida: {hallazgos}")
+        self._insertar_excepcion(root_id, borrador, documento, ahora)
+        return borrador["exceptionId"]
+
+    def _razon_de_autoridad(self, root_id: str, efecto: dict, ahora: str) -> str | None:
+        """Primera razón por la que el efecto no procede: contrato o H."""
+        autoridad_meta = json.loads(
+            self._una_fila(
+                "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
+            )["authority_json"]
+        )
+        razon = contrato.efecto_admisible(autoridad_meta, efecto, ahora)
+        if razon is None and self.permisos_h is not None:
+            razon = self.permisos_h.niega_accion(efecto.get("action"))
+        return razon
+
+    OPCIONES_DE_AUTORIDAD = ["autorizar", "listo", "omitir", "cancelar"]
+
+    def _revisar_permisos_al_reanudar(self, root_id: str, ahora: str) -> None:
+        """Punto 2 de la intersección (I07): al reanudar, lo que va a correr se
+        vuelve a contrastar con el contrato y con H; lo denegado levanta su
+        excepción y no recupera el permiso de inicio."""
+        autoridad_meta = json.loads(
+            self._una_fila(
+                "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
+            )["authority_json"]
+        )
+        for fila in self._conexion.execute(
+            "SELECT effect_id, intent_json FROM efectos"
+            " WHERE root_id = ? AND state = 'prepared'",
+            (root_id,),
+        ):
+            intent = json.loads(fila["intent_json"])
+            razon = contrato.efecto_admisible(autoridad_meta, intent, ahora)
+            if razon is None and self.permisos_h is not None:
+                razon = self.permisos_h.niega_accion(intent.get("action"))
+            if razon is not None:
+                self._levantar_excepcion(
+                    root_id,
+                    "NECESITA_DAVID",
+                    {
+                        "kind": "effect",
+                        "effectId": fila["effect_id"],
+                        "cause": autoridad.causa_de(razon),
+                    },
+                    self.OPCIONES_DE_AUTORIDAD,
+                    ahora,
+                )
+        for fila in self._conexion.execute(
+            "SELECT b.unit_id, b.attempt, i.assignment_json FROM bandeja b"
+            " JOIN intentos i ON i.root_id = b.root_id AND i.unit_id = b.unit_id"
+            " AND i.attempt = b.attempt"
+            " WHERE b.root_id = ? AND b.state = 'pendiente'",
+            (root_id,),
+        ):
+            unidad_plan = self._una_fila(
+                "SELECT unit_json FROM unidades_de_plan WHERE root_id = ?"
+                " AND revision = (SELECT MAX(revision) FROM revisiones"
+                " WHERE root_id = ?) AND unit_id = ?",
+                (root_id, root_id, fila["unit_id"]),
+            )
+            razon = autoridad.negar_arranque(
+                autoridad_meta,
+                self.permisos_h,
+                ahora,
+                json.loads(fila["assignment_json"]),
+                json.loads(unidad_plan["unit_json"]) if unidad_plan else None,
+            )
+            if razon is not None:
+                self._levantar_excepcion(
+                    root_id,
+                    "NECESITA_DAVID",
+                    {
+                        "kind": "attempt",
+                        "unitId": fila["unit_id"],
+                        "attempt": fila["attempt"],
+                        "cause": autoridad.causa_de(razon),
+                    },
+                    self.OPCIONES_DE_AUTORIDAD,
+                    ahora,
+                )
 
     # -- apertura ---------------------------------------------------------
 
@@ -461,6 +614,8 @@ class Store:
             efectos_comprometidos = self._efectos_comprometidos(root_id)
             if orden == "cancel":
                 self._cancelar_intentos(root_id, command_id, ahora)
+            if orden == "resume":
+                self._revisar_permisos_al_reanudar(root_id, ahora)
             recibo = self._asentar_control(
                 root_id,
                 orden,
@@ -955,58 +1110,17 @@ class Store:
                         " WHERE root_id = ? AND counter = ?",
                         (root_id, nombre),
                     )
-            requester = json.loads(
-                self._una_fila(
-                    "SELECT requester_json FROM raices WHERE root_id = ?", (root_id,)
-                )["requester_json"]
-            )
             for borrador in decision["excepciones"]:
-                documento_excepcion = {
-                    "schema": "sistema-agentes.excepcion.v1",
-                    "exceptionId": borrador["exceptionId"],
-                    "rootId": root_id,
-                    "unitId": borrador["subject"].get("unitId"),
-                    "type": borrador["type"],
-                    "options": [
-                        {"optionId": opcion, "text": TEXTO_DE_OPCION[opcion]}
-                        for opcion in borrador["options"]
-                    ],
-                    "evidenceRef": borrador.get("evidenceRef"),
-                    "recipient": {
-                        "channel": "telegram",
-                        "principal": requester.get("principal", []),
-                    },
-                    "raisedAt": ahora,
-                    "renoticeAfterMs": RENOTICE_MS,
-                    "response": None,
-                }
+                documento_excepcion = self._documento_excepcion(
+                    root_id, borrador, ahora
+                )
                 hallazgos = contrato.validar(documento_excepcion)
                 if hallazgos:
                     self._rollback()
                     return Conflicto(
                         "documento-invalido", {"hallazgos": _a_json(hallazgos)}
                     )
-                self._conexion.execute(
-                    "INSERT OR IGNORE INTO excepciones"
-                    " (exception_id, root_id, unit_id, type, subject_json, options_json,"
-                    "  evidence_ref_json, recipient_json, raised_at, renotice_after_ms,"
-                    "  noticed_at, response_json, applied_by)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)",
-                    (
-                        borrador["exceptionId"],
-                        root_id,
-                        borrador["subject"].get("unitId"),
-                        borrador["type"],
-                        _a_json(borrador["subject"]),
-                        _a_json(documento_excepcion["options"]),
-                        _a_json(borrador["evidenceRef"])
-                        if borrador.get("evidenceRef")
-                        else None,
-                        _a_json(documento_excepcion["recipient"]),
-                        ahora,
-                        RENOTICE_MS,
-                    ),
-                )
+                self._insertar_excepcion(root_id, borrador, documento_excepcion, ahora)
             for exception_id in decision["respuestas_aplicadas"]:
                 self._conexion.execute(
                     "UPDATE excepciones SET applied_by = ? WHERE exception_id = ?"
@@ -1060,7 +1174,7 @@ class Store:
         self._begin()
         try:
             fila = self._una_fila(
-                "SELECT state, start_id, started_epoch FROM efectos"
+                "SELECT state, start_id, started_epoch, intent_json FROM efectos"
                 " WHERE root_id = ? AND effect_id = ?",
                 (root_id, effect_id),
             )
@@ -1094,6 +1208,22 @@ class Store:
                 self._rollback()
                 return Conflicto("stale-control-epoch", {"actual": vigente["epoch"]})
             ahora = self.reloj()
+            intent = json.loads(fila["intent_json"])
+            razon = self._razon_de_autoridad(root_id, intent, ahora)
+            if razon is not None:
+                self._levantar_excepcion(
+                    root_id,
+                    "NECESITA_DAVID",
+                    {
+                        "kind": "effect",
+                        "effectId": effect_id,
+                        "cause": autoridad.causa_de(razon),
+                    },
+                    ["autorizar", "listo", "omitir", "cancelar"],
+                    ahora,
+                )
+                self._commit()
+                return Conflicto("authority", {"reason": razon})
             self._conexion.execute(
                 "UPDATE efectos SET state = 'started', start_id = ?,"
                 " started_epoch = ?, updated_at = ?"
@@ -1713,5 +1843,6 @@ class Store:
             "plazas": plazas,
             "hechos": hechos,
             "politica": json.loads(raiz["politica_json"]),
+            "permisos_h": self.permisos_h_datos,
             "ahora": self.reloj(),
         }
