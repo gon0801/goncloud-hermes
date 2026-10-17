@@ -7,6 +7,7 @@ con el doble de hermes_cli y HERMES_HOME temporal); los caminos inyectables
 """
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -88,6 +89,11 @@ VINCULO = {
         "target": {"kind": "cli", "adapterId": "codex"},
         "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
         "resultContract": "review.v1",
+        "inputRevision": {
+            "kind": "code",
+            "repository": "owner-01/repo-a",
+            "sha": "0" * 40,
+        },
         "continuation": {"kind": "requester"},
     },
     "writers": [],
@@ -114,9 +120,23 @@ class Base(unittest.TestCase):
 
 
 class Script(Base):
+    PERMISOS = {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"codex": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+    def instalar_permisos(self):
+        raices = self.home / "raices"
+        raices.mkdir(exist_ok=True)
+        (raices / "permisos.json").write_text(
+            json.dumps(self.PERMISOS), encoding="utf-8"
+        )
+
     def test_una_vuelta_despacha_la_intencion_pendiente_y_sale_silencioso(self):
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
+        self.instalar_permisos()
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.home / "sistema-agentes.db")
         tienda.abrir_raiz(META)

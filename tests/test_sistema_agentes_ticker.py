@@ -34,6 +34,16 @@ DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
 
 
+def permisos_de_prueba():
+    """Los permisos de H del escenario, explícitos: el None de producción
+    niega (fail-closed), así que ningún test depende del omisión."""
+    return {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"codex": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+
 def asignacion(adapter="codex", repo="owner-01/repo-a"):
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
@@ -180,7 +190,12 @@ class Escenario(unittest.TestCase):
         return tienda, kanban
 
     def vuelta(self, tienda, kanban, hechos=None):
-        return ticker.vuelta(tienda, kanban, {RAIZ: hechos or hechos_de_raiz()})
+        return ticker.vuelta(
+            tienda,
+            kanban,
+            {RAIZ: hechos or hechos_de_raiz()},
+            permisos_h=permisos_de_prueba(),
+        )
 
     def terminar_a_y_b(self, tienda, kanban, hechos=None):
         self.vuelta(tienda, kanban, hechos)
@@ -331,6 +346,13 @@ class I04Ticker(Escenario):
             [(i["unitId"], i["incidentKey"]) for i in vista["incidencias"]],
             [("a", f"invalid-result:{tarjeta.id}")],
         )
+        episodio = vista["incidencias"][0]["incident"]["episodeId"]
+        identidad = decidir.digesto(["schema-invalid", "structured-result"])
+        self.assertEqual(
+            episodio,
+            "invalid-result:" + decidir.digesto([tarjeta.id, identidad]),
+        )
+        self.assertNotEqual(episodio, tarjeta.id)
         self.assertEqual(vista["resultados"], [])
 
     def test_una_tarjeta_archivada_es_un_intento_muerto_con_incidencia(self):
@@ -358,6 +380,33 @@ class I04Ticker(Escenario):
         clave_dos = clave_de_tarjeta(RAIZ, "a", 2)
         self.assertIn(clave_dos, kanban.creaciones)
         self.assertIsNotNone(kanban.por_clave(clave_dos))
+
+    def test_el_episodio_invalido_distingue_cargas_distintas(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        tarjeta_a = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        tarjeta_b = kanban.por_clave(clave_de_tarjeta(RAIZ, "b", 1))
+        kanban.crear_hecha(
+            tarjeta_a.clave, {"resultContract": "review.v1", "verdict": "changes"}
+        )
+        kanban.crear_hecha(
+            tarjeta_b.clave,
+            {
+                "resultContract": "review.v1",
+                "verdict": "changes",
+                "resultDigest": DIGEST,
+            },
+        )
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        episodios = {
+            i["unitId"]: i["incident"]["episodeId"] for i in vista["incidencias"]
+        }
+        self.assertEqual(
+            episodios["b"],
+            "invalid-result:" + decidir.digesto([tarjeta_b.id, DIGEST]),
+        )
+        self.assertNotEqual(episodios["a"], episodios["b"])
 
     def test_tras_las_caidas_el_plan_termina_y_sigue(self):
         tienda, kanban = self.frescar()

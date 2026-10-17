@@ -21,7 +21,8 @@
  ],
  "rebanadasCerradas": [
   "H0b",
-  "H1"
+  "H1",
+  "H3"
  ],
  "filas": [
   {
@@ -161,28 +162,28 @@
    "ensayo": "I07",
    "clausula": "I07.1",
    "texto": "autoridad negativa, revocación, otra sesión, diseño, borrador de mail y SHA futuro restringen efectos (autoridad/efectos.json)",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_autoridad.I07Contrato.test_cada_caso_del_fixture_da_la_misma_razon",
    "rebanada": "H3"
   },
   {
    "ensayo": "I07",
    "clausula": "I07.2",
    "texto": "en el arranque, autoridad que admite y permiso de H que niega no ejecutan nada",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_autoridad.I07Arranque.test_la_autoridad_admite_y_h_niega_no_despacha_nada",
    "rebanada": "H3"
   },
   {
    "ensayo": "I07",
    "clausula": "I07.3",
    "texto": "en la reanudación, autoridad que admite y permiso de H que niega no ejecutan nada",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_autoridad.I07Reanudacion.test_al_reanudar_h_niega_y_el_efecto_no_recupera_el_permiso",
    "rebanada": "H3"
   },
   {
    "ensayo": "I07",
    "clausula": "I07.4",
    "texto": "antes del efecto, autoridad que admite y permiso de H que niega no ejecutan nada",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_autoridad.I07Efecto.test_la_autoridad_admite_y_h_niega_el_efecto_no_corre",
    "rebanada": "H3"
   },
   {
@@ -372,14 +373,14 @@
    "ensayo": "I14",
    "clausula": "I14.1",
    "texto": "aviso y proyección comparten estado y porcentaje (la de H sale de derivar de G)",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I14Proyeccion.test_la_de_h_coincide_con_derivar_sobre_el_mismo_snapshot",
    "rebanada": "H3"
   },
   {
    "ensayo": "I14",
    "clausula": "I14.2",
    "texto": "dos raíces, CI en espera y unidades sin PR se representan bien",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I14Proyeccion.test_dos_raices_y_unidades_sin_reporte_se_representan",
    "rebanada": "H3"
   },
   {
@@ -394,28 +395,28 @@
    "ensayo": "I16",
    "clausula": "I16.1",
    "texto": "un PID reutilizado no atribuye ni mata recursos ajenos",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I16Proyeccion.test_un_hecho_de_otro_intento_no_atribuye_error",
    "rebanada": "H3"
   },
   {
    "ensayo": "I16",
    "clausula": "I16.2",
    "texto": "una sesión caída no atribuye ni mata recursos ajenos",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I16Proyeccion.test_la_sesion_caida_solo_mancha_su_fila",
    "rebanada": "H3"
   },
   {
    "ensayo": "I16",
    "clausula": "I16.3",
    "texto": "datos corruptos no atribuyen ni matan recursos ajenos",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I16Proyeccion.test_un_json_roto_no_atribuye_ni_tumba_la_proyeccion",
    "rebanada": "H3"
   },
   {
    "ensayo": "I16",
    "clausula": "I16.4",
    "texto": "métricas ausentes no atribuyen ni matan recursos ajenos",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_proyeccion.I16Proyeccion.test_metricas_ausentes_no_inventan_nada",
    "rebanada": "H3"
   },
   {

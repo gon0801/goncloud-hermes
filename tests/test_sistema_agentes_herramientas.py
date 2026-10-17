@@ -322,6 +322,11 @@ class Resolucion(Base):
                         "target": {"kind": "cli", "adapterId": "codex"},
                         "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
                         "resultContract": "review.v1",
+                        "inputRevision": {
+                            "kind": "code",
+                            "repository": "owner-01/repo-a",
+                            "sha": "0" * 40,
+                        },
                         "continuation": {"kind": "requester"},
                     },
                     "relay": False,
@@ -330,8 +335,13 @@ class Resolucion(Base):
             "claims": [],
             "efectos": [],
         }
-        informe = ticker.vuelta(tienda, puerto, {RAIZ: hechos})
-        informe = ticker.vuelta(tienda, puerto, {RAIZ: hechos})
+        permisos = {
+            "acciones": ["read", "implement", "review"],
+            "toolsets": {"codex": ["read", "write"]},
+            "comandos": ["git", "python3"],
+        }
+        informe = ticker.vuelta(tienda, puerto, {RAIZ: hechos}, permisos_h=permisos)
+        informe = ticker.vuelta(tienda, puerto, {RAIZ: hechos}, permisos_h=permisos)
         self.assertEqual(informe.aplicadas, 1)
         snapshot = self.llamar("goncloud_root_read", {"rootId": RAIZ})
         self.assertEqual(len(snapshot["excepciones"]), 1)
