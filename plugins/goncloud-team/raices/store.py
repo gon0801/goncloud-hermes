@@ -688,10 +688,26 @@ class Store:
                     (ahora, root_id, desenlace["unitId"], desenlace["attempt"]),
                 )
                 if desenlace["outcome"] in ("accepted", "failed", "cancelled"):
-                    self._conexion.execute(
-                        "DELETE FROM escritores WHERE root_id = ? AND unit_id = ?",
+                    vivos = self._conexion.execute(
+                        "SELECT assignment_json FROM intentos"
+                        " WHERE root_id = ? AND unit_id != ? AND outcome_ref IS NULL",
                         (root_id, desenlace["unitId"]),
-                    )
+                    ).fetchall()
+                    recursos = {
+                        _repo_de(json.loads(fila["assignment_json"])) for fila in vivos
+                    }
+                    recursos.discard(None)
+                    if recursos:
+                        marcadores = ",".join("?" for _ in recursos)
+                        self._conexion.execute(
+                            "DELETE FROM escritores WHERE root_id = ?"
+                            f" AND resource_ref NOT IN ({marcadores})",
+                            (root_id, *recursos),
+                        )
+                    else:
+                        self._conexion.execute(
+                            "DELETE FROM escritores WHERE root_id = ?", (root_id,)
+                        )
             vivos_raiz = self._una_fila(
                 "SELECT COUNT(*) AS n FROM intentos WHERE root_id = ?"
                 " AND outcome_ref IS NULL",
