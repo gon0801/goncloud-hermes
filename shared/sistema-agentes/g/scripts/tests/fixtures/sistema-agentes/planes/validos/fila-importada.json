@@ -1,0 +1,101 @@
+{
+  "schema": "sistema-agentes.meta.v1",
+  "rootId": "root-02",
+  "requester": {
+    "principal": [
+      "telegram",
+      "owner-01"
+    ],
+    "agentId": "agent-01"
+  },
+  "authority": {
+    "schema": "sistema-agentes.autoridad.v1",
+    "authorityRef": "P0001",
+    "grantedBy": "David",
+    "grantedAt": "2026-10-13T09:00:00Z",
+    "actions": [
+      "implement"
+    ],
+    "repos": [
+      "owner-01/repo-a"
+    ],
+    "accounts": [
+      "cuenta-01"
+    ],
+    "destinations": [
+      "dest-a"
+    ],
+    "deadline": "2026-12-31T00:00:00Z",
+    "mode": "implement"
+  },
+  "budget": {
+    "maxConcurrentTasks": 2,
+    "maxDepth": 2,
+    "maxChildren": 4,
+    "maxModelCalls": 40,
+    "maxInputTokens": 400000,
+    "maxOutputTokens": 40000,
+    "maxCacheReadTokens": 800000,
+    "maxContextTokens": 200000,
+    "maxTreeTokens": 1200000,
+    "maxAutomaticRecoveryCalls": 2
+  },
+  "plan": {
+    "revision": 1,
+    "planDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "requestDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "units": [
+      {
+        "unitId": "unit-a",
+        "title": "Unidad A",
+        "dependsOn": [],
+        "criteria": [
+          {
+            "criterionId": "crit-a-1",
+            "text": "La unidad A cumple su criterio.",
+            "verifier": "reviewer"
+          }
+        ],
+        "scope": {
+          "repos": [
+            "owner-01/repo-a"
+          ],
+          "mode": "implement"
+        }
+      },
+      {
+        "unitId": "unit-b",
+        "title": "Unidad B",
+        "dependsOn": [
+          "unit-a"
+        ],
+        "criteria": [
+          {
+            "criterionId": "crit-b-1",
+            "text": "La unidad B cumple su criterio.",
+            "verifier": "ci"
+          }
+        ],
+        "scope": {
+          "repos": [
+            "owner-01/repo-a"
+          ],
+          "mode": "implement"
+        }
+      }
+    ],
+    "assumptions": [
+      "La fila importada conserva el orden de su plan de origen."
+    ]
+  },
+  "controlEpoch": 1,
+  "control": {
+    "state": "active",
+    "epoch": 1,
+    "reason": null
+  },
+  "qualityPolicy": {
+    "version": "quality-kit.regla4"
+  },
+  "createdAt": "2026-10-13T09:05:00Z"
+}

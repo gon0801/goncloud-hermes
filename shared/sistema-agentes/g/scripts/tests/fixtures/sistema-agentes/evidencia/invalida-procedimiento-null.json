@@ -1,0 +1,30 @@
+{
+  "schema": "sistema-agentes.evidencia.v1",
+  "evidenceId": "evid-01",
+  "rootId": "root-03",
+  "unitId": "unit-c",
+  "criterionId": "crit-c-1",
+  "planRevision": 1,
+  "artifactRef": {
+    "ref": "git:cccccccccccccccccccccccccccccccccccccccc",
+    "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  "environment": {
+    "host": "mac-local",
+    "versions": {
+      "python": "3.9.6",
+      "node": "24.19.0"
+    }
+  },
+  "verifier": {
+    "principal": [
+      "agent",
+      "agent-03"
+    ],
+    "role": "owner"
+  },
+  "procedure": null,
+  "outcome": "passed",
+  "at": "2026-10-13T10:30:00Z",
+  "expiresAt": null
+}

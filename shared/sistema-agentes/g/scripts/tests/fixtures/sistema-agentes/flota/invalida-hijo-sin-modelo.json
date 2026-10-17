@@ -1,0 +1,33 @@
+{
+  "schema": "sistema-agentes.flota.v1",
+  "rootId": "root-03",
+  "unitId": "unit-c",
+  "attempt": 1,
+  "specialist": "ingenieria",
+  "host": "mac-local",
+  "executor": "opencode",
+  "accountRef": "cuenta-01",
+  "model": {
+    "id": "proveedor-01/modelo-a"
+  },
+  "generation": 1,
+  "permissions": [
+    "read",
+    "write"
+  ],
+  "attestations": [
+    {
+      "what": "poteto",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "what": "tools",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "children": [
+    {
+      "agent": "poteto-agent"
+    }
+  ]
+}

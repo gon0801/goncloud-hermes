@@ -1,0 +1,38 @@
+{
+  "schema": "sistema-agentes.excepcion.v1",
+  "exceptionId": "exc-01",
+  "rootId": "root-03",
+  "unitId": "unit-c",
+  "type": "NECESITA_DAVID",
+  "options": [
+    {
+      "optionId": "seguir",
+      "text": "Seguir con el plan."
+    },
+    {
+      "optionId": "cancelar",
+      "text": "Cancelar."
+    }
+  ],
+  "evidenceRef": {
+    "ref": "artifact:evidencia-03",
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "recipient": {
+    "channel": "telegram",
+    "principal": [
+      "telegram",
+      "owner-01"
+    ]
+  },
+  "raisedAt": "2026-10-13T11:30:00Z",
+  "renoticeAfterMs": 3600000,
+  "response": {
+    "optionId": "borrar",
+    "by": [
+      "telegram",
+      "owner-01"
+    ],
+    "at": "2026-10-13T11:45:00Z"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "sistema-agentes.flota.v1",
+  "rootId": "root-03",
+  "unitId": "unit-c",
+  "attempt": 1,
+  "specialist": "ingenieria",
+  "host": "mac-local",
+  "executor": "cli",
+  "accountRef": null,
+  "model": {
+    "id": null,
+    "reason": "El lanzador no publica el modelo que usa."
+  },
+  "generation": 1,
+  "permissions": [],
+  "attestations": [
+    {
+      "what": "poteto",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "what": "tools",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

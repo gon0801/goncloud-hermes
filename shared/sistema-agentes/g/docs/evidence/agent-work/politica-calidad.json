@@ -1,0 +1,22 @@
+{
+  "schema": "agent-work.calidad.v1",
+  "activa": "quality-kit.regla4",
+  "versiones": {
+    "quality-kit.regla4": {
+      "roundsPerImplementer": 5,
+      "relays": 1,
+      "agrupar": "los hallazgos se juntan y se corrigen en una ronda por bloque",
+      "reabre": "solo un bloqueante, con el comando que lo reproduce",
+      "bloqueanteNuncaEnFila": true,
+      "noBloqueante": "se corrige en la misma ronda si es de una línea; si no, fila del plan nombrada en el PR",
+      "revisorExcluyeAutores": true,
+      "segundoModelo": false,
+      "decision": {
+        "by": "David",
+        "on": "2026-10-12",
+        "ref": "docs/evidence/sistema-agentes-unificado/revision-2026-10-12/decisiones-para-david.md:27",
+        "quote": "regla 4 de quality-kit con tope 5+5. La propuesta de cuatro ciclos queda inactiva."
+      }
+    }
+  }
+}

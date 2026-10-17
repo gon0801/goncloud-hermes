@@ -1,0 +1,26 @@
+{
+  "schema": "sistema-agentes.proyeccion.v1",
+  "rootId": "root-03",
+  "planRevision": 1,
+  "controlEpoch": 1,
+  "generatedAt": "2026-10-13T12:00:00Z",
+  "progress": {
+    "declared": 66,
+    "observed": 33,
+    "accepted": null
+  },
+  "units": [
+    {
+      "unitId": "unit-c",
+      "state": "running",
+      "host": "mac-local",
+      "executor": "opencode",
+      "modelId": null,
+      "nextCheckAt": "2026-10-13T12:05:00Z",
+      "error": null
+    }
+  ],
+  "freshness": {
+    "staleAfterMs": 300000
+  }
+}

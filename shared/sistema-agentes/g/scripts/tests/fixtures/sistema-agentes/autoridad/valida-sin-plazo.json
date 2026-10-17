@@ -1,0 +1,19 @@
+{
+  "schema": "sistema-agentes.autoridad.v1",
+  "authorityRef": "P0002",
+  "grantedBy": "David",
+  "grantedAt": "2026-10-13T09:00:00Z",
+  "actions": [
+    "read",
+    "implement",
+    "publish"
+  ],
+  "repos": [
+    "owner-01/repo-a",
+    "owner-01/repo-b"
+  ],
+  "accounts": [],
+  "destinations": [],
+  "deadline": null,
+  "mode": "publish"
+}

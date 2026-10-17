@@ -1,0 +1,233 @@
+[
+  {
+    "id": "I01",
+    "distingue": "Pedido natural, plan y fila importada conservan alcance, supuestos y criterios.",
+    "bloque": "SUA-00",
+    "estado": "especificado",
+    "fixtures": [
+      "planes/validos/pedido-chico.json",
+      "planes/validos/fila-importada.json",
+      "planes/validos/pedido-compuesto.json"
+    ]
+  },
+  {
+    "id": "I02",
+    "distingue": "Ciclo, ID duplicado, dependencia o criterio faltante se rechazan antes de lanzar.",
+    "bloque": "SUA-00",
+    "estado": "especificado",
+    "fixtures": [
+      "planes/invalidos/ciclo.json",
+      "planes/invalidos/auto-dependencia.json",
+      "planes/invalidos/id-duplicado.json",
+      "planes/invalidos/criterio-duplicado.json",
+      "planes/invalidos/dependencia-faltante.json",
+      "planes/invalidos/criterio-faltante.json",
+      "planes/invalidos/campo-prohibido.json",
+      "planes/invalidos/schema-ajeno.json"
+    ]
+  },
+  {
+    "id": "I03",
+    "distingue": "A+B→C con dos reconciliadores y ACK perdido crea exactamente una C bajo la raíz.",
+    "bloque": "SUA-01",
+    "estado": "especificado",
+    "fixtures": [
+      "unidad/valida.json",
+      "unidad/invalida-estado-desconocido.json",
+      "unidad/invalida-unit-id-vacio.json",
+      "unidad/invalida-asignacion-en-texto.json",
+      "unidad/transiciones.json"
+    ]
+  },
+  {
+    "id": "I04",
+    "distingue": "Caídas entre commit/admisión/consumo recuperan tareas y gasto; termina el turno y sigue el plan.",
+    "bloque": "SUA-01",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I05",
+    "distingue": "Pausa/cancelación contra permiso Started; envío posterior al ACK queda enumerado si ya estaba comprometido. Replay de control estable, Resume obsoleto rechazado, eventos tardíos sin resurrección.",
+    "bloque": "SUA-01",
+    "estado": "especificado",
+    "fixtures": [
+      "control/pause-con-recibo.json",
+      "control/invalida-comando-desconocido.json",
+      "control/invalida-epoca-en-texto.json"
+    ]
+  },
+  {
+    "id": "I06",
+    "distingue": "Efecto confirmado no se repite; efecto incierto conserva estado y exige conciliación.",
+    "bloque": "SUA-01",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I07",
+    "distingue": "Autoridad negativa, revocación, otra sesión, diseño, mail borrador y SHA futuro restringen efectos.",
+    "bloque": "SUA-02",
+    "estado": "especificado",
+    "fixtures": [
+      "autoridad/valida.json",
+      "autoridad/valida-sin-plazo.json",
+      "autoridad/invalida-accion-desconocida.json",
+      "autoridad/invalida-repo-sin-owner.json",
+      "autoridad/efectos.json"
+    ]
+  },
+  {
+    "id": "I08",
+    "distingue": "Poteto completo llega y funciona en las cinco rutas vivas (turno nativo, hijo nativo, encargo nativo a un agente, encargo por CLI con un proceso de opencode por encargo, hijo de una CLI); ausencia impide admitir la ruta.",
+    "bloque": "SUA-03",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I09",
+    "distingue": "En la ruta por CLI el modelo efectivo es el pedido (cabecera del brief, `-m` lanzado, modelo que opencode usó); un intento nuevo conserva su snapshot; permisos efectivos medidos; opencode y sus hijos dentro del grupo del slot; reviewer sin escritura en fuente.",
+    "bloque": "SUA-03",
+    "estado": "especificado",
+    "fixtures": [
+      "flota/modelo-exacto.json",
+      "flota/modelo-desconocido-con-razon.json",
+      "flota/invalida-executor-fuera-del-enum.json",
+      "flota/invalida-modelo-desconocido-sin-razon.json",
+      "flota/invalida-generacion-booleana.json",
+      "flota/invalida-digest-corto.json",
+      "flota/modelo-exacto-con-hijos.json",
+      "flota/invalida-hijo-sin-modelo.json"
+    ]
+  },
+  {
+    "id": "I10",
+    "distingue": "Sucesor estable se promueve automáticamente; preview/incompatible falla; intento activo conserva snapshot.",
+    "bloque": "SUA-04",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I11",
+    "distingue": "Alta nueva conecta ida/vuelta; perfil incompleto visible; competencia, caducidad y memoria preservada.",
+    "bloque": "SUA-03",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I12",
+    "distingue": "Corrección converge o detiene; nuevos hallazgos/relevo no reinician linaje. Cambiar la política vigente exige la decisión registrada de David; raíces previas conservan política; ningún paso pide revisión a un segundo modelo.",
+    "bloque": "SUA-05",
+    "estado": "especificado",
+    "fixtures": [
+      "excepcion/necesita-david.json",
+      "excepcion/necesita-david-respondida.json",
+      "excepcion/invalida-respuesta-fuera-de-opciones.json",
+      "excepcion/invalida-sin-opciones.json",
+      "excepcion/invalida-reaviso-corto.json",
+      "excepcion/invalida-opciones-en-texto.json"
+    ]
+  },
+  {
+    "id": "I13",
+    "distingue": "Review/CI del head, criterio y entorno vigentes; LISTO, merge, rollback y criterio borrado no fabrican éxito.",
+    "bloque": "SUA-05",
+    "estado": "especificado",
+    "fixtures": [
+      "resultados/review-approved.json",
+      "resultados/review-changes.json",
+      "resultados/ready.json",
+      "resultados/invalido-contrato-desconocido.json",
+      "resultados/invalido-sin-result-digest.json",
+      "resultados/invalido-changes-sin-findings.json",
+      "evidencia/claim-passed.json",
+      "evidencia/invalida-outcome-fuera-del-enum.json",
+      "evidencia/invalida-fecha-sin-z.json",
+      "evidencia/invalida-procedimiento-null.json",
+      "evidencia/invalida-version-numerica.json",
+      "evidencia/invalida-versiones-en-lista.json"
+    ]
+  },
+  {
+    "id": "I14",
+    "distingue": "Panel y aviso comparten estado/porcentaje; dos tareas, CI en espera y tareas sin PR se representan bien.",
+    "bloque": "SUA-06",
+    "estado": "especificado",
+    "fixtures": [
+      "proyeccion/valida.json",
+      "proyeccion/invalida-progreso-mayor-a-100.json"
+    ]
+  },
+  {
+    "id": "I15",
+    "distingue": "LobsterBoard original y ajustes probados en móvil/escritorio, teclado, vacío/error/offline y frescura.",
+    "bloque": "SUA-06",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I16",
+    "distingue": "PID reutilizado, sesión caída, datos corruptos y métricas ausentes no atribuyen ni matan recursos ajenos.",
+    "bloque": "SUA-06",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I17",
+    "distingue": "Secretos sintéticos, XSS y rutas/URLs maliciosas no se filtran por vista/evento/exportación.",
+    "bloque": "SUA-06",
+    "estado": "especificado",
+    "fixtures": [
+      "proyeccion/invalida-campo-extra-argv.json"
+    ]
+  },
+  {
+    "id": "I18",
+    "distingue": "Advisor con/sin eventos declara cobertura; caída no aprueba ni despacha.",
+    "bloque": "SUA-03",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I19",
+    "distingue": "Generaciones, apply sin attest, nuevo destino y reversa conservan autorización y tareas.",
+    "bloque": "SUA-04",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I20",
+    "distingue": "Presupuesto raíz, cupo global y escritor exclusivo; par atómico con dos/tres plazas ocupadas.",
+    "bloque": "SUA-01",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I21",
+    "distingue": "Batería íntegra, unión de shards, corpus real, logs y hooks; sin prueba omitida o duplicación inútil.",
+    "bloque": "SUA-05",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I22",
+    "distingue": "Corte por entrada deja un dueño; pending results/crash/reversa y cron mixto no pierden trabajo.",
+    "bloque": "SUA-09O",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I23",
+    "distingue": "Orbit por SHA remoto, respaldo, copia, salud y reversa; autorización e incertidumbre comprobadas.",
+    "bloque": "SUA-08",
+    "estado": "especificado",
+    "fixtures": []
+  },
+  {
+    "id": "I24",
+    "distingue": "Cada host instala/reinstala/revierte y opera con el otro inaccesible; alias/runbook no duplican programas.",
+    "bloque": "SUA-09O",
+    "estado": "especificado",
+    "fixtures": []
+  }
+]

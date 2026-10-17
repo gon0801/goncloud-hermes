@@ -1,0 +1,147 @@
+[
+  {
+    "nombre": "accion fuera",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "send-mail",
+      "repo": "owner-01/repo-a",
+      "mode": "implement"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "accion-fuera-de-autoridad"
+  },
+  {
+    "nombre": "repo fuera",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-z",
+      "mode": "implement"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "repo-fuera-de-autoridad"
+  },
+  {
+    "nombre": "destino fuera",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "implement",
+      "destination": "dest-z"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "destino-fuera-de-autoridad"
+  },
+  {
+    "nombre": "modo publish contra autoridad implement",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "publish"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "modo-fuera-de-autoridad"
+  },
+  {
+    "nombre": "autoridad vencida",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "implement"
+    },
+    "ahora": "2027-01-01T00:00:00Z",
+    "esperado": "autoridad-vencida"
+  },
+  {
+    "nombre": "vencida por un milisegundo",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "implement"
+    },
+    "ahora": "2026-12-31T00:00:00.001Z",
+    "esperado": "autoridad-vencida"
+  },
+  {
+    "nombre": "en el instante del plazo",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "implement"
+    },
+    "ahora": "2026-12-31T00:00:00Z",
+    "esperado": "admisible"
+  },
+  {
+    "nombre": "vencida gana a accion fuera",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "send-mail",
+      "repo": "owner-01/repo-a",
+      "mode": "implement"
+    },
+    "ahora": "2027-01-01T00:00:00Z",
+    "esperado": "autoridad-vencida"
+  },
+  {
+    "nombre": "accion fuera gana a repo fuera",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "send-mail",
+      "repo": "owner-01/repo-z",
+      "mode": "implement"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "accion-fuera-de-autoridad"
+  },
+  {
+    "nombre": "admisible con destino",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "implement",
+      "destination": "dest-a"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "admisible"
+  },
+  {
+    "nombre": "admisible sin destino y con modo menor",
+    "autoridad": "autoridad/valida.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "read"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "admisible"
+  },
+  {
+    "nombre": "sin plazo no vence",
+    "autoridad": "autoridad/valida-sin-plazo.json",
+    "efecto": {
+      "action": "publish",
+      "repo": "owner-01/repo-a",
+      "mode": "publish"
+    },
+    "ahora": "2031-01-01T00:00:00Z",
+    "esperado": "admisible"
+  },
+  {
+    "nombre": "modo que el contrato no conoce",
+    "autoridad": "autoridad/valida-sin-plazo.json",
+    "efecto": {
+      "action": "implement",
+      "repo": "owner-01/repo-a",
+      "mode": "root"
+    },
+    "ahora": "2026-10-13T12:00:00Z",
+    "esperado": "modo-fuera-de-autoridad"
+  }
+]
