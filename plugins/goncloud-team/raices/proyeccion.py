@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 compartido = importlib.import_module("raices.compartido")
@@ -232,6 +232,57 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     informe["messageId"] = message_id
     informe["errores"] = errores
     return informe
+
+
+def _mensaje_capacidad_incierta(causa: str) -> str:
+    lineas = [
+        f"⚠️ *CAPACIDAD_INCIERTA · {causa}*",
+        "",
+        "La ruta de raíces está cerrada: el ticker no decide ni despacha.",
+    ]
+    return "\n".join(lineas)
+
+
+def avisar_capacidad_incierta(ruta_estado, causa, ahora, enviar) -> dict:
+    """El aviso de ruta cerrada (H4a): una vez por cambio de causa. El
+    checkpoint es el estado en disco y solo avanza con un messageId entero
+    positivo, así la vuelta siguiente reintenta hasta que el aviso salga.
+    No crea directorios: en producción %HERMES_HOME%/raices ya existe, y un
+    home sin raices/ no es asunto de esta pasada."""
+    try:
+        estado = json.loads(Path(ruta_estado).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        estado = {}
+    if not isinstance(estado, dict):
+        estado = {}
+    if estado.get("causa") == causa:
+        return {"avisada": False}
+    mensaje_id = enviar(_mensaje_capacidad_incierta(causa))
+    if (
+        not isinstance(mensaje_id, int)
+        or isinstance(mensaje_id, bool)
+        or mensaje_id <= 0
+    ):
+        return {"avisada": False}
+    avisada_en = ahora
+    if isinstance(ahora, datetime):
+        avisada_en = ahora.strftime("%Y-%m-%dT%H:%M:%SZ")
+    documento = {
+        "causa": causa,
+        "avisadaEn": avisada_en,
+        "messageId": mensaje_id,
+    }
+    try:
+        ruta = Path(ruta_estado)
+        temporal = ruta.with_name(f".{ruta.name}.{os.getpid()}.tmp")
+        temporal.write_text(
+            json.dumps(documento, ensure_ascii=False, sort_keys=True, indent=1),
+            encoding="utf-8",
+        )
+        os.replace(temporal, ruta)
+    except OSError:
+        return {"avisada": False}
+    return {"avisada": True, "messageId": mensaje_id}
 
 
 def pasada(
