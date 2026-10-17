@@ -14,6 +14,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+
+from conexiones import rastrear_conexiones  # noqa: E402
 
 store = importlib.import_module("raices.store")
 decidir = importlib.import_module("raices.decidir")
@@ -183,13 +186,20 @@ def politica_regla4(**cambios):
 
 class AlmacenDePrueba(unittest.TestCase):
     def setUp(self):
+        rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta)
+        self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(
             meta_de([unidad("a", "a1"), unidad("c", "c1", ["a"]), unidad("d", "d1")])
         )
+
+    def tienda_de(self, **kwargs):
+        tienda = store.Store(self.ruta, **kwargs)
+        self.addCleanup(tienda.cerrar)
+        return tienda
 
     def preparar_efecto(self, unit_id=None):
         self.tienda.aplicar(
@@ -300,8 +310,7 @@ class I05Control(AlmacenDePrueba):
 
 class CarrerasDeUnaTransaccion(AlmacenDePrueba):
     def test_el_cancel_de_otro_proceso_cierra_la_ventana_de_aplicar(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         original = self.tienda._begin
 
         def begin_con_cancel_intercalado():
@@ -324,8 +333,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual(escritores, 0)
 
     def test_el_replay_concurrente_da_el_recibo_original(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         original = self.tienda._begin
         visto = []
 
@@ -342,8 +350,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual(recibo.valor.state, "paused")
 
     def test_la_liquidacion_perdedora_devuelve_conflicto(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         self.preparar_efecto()
         original = self.tienda._begin
 
@@ -367,8 +374,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual([e["state"] for e in vista["efectos"]], ["confirmed"])
 
     def test_transicionar_en_carrera_con_el_cancel_no_afirma_estado(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         self.assertIsInstance(
             self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
             store.Ok,
@@ -388,8 +394,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual([d["state"] for d in vista["unidades"]], ["cancelled"])
 
     def test_dos_respuestas_concurrentes_la_segunda_pierde(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         borrador = decidir.borrador_excepcion(
             RAIZ,
             "NECESITA_DAVID",
@@ -451,7 +456,7 @@ class I06Efectos(AlmacenDePrueba):
 
 class I20Cupos(AlmacenDePrueba):
     def test_el_presupuesto_de_la_raiz(self):
-        tienda = store.Store(self.ruta)
+        tienda = self.tienda_de()
         tienda.abrir_raiz(
             {**meta_de([unidad("x", "x1")], max_concurrentes=1), "rootId": "root-chica"}
         )
@@ -463,30 +468,28 @@ class I20Cupos(AlmacenDePrueba):
         self.assertEqual(lleno.codigo, "capacity")
 
     def test_el_cupo_global(self):
-        tienda = store.Store(self.ruta, cupos=store.Cupos(global_max=0))
+        tienda = self.tienda_de(cupos=store.Cupos(global_max=0))
         conflicto = tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1")
         self.assertEqual(conflicto.codigo, "capacity")
         self.assertEqual(tienda.ocupacion()["global"], 0)
 
     def test_el_cupo_global_y_por_perfil(self):
-        sin_cupo = store.Store(self.ruta, cupos=store.Cupos(global_max=0))
+        sin_cupo = self.tienda_de(cupos=store.Cupos(global_max=0))
         conflicto = sin_cupo.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1")
         self.assertEqual(conflicto.codigo, "capacity")
         self.assertEqual(sin_cupo.ocupacion()["global"], 0)
-        primero = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 1}))
+        primero = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 1}))
         self.assertIsInstance(
             primero.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1"), store.Ok
         )
-        segundo = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 1}))
+        segundo = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 1}))
         negado = segundo.aplicar(RAIZ, decision(bindings=[binding("c")]), "dec-2")
         self.assertEqual(negado.codigo, "capacity")
-        holgado = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 2}))
+        holgado = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 2}))
         self.assertIsInstance(
             holgado.aplicar(RAIZ, decision(bindings=[binding("c")]), "dec-3"), store.Ok
         )
-        otro_perfil = store.Store(
-            self.ruta, cupos=store.Cupos(por_perfil={"claude": 1})
-        )
+        otro_perfil = self.tienda_de(cupos=store.Cupos(por_perfil={"claude": 1}))
         self.assertIsInstance(
             otro_perfil.aplicar(
                 RAIZ,
@@ -553,7 +556,7 @@ class I20Cupos(AlmacenDePrueba):
         self.assertIsInstance(libre, store.Ok)
 
     def test_el_par_atomico_con_dos_y_tres_plazas_ocupadas(self):
-        par = store.Store(self.ruta, cupos=store.Cupos(global_max=2))
+        par = self.tienda_de(cupos=store.Cupos(global_max=2))
         self.assertIsInstance(
             par.aplicar(
                 RAIZ,
@@ -567,7 +570,7 @@ class I20Cupos(AlmacenDePrueba):
         tercera = par.aplicar("root-b", decision(bindings=[binding("b")]), "dec-2")
         self.assertEqual(tercera.codigo, "capacity")
         self.assertEqual(par.ocupacion()["global"], 2)
-        holgado = store.Store(self.ruta, cupos=store.Cupos(global_max=3))
+        holgado = self.tienda_de(cupos=store.Cupos(global_max=3))
         self.assertIsInstance(
             holgado.aplicar(
                 "root-b",
@@ -583,7 +586,7 @@ class I20Cupos(AlmacenDePrueba):
                 "rootId": "root-pq",
             }
         )
-        par_de_tres = store.Store(self.ruta, cupos=store.Cupos(global_max=3))
+        par_de_tres = self.tienda_de(cupos=store.Cupos(global_max=3))
         negado = par_de_tres.aplicar(
             "root-pq",
             decision(
@@ -631,7 +634,7 @@ class I12LinajeEnElStore(AlmacenDePrueba):
 
     def test_una_raiz_conserva_la_politica_con_la_que_abrio(self):
         tendera = politica_regla4(roundsPerImplementer=2)
-        tienda = store.Store(self.ruta)
+        tienda = self.tienda_de()
         tienda.abrir_raiz(
             {**meta_de([unidad("l", "l1")]), "rootId": "root-lenta"},
             politicas={"quality-kit.regla4": tendera},
