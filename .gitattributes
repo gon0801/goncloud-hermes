@@ -1,0 +1,4 @@
+# La copia fijada de G y su dorado comparan byte a byte contra pin.json:
+# ninguna conversion de fin de linea, en ninguna plataforma.
+shared/sistema-agentes/** -text
+tests/fixtures/sistema-agentes-g/** -text

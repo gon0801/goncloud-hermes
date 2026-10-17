@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,11 @@ _spec = importlib.util.spec_from_file_location(
 )
 compartido = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compartido)
+
+SIN_CONVERSION = (
+    "shared/sistema-agentes/**",
+    "tests/fixtures/sistema-agentes-g/**",
+)
 
 
 class Espejo(unittest.TestCase):
@@ -65,6 +71,36 @@ class Espejo(unittest.TestCase):
             / "scripts/tests/fixtures/sistema-agentes/planes/validos/pedido-chico.json"
         )
         self.assertEqual(contrato.validar_plan(contrato.cargar_json(plan)), [])
+
+
+class FinDeLinea(unittest.TestCase):
+    """La copia fijada y su dorado no pasan por la conversion de fin de linea.
+
+    Un clon en Windows con autocrlf reescribia LF como CRLF y los sha256 del
+    pin ya no coincidian. La regla vive en .gitattributes y esta prueba la
+    lee con git check-attr para que valga en cualquier arbol que corra la
+    bateria.
+    """
+
+    def test_los_fijados_por_bytes_quedan_fuera_de_la_conversion(self):
+        for regla in SIN_CONVERSION:
+            for ruta in (
+                "shared/sistema-agentes/pin.json",
+                "tests/fixtures/sistema-agentes-g/salida-derivar.json",
+            ):
+                with self.subTest(regla=regla, ruta=ruta):
+                    try:
+                        resultado = subprocess.run(
+                            ["git", "check-attr", "text", "--", ruta],
+                            cwd=REPO,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                    except OSError:
+                        self.skipTest("git no esta disponible")
+                    self.assertEqual(resultado.returncode, 0, resultado.stderr)
+                    self.assertIn("text: unset", resultado.stdout, (regla, ruta))
 
 
 if __name__ == "__main__":
