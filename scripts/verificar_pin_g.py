@@ -41,7 +41,6 @@ def main():
     parser.add_argument(
         "--fuente", required=True, help="directorio raíz de G o URL base raw"
     )
-    parser.add_argument("--pin", type=Path, default=PIN, help="pin.json a verificar")
     argumentos = parser.parse_args()
 
     if "://" in argumentos.fuente:
@@ -52,7 +51,7 @@ def main():
     else:
         fuente = Path(argumentos.fuente).resolve()
 
-    pin = json.loads(argumentos.pin.read_text(encoding="utf-8"))
+    pin = json.loads(PIN.read_text(encoding="utf-8"))
     fallidos = []
     for ruta, fijado in pin["files"].items():
         try:

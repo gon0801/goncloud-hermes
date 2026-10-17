@@ -42,10 +42,7 @@ class Espejo(unittest.TestCase):
         en_disco = {
             ruta.relative_to(self.g_dir).as_posix()
             for ruta in self.g_dir.rglob("*")
-            if ruta.is_file()
-            and not any(parte == "__pycache__" for parte in ruta.parts)
-            and ruta.suffix != ".pyc"
-            and ruta.name != ".DS_Store"
+            if ruta.is_file() and ruta.name != ".DS_Store"
         }
         self.assertEqual(en_disco, set(self.pin["files"]))
 
