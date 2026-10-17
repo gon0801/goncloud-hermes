@@ -26,6 +26,7 @@ decidir = importlib.import_module("raices.decidir")
 RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
 digesto = decidir.digesto
+instante = decidir.instante
 
 TERMINALES = ("accepted", "failed", "cancelled")
 
@@ -295,6 +296,38 @@ class Store:
 
     def _rollback(self):
         self._conexion.execute("ROLLBACK")
+
+    def _criterio_cubierto(
+        self, claims, unit_id, attempt, criterion_id, revision, ahora
+    ) -> bool:
+        vigente = None
+        for c in reversed(claims):
+            if (
+                c["unitId"] == unit_id
+                and c["attempt"] == attempt
+                and c["criterionId"] == criterion_id
+            ):
+                vigente = c
+                break
+        if vigente is None or vigente["outcome"] != "passed":
+            return False
+        if vigente.get("planRevision") != revision:
+            return False
+        if vigente["expiresAt"] is not None and instante(
+            vigente["expiresAt"]
+        ) <= instante(ahora):
+            return False
+        if vigente["verifier"]["role"] == "owner":
+            ref = (vigente.get("artifactRef") or {}).get("ref") or ""
+            if not ref.startswith("exception:"):
+                return False
+            respuesta = self._una_fila(
+                "SELECT response_json FROM excepciones"
+                " WHERE exception_id = ? AND response_json IS NOT NULL",
+                (ref[len("exception:") :],),
+            )
+            return respuesta is not None
+        return True
 
     def _una_fila(self, sql, parametros=()):
         return self._conexion.execute(sql, parametros).fetchone()
@@ -591,14 +624,13 @@ class Store:
                         {"unitId": desenlace["unitId"]},
                     )
                 for criterio in unidad_plan["criteria"]:
-                    cubierto = any(
-                        c["unitId"] == desenlace["unitId"]
-                        and c["attempt"] == desenlace["attempt"]
-                        and c["criterionId"] == criterio["criterionId"]
-                        and c["outcome"] == "passed"
-                        and (c["expiresAt"] is None or c["expiresAt"] > ahora)
-                        and c.get("planRevision") == revision
-                        for c in claims
+                    cubierto = self._criterio_cubierto(
+                        claims,
+                        desenlace["unitId"],
+                        desenlace["attempt"],
+                        criterio["criterionId"],
+                        revision,
+                        ahora,
                     )
                     if not cubierto:
                         self._rollback()

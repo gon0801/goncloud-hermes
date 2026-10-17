@@ -392,8 +392,10 @@ def decidir(
         return None
 
     # Los claims de los hechos entran primero: los resultados de abajo se juzgan con
-    # ellos.
+    # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo).
     for claim_hecho in vista["hechos"]["claims"]:
+        if claim_hecho.get("role", "verifier") not in ("verifier", "ci"):
+            continue
         resto = {k: v for k, v in claim_hecho.items() if k not in ("role",)}
         sembrar_claim(
             {
