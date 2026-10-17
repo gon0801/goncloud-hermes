@@ -541,16 +541,16 @@ def decidir(
             decision["respuestas_aplicadas"].append(excepcion["exceptionId"])
 
     for pendiente in vista["resultados"]:
-        decision["consumidos"].append(pendiente["taskId"])
         documento = documento_de_tarea(pendiente["taskId"])
         if documento is None or estado_de(documento) in TERMINALES:
+            decision["consumidos"].append(pendiente["taskId"])
             continue
-        if not falla_el_resultado(pendiente):
-            continue
-        terminar(documento, "failed")
-        fallo_por_resultado[documento["unitId"]] = (
-            pendiente["ref"] if pendiente["kind"] == "produced" else None
-        )
+        if falla_el_resultado(pendiente):
+            decision["consumidos"].append(pendiente["taskId"])
+            terminar(documento, "failed")
+            fallo_por_resultado[documento["unitId"]] = (
+                pendiente["ref"] if pendiente["kind"] == "produced" else None
+            )
 
     resultados_por_tarea = {r["taskId"] for r in vista["resultados"]}
 
@@ -609,6 +609,7 @@ def decidir(
             )
         if not abierto:
             if documento["taskId"] in resultados_por_tarea:
+                decision["consumidos"].append(documento["taskId"])
                 terminar(documento, "accepted")
 
     for unidad_plan in plan_unidades:
