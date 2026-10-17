@@ -110,6 +110,25 @@ MUSE_KEY_VARIABLE = "MODEL_API_KEY"
 MUSE_LOGIN_OVERRIDE = "GONCLOUD_MUSE_LOGIN"
 
 
+def archivos_compartidos():
+    """The fixed copy of G every plugin-bearing profile needs beside it.
+
+    ``raices/compartido.py`` resolves ``shared/sistema-agentes`` through
+    ``parents[3]`` (finding F1 of PR #19): in the deployed copy that is the
+    profile directory, so the mirror must land in
+    ``profiles/<rol>/shared/sistema-agentes`` for the deployed plugin to find
+    it. Managed like any other file, so a later retirement removes it.
+    """
+    origen = ROOT / "shared" / "sistema-agentes"
+    return {
+        f"shared/sistema-agentes/{ruta.relative_to(origen).as_posix()}": (
+            ruta.read_bytes()
+        )
+        for ruta in sorted(origen.rglob("*"))
+        if ruta.is_file() and "__pycache__" not in ruta.parts
+    }
+
+
 def director_native_config(source):
     """The director's native chain, compiled from the table's ``main`` row."""
     return native_config(source, "claw")
@@ -747,6 +766,7 @@ def configure(
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
             ] = source.read_text(encoding="utf-8")
+        files.update(archivos_compartidos())
         if role == team["director"]:
             # The daily model watcher and the daily full backup are no_agent
             # cron scripts of the director's gateway; cron resolves them under
