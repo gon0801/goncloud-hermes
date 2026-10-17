@@ -79,7 +79,7 @@ def meta_de(unidades, max_concurrentes=8):
     }
 
 
-def unidad(unit_id, criterio, dependencias=()):
+def unidad(unit_id, criterio, dependencias=(), rol="verifier"):
     return {
         "unitId": unit_id,
         "title": f"Unidad {unit_id}",
@@ -88,7 +88,7 @@ def unidad(unit_id, criterio, dependencias=()):
             {
                 "criterionId": criterio,
                 "text": f"Criterio {criterio}",
-                "verifier": "verifier",
+                "verifier": rol,
             }
         ],
         "scope": {"repos": ["owner-01/repo-a"], "mode": "implement"},
@@ -339,6 +339,81 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertTrue(recibo.replayed)
         self.assertEqual(recibo.valor.state, "paused")
 
+    def test_la_liquidacion_perdedora_devuelve_conflicto(self):
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        self.preparar_efecto()
+        original = self.tienda._begin
+
+        def begin_con_liquidacion_intercalada():
+            otro.liquidar_efecto(
+                RAIZ,
+                "effect-01",
+                "start-1",
+                {"kind": "confirmed", "occurred": True, "evidenceRef": "artifact:ev"},
+            )
+            self.tienda._begin = original
+            original()
+
+        self.tienda._begin = begin_con_liquidacion_intercalada
+        perdedora = self.tienda.liquidar_efecto(
+            RAIZ, "effect-01", "start-1", {"kind": "uncertain", "note": "no sé"}
+        )
+        self.assertIsInstance(perdedora, store.Conflicto)
+        self.assertEqual(perdedora.codigo, "effect-refused")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([e["state"] for e in vista["efectos"]], ["confirmed"])
+
+    def test_transicionar_en_carrera_con_el_cancel_no_afirma_estado(self):
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        original = self.tienda._begin
+
+        def begin_con_cancel_intercalado():
+            otro.control(comando("cancel", "cmd-x", 1))
+            self.tienda._begin = original
+            original()
+
+        self.tienda._begin = begin_con_cancel_intercalado
+        resultado = self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.assertIsInstance(resultado, store.Conflicto)
+        self.assertEqual(resultado.codigo, "transition-refused")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["cancelled"])
+
+    def test_dos_respuestas_concurrentes_la_segunda_pierde(self):
+        otro = store.Store(self.ruta)
+        self.addCleanup(otro.cerrar)
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {"kind": "rounds", "unitId": "a", "block": 0},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        original = self.tienda._begin
+
+        def begin_con_respuesta_intercalada():
+            otro.responder_excepcion(
+                RAIZ, borrador["exceptionId"], "cancelar", ["david"]
+            )
+            self.tienda._begin = original
+            original()
+
+        self.tienda._begin = begin_con_respuesta_intercalada
+        segunda = self.tienda.responder_excepcion(
+            RAIZ, borrador["exceptionId"], "seguir", ["david"]
+        )
+        self.assertEqual(segunda.codigo, "exception-answered")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(vista["excepciones"][0]["response"]["optionId"], "cancelar")
+
 
 class I06Efectos(AlmacenDePrueba):
     def test_un_confirmado_no_se_repite(self):
@@ -433,6 +508,45 @@ class I20Cupos(AlmacenDePrueba):
             "root-b",
             decision(bindings=[binding("b", repo="owner-01/repo-b")]),
             "dec-3",
+        )
+        self.assertIsInstance(libre, store.Ok)
+
+    def test_el_escritor_sigue_mientras_otro_intento_vivo_usa_el_repo(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(bindings=[binding("a"), binding("c")]),
+                "dec-0",
+            ),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-a")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-a")
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(outcomes=[{"unitId": "a", "attempt": 1, "outcome": "failed"}]),
+                "dec-1",
+            ),
+            store.Ok,
+        )
+        self.tienda.abrir_raiz({**meta_de([unidad("b", "b1")]), "rootId": "root-b"})
+        choque = self.tienda.aplicar(
+            "root-b", decision(bindings=[binding("b")]), "dec-2"
+        )
+        self.assertEqual(choque.codigo, "writer-held")
+        self.tienda.transicionar_intento(RAIZ, "c", 1, "admitted", "t-c")
+        self.tienda.transicionar_intento(RAIZ, "c", 1, "running", "t-c")
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(outcomes=[{"unitId": "c", "attempt": 1, "outcome": "failed"}]),
+                "dec-3",
+            ),
+            store.Ok,
+        )
+        libre = self.tienda.aplicar(
+            "root-b", decision(bindings=[binding("b")]), "dec-4"
         )
         self.assertIsInstance(libre, store.Ok)
 
@@ -641,6 +755,50 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         distinta = self.tienda.abrir_raiz(otra)
         self.assertEqual(distinta.codigo, "operation-conflict")
 
+    def test_el_claim_mas_nuevo_de_la_decision_gana_al_guardado(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
+            store.Ok,
+        )
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(claims=[claim("a", 1, "a1", "unknown")]),
+                "dec-incierto",
+            ),
+            store.Ok,
+        )
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        tipos = [e["type"] for e in decidir.decidir(vista).decision["excepciones"]]
+        self.assertIn("EVIDENCIA_INCIERTA", tipos)
+        nuevo = claim("a", 1, "a1", "passed")
+        nuevo["evidenceId"] = "evid-a1-2"
+        aceptacion = decision(
+            claims=[nuevo],
+            outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+        recibo = self.tienda.aplicar(RAIZ, aceptacion, "dec-conciliado")
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
+
 
 class EntradasDelMundo(AlmacenDePrueba):
     def resultado(self, digest):
@@ -690,6 +848,16 @@ class EntradasDelMundo(AlmacenDePrueba):
             RAIZ, borrador["exceptionId"], "autorizar", ["david"]
         )
         self.assertEqual(negada.codigo, "option-not-offered")
+
+    def test_responder_una_excepcion_de_otra_raiz_no_la_encuentra(self):
+        borrador = self.excepcion_abierta()
+        self.tienda.abrir_raiz({**meta_de([unidad("x", "x1")]), "rootId": "root-x"})
+        ajena = self.tienda.responder_excepcion(
+            "root-x", borrador["exceptionId"], "seguir", ["david"]
+        )
+        self.assertEqual(ajena.codigo, "exception-unknown")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertIsNone(vista["excepciones"][0]["response"])
 
     def _intento_reportado(self):
         self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
@@ -779,6 +947,157 @@ class EntradasDelMundo(AlmacenDePrueba):
             "claims": [],
             "efectos": [],
         }
+
+
+class ElClaimDelDuenoProducidoPorDecidir(AlmacenDePrueba):
+    """Punta a punta: el claim que decidir siembra desde la respuesta aceptar o
+    rechazar entra al store y acepta. B9."""
+
+    def _raiz_con_criterio_dueno(self):
+        unidad_dueno = unidad("o", "o1", rol="owner")
+        self.tienda.abrir_raiz({**meta_de([unidad_dueno]), "rootId": "root-dueno"})
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                "root-dueno", decision(bindings=[binding("o")]), "dec-0"
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.reclamar_intencion("root-dueno", "o", 1), store.Ok
+        )
+        self.assertIsInstance(
+            self.tienda.admitir_intento("root-dueno", "o", 1, "t-1"), store.Ok
+        )
+        self.tienda.transicionar_intento("root-dueno", "o", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": "root-dueno",
+                    "unitId": "o",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_la_respuesta_aceptar_del_dueno_acepta_punta_a_punta(self):
+        self._raiz_con_criterio_dueno()
+        borrador = decidir.borrador_excepcion(
+            "root-dueno",
+            "NECESITA_DAVID",
+            {"kind": "attempt", "unitId": "o", "attempt": 1, "cause": "owner:o1"},
+            ["aceptar", "rechazar"],
+        )
+        pregunta = decidir._decision_vacia(1, 1)
+        pregunta["excepciones"] = [borrador]
+        self.assertIsInstance(
+            self.tienda.aplicar("root-dueno", pregunta, "dec-pregunta"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(
+                "root-dueno", borrador["exceptionId"], "aceptar", ["david"]
+            ),
+            store.Ok,
+        )
+        cierre = decidir.decidir(
+            self.tienda.leer_vista("root-dueno", EntradasDelMundo.hechos_nulos())
+        )
+        self.assertEqual(
+            cierre.decision["outcomes"],
+            [{"unitId": "o", "attempt": 1, "outcome": "accepted"}],
+        )
+        recibo = self.tienda.aplicar("root-dueno", cierre.decision, "dec-cierre")
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
+        sembrado = cierre.decision["claims"][0]
+        self.assertEqual(sembrado["rootId"], "root-dueno")
+        self.assertTrue(sembrado["artifactRef"]["digest"].startswith("sha256:"))
+        vista = self.tienda.leer_vista("root-dueno", EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
+
+
+class LaVerificacionTardia(AlmacenDePrueba):
+    """B10: un resultado no se consume sin desenlace; el claim que llega una
+    vuelta después todavía puede aceptar el intento."""
+
+    def _raiz_ci_reportada(self):
+        self.tienda.abrir_raiz(
+            {**meta_de([unidad("u", "u1", rol="ci")]), "rootId": "root-ci"}
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar("root-ci", decision(bindings=[binding("u")]), "dec-0"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.reclamar_intencion("root-ci", "u", 1), store.Ok
+        )
+        self.assertIsInstance(
+            self.tienda.admitir_intento("root-ci", "u", 1, "t-1"), store.Ok
+        )
+        self.tienda.transicionar_intento("root-ci", "u", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": "root-ci",
+                    "unitId": "u",
+                    "attempt": 1,
+                    "resultContract": "review.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"verdict": "approved", "evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+
+    def test_un_claim_llegado_despues_del_resultado_acepta(self):
+        self._raiz_ci_reportada()
+        primera = decidir.decidir(
+            self.tienda.leer_vista("root-ci", EntradasDelMundo.hechos_nulos())
+        )
+        self.assertEqual(primera.necesidades[0].criterios, ["u1"])
+        self.assertEqual(primera.decision["consumidos"], [])
+        self.assertIsInstance(
+            self.tienda.aplicar("root-ci", primera.decision, "dec-1"), store.Ok
+        )
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [],
+            "claims": [
+                {
+                    "rootId": "root-ci",
+                    "unitId": "u",
+                    "attempt": 1,
+                    "criterionId": "u1",
+                    "planRevision": 1,
+                    "artifactRef": REF,
+                    "environment": {"host": "mac-local", "versions": {}},
+                    "role": "ci",
+                    "procedure": "pytest",
+                    "outcome": "passed",
+                    "at": "2026-10-17T11:30:00Z",
+                    "expiresAt": None,
+                }
+            ],
+            "efectos": [],
+        }
+        segunda = decidir.decidir(self.tienda.leer_vista("root-ci", hechos))
+        self.assertEqual(
+            segunda.decision["outcomes"],
+            [{"unitId": "u", "attempt": 1, "outcome": "accepted"}],
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar("root-ci", segunda.decision, "dec-2"), store.Ok
+        )
+        vista = self.tienda.leer_vista("root-ci", EntradasDelMundo.hechos_nulos())
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
+        self.assertEqual(vista["resultados"], [])
 
 
 if __name__ == "__main__":
