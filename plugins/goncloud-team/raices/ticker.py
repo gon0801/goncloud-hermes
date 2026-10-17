@@ -242,11 +242,11 @@ def _reportar(tienda, intento, tarjeta, ahora) -> None:
     carga = tarjeta.resultado or {}
     documento = _documento_de_resultado(carga, intento, tarjeta, ahora)
     if documento is None:
-        _incidencia_invalida(tienda, intento, tarjeta)
+        _incidencia_invalida(tienda, intento, tarjeta, carga)
         return
     respuesta = tienda.reportar_resultado(documento)
     if hasattr(respuesta, "codigo"):
-        _incidencia_invalida(tienda, intento, tarjeta)
+        _incidencia_invalida(tienda, intento, tarjeta, carga)
 
 
 def _documento_de_resultado(carga, intento, tarjeta, ahora):
@@ -288,11 +288,25 @@ def _documento_de_resultado(carga, intento, tarjeta, ahora):
     return documento
 
 
-def _incidencia_invalida(tienda, intento, tarjeta) -> None:
+def _incidencia_invalida(tienda, intento, tarjeta, carga=None) -> None:
+    """El episodeId es el canónico de R (managed-task.worker.ts): el digest del
+    resultado si lo trajo, o el de schema-invalid sobre lo que llegó."""
+    identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
+    if not isinstance(identidad, str) or not identidad:
+        identidad = digesto(
+            [
+                "schema-invalid",
+                carga if isinstance(carga, str) else "structured-result",
+            ]
+        )
     tienda.registrar_incidencia(
         intento["rootId"],
         intento["unitId"],
         intento["attempt"],
         f"invalid-result:{tarjeta.id}",
-        {"kind": "invalid-result", "evidenceRef": tarjeta.id},
+        {
+            "kind": "invalid-result",
+            "episodeId": f"invalid-result:{digesto([tarjeta.id, identidad])}",
+            "evidenceRef": tarjeta.id,
+        },
     )
