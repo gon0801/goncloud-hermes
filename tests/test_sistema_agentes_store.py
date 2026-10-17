@@ -1378,7 +1378,7 @@ class LaGuardaSaltaLosClaimsVencidos(AlmacenDePrueba):
         self._intento_reportado()
         viejo = claim("a", 1, "a1", "passed")
         viejo["evidenceId"] = "evid-viejo"
-        vencido = claim("a", 1, "a1", "passed")
+        vencido = claim("a", 1, "a1", "unknown")
         vencido["evidenceId"] = "evid-vencido"
         vencido["expiresAt"] = "2026-10-16T00:00:00Z"
         self.assertIsInstance(
