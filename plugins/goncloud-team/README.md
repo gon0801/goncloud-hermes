@@ -71,7 +71,12 @@ hermes -p claw cron create "* * * * *" --name ticker-raices --script
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
-raices cerrada (el par de Hermes sin certificar, H4) no corre y sale 0. El
+raices cerrada (H4a: capacidad faltante, par incierto o par sin certificar en
+`raices/certificadas.json`) el cron avisa `CAPACIDAD_INCIERTA` una vez por
+cambio de causa y sale 0; la vuelta sigue corriendo cerrada, con bloqueos y
+conciliacion pero sin decidir ni despachar, y si falta una capacidad ni siquiera
+abre el store. `goncloud_root_submit` responde `ruta-cerrada` con la causa; el
+par nuevo se acredita con `raices/certificar.py` en la PC y entra por PR. El
 store es `%HERMES_HOME%\sistema-agentes.db`; el kanban, `HERMES_KANBAN_DB` o
 `%HERMES_HOME%\kanban.db`, y solo se abre si hay algo que despachar. La
 expresion `* * * * *` es el cada minuto estandar de cron; la referencia 0.21.5

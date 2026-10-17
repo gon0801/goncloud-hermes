@@ -247,21 +247,21 @@
    "ensayo": "I10",
    "clausula": "I10.1",
    "texto": "un par certificado nuevo entra solo por certificar.py más PR",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_certificar.Certificar.test_sin_escribir_jamas_escribe",
    "rebanada": "H4"
   },
   {
    "ensayo": "I10",
    "clausula": "I10.2",
    "texto": "un par sin certificar cierra la ruta",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_capacidades.Decidir.test_capacidades_presentas_con_par_sin_certificar_no_abre",
    "rebanada": "H4"
   },
   {
    "ensayo": "I10",
    "clausula": "I10.3",
    "texto": "un intento abierto conserva su snapshot tras la subida",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_ticker.RutaCerrada.test_cerrada_concilia_la_tarjeta_corriendo_sin_aceptar",
    "rebanada": "H4"
   },
   {
