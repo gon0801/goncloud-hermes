@@ -2,10 +2,11 @@
 
 Pura y total: toda la información que usa entra en la vista (plan, intentos,
 resultados, incidencias, efectos, excepciones, contadores, política, hechos y el
-reloj `ahora`). Sin I/O y sin reloj propio. La autoridad es un parámetro inyectable;
-hoy admite todo y H3 la intersectará con los permisos de H. La semántica transcribe
-managed-root.decide.ts de R con la política quality-kit.regla4 (5+5, el relevo es la
-ronda 6, a la 10 sin converger NECESITA_DAVID).
+reloj `ahora`). Sin I/O y sin reloj propio. La autoridad es inyectable; por
+omisión es la intersección real (raices/autoridad.py): contrato.efecto_admisible
+de la copia fijada con los permisos de H que traiga la vista (I07). La semántica
+transcribe managed-root.decide.ts de R con la política quality-kit.regla4 (5+5,
+el relevo es la ronda 6, a la 10 sin converger NECESITA_DAVID).
 """
 
 from __future__ import annotations
@@ -138,10 +139,13 @@ class Propuesta(NamedTuple):
     estado: str
 
 
-def ADMITE_TODO(intento: Mapping) -> str | None:
-    # TODO(H3): intersectar contrato.efecto_admisible con los permisos de H en los
-    # tres puntos (arranque, reanudación y antes del efecto).
-    return None
+def _autoridad_de_vista(vista: Vista) -> Callable[[Mapping], str | None]:
+    modulo = importlib.import_module("raices.autoridad")
+    datos = vista.get("permisos_h")
+    permisos = modulo.PermisosH(datos) if datos is not None else None
+    return modulo.interseccion(
+        vista["meta"].get("authority") or {}, permisos, vista["ahora"]
+    )
 
 
 def digesto(partes: object) -> str:
@@ -245,11 +249,15 @@ def _decision_vacia(revision: int, epoch: int) -> dict:
 
 
 def decidir(
-    vista: Vista, autoridad: Callable[[Mapping], str | None] = ADMITE_TODO
+    vista: Vista,
+    autoridad: Callable[[Mapping], str | None] | None = None,
 ) -> Propuesta:
     """El juicio del controlador, en el orden fijo de R. Cada paso ve lo que los
     anteriores pusieron en la propuesta. Las necesidades son NecesidadAsignacion o
-    NecesidadVerificacion."""
+    NecesidadVerificacion. Sin autoridad explícita manda la intersección real de
+    la vista: lo que el contrato y los permisos de H admitan (I07)."""
+    if autoridad is None:
+        autoridad = _autoridad_de_vista(vista)
     meta = vista["meta"]
     root_id = meta["rootId"]
     revision = meta["plan"]["revision"]

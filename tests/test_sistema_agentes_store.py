@@ -61,7 +61,7 @@ def meta_de(unidades, max_concurrentes=8):
             "actions": ["read", "implement", "review", "push"],
             "repos": ["owner-01/repo-a"],
             "accounts": [],
-            "destinations": ["github.com/owner-01/repo-a"],
+            "destinations": ["dest-a"],
             "deadline": None,
             "mode": "implement",
         },
