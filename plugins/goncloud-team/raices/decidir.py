@@ -11,11 +11,15 @@ ronda 6, a la 10 sin converger NECESITA_DAVID).
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, TypedDict
+
+compartido = importlib.import_module("raices.compartido")
+contrato = compartido.contrato
 
 _FECHA = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z")
 
@@ -409,7 +413,9 @@ def decidir(
         return None
 
     # Los claims de los hechos entran primero: los resultados de abajo se juzgan con
-    # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo).
+    # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo) y cada
+    # uno pasa contrato.validar antes de sembrarse: el inválido se aísla y el store
+    # nunca rechaza la decisión entera por su forma (F12).
     for claim_hecho in vista["hechos"]["claims"]:
         if not isinstance(claim_hecho, Mapping):
             continue
@@ -417,48 +423,37 @@ def decidir(
             continue
         if any(
             clave not in claim_hecho
-            for clave in (
-                "unitId",
-                "attempt",
-                "criterionId",
-                "outcome",
-                "expiresAt",
-                "artifactRef",
-            )
+            for clave in ("unitId", "attempt", "criterionId", "outcome")
         ):
             continue
-        artifact_ref = claim_hecho["artifactRef"]
+        artifact_ref = claim_hecho.get("artifactRef")
         if (
             not isinstance(artifact_ref, Mapping)
             or not isinstance(artifact_ref.get("ref"), str)
             or not isinstance(artifact_ref.get("digest"), str)
         ):
             continue
-        expiracion = claim_hecho["expiresAt"]
-        if expiracion is not None and (
-            not isinstance(expiracion, str) or _FECHA.fullmatch(expiracion) is None
-        ):
-            continue
         resto = {k: v for k, v in claim_hecho.items() if k not in ("role",)}
-        sembrar_claim(
-            {
-                **resto,
-                "evidenceId": digesto(
-                    [
-                        root_id,
-                        resto["unitId"],
-                        resto["attempt"],
-                        resto["criterionId"],
-                        resto["artifactRef"]["digest"],
-                        resto["outcome"],
-                    ]
-                ),
-                "verifier": {
-                    "principal": vista["hechos"]["principal"],
-                    "role": claim_hecho.get("role", "verifier"),
-                },
-            }
-        )
+        sembrado = {
+            **resto,
+            "evidenceId": digesto(
+                [
+                    root_id,
+                    resto["unitId"],
+                    resto["attempt"],
+                    resto["criterionId"],
+                    resto["artifactRef"]["digest"],
+                    resto["outcome"],
+                ]
+            ),
+            "verifier": {
+                "principal": vista["hechos"]["principal"],
+                "role": claim_hecho.get("role", "verifier"),
+            },
+        }
+        if contrato.validar({"schema": contrato.EVIDENCIA, **sembrado}):
+            continue
+        sembrar_claim(sembrado)
 
     # Respuestas sin aplicar, cada una sobre su sujeto y nada más.
     for excepcion in vista["excepciones"]:
