@@ -502,9 +502,6 @@ def decidir(
                     unidad_id = unidad_plan["unitId"]
                     if cerrada(unidad_id) and not aceptada(unidad_id):
                         subir_contador(f"reabiertas:{unidad_id}")
-                        ultimo = ultimo_de(unidad_id)
-                        if ultimo:
-                            ligar(unidad_id, ultimo["assignment"])
             elif unidad_sujeta and excepcion["type"] in (
                 "INESPERADO",
                 "CAPACIDAD_INCIERTA",
