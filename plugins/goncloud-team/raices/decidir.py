@@ -742,6 +742,10 @@ def decidir(
                 ["autorizar", "listo", "omitir", "cancelar"],
             )
     for intent in vista["hechos"]["efectos"]:
+        if not isinstance(intent, Mapping) or not isinstance(
+            intent.get("effectId"), str
+        ):
+            continue
         ya_visto = any(
             e["effectId"] == intent["effectId"]
             for e in vista["efectos"] + decision["efectos"]

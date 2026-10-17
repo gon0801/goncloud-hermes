@@ -893,6 +893,32 @@ class LosHechosMalFormadosNoTumbanLaVuelta(unittest.TestCase):
         self.assertEqual(propuesta.decision["outcomes"], [])
         self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
 
+    def test_un_hecho_de_efecto_sin_effect_id_se_aisla(self):
+        efectos = [
+            {"action": "push", "destination": "dest-a"},
+            "efecto que no es mapa",
+            {
+                "effectId": "effect-01",
+                "action": "push",
+                "destination": "dest-a",
+                "cancellable": False,
+            },
+        ]
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [],
+                    "efectos": efectos,
+                },
+            )
+        )
+        self.assertIsInstance(propuesta, decidir.Propuesta)
+        self.assertEqual(len(propuesta.decision["efectos"]), 1)
+        self.assertEqual(propuesta.decision["efectos"][0]["effectId"], "effect-01")
+
     def test_un_hecho_de_claim_con_outcome_fuera_del_enum_se_aisla(self):
         raro = {
             "rootId": RAIZ,

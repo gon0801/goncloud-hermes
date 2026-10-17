@@ -372,6 +372,40 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         vista = tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))
         self.assertEqual(vista["evidencia"], [])
 
+    def test_el_efecto_mal_formado_no_tumba_la_aceptacion(self):
+        hechos_raiz = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_raiz["efectos"] = [
+            {"action": "push", "destination": "dest-a"},
+            "efecto que no es mapa",
+        ]
+        self.dirigir(
+            "efecto-malo",
+            [unidad("a", rol="verifier")],
+            {"a": ["accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            hechos_raiz=hechos_raiz,
+        )
+
+    def test_la_asignacion_sin_target_no_se_liga_y_el_valido_sigue(self):
+        hechos_raiz = hechos(("a",))
+        hechos_raiz["asignaciones"].insert(
+            0,
+            {
+                "unitId": "a",
+                "assignment": {"resultContract": "review.v1"},
+                "relay": False,
+            },
+        )
+        self.dirigir(
+            "asignacion-mala",
+            [unidad("a", rol="owner")],
+            {"a": ["accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            hechos_raiz=hechos_raiz,
+        )
+
     def test_la_evidencia_incierta_concilia_y_la_guarda_no_objeta(self):
         claims = [claim_de_hecho("a", 1, "a1", "unknown")]
         informe, tienda = self.dirigir(
