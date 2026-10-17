@@ -193,6 +193,7 @@ class I03Ticker(Escenario):
         self.addCleanup(tienda2.cerrar)
         self.vuelta(tienda2, kanban)
         self.assertEqual(len(kanban.creaciones), 3)
+        self.assertEqual(len(kanban.creaciones_llamadas), 3)
         self.assertEqual(kanban.creaciones.count(clave_c), 1)
         self.assertEqual(tienda.intenciones_pendientes(), [])
         vista = tienda.leer_vista(RAIZ, hechos_de_raiz())

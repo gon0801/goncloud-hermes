@@ -122,6 +122,7 @@ class DobleKanban:
         self._lock = threading.Lock()
         self._contador = 0
         self.creaciones: list = []
+        self.creaciones_llamadas: list = []
 
     def caer_en(self, punto: PuntoDeCaida) -> None:
         self._caidas.add(punto)
@@ -135,6 +136,7 @@ class DobleKanban:
 
     def _crear(self, clave: str, spec: SpecDeTarjeta) -> Tarjeta:
         self._contador += 1
+        self.creaciones_llamadas.append(clave)
         return Tarjeta(f"t-{self._contador}", clave, "pendiente", None)
 
     @contextmanager

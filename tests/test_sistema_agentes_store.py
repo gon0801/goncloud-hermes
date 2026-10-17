@@ -319,7 +319,11 @@ class I20Cupos(AlmacenDePrueba):
         self.assertEqual(conflicto.codigo, "capacity")
         self.assertEqual(tienda.ocupacion()["global"], 0)
 
-    def test_el_cupo_por_perfil(self):
+    def test_el_cupo_global_y_por_perfil(self):
+        sin_cupo = store.Store(self.ruta, cupos=store.Cupos(global_max=0))
+        conflicto = sin_cupo.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1")
+        self.assertEqual(conflicto.codigo, "capacity")
+        self.assertEqual(sin_cupo.ocupacion()["global"], 0)
         primero = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 1}))
         self.assertIsInstance(
             primero.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1"), store.Ok

@@ -1,468 +1,471 @@
 {
-  "bloque": "SUA-07",
-  "ensayos": [
-    "I01",
-    "I02",
-    "I03",
-    "I04",
-    "I05",
-    "I06",
-    "I07",
-    "I08",
-    "I09",
-    "I10",
-    "I11",
-    "I12",
-    "I13",
-    "I14",
-    "I16",
-    "I18",
-    "I20"
-  ],
-  "rebanadasCerradas": ["H0b"],
-  "filas": [
-    {
-      "ensayo": "I01",
-      "clausula": "I01.1",
-      "texto": "el pedido natural conserva alcance, supuestos y criterios",
-      "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I01",
-      "clausula": "I01.2",
-      "texto": "el plan compuesto conserva alcance, supuestos y criterios",
-      "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I01",
-      "clausula": "I01.3",
-      "texto": "la fila importada conserva alcance, supuestos y criterios",
-      "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I02",
-      "clausula": "I02.1",
-      "texto": "el ciclo se rechaza antes de lanzar",
-      "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I02",
-      "clausula": "I02.2",
-      "texto": "el id duplicado se rechaza antes de lanzar",
-      "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I02",
-      "clausula": "I02.3",
-      "texto": "la dependencia faltante se rechaza antes de lanzar",
-      "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I02",
-      "clausula": "I02.4",
-      "texto": "el criterio faltante se rechaza antes de lanzar",
-      "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
-      "rebanada": "H0b"
-    },
-    {
-      "ensayo": "I03",
-      "clausula": "I03.1",
-      "texto": "con dos tickers, exactamente una C bajo la raíz",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I03",
-      "clausula": "I03.2",
-      "texto": "con el ACK perdido, exactamente una C bajo la raíz",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I04",
-      "clausula": "I04.1",
-      "texto": "la caída entre commit y admisión recupera tareas y gasto",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I04",
-      "clausula": "I04.2",
-      "texto": "la caída entre admisión y consumo recupera tareas y gasto",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I04",
-      "clausula": "I04.3",
-      "texto": "tras la caída termina el turno y sigue el plan",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I05",
-      "clausula": "I05.1",
-      "texto": "pausa y cancelación contra un permiso started",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I05",
-      "clausula": "I05.2",
-      "texto": "un envío posterior al ACK comprometido queda en committedEffects",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I05",
-      "clausula": "I05.3",
-      "texto": "el replay del control da el recibo original",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I05",
-      "clausula": "I05.4",
-      "texto": "un resume con época vieja se rechaza",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I05",
-      "clausula": "I05.5",
-      "texto": "un evento tardío no resucita la unidad",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I06",
-      "clausula": "I06.1",
-      "texto": "un efecto confirmado no se repite",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I06",
-      "clausula": "I06.2",
-      "texto": "un efecto incierto conserva su estado y exige conciliación",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I07",
-      "clausula": "I07.1",
-      "texto": "autoridad negativa, revocación, otra sesión, diseño, borrador de mail y SHA futuro restringen efectos (autoridad/efectos.json)",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I07",
-      "clausula": "I07.2",
-      "texto": "en el arranque, autoridad que admite y permiso de H que niega no ejecutan nada",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I07",
-      "clausula": "I07.3",
-      "texto": "en la reanudación, autoridad que admite y permiso de H que niega no ejecutan nada",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I07",
-      "clausula": "I07.4",
-      "texto": "antes del efecto, autoridad que admite y permiso de H que niega no ejecutan nada",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I08",
-      "clausula": "I08.1",
-      "texto": "poteto completo llega al turno de claw",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I08",
-      "clausula": "I08.2",
-      "texto": "poteto completo llega al hijo CLI por tarjeta",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I08",
-      "clausula": "I08.3",
-      "texto": "sin poteto, la ruta no se admite",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I09",
-      "clausula": "I09.1",
-      "texto": "el modelo efectivo es el pedido (perfil y router contra el modelo que corrió)",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I09",
-      "clausula": "I09.2",
-      "texto": "un intento nuevo conserva su snapshot",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I09",
-      "clausula": "I09.3",
-      "texto": "permisos efectivos medidos (toolsets del hijo)",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I09",
-      "clausula": "I09.4",
-      "texto": "el reviewer no escribe en la fuente",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I09",
-      "clausula": "I09.5",
-      "texto": "opencode dentro del grupo del slot",
-      "prueba": "no-aplica",
-      "razon": "H no usa opencode ni grupos de macOS; el aislamiento equivalente es el cupo por perfil (I20)",
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I10",
-      "clausula": "I10.1",
-      "texto": "un par certificado nuevo entra solo por certificar.py más PR",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I10",
-      "clausula": "I10.2",
-      "texto": "un par sin certificar cierra la ruta",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I10",
-      "clausula": "I10.3",
-      "texto": "un intento abierto conserva su snapshot tras la subida",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I11",
-      "clausula": "I11.1",
-      "texto": "un perfil nuevo da ida y vuelta",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I11",
-      "clausula": "I11.2",
-      "texto": "un perfil incompleto se ve",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I11",
-      "clausula": "I11.3",
-      "texto": "su competencia, caducidad y memoria se conservan",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.1",
-      "texto": "la corrección converge o se detiene a las 10 rondas (el relevo es la ronda 6)",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.2",
-      "texto": "hallazgos nuevos no reinician el linaje",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.3",
-      "texto": "el relevo no reinicia el linaje",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.4",
-      "texto": "la política solo cambia con el pin (decisión de David)",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.5",
-      "texto": "una raíz vieja conserva su política",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.6",
-      "texto": "ningún paso pide revisión a un segundo modelo",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I12",
-      "clausula": "I12.7",
-      "texto": "el revisor excluye a los autores",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I13",
-      "clausula": "I13.1",
-      "texto": "revisión y CI del head, criterio y entorno vigentes",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I13",
-      "clausula": "I13.2",
-      "texto": "un LISTO no fabrica éxito",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I13",
-      "clausula": "I13.3",
-      "texto": "un merge no fabrica éxito",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I13",
-      "clausula": "I13.4",
-      "texto": "un rollback no fabrica éxito",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I13",
-      "clausula": "I13.5",
-      "texto": "un criterio borrado no fabrica éxito",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I14",
-      "clausula": "I14.1",
-      "texto": "aviso y proyección comparten estado y porcentaje (la de H sale de derivar de G)",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I14",
-      "clausula": "I14.2",
-      "texto": "dos raíces, CI en espera y unidades sin PR se representan bien",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I14",
-      "clausula": "I14.3",
-      "texto": "panel",
-      "prueba": "no-aplica",
-      "razon": "las raíces de H llegan al panel en SUA-09H (diseño §7)",
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I16",
-      "clausula": "I16.1",
-      "texto": "un PID reutilizado no atribuye ni mata recursos ajenos",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I16",
-      "clausula": "I16.2",
-      "texto": "una sesión caída no atribuye ni mata recursos ajenos",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I16",
-      "clausula": "I16.3",
-      "texto": "datos corruptos no atribuyen ni matan recursos ajenos",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I16",
-      "clausula": "I16.4",
-      "texto": "métricas ausentes no atribuyen ni matan recursos ajenos",
-      "prueba": null,
-      "rebanada": "H3"
-    },
-    {
-      "ensayo": "I18",
-      "clausula": "I18.1",
-      "texto": "un perfil sin eventos declara cobertura unknown",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I18",
-      "clausula": "I18.2",
-      "texto": "su caída no aprueba ni despacha",
-      "prueba": null,
-      "rebanada": "H4"
-    },
-    {
-      "ensayo": "I20",
-      "clausula": "I20.1",
-      "texto": "presupuesto raíz",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I20",
-      "clausula": "I20.2",
-      "texto": "cupo global (max_in_progress) y por perfil",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I20",
-      "clausula": "I20.3",
-      "texto": "escritor exclusivo",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I20",
-      "clausula": "I20.4",
-      "texto": "el par atómico con dos plazas ocupadas",
-      "prueba": null,
-      "rebanada": "H1"
-    },
-    {
-      "ensayo": "I20",
-      "clausula": "I20.5",
-      "texto": "el par atómico con tres plazas ocupadas",
-      "prueba": null,
-      "rebanada": "H1"
-    }
-  ]
+ "bloque": "SUA-07",
+ "ensayos": [
+  "I01",
+  "I02",
+  "I03",
+  "I04",
+  "I05",
+  "I06",
+  "I07",
+  "I08",
+  "I09",
+  "I10",
+  "I11",
+  "I12",
+  "I13",
+  "I14",
+  "I16",
+  "I18",
+  "I20"
+ ],
+ "rebanadasCerradas": [
+  "H0b",
+  "H1"
+ ],
+ "filas": [
+  {
+   "ensayo": "I01",
+   "clausula": "I01.1",
+   "texto": "el pedido natural conserva alcance, supuestos y criterios",
+   "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I01",
+   "clausula": "I01.2",
+   "texto": "el plan compuesto conserva alcance, supuestos y criterios",
+   "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I01",
+   "clausula": "I01.3",
+   "texto": "la fila importada conserva alcance, supuestos y criterios",
+   "prueba": "test_sistema_agentes_contrato.I01PedidosValidos.test_cada_pedido_valido_valida_con_ambos_validadores",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I02",
+   "clausula": "I02.1",
+   "texto": "el ciclo se rechaza antes de lanzar",
+   "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I02",
+   "clausula": "I02.2",
+   "texto": "el id duplicado se rechaza antes de lanzar",
+   "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I02",
+   "clausula": "I02.3",
+   "texto": "la dependencia faltante se rechaza antes de lanzar",
+   "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I02",
+   "clausula": "I02.4",
+   "texto": "el criterio faltante se rechaza antes de lanzar",
+   "prueba": "test_sistema_agentes_contrato.I02PlanesInvalidos.test_cada_plan_invalido_da_su_regla_y_su_ruta",
+   "rebanada": "H0b"
+  },
+  {
+   "ensayo": "I03",
+   "clausula": "I03.1",
+   "texto": "con dos tickers, exactamente una C bajo la raíz",
+   "prueba": "test_sistema_agentes_ticker.I03Ticker.test_dos_tickers_en_vivo_no_duplican_tarjetas",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I03",
+   "clausula": "I03.2",
+   "texto": "con el ACK perdido, exactamente una C bajo la raíz",
+   "prueba": "test_sistema_agentes_ticker.I03Ticker.test_dos_tickers_y_el_ack_perdido_crea_exactamente_una_c",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I04",
+   "clausula": "I04.1",
+   "texto": "la caída entre commit y admisión recupera tareas y gasto",
+   "prueba": "test_sistema_agentes_ticker.I04Ticker.test_caida_entre_el_commit_y_la_admision",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I04",
+   "clausula": "I04.2",
+   "texto": "la caída entre admisión y consumo recupera tareas y gasto",
+   "prueba": "test_sistema_agentes_ticker.I04Ticker.test_caida_entre_la_admision_y_el_consumo",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I04",
+   "clausula": "I04.3",
+   "texto": "tras la caída termina el turno y sigue el plan",
+   "prueba": "test_sistema_agentes_ticker.I04Ticker.test_tras_las_caidas_el_plan_termina_y_sigue",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I05",
+   "clausula": "I05.1",
+   "texto": "pausa y cancelación contra un permiso started",
+   "prueba": "test_sistema_agentes_store.I05Control.test_la_pausa_enumerara_los_efectos_comprometidos",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I05",
+   "clausula": "I05.2",
+   "texto": "un envío posterior al ACK comprometido queda en committedEffects",
+   "prueba": "test_sistema_agentes_store.I05Control.test_envio_posterior_al_ack_sigue_y_el_recibo_queda_congelado",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I05",
+   "clausula": "I05.3",
+   "texto": "el replay del control da el recibo original",
+   "prueba": "test_sistema_agentes_store.I05Control.test_replay_da_el_recibo_original",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I05",
+   "clausula": "I05.4",
+   "texto": "un resume con época vieja se rechaza",
+   "prueba": "test_sistema_agentes_store.I05Control.test_resume_con_epoca_vieja_se_rechaza",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I05",
+   "clausula": "I05.5",
+   "texto": "un evento tardío no resucita la unidad",
+   "prueba": "test_sistema_agentes_store.I05Control.test_cancel_es_terminal_y_un_evento_tardio_no_resucita",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I06",
+   "clausula": "I06.1",
+   "texto": "un efecto confirmado no se repite",
+   "prueba": "test_sistema_agentes_store.I06Efectos.test_un_confirmado_no_se_repite",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I06",
+   "clausula": "I06.2",
+   "texto": "un efecto incierto conserva su estado y exige conciliación",
+   "prueba": "test_sistema_agentes_store.I06Efectos.test_un_incierto_conserva_su_estado_y_exige_conciliacion",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I07",
+   "clausula": "I07.1",
+   "texto": "autoridad negativa, revocación, otra sesión, diseño, borrador de mail y SHA futuro restringen efectos (autoridad/efectos.json)",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I07",
+   "clausula": "I07.2",
+   "texto": "en el arranque, autoridad que admite y permiso de H que niega no ejecutan nada",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I07",
+   "clausula": "I07.3",
+   "texto": "en la reanudación, autoridad que admite y permiso de H que niega no ejecutan nada",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I07",
+   "clausula": "I07.4",
+   "texto": "antes del efecto, autoridad que admite y permiso de H que niega no ejecutan nada",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I08",
+   "clausula": "I08.1",
+   "texto": "poteto completo llega al turno de claw",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I08",
+   "clausula": "I08.2",
+   "texto": "poteto completo llega al hijo CLI por tarjeta",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I08",
+   "clausula": "I08.3",
+   "texto": "sin poteto, la ruta no se admite",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I09",
+   "clausula": "I09.1",
+   "texto": "el modelo efectivo es el pedido (perfil y router contra el modelo que corrió)",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I09",
+   "clausula": "I09.2",
+   "texto": "un intento nuevo conserva su snapshot",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I09",
+   "clausula": "I09.3",
+   "texto": "permisos efectivos medidos (toolsets del hijo)",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I09",
+   "clausula": "I09.4",
+   "texto": "el reviewer no escribe en la fuente",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I09",
+   "clausula": "I09.5",
+   "texto": "opencode dentro del grupo del slot",
+   "prueba": "no-aplica",
+   "razon": "H no usa opencode ni grupos de macOS; el aislamiento equivalente es el cupo por perfil (I20)",
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I10",
+   "clausula": "I10.1",
+   "texto": "un par certificado nuevo entra solo por certificar.py más PR",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I10",
+   "clausula": "I10.2",
+   "texto": "un par sin certificar cierra la ruta",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I10",
+   "clausula": "I10.3",
+   "texto": "un intento abierto conserva su snapshot tras la subida",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I11",
+   "clausula": "I11.1",
+   "texto": "un perfil nuevo da ida y vuelta",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I11",
+   "clausula": "I11.2",
+   "texto": "un perfil incompleto se ve",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I11",
+   "clausula": "I11.3",
+   "texto": "su competencia, caducidad y memoria se conservan",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.1",
+   "texto": "la corrección converge o se detiene a las 10 rondas (el relevo es la ronda 6)",
+   "prueba": "test_sistema_agentes_decidir.I12Rondas.test_el_bucle_de_diez_rondas",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.2",
+   "texto": "hallazgos nuevos no reinician el linaje",
+   "prueba": "test_sistema_agentes_decidir.I12Linaje.test_hallazgos_nuevos_no_reinician_el_contador",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.3",
+   "texto": "el relevo no reinicia el linaje",
+   "prueba": "test_sistema_agentes_decidir.I12Rondas.test_un_relevo_exige_hecho_relay_y_sube_el_contador",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.4",
+   "texto": "la política solo cambia con el pin (decisión de David)",
+   "prueba": "test_sistema_agentes_ticker.I12PoliticaDelTicker.test_la_politica_sale_de_la_copia_fijada_con_la_decision_de_david",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.5",
+   "texto": "una raíz vieja conserva su política",
+   "prueba": "test_sistema_agentes_store.I12LinajeEnElStore.test_una_raiz_conserva_la_politica_con_la_que_abrio",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.6",
+   "texto": "ningún paso pide revisión a un segundo modelo",
+   "prueba": "test_sistema_agentes_decidir.I12Politica.test_ningun_paso_pide_revision_a_un_segundo_modelo",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I12",
+   "clausula": "I12.7",
+   "texto": "el revisor excluye a los autores",
+   "prueba": "test_sistema_agentes_decidir.I12Politica.test_el_revisor_excluye_a_los_autores",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I13",
+   "clausula": "I13.1",
+   "texto": "revisión y CI del head, criterio y entorno vigentes",
+   "prueba": "test_sistema_agentes_decidir.I13Aceptacion.test_review_approved_con_claims_vigentes_acepta",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I13",
+   "clausula": "I13.2",
+   "texto": "un LISTO no fabrica éxito",
+   "prueba": "test_sistema_agentes_decidir.I13Aceptacion.test_un_listo_no_fabrica_exito",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I13",
+   "clausula": "I13.3",
+   "texto": "un merge no fabrica éxito",
+   "prueba": "test_sistema_agentes_store.I13AceptacionEnElStore.test_una_aceptacion_sin_claims_no_entra",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I13",
+   "clausula": "I13.4",
+   "texto": "un rollback no fabrica éxito",
+   "prueba": "test_sistema_agentes_decidir.I13Aceptacion.test_claims_de_otro_intento_no_cubren",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I13",
+   "clausula": "I13.5",
+   "texto": "un criterio borrado no fabrica éxito",
+   "prueba": "test_sistema_agentes_decidir.I13Aceptacion.test_un_criterio_borrado_no_acepta",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I14",
+   "clausula": "I14.1",
+   "texto": "aviso y proyección comparten estado y porcentaje (la de H sale de derivar de G)",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I14",
+   "clausula": "I14.2",
+   "texto": "dos raíces, CI en espera y unidades sin PR se representan bien",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I14",
+   "clausula": "I14.3",
+   "texto": "panel",
+   "prueba": "no-aplica",
+   "razon": "las raíces de H llegan al panel en SUA-09H (diseño §7)",
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I16",
+   "clausula": "I16.1",
+   "texto": "un PID reutilizado no atribuye ni mata recursos ajenos",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I16",
+   "clausula": "I16.2",
+   "texto": "una sesión caída no atribuye ni mata recursos ajenos",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I16",
+   "clausula": "I16.3",
+   "texto": "datos corruptos no atribuyen ni matan recursos ajenos",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I16",
+   "clausula": "I16.4",
+   "texto": "métricas ausentes no atribuyen ni matan recursos ajenos",
+   "prueba": null,
+   "rebanada": "H3"
+  },
+  {
+   "ensayo": "I18",
+   "clausula": "I18.1",
+   "texto": "un perfil sin eventos declara cobertura unknown",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I18",
+   "clausula": "I18.2",
+   "texto": "su caída no aprueba ni despacha",
+   "prueba": null,
+   "rebanada": "H4"
+  },
+  {
+   "ensayo": "I20",
+   "clausula": "I20.1",
+   "texto": "presupuesto raíz",
+   "prueba": "test_sistema_agentes_store.I20Cupos.test_el_presupuesto_de_la_raiz",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I20",
+   "clausula": "I20.2",
+   "texto": "cupo global (max_in_progress) y por perfil",
+   "prueba": "test_sistema_agentes_store.I20Cupos.test_el_cupo_global_y_por_perfil",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I20",
+   "clausula": "I20.3",
+   "texto": "escritor exclusivo",
+   "prueba": "test_sistema_agentes_store.I20Cupos.test_el_escritor_exclusivo",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I20",
+   "clausula": "I20.4",
+   "texto": "el par atómico con dos plazas ocupadas",
+   "prueba": "test_sistema_agentes_store.I20Cupos.test_el_par_atomico_con_dos_y_tres_plazas_ocupadas",
+   "rebanada": "H1"
+  },
+  {
+   "ensayo": "I20",
+   "clausula": "I20.5",
+   "texto": "el par atómico con tres plazas ocupadas",
+   "prueba": "test_sistema_agentes_store.I20Cupos.test_el_par_atomico_con_dos_y_tres_plazas_ocupadas",
+   "rebanada": "H1"
+  }
+ ]
 }
