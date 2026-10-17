@@ -166,6 +166,58 @@ class I07Contrato(unittest.TestCase):
                 self.assertEqual(negar(caso["efecto"]), esperado)
 
 
+class I07SinPermisos(unittest.TestCase):
+    """Sin permisos de H (None, el valor por omisión) el gate falla cerrado:
+    acción, perfil y comando se niegan con la razón propia sin-permisos."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(self.ruta)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    def test_none_niega_todo_con_razon_propia(self):
+        sin_datos = autoridad.PermisosH(None)
+        self.assertEqual(sin_datos.niega_accion("push"), "sin-permisos")
+        self.assertEqual(sin_datos.niega_perfil("codex", "implement"), "sin-permisos")
+        self.assertEqual(sin_datos.niega_comando("git"), "sin-permisos")
+        vacio = autoridad.PermisosH({})
+        self.assertEqual(vacio.niega_accion("push"), "accion-preguntar")
+        self.assertEqual(autoridad.causa_de("sin-permisos"), "permiso-h:sin-permisos")
+
+    def test_sin_permisos_de_h_el_efecto_no_corre(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.codigo, "authority")
+        self.assertEqual(recibo.detalle["reason"], "sin-permisos")
+        vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        self.assertEqual([e["state"] for e in vista["efectos"]], ["prepared"])
+        causas = [e["subject"].get("cause") for e in vista["excepciones"]]
+        self.assertIn("permiso-h:sin-permisos", causas)
+
+    def test_sin_permisos_de_h_el_arranque_no_despacha(self):
+        kanban = kanban_port.DobleKanban()
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {"unitId": "a", "assignment": asignacion(), "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        informe = ticker.vuelta(self.tienda, kanban, {RAIZ: hechos})
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        self.assertEqual(len(self.tienda.intenciones_pendientes()), 1)
+        vista = self.tienda.leer_vista(RAIZ, hechos)
+        causas = [e["subject"].get("cause") for e in vista["excepciones"]]
+        self.assertIn("permiso-h:sin-permisos", causas)
+
+
 class I07Efecto(unittest.TestCase):
     """Punto 3: antes de cada efecto en iniciar_efecto."""
 
