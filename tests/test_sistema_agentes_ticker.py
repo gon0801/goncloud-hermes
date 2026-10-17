@@ -7,6 +7,7 @@ parte de I12 que fija de dónde sale la política.
 """
 
 import importlib
+import json
 import sys
 import tempfile
 import threading
@@ -336,6 +337,96 @@ class I04Ticker(Escenario):
             sorted(d["state"] for d in vista["unidades"]),
             ["accepted", "accepted", "accepted"],
         )
+
+
+class ElCancelYLaBandeja(Escenario):
+    @staticmethod
+    def comando_cancel(command_id, epoch):
+        return {
+            "schema": "sistema-agentes.control.v1",
+            "rootId": RAIZ,
+            "command": "cancel",
+            "commandId": command_id,
+            "expectedControlEpoch": epoch,
+            "reason": None,
+            "issuedAt": "2026-10-17T11:00:00Z",
+        }
+
+    def test_el_cancel_bloquea_las_tarjetas_vivas_en_el_kanban(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        kanban.crear_corriendo(clave_de_tarjeta(RAIZ, "a", 1))
+        self.vuelta(tienda, kanban)
+        recibo = tienda.control(self.comando_cancel("c1", 1)).valor
+        self.assertEqual(recibo.state, "cancelled")
+        self.vuelta(tienda, kanban)
+        for unit_id in ("a", "b"):
+            tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, unit_id, 1))
+            self.assertIsNotNone(tarjeta)
+            self.assertEqual(tarjeta.estado, "bloqueada")
+
+    def test_el_despacho_en_carrera_con_el_cancel_no_deja_tarjeta_viva(self):
+        tienda, kanban = self.frescar()
+        otro = store.Store(tienda.ruta)
+        self.addCleanup(otro.cerrar)
+        original = kanban_port.asegurar_tarjeta
+
+        def con_cancel(puerto, clave, spec):
+            if tienda.estado_de_control(RAIZ) == "active":
+                otro.control(self.comando_cancel("c1", 1))
+            return original(puerto, clave, spec)
+
+        kanban_port.asegurar_tarjeta = con_cancel
+        try:
+            self.vuelta(tienda, kanban)
+        finally:
+            kanban_port.asegurar_tarjeta = original
+        self.assertEqual(tienda.estado_de_control(RAIZ), "cancelled")
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        self.assertEqual(
+            sorted(d["state"] for d in vista["unidades"]),
+            ["cancelled", "cancelled"],
+        )
+        self.vuelta(tienda, kanban)
+        for clave in kanban.creaciones:
+            self.assertEqual(kanban.por_clave(clave).estado, "bloqueada")
+
+    def test_terminar_un_intento_anula_su_intencion(self):
+        tienda, kanban = self.frescar()
+        kanban.caer_en(PuntoDeCaida.ABRIR_TXN)
+        with self.assertRaises(kanban_port.CaidaInyectada):
+            self.vuelta(tienda, kanban)
+        kanban.quitar_caida(PuntoDeCaida.ABRIR_TXN)
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {
+                "kind": "attempt",
+                "unitId": "a",
+                "attempt": 1,
+                "cause": "incident:x",
+            },
+            ["listo", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        tienda._conexion.execute(
+            "UPDATE excepciones SET response_json = ? WHERE exception_id = ?",
+            (
+                json.dumps(
+                    {
+                        "optionId": "cancelar",
+                        "by": ["david"],
+                        "at": "2026-10-17T11:00:00Z",
+                    }
+                ),
+                borrador["exceptionId"],
+            ),
+        )
+        self.vuelta(tienda, kanban)
+        self.assertEqual(kanban.creaciones, [clave_de_tarjeta(RAIZ, "b", 1)])
+        self.assertEqual(tienda.intenciones_pendientes(), [])
 
 
 class I12PoliticaDelTicker(unittest.TestCase):
