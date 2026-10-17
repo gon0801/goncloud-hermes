@@ -1647,7 +1647,13 @@ class Store:
                         (root_id, revision),
                     )["request_digest"],
                     "units": unidades_plan,
-                    "assumptions": [],
+                    "assumptions": json.loads(
+                        self._una_fila(
+                            "SELECT assumptions_json FROM revisiones"
+                            " WHERE root_id = ? AND revision = ?",
+                            (root_id, revision),
+                        )["assumptions_json"]
+                    ),
                 },
                 "controlEpoch": control["epoch"],
                 "control": {

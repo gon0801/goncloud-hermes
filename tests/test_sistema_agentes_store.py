@@ -1178,6 +1178,23 @@ class ElReplayDeAplicarDaElMismoRecibo(AlmacenDePrueba):
         self.assertEqual(replay.valor, primera.valor)
 
 
+class LaVistaTraeLosSupuestosDelPlan(AlmacenDePrueba):
+    """F19: abrir_raiz guarda plan.assumptions y leer_vista los devolvía
+    siempre vacíos: el campo del contrato se escribía para no leerse."""
+
+    def test_leer_vista_devuelve_los_assumptions_de_la_revision(self):
+        otra = store.Store(Path(self.directorio.name) / "otra.db")
+        self.addCleanup(otra.cerrar)
+        documento = meta_de([unidad("a", "a1")])
+        documento["plan"]["assumptions"] = ["el repo sigue en main", "hay red"]
+        self.assertIsInstance(otra.abrir_raiz(documento), store.Ok)
+        vista = otra.leer_vista(RAIZ, hechos_vacios())
+        self.assertEqual(
+            vista["meta"]["plan"]["assumptions"],
+            ["el repo sigue en main", "hay red"],
+        )
+
+
 class LaGuardaValidaLosClaimsDeLaDecision(AlmacenDePrueba):
     """F16: los claims de la decisión se validan contra el contrato ANTES de
     la guarda de aceptación; uno sin forma es documento-invalido, no una
