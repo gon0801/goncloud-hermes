@@ -1164,6 +1164,20 @@ class ElCancelDelDuenoDesdeLaPropuesta(AlmacenDePrueba):
         self.assertEqual(tope["epoch"], 2)
 
 
+class ElReplayDeAplicarDaElMismoRecibo(AlmacenDePrueba):
+    """F15: el reintento idempotente devuelve el mismo ReciboDecision que el
+    camino nuevo, no su JSON parseado."""
+
+    def test_el_replay_reconstruye_el_recibo_de_decision(self):
+        primera = self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-r0")
+        self.assertIsInstance(primera, store.Ok)
+        self.assertIsInstance(primera.valor, store.ReciboDecision)
+        replay = self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-r0")
+        self.assertTrue(replay.replayed)
+        self.assertIsInstance(replay.valor, store.ReciboDecision)
+        self.assertEqual(replay.valor, primera.valor)
+
+
 class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
     """F7: la guarda de aceptación del store aplica revisorExcluyeAutores."""
 

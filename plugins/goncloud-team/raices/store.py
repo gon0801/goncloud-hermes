@@ -571,7 +571,7 @@ class Store:
                     self._rollback()
                     return Conflicto("operation-conflict")
                 self._rollback()
-                return Ok(json.loads(guardada["receipt_json"]), True)
+                return Ok(ReciboDecision(**json.loads(guardada["receipt_json"])), True)
             vigente = self._una_fila(
                 "SELECT epoch, state FROM controles WHERE root_id = ?"
                 " ORDER BY epoch DESC LIMIT 1",
