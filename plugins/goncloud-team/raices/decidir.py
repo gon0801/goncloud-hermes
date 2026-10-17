@@ -521,7 +521,6 @@ def decidir(
         if aplicada:
             decision["respuestas_aplicadas"].append(excepcion["exceptionId"])
 
-    # Resultados: cada pendiente se consume; el que falla termina su intento.
     for pendiente in vista["resultados"]:
         decision["consumidos"].append(pendiente["taskId"])
         documento = documento_de_tarea(pendiente["taskId"])
@@ -596,7 +595,6 @@ def decidir(
             continue
         juzgar_criterios(unidad_plan, documento)
 
-    # Incidencias de intentos vivos: un reintento automático, luego el dueño.
     def clase_de_incidencia(incidencia):
         clase = incidencia.get("kind")
         if clase == "permission-required":
@@ -733,7 +731,6 @@ def decidir(
         ligar(unit_id, hecho["assignment"])
         subir_contador(f"rondas:{unit_id}")
 
-    # Unidades listas: sin intento vivo, nunca falladas, dependencias aceptadas.
     for unidad_plan in plan_unidades:
         unit_id = unidad_plan["unitId"]
         ultimo = ultimo_de(unit_id)
@@ -793,7 +790,6 @@ def decidir(
             ["seguir", "cancelar"],
         )
 
-    # Avisos: lo nuevo de esta propuesta y lo vencido.
     avisar = [e["exceptionId"] for e in decision["excepciones"]] + avisados_vencidos()
     decision_vacia = all(
         len(decision[llave]) == 0
