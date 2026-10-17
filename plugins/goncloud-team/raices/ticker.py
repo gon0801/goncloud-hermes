@@ -59,6 +59,11 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
     creadas_antes = len(puerto.creaciones)
     estado: str | None = None
 
+    for bloqueo in tienda.bloqueos_pendientes():
+        with puerto.write_txn() as escritura:
+            escritura.bloquear(bloqueo["cardId"], bloqueo["motivo"])
+        tienda.bloqueo_hecho(bloqueo["rootId"], bloqueo["cardId"])
+
     for intento in tienda.intentos_con_tarjeta():
         if _conciliar_uno(tienda, puerto, intento):
             conciliadas += 1
@@ -86,7 +91,10 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
             estado = "done"
 
     for intencion in tienda.intenciones_pendientes():
-        if tienda.estado_de_control(intencion.root_id) != "active":
+        reclamo = tienda.reclamar_intencion(
+            intencion.root_id, intencion.unit_id, intencion.attempt
+        )
+        if hasattr(reclamo, "codigo"):
             continue
         target = intencion.assignment.get("target") or {}
         spec = SpecDeTarjeta(

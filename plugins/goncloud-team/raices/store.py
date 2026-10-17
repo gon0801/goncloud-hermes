@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS escritores (
   unit_id      TEXT NOT NULL,
   PRIMARY KEY (root_id, resource_ref)
 );
+CREATE TABLE IF NOT EXISTS bloqueos (
+  root_id  TEXT NOT NULL,
+  card_id  TEXT NOT NULL,
+  motivo   TEXT NOT NULL,
+  hecho_at TEXT,
+  PRIMARY KEY (root_id, card_id)
+);
 CREATE TABLE IF NOT EXISTS bandeja (
   root_id         TEXT NOT NULL,
   unit_id         TEXT NOT NULL,
@@ -432,7 +439,7 @@ class Store:
             nueva_epoch = epoch + 1
             if orden == "cancel":
                 vivos = self._conexion.execute(
-                    "SELECT unit_id, attempt FROM intentos"
+                    "SELECT unit_id, attempt, card_id FROM intentos"
                     " WHERE root_id = ? AND outcome_ref IS NULL",
                     (root_id,),
                 ).fetchall()
@@ -449,6 +456,11 @@ class Store:
                             fila["attempt"],
                         ),
                     )
+                    if fila["card_id"] is not None:
+                        self._conexion.execute(
+                            "INSERT OR IGNORE INTO bloqueos VALUES (?,?,?,NULL)",
+                            (root_id, fila["card_id"], f"cancel:{command_id}"),
+                        )
                 self._conexion.execute(
                     "DELETE FROM escritores WHERE root_id = ?", (root_id,)
                 )
@@ -620,6 +632,12 @@ class Store:
                             "attempt": desenlace["attempt"],
                         },
                     )
+                self._conexion.execute(
+                    "UPDATE bandeja SET state = 'anulada', fulfilled_at = ?"
+                    " WHERE root_id = ? AND unit_id = ? AND attempt = ?"
+                    " AND state = 'pendiente'",
+                    (ahora, root_id, desenlace["unitId"], desenlace["attempt"]),
+                )
                 if desenlace["outcome"] in ("accepted", "failed", "cancelled"):
                     self._conexion.execute(
                         "DELETE FROM escritores WHERE root_id = ? AND unit_id = ?",
@@ -1103,18 +1121,64 @@ class Store:
             raise
         return Ok(True)
 
-    def admitir_intento(self, root_id, unit_id, attempt, card_id) -> object:
-        fila = self._una_fila(
-            "SELECT state FROM bandeja WHERE root_id = ? AND unit_id = ? AND attempt = ?",
-            (root_id, unit_id, attempt),
-        )
-        if fila is None:
-            return Conflicto("intento-desconocido", {"unitId": unit_id})
-        if fila["state"] != "pendiente":
-            return Ok(True, True)
-        ahora = self.reloj()
+    def reclamar_intencion(self, root_id, unit_id, attempt) -> object:
+        """Verifica active y retiene la intención en una transacción, antes de
+        tocar el kanban (I05)."""
         self._begin()
         try:
+            fila = self._una_fila(
+                "SELECT state FROM bandeja WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            if fila is None:
+                self._rollback()
+                return Conflicto("intento-desconocido", {"unitId": unit_id})
+            if fila["state"] != "pendiente":
+                self._rollback()
+                return Conflicto("intencion-no-pendiente", {"state": fila["state"]})
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente["state"] != "active":
+                self._rollback()
+                return Conflicto("root-not-active", {"state": vigente["state"]})
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(True)
+
+    def admitir_intento(self, root_id, unit_id, attempt, card_id) -> object:
+        self._begin()
+        try:
+            fila = self._una_fila(
+                "SELECT state FROM bandeja WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            if fila is None:
+                self._rollback()
+                return Conflicto("intento-desconocido", {"unitId": unit_id})
+            if fila["state"] != "pendiente":
+                if fila["state"] == "anulada" and card_id is not None:
+                    self._conexion.execute(
+                        "INSERT OR IGNORE INTO bloqueos VALUES (?,?,?,NULL)",
+                        (root_id, card_id, "cancel"),
+                    )
+                self._commit()
+                return Ok(True, True)
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente["state"] != "active":
+                self._rollback()
+                return Conflicto("root-not-active", {"state": vigente["state"]})
+            ahora = self.reloj()
             self._conexion.execute(
                 "UPDATE bandeja SET state = 'cumplida', fulfilled_at = ?"
                 " WHERE root_id = ? AND unit_id = ? AND attempt = ? AND state = 'pendiente'",
@@ -1129,6 +1193,28 @@ class Store:
                 "UPDATE intentos SET state = 'admitted', updated_at = ?"
                 " WHERE root_id = ? AND unit_id = ? AND attempt = ? AND state = 'ready'",
                 (ahora, root_id, unit_id, attempt),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(True)
+
+    def bloqueos_pendientes(self) -> list:
+        return [
+            {"rootId": f["root_id"], "cardId": f["card_id"], "motivo": f["motivo"]}
+            for f in self._conexion.execute(
+                "SELECT root_id, card_id, motivo FROM bloqueos"
+                " WHERE hecho_at IS NULL ORDER BY rowid"
+            ).fetchall()
+        ]
+
+    def bloqueo_hecho(self, root_id, card_id) -> Ok:
+        self._begin()
+        try:
+            self._conexion.execute(
+                "UPDATE bloqueos SET hecho_at = ? WHERE root_id = ? AND card_id = ?",
+                (self.reloj(), root_id, card_id),
             )
             self._commit()
         except Exception:
