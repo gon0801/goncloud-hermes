@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -557,7 +558,42 @@ class Store:
 
     # -- decisión ---------------------------------------------------------
 
+    @staticmethod
+    def _forma_de_decision(decision):
+        """La forma mínima de las listas que aplicar desempaqueta por llave,
+        antes de tocar la base (F20): lo que no es un mapa, o le falta su
+        llave, es documento-invalido y no una excepción en la transacción."""
+        hallazgos = []
+        for seccion, llaves in (
+            ("claims", ()),
+            ("bindings", ("unitId",)),
+            ("outcomes", ("unitId", "attempt", "outcome")),
+        ):
+            for elemento in decision.get(seccion) or ():
+                if (
+                    not isinstance(elemento, Mapping)
+                    or any(llave not in elemento for llave in llaves)
+                    or (
+                        seccion == "bindings"
+                        and not isinstance(elemento.get("assignment"), Mapping)
+                    )
+                ):
+                    hallazgos.append(
+                        {"seccion": seccion, "regla": "elemento-sin-forma"}
+                    )
+                    break
+        for intent in decision.get("efectos") or ():
+            if not isinstance(intent, Mapping) or not isinstance(
+                intent.get("effectId"), str
+            ):
+                hallazgos.append({"seccion": "efectos", "regla": "elemento-sin-forma"})
+                break
+        return hallazgos
+
     def aplicar(self, root_id: str, decision: dict, decision_id: str) -> object:
+        forma = self._forma_de_decision(decision)
+        if forma:
+            return Conflicto("documento-invalido", {"hallazgos": _a_json(forma)})
         digest = digesto(decision)
         self._begin()
         try:

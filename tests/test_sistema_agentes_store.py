@@ -1195,6 +1195,32 @@ class LaVistaTraeLosSupuestosDelPlan(AlmacenDePrueba):
         )
 
 
+class LaFronteraRechazaDecisionesSinForma(AlmacenDePrueba):
+    """F20: la forma de claims, bindings, outcomes y efectos de la decisión
+    se comprueba antes de tocar la base; una decisión ajena mal formada es
+    documento-invalido, no una excepción dentro de la transacción."""
+
+    def test_la_decision_sin_forma_es_documento_invalido(self):
+        casos = {
+            "claim que no es mapa": decision(claims=["chorizo"]),
+            "binding sin assignment": decision(bindings=[{"unitId": "a"}]),
+            "binding que no es mapa": decision(bindings=["chorizo"]),
+            "outcome sin outcome": decision(outcomes=[{"unitId": "a", "attempt": 1}]),
+            "outcome que no es mapa": decision(outcomes=["chorizo"]),
+            "efecto sin effectId": decision(efectos=[{"action": "push"}]),
+            "efecto que no es mapa": decision(efectos=["chorizo"]),
+        }
+        for nombre, mal_formada in casos.items():
+            with self.subTest(caso=nombre):
+                negada = self.tienda.aplicar(RAIZ, mal_formada, f"dec-f20-{nombre}")
+                self.assertIsInstance(negada, store.Conflicto)
+                self.assertEqual(negada.codigo, "documento-invalido")
+                self.assertEqual(
+                    self.tienda._una_fila("SELECT COUNT(*) AS n FROM decisiones")["n"],
+                    0,
+                )
+
+
 class LaGuardaValidaLosClaimsDeLaDecision(AlmacenDePrueba):
     """F16: los claims de la decisión se validan contra el contrato ANTES de
     la guarda de aceptación; uno sin forma es documento-invalido, no una
