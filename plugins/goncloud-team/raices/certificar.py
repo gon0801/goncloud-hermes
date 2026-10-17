@@ -63,6 +63,8 @@ def _leer_par_vivo():
 
 
 def _correr_pruebas(home_temporal, repo, python=sys.executable) -> str:
+    """Junta stdout con stderr: unittest escribe su resumen (Ran N tests /
+    OK) por stderr."""
     entorno = dict(os.environ)
     entorno.update(
         {
@@ -79,7 +81,7 @@ def _correr_pruebas(home_temporal, repo, python=sys.executable) -> str:
         text=True,
         timeout=600,
     )
-    return terminado.stdout
+    return terminado.stdout + terminado.stderr
 
 
 def _paso_la_bateria(salida) -> str | None:

@@ -6,6 +6,7 @@ nunca se copia) y el archivo de certificados solo cambia con --escribir."""
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -121,6 +122,18 @@ class Certificar(unittest.TestCase):
             (self.home / "backup-key").read_text(encoding="utf-8"), "llave-secreta"
         )
         self.assertEqual(grande.read_bytes(), b"\0" * 4096)
+
+    def test_la_salida_trae_el_resumen_que_unittest_escribe_por_stderr(self):
+        terminado = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=SALIDA_VERDE
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporal,
+            mock.patch("raices.certificar.subprocess.run", return_value=terminado),
+        ):
+            salida = certificar._correr_pruebas(Path(temporal), REPO)
+        self.assertIn("Ran 3 tests", salida)
+        self.assertTrue(salida.endswith("OK\n"))
 
     def test_el_par_ya_certificado_sale_cero_sin_copiar_nada(self):
         codigo, salida = self.certificar(
