@@ -1550,6 +1550,225 @@ class Store:
             for f in filas
         ]
 
+    def snapshot_raiz(self, root_id: str) -> dict | None:
+        """El snapshot con la forma de managedTasks.root.read de R (I14). Las
+        filas rotas (JSON que no parsea o no es objeto) se saltan: no atribuyen
+        ni tumban la proyección (I16)."""
+        raiz = self._una_fila("SELECT * FROM raices WHERE root_id = ?", (root_id,))
+        if raiz is None:
+            return None
+        revision = self._una_fila(
+            "SELECT MAX(revision) AS revision FROM revisiones WHERE root_id = ?",
+            (root_id,),
+        )["revision"]
+        control = self._una_fila(
+            "SELECT epoch, state, reason FROM controles WHERE root_id = ?"
+            " ORDER BY epoch DESC LIMIT 1",
+            (root_id,),
+        )
+        unidades_plan = [
+            json.loads(f["unit_json"])
+            for f in self._conexion.execute(
+                "SELECT unit_json FROM unidades_de_plan"
+                " WHERE root_id = ? AND revision = ? ORDER BY unit_id",
+                (root_id, revision),
+            )
+        ]
+        units = []
+        for f in self._conexion.execute(
+            "SELECT * FROM intentos WHERE root_id = ? ORDER BY unit_id, attempt",
+            (root_id,),
+        ):
+            try:
+                assignment = json.loads(f["assignment_json"])
+                if not isinstance(assignment, dict):
+                    raise ValueError
+            except ValueError:
+                continue
+            units.append(
+                {
+                    "schema": "sistema-agentes.unidad.v1",
+                    "rootId": root_id,
+                    "planRevision": f["plan_revision"],
+                    "unitId": f["unit_id"],
+                    "attempt": f["attempt"],
+                    "taskId": f["card_id"],
+                    "assignment": assignment,
+                    "state": f["state"],
+                    "controlEpoch": f["control_epoch"],
+                }
+            )
+        ligadas = {u["unitId"] for u in units}
+        aceptadas = {u["unitId"] for u in units if u["state"] == "accepted"}
+        unbound = []
+        for unidad_plan in unidades_plan:
+            if unidad_plan["unitId"] in ligadas:
+                continue
+            faltan = [d for d in unidad_plan["dependsOn"] if d not in aceptadas]
+            unbound.append(
+                {
+                    "unitId": unidad_plan["unitId"],
+                    "state": "ready" if not faltan else "pending",
+                    "missing": faltan,
+                }
+            )
+        evidence = []
+        for f in self._conexion.execute(
+            "SELECT evidence_json FROM evidencia WHERE root_id = ?"
+            " ORDER BY created_at, evidence_id",
+            (root_id,),
+        ):
+            try:
+                documento = json.loads(f["evidence_json"])
+            except ValueError:
+                continue
+            if isinstance(documento, dict):
+                evidence.append(documento)
+        effects = [
+            {
+                "rootId": root_id,
+                "effectId": f["effect_id"],
+                "state": f["state"],
+                "startId": f["start_id"],
+                "startedEpoch": f["started_epoch"],
+            }
+            for f in self._conexion.execute(
+                "SELECT * FROM efectos WHERE root_id = ? ORDER BY created_at, effect_id",
+                (root_id,),
+            )
+        ]
+        pending_results = []
+        for f in self._conexion.execute(
+            "SELECT result_json FROM resultados WHERE root_id = ?"
+            " AND consumed_at IS NULL ORDER BY created_at",
+            (root_id,),
+        ):
+            try:
+                documento = json.loads(f["result_json"])
+            except ValueError:
+                continue
+            if isinstance(documento, dict):
+                pending_results.append(
+                    {
+                        "taskId": documento.get("reportedBy", {}).get("taskId"),
+                        "resultDigest": documento.get("resultDigest"),
+                        "resultContract": documento.get("resultContract"),
+                    }
+                )
+        counters = {
+            f["counter"]: f["value"]
+            for f in self._conexion.execute(
+                "SELECT counter, value FROM contadores WHERE root_id = ?",
+                (root_id,),
+            )
+        }
+        writers = [
+            {"resourceRef": f["resource_ref"], "unitId": f["unit_id"]}
+            for f in self._conexion.execute(
+                "SELECT resource_ref, unit_id FROM escritores WHERE root_id = ?",
+                (root_id,),
+            )
+        ]
+        incidents = []
+        for f in self._conexion.execute(
+            "SELECT i.card_id, n.unit_id, n.attempt, n.incident_key,"
+            " n.incident_json FROM incidencias n"
+            " JOIN intentos i ON i.root_id = n.root_id AND i.unit_id = n.unit_id"
+            " AND i.attempt = n.attempt"
+            " WHERE n.root_id = ?"
+            " ORDER BY n.created_at, n.unit_id, n.attempt, n.incident_key",
+            (root_id,),
+        ):
+            try:
+                incidente = json.loads(f["incident_json"])
+            except ValueError:
+                continue
+            if not isinstance(incidente, dict):
+                continue
+            incidents.append(
+                {
+                    "unitId": f["unit_id"],
+                    "attempt": f["attempt"],
+                    "taskId": f["card_id"] or "",
+                    "incidentKey": f["incident_key"],
+                    "incident": incidente,
+                }
+            )
+        exceptions = []
+        for f in self._conexion.execute(
+            "SELECT * FROM excepciones WHERE root_id = ? ORDER BY raised_at, exception_id",
+            (root_id,),
+        ):
+            try:
+                documento = {
+                    "schema": "sistema-agentes.excepcion.v1",
+                    "exceptionId": f["exception_id"],
+                    "rootId": root_id,
+                    "unitId": f["unit_id"],
+                    "type": f["type"],
+                    "options": json.loads(f["options_json"]),
+                    "evidenceRef": (
+                        json.loads(f["evidence_ref_json"])
+                        if f["evidence_ref_json"]
+                        else None
+                    ),
+                    "recipient": json.loads(f["recipient_json"]),
+                    "raisedAt": f["raised_at"],
+                    "renoticeAfterMs": f["renotice_after_ms"],
+                    "response": (
+                        json.loads(f["response_json"]) if f["response_json"] else None
+                    ),
+                }
+            except ValueError:
+                continue
+            if isinstance(documento["options"], list):
+                exceptions.append(documento)
+        return {
+            "meta": {
+                "schema": "sistema-agentes.meta.v1",
+                "rootId": root_id,
+                "requester": json.loads(raiz["requester_json"]),
+                "authority": json.loads(raiz["authority_json"]),
+                "budget": json.loads(raiz["budget_json"]),
+                "plan": {
+                    "revision": revision,
+                    "planDigest": self._una_fila(
+                        "SELECT plan_digest FROM revisiones WHERE root_id = ? AND revision = ?",
+                        (root_id, revision),
+                    )["plan_digest"],
+                    "requestDigest": self._una_fila(
+                        "SELECT request_digest FROM revisiones WHERE root_id = ? AND revision = ?",
+                        (root_id, revision),
+                    )["request_digest"],
+                    "units": unidades_plan,
+                    "assumptions": [],
+                },
+                "controlEpoch": control["epoch"],
+                "control": {
+                    "state": control["state"],
+                    "epoch": control["epoch"],
+                    "reason": control["reason"],
+                },
+                "qualityPolicy": {"version": raiz["quality_policy"]},
+                "createdAt": raiz["created_at"],
+            },
+            "units": units,
+            "unbound": unbound,
+            "evidence": evidence,
+            "effects": effects,
+            "budget": json.loads(raiz["budget_json"]),
+            "pendingResults": pending_results,
+            "counters": counters,
+            "writers": writers,
+            "requesterGeneration": 1,
+            "incidents": incidents,
+            "exceptions": exceptions,
+            "authority": {
+                "revision": 1,
+                "authority": json.loads(raiz["authority_json"]),
+            },
+        }
+
     def estado_de_control(self, root_id) -> str | None:
         fila = self._una_fila(
             "SELECT state FROM controles WHERE root_id = ? ORDER BY epoch DESC LIMIT 1",
