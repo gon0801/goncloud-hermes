@@ -605,6 +605,64 @@ class EntradasDelMundo(AlmacenDePrueba):
         )
         self.assertEqual(negada.codigo, "option-not-offered")
 
+    def _intento_reportado(self):
+        self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(self.resultado(DIGEST)), store.Ok
+        )
+
+    def test_un_claim_owner_respaldado_por_la_respuesta_del_dueno_acepta(self):
+        self._intento_reportado()
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {
+                "kind": "attempt",
+                "unitId": "a",
+                "attempt": 1,
+                "cause": "owner:a1",
+            },
+            ["aceptar", "rechazar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(
+                RAIZ, borrador["exceptionId"], "aceptar", ["david"]
+            ),
+            store.Ok,
+        )
+        claim_dueno = claim("a", 1, "a1")
+        claim_dueno["verifier"] = {"principal": ["david"], "role": "owner"}
+        claim_dueno["artifactRef"] = {
+            "ref": f"exception:{borrador['exceptionId']}",
+            "digest": DIGEST,
+        }
+        aceptacion = decision(
+            claims=[claim_dueno],
+            outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, aceptacion, "dec-ok"), store.Ok)
+
+    def test_un_claim_owner_sin_respuesta_del_dueno_no_acepta(self):
+        self._intento_reportado()
+        claim_falso = claim("a", 1, "a1")
+        claim_falso["verifier"] = {"principal": ["claw"], "role": "owner"}
+        negada = self.tienda.aplicar(
+            RAIZ,
+            decision(
+                claims=[claim_falso],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-falsa",
+        )
+        self.assertEqual(negada.codigo, "criteria-unproven")
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(vista["unidades"][0]["state"], "reported")
+
     def test_reportar_resultado_pone_reported_en_su_misma_transaccion(self):
         self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
         self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")

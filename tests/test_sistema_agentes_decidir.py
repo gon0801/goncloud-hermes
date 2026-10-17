@@ -472,6 +472,54 @@ class I13Aceptacion(unittest.TestCase):
         self.assertEqual(propuesta.necesidades[0].attempt, 2)
 
 
+class HechosYRoles(unittest.TestCase):
+    @staticmethod
+    def hechos_con(claim_hecho):
+        return {
+            "principal": ["claw"],
+            "asignaciones": [],
+            "claims": [claim_hecho],
+            "efectos": [],
+        }
+
+    @staticmethod
+    def claim_de_hecho(rol, principal):
+        claim_hecho = claim("a", 1, "a1", "passed", principal=principal, rol=rol)
+        claim_hecho.pop("verifier")
+        claim_hecho.pop("evidenceId")
+        claim_hecho.pop("schema")
+        claim_hecho["role"] = rol
+        return claim_hecho
+
+    def test_un_claim_owner_del_modelo_no_cubre(self):
+        hecho = self.claim_de_hecho("owner", ["claw"])
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("owner",))],
+                intentos=[intento("a", 1, "reported")],
+                hechos=self.hechos_con(hecho),
+            )
+        )
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        tipos = [e["type"] for e in propuesta.decision["excepciones"]]
+        self.assertIn("NECESITA_DAVID", tipos)
+
+    def test_un_claim_verifier_del_modelo_sigue_cubriendo(self):
+        hecho = self.claim_de_hecho("verifier", ["verif-1"])
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                hechos=self.hechos_con(hecho),
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+
+
 class RespuestasSobreEfectos(unittest.TestCase):
     def test_el_cancel_de_un_efecto_alcanza_a_su_unidad(self):
         excepcion = {
