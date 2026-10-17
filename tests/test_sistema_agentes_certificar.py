@@ -187,5 +187,65 @@ class Certificar(unittest.TestCase):
         self.assertEqual(self.pruebas, [])
 
 
+class ElLectorUnicoDeVersion(unittest.TestCase):
+    """El texto de --version se lee UNA vez: certificar reutiliza el lector de
+    capacidades, que resuelve el ejecutable con shutil.which. En Windows el
+    nombre pelado no encuentra hermes.CMD y la duplicación dejaba la
+    evidencia con None aunque la puerta abriera."""
+
+    def test_sin_duplicado_del_lector_en_certificar(self):
+        self.assertFalse(
+            hasattr(certificar, "_texto_de_version"),
+            "el lector de --version vive solo en capacidades",
+        )
+
+    def test_la_evidencia_trae_el_texto_del_lector_de_capacidades(self):
+        hechos = capacidades.Hechos(
+            capacidades.VersionCLI("0.21.5", SHA[:7]),
+            capacidades.ParGateway(
+                kind="hermes-gateway",
+                gateway_state="running",
+                code_version="0.21.5",
+                code_sha=SHA,
+                hermes_home="/home/hermes",
+                updated_at="2026-10-17T00:00:00Z",
+            ),
+            (),
+            frozenset(capacidades.CAPACIDADES_REQUERIDAS),
+            "/home/hermes",
+        )
+        texto = "Hermes Agent v0.21.5+5822.gaabbccd (2026.9.24)"
+        with (
+            mock.patch.object(capacidades, "hechos_vivos", lambda *a, **k: hechos),
+            mock.patch.object(capacidades, "_correr_hermes_version", lambda: texto),
+        ):
+            _, _, par = certificar._leer_par_vivo()
+        self.assertEqual(par["texto_version"], texto)
+
+
+class SinHermesHome(unittest.TestCase):
+    """Sin HERMES_HOME el lector de la puerta mira el directorio actual y
+    contesta par-incierto, que confunde; el fallo debe nombrar la falta,
+    igual que cron_ticker."""
+
+    def test_falla_claro_y_no_consulta_el_par(self):
+        consultado = []
+
+        def lector():
+            consultado.append(True)
+            return (False, "par-incierto", None)
+
+        bufer = StringIO()
+        with (
+            mock.patch.dict(os.environ),
+            redirect_stdout(bufer),
+        ):
+            os.environ.pop("HERMES_HOME", None)
+            codigo = certificar.main([], leer_par=lector)
+        self.assertEqual(codigo, 1)
+        self.assertIn("HERMES_HOME no esta definido", bufer.getvalue())
+        self.assertEqual(consultado, [], "sin home no se lee ningún par")
+
+
 if __name__ == "__main__":
     unittest.main()
