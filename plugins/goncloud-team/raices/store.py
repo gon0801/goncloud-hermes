@@ -1015,25 +1015,28 @@ class Store:
     def liquidar_efecto(
         self, root_id: str, effect_id: str, start_id: str, desenlace: dict
     ) -> object:
-        fila = self._una_fila(
-            "SELECT state, start_id FROM efectos WHERE root_id = ? AND effect_id = ?",
-            (root_id, effect_id),
-        )
-        if fila is None:
-            return Conflicto("effect-unknown", {"effectId": effect_id})
-        if fila["state"] in ("confirmed", "uncertain"):
-            return Conflicto("effect-refused", {"state": fila["state"]})
-        if fila["state"] != "started" or fila["start_id"] != start_id:
-            return Conflicto("effect-refused", {"state": fila["state"]})
-        nuevo = "confirmed" if desenlace["kind"] == "confirmed" else "uncertain"
-        ahora = self.reloj()
         self._begin()
         try:
-            self._conexion.execute(
-                "UPDATE efectos SET state = ?, updated_at = ?"
-                " WHERE root_id = ? AND effect_id = ? AND state = 'started'",
-                (nuevo, ahora, root_id, effect_id),
+            fila = self._una_fila(
+                "SELECT state, start_id FROM efectos WHERE root_id = ? AND effect_id = ?",
+                (root_id, effect_id),
             )
+            if fila is None:
+                self._rollback()
+                return Conflicto("effect-unknown", {"effectId": effect_id})
+            if fila["state"] != "started" or fila["start_id"] != start_id:
+                self._rollback()
+                return Conflicto("effect-refused", {"state": fila["state"]})
+            nuevo = "confirmed" if desenlace["kind"] == "confirmed" else "uncertain"
+            cambio = self._conexion.execute(
+                "UPDATE efectos SET state = ?, updated_at = ?"
+                " WHERE root_id = ? AND effect_id = ? AND state = 'started'"
+                " AND start_id = ?",
+                (nuevo, self.reloj(), root_id, effect_id, start_id),
+            )
+            if cambio.rowcount != 1:
+                self._rollback()
+                return Conflicto("effect-refused", {"state": fila["state"]})
             self._commit()
         except Exception:
             self._rollback()
@@ -1147,23 +1150,33 @@ class Store:
     def transicionar_intento(
         self, root_id, unit_id, attempt, nuevo_estado, ref
     ) -> object:
-        fila = self._una_fila(
-            "SELECT state FROM intentos WHERE root_id = ? AND unit_id = ? AND attempt = ?",
-            (root_id, unit_id, attempt),
-        )
-        if fila is None:
-            return Conflicto("intento-desconocido", {"unitId": unit_id})
-        if not contrato.transicion_permitida(fila["state"], nuevo_estado):
-            return Conflicto(
-                "transition-refused", {"state": fila["state"], "nuevo": nuevo_estado}
-            )
         self._begin()
         try:
-            self._conexion.execute(
+            fila = self._una_fila(
+                "SELECT state FROM intentos WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            if fila is None:
+                self._rollback()
+                return Conflicto("intento-desconocido", {"unitId": unit_id})
+            if not contrato.transicion_permitida(fila["state"], nuevo_estado):
+                self._rollback()
+                return Conflicto(
+                    "transition-refused",
+                    {"state": fila["state"], "nuevo": nuevo_estado},
+                )
+            cambio = self._conexion.execute(
                 "UPDATE intentos SET state = ?, updated_at = ? WHERE root_id = ?"
                 " AND unit_id = ? AND attempt = ? AND state = ?",
                 (nuevo_estado, self.reloj(), root_id, unit_id, attempt, fila["state"]),
             )
+            if cambio.rowcount != 1:
+                self._rollback()
+                return Conflicto(
+                    "transition-refused",
+                    {"state": fila["state"], "nuevo": nuevo_estado},
+                )
             self._commit()
         except Exception:
             self._rollback()
