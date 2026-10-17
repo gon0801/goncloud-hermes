@@ -368,45 +368,50 @@ class Store:
             if k not in ("schema", "commandId", "receipt")
         }
         digest = digesto(contenido)
-        guardado = self._una_fila(
-            "SELECT command_digest, receipt_json FROM comandos_de_control"
-            " WHERE root_id = ? AND command_id = ?",
-            (root_id, command_id),
-        )
-        if guardado is not None:
-            if guardado["command_digest"] != digest:
-                return Conflicto("operation-conflict")
-            recibo = json.loads(guardado["receipt_json"])
-            return Ok(
-                ReciboControl(
-                    recibo["controlEpoch"],
-                    recibo["state"],
-                    True,
-                    recibo["committedEffects"],
-                ),
-                True,
-            )
-        vigente = self._una_fila(
-            "SELECT epoch, state FROM controles WHERE root_id = ?"
-            " ORDER BY epoch DESC LIMIT 1",
-            (root_id,),
-        )
-        if vigente is None:
-            return Conflicto("raiz-desconocida")
-        epoch, state = vigente["epoch"], vigente["state"]
-        if comando["expectedControlEpoch"] != epoch:
-            return Conflicto("stale-control-epoch", {"actual": epoch})
-        orden = comando["command"]
-        admite = {
-            "pause": ("active",),
-            "resume": ("paused",),
-            "cancel": ("active", "paused"),
-        }
-        if state not in admite[orden]:
-            return Conflicto("transition-refused", {"state": state})
         ahora = self.reloj()
         self._begin()
         try:
+            guardado = self._una_fila(
+                "SELECT command_digest, receipt_json FROM comandos_de_control"
+                " WHERE root_id = ? AND command_id = ?",
+                (root_id, command_id),
+            )
+            if guardado is not None:
+                if guardado["command_digest"] != digest:
+                    self._rollback()
+                    return Conflicto("operation-conflict")
+                recibo = json.loads(guardado["receipt_json"])
+                self._rollback()
+                return Ok(
+                    ReciboControl(
+                        recibo["controlEpoch"],
+                        recibo["state"],
+                        True,
+                        recibo["committedEffects"],
+                    ),
+                    True,
+                )
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente is None:
+                self._rollback()
+                return Conflicto("raiz-desconocida")
+            epoch, state = vigente["epoch"], vigente["state"]
+            if comando["expectedControlEpoch"] != epoch:
+                self._rollback()
+                return Conflicto("stale-control-epoch", {"actual": epoch})
+            orden = comando["command"]
+            admite = {
+                "pause": ("active",),
+                "resume": ("paused",),
+                "cancel": ("active", "paused"),
+            }
+            if state not in admite[orden]:
+                self._rollback()
+                return Conflicto("transition-refused", {"state": state})
             committed = self._conexion.execute(
                 "SELECT effect_id, intent_json, state"
                 " FROM efectos WHERE root_id = ? AND state IN ('started','uncertain')"
@@ -497,93 +502,101 @@ class Store:
 
     def aplicar(self, root_id: str, decision: dict, decision_id: str) -> object:
         digest = digesto(decision)
-        guardada = self._una_fila(
-            "SELECT decision_digest, receipt_json FROM decisiones"
-            " WHERE root_id = ? AND decision_id = ?",
-            (root_id, decision_id),
-        )
-        if guardada is not None:
-            if guardada["decision_digest"] != digest:
-                return Conflicto("operation-conflict")
-            return Ok(json.loads(guardada["receipt_json"]), True)
-        vigente = self._una_fila(
-            "SELECT epoch, state FROM controles WHERE root_id = ?"
-            " ORDER BY epoch DESC LIMIT 1",
-            (root_id,),
-        )
-        if vigente is None:
-            return Conflicto("raiz-desconocida")
-        epoch, state = vigente["epoch"], vigente["state"]
-        if decision["expected_control_epoch"] != epoch:
-            return Conflicto("stale-control-epoch", {"actual": epoch})
-        revision_fila = self._una_fila(
-            "SELECT MAX(revision) AS revision FROM revisiones WHERE root_id = ?",
-            (root_id,),
-        )
-        revision = revision_fila["revision"]
-        if decision["expected_plan_revision"] != revision:
-            return Conflicto("stale-plan-revision", {"actual": revision})
-        hay_trabajo = any(
-            decision[llave]
-            for llave in (
-                "consumidos",
-                "claims",
-                "outcomes",
-                "bindings",
-                "efectos",
-                "contadores",
-                "excepciones",
-                "respuestas_aplicadas",
-            )
-        )
-        if hay_trabajo and state != "active":
-            return Conflicto("root-not-active", {"state": state})
-        ahora = self.reloj()
-        unidades = {
-            fila["unit_id"]: json.loads(fila["unit_json"])
-            for fila in self._conexion.execute(
-                "SELECT unit_id, unit_json FROM unidades_de_plan"
-                " WHERE root_id = ? AND revision = ?",
-                (root_id, revision),
-            )
-        }
-        # Guarda de borde: una aceptación exige claims passed por cada criterio
-        # vigente, aunque la propuesta no venga de decidir (I13).
-        claims = list(decision["claims"])
-        for fila in self._conexion.execute(
-            "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY created_at",
-            (root_id,),
-        ):
-            claims.append(json.loads(fila["evidence_json"]))
-        for desenlace in decision["outcomes"]:
-            if desenlace["outcome"] != "accepted":
-                continue
-            unidad_plan = unidades.get(desenlace["unitId"])
-            if unidad_plan is None:
-                return Conflicto(
-                    "criterion-removed",
-                    {"unitId": desenlace["unitId"]},
-                )
-            for criterio in unidad_plan["criteria"]:
-                cubierto = any(
-                    c["unitId"] == desenlace["unitId"]
-                    and c["attempt"] == desenlace["attempt"]
-                    and c["criterionId"] == criterio["criterionId"]
-                    and c["outcome"] == "passed"
-                    and (c["expiresAt"] is None or c["expiresAt"] > ahora)
-                    and c.get("planRevision") == revision
-                    for c in claims
-                )
-                if not cubierto:
-                    return Conflicto(
-                        "criteria-unproven",
-                        {
-                            "unitId": desenlace["unitId"],
-                            "criterionId": criterio["criterionId"],
-                        },
-                    )
         self._begin()
         try:
+            guardada = self._una_fila(
+                "SELECT decision_digest, receipt_json FROM decisiones"
+                " WHERE root_id = ? AND decision_id = ?",
+                (root_id, decision_id),
+            )
+            if guardada is not None:
+                if guardada["decision_digest"] != digest:
+                    self._rollback()
+                    return Conflicto("operation-conflict")
+                self._rollback()
+                return Ok(json.loads(guardada["receipt_json"]), True)
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente is None:
+                self._rollback()
+                return Conflicto("raiz-desconocida")
+            epoch, state = vigente["epoch"], vigente["state"]
+            if decision["expected_control_epoch"] != epoch:
+                self._rollback()
+                return Conflicto("stale-control-epoch", {"actual": epoch})
+            revision_fila = self._una_fila(
+                "SELECT MAX(revision) AS revision FROM revisiones WHERE root_id = ?",
+                (root_id,),
+            )
+            revision = revision_fila["revision"]
+            if decision["expected_plan_revision"] != revision:
+                self._rollback()
+                return Conflicto("stale-plan-revision", {"actual": revision})
+            hay_trabajo = any(
+                decision[llave]
+                for llave in (
+                    "consumidos",
+                    "claims",
+                    "outcomes",
+                    "bindings",
+                    "efectos",
+                    "contadores",
+                    "excepciones",
+                    "respuestas_aplicadas",
+                )
+            )
+            if hay_trabajo and state != "active":
+                self._rollback()
+                return Conflicto("root-not-active", {"state": state})
+            ahora = self.reloj()
+            unidades = {
+                fila["unit_id"]: json.loads(fila["unit_json"])
+                for fila in self._conexion.execute(
+                    "SELECT unit_id, unit_json FROM unidades_de_plan"
+                    " WHERE root_id = ? AND revision = ?",
+                    (root_id, revision),
+                )
+            }
+            # Guarda de borde: una aceptación exige claims passed por cada criterio
+            # vigente, aunque la propuesta no venga de decidir (I13).
+            claims = list(decision["claims"])
+            for fila in self._conexion.execute(
+                "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY created_at",
+                (root_id,),
+            ):
+                claims.append(json.loads(fila["evidence_json"]))
+            for desenlace in decision["outcomes"]:
+                if desenlace["outcome"] != "accepted":
+                    continue
+                unidad_plan = unidades.get(desenlace["unitId"])
+                if unidad_plan is None:
+                    self._rollback()
+                    return Conflicto(
+                        "criterion-removed",
+                        {"unitId": desenlace["unitId"]},
+                    )
+                for criterio in unidad_plan["criteria"]:
+                    cubierto = any(
+                        c["unitId"] == desenlace["unitId"]
+                        and c["attempt"] == desenlace["attempt"]
+                        and c["criterionId"] == criterio["criterionId"]
+                        and c["outcome"] == "passed"
+                        and (c["expiresAt"] is None or c["expiresAt"] > ahora)
+                        and c.get("planRevision") == revision
+                        for c in claims
+                    )
+                    if not cubierto:
+                        self._rollback()
+                        return Conflicto(
+                            "criteria-unproven",
+                            {
+                                "unitId": desenlace["unitId"],
+                                "criterionId": criterio["criterionId"],
+                            },
+                        )
             for desenlace in decision["outcomes"]:
                 cambio = self._conexion.execute(
                     "UPDATE intentos SET state = ?, outcome_ref = ?, updated_at = ?"

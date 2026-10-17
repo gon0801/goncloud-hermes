@@ -284,7 +284,8 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
             RAIZ, decision(bindings=[binding("a")]), "dec-1"
         )
         self.assertIsInstance(resultado, store.Conflicto)
-        self.assertEqual(resultado.codigo, "root-not-active")
+        self.assertEqual(resultado.codigo, "stale-control-epoch")
+        self.assertEqual(resultado.detalle["actual"], 2)
         self.assertEqual(self.tienda.ocupacion()["global"], 0)
         self.assertEqual(self.tienda.intenciones_pendientes(), [])
         escritores = self.tienda._conexion.execute(
