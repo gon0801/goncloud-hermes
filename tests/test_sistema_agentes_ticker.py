@@ -272,6 +272,21 @@ class I04Ticker(Escenario):
         self.vuelta(tienda, kanban)
         clave_c = clave_de_tarjeta(RAIZ, "c", 1)
         kanban.crear_hecha(clave_c, resultado_aprobado())
+        original = tienda.reportar_resultado
+
+        def muere(documento):
+            raise RuntimeError("el ticker muere entre la admisión y el consumo")
+
+        tienda.reportar_resultado = muere
+        with self.assertRaises(RuntimeError):
+            self.vuelta(tienda, kanban)
+        estado_tras_caida = [
+            d["state"]
+            for d in tienda.leer_vista(RAIZ, hechos_de_raiz())["unidades"]
+            if d["unitId"] == "c"
+        ]
+        self.assertEqual(estado_tras_caida, ["running"])
+        tienda.reportar_resultado = original
         self.vuelta(tienda, kanban)
         vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
         self.assertEqual(
@@ -286,6 +301,23 @@ class I04Ticker(Escenario):
             ["accepted"],
         )
         self.assertEqual(informe_de_mas.estado, "done")
+
+    def test_un_resultado_invalido_registra_la_incidencia_y_no_fabrica_exito(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        kanban.crear_hecha(
+            tarjeta.clave, {"resultContract": "review.v1", "verdict": "changes"}
+        )
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        estados = [d["state"] for d in vista["unidades"] if d["unitId"] == "a"]
+        self.assertEqual(estados[0], "failed")
+        self.assertEqual(
+            [(i["unitId"], i["incidentKey"]) for i in vista["incidencias"]],
+            [("a", f"invalid-result:{tarjeta.id}")],
+        )
+        self.assertEqual(vista["resultados"], [])
 
     def test_tras_las_caidas_el_plan_termina_y_sigue(self):
         tienda, kanban = self.frescar()

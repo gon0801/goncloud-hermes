@@ -446,6 +446,17 @@ class I13Aceptacion(unittest.TestCase):
         self.assertEqual(propuesta.decision["outcomes"], [])
         self.assertEqual(necesitaciones(propuesta), [("verify", ("a1",))])
 
+    def test_un_reported_sin_resultado_no_se_acepta(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a")],
+                intentos=[intento("a", 1, "reported")],
+                evidencia=[claim("a", 1, "a1", "passed")],
+            )
+        )
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        self.assertEqual(propuesta.necesidades, [])
+
     def test_claims_de_otro_intento_no_cubren(self):
         propuesta = decidir.decidir(
             vista(

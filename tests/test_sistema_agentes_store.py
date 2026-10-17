@@ -556,5 +556,50 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         self.assertEqual(sorted(d["state"] for d in vista["unidades"]), ["accepted"])
 
 
+class EntradasDelMundo(AlmacenDePrueba):
+    def resultado(self, digest):
+        return {
+            "rootId": RAIZ,
+            "unitId": "a",
+            "attempt": 1,
+            "resultContract": "ready.v1",
+            "resultDigest": digest,
+            "reportedAt": "2026-10-17T11:00:00Z",
+            "reportedBy": {"kind": "native", "taskId": "t-1"},
+            "payload": {"evidenceRef": REF},
+        }
+
+    def test_reportar_resultado_pone_reported_en_su_misma_transaccion(self):
+        self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        recibo = self.tienda.reportar_resultado(self.resultado(DIGEST))
+        self.assertIsInstance(recibo, store.Ok)
+        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        self.assertEqual(vista["unidades"][0]["state"], "reported")
+
+    def test_un_reintento_con_otro_digest_es_conflicto(self):
+        self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(self.resultado(DIGEST)), store.Ok
+        )
+        repetido = self.tienda.reportar_resultado(self.resultado(DIGEST))
+        self.assertEqual(repetido.valor, True)
+        self.assertTrue(repetido.replayed)
+        distinto = self.tienda.reportar_resultado(self.resultado("sha256:" + "b" * 64))
+        self.assertEqual(distinto.codigo, "operation-conflict")
+
+    @staticmethod
+    def hechos_nulos():
+        return {
+            "principal": [],
+            "asignaciones": [],
+            "claims": [],
+            "efectos": [],
+        }
+
+
 if __name__ == "__main__":
     unittest.main()
