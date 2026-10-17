@@ -1213,8 +1213,9 @@ class Store:
         return Ok(True)
 
     def reclamar_intencion(self, root_id, unit_id, attempt) -> object:
-        """Verifica active y retiene la intención en una transacción, antes de
-        tocar el kanban (I05)."""
+        """Verifica active dentro de una transacción, antes de tocar el kanban
+        (I05). No retiene nada por sí sola: la exclusividad la da buscar_o_crear
+        dentro del write_txn del kanban y que admitir_intento exija 'pendiente'."""
         self._begin()
         try:
             fila = self._una_fila(
