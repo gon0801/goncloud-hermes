@@ -130,12 +130,17 @@ class Recorrido(unittest.TestCase):
                 self.assertTrue(razon.strip())
 
     def test_una_rebanada_cerrada_no_deja_clausulas_sin_prueba(self):
+        """El diseño (§4) admite `no-aplica` con su razón como fila de una
+        rebanada cerrada: la cláusula queda cubierta por la razón."""
         cerradas = set(DOCUMENTO["rebanadasCerradas"])
         for fila in DOCUMENTO["filas"]:
             if fila["rebanada"] not in cerradas:
                 continue
             with self.subTest(clausula=fila["clausula"]):
-                self.assertNotIn(fila["prueba"], (None, "no-aplica"))
+                if fila["prueba"] == "no-aplica":
+                    self.assertTrue((fila.get("razon") or "").strip())
+                else:
+                    self.assertIsNotNone(fila["prueba"])
 
 
 if __name__ == "__main__":
