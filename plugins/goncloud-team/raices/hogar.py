@@ -88,6 +88,9 @@ def leer_permisos(home=None) -> dict | None:
     raiz que resuelve raiz_del_hogar: un home de perfil sube, nunca HERMES_HOME
     pelado). Sin archivo legible, con uno que no sea un objeto JSON o con tipos
     que PermisosH no sabe leer (F5), devuelve None y los gates fallan cerrado.
+    Los toolsets efectivos son la interseccion (H4b3, raices/permisos.py) entre
+    lo declarado y el config real de cada perfil bajo <raiz>/profiles; un
+    config.yaml ilegible queda sin toolsets y no revienta.
     """
     try:
         texto = (raiz_del_hogar(home) / "raices" / "permisos.json").read_text(
@@ -96,4 +99,7 @@ def leer_permisos(home=None) -> dict | None:
         datos = json.loads(texto)
     except (OSError, ValueError):
         return None
-    return datos if _forma_de_permisos(datos) else None
+    if not _forma_de_permisos(datos):
+        return None
+    permisos = importlib.import_module("raices.permisos")
+    return permisos.toolsets_efectivos(raiz_del_hogar(home), datos)

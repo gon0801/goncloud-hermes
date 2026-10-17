@@ -24,6 +24,13 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
+from yaml_doble import YamlDoble, yaml_real  # noqa: E402
+
+
+def yaml_de_prueba():
+    """El PyYAML real donde esté; si no, el doble del subset."""
+    return yaml_real or YamlDoble
+
 
 SCRIPT = REPO / "plugins/goncloud-team/raices/cron_ticker.py"
 PLUGIN = REPO / "plugins/goncloud-team"
@@ -129,6 +136,12 @@ class Base(unittest.TestCase):
         puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
         puerta.start()
         self.addCleanup(puerta.stop)
+        # La interseccion de toolsets (H4b3) lee el config.yaml con el PyYAML
+        # real donde este; en la Mac de pruebas, el doble del subset.
+        permisos = importlib.import_module("raices.permisos")
+        yaml_parche = mock.patch.object(permisos, "yaml", yaml_de_prueba())
+        yaml_parche.start()
+        self.addCleanup(yaml_parche.stop)
 
 
 class Script(Base):
@@ -155,6 +168,15 @@ class Script(Base):
                     "poteto": {"digest": "sha256:" + "b" * 64},
                 }
             ),
+            encoding="utf-8",
+        )
+        # Los toolsets efectivos son la intersección con el config real del
+        # perfil (H4b3): sin config, codex queda sin toolsets y el gate niega
+        # el despacho.
+        perfil = self.home / "profiles" / "codex"
+        perfil.mkdir(parents=True, exist_ok=True)
+        (perfil / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
             encoding="utf-8",
         )
 
@@ -191,10 +213,12 @@ class Script(Base):
 
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
+        permisos = importlib.import_module("raices.permisos")
         with redirect_stdout(salida):
-            # La puerta real cierra en la Mac (no hay gateway vivo): la
-            # inyección deja la vuelta como era antes de H4a.
-            codigo = cron.correr(ruta_abierta=lambda: (True, None))
+            with mock.patch.object(permisos, "yaml", yaml_de_prueba()):
+                # La puerta real cierra en la Mac (no hay gateway vivo): la
+                # inyección deja la vuelta como era antes de H4a.
+                codigo = cron.correr(ruta_abierta=lambda: (True, None))
         self.assertEqual(codigo, 0)
         self.assertEqual(salida.getvalue(), "")
 
@@ -475,8 +499,9 @@ class StoreCompartido(Base):
             ),
             encoding="utf-8",
         )
-        # El despacho exige el paquete poteto del perfil (H4b2, I08); el
-        # managed.json vive en profiles bajo la raiz.
+        # El despacho exige el paquete poteto del perfil (H4b2, I08) y los
+        # toolsets efectivos la interseccion con el config real (H4b3); el
+        # managed.json y el config viven en profiles bajo la raiz.
         perfil = self.raiz / "profiles" / "codex"
         perfil.mkdir(parents=True)
         (perfil / "goncloud-managed.json").write_text(
@@ -487,6 +512,10 @@ class StoreCompartido(Base):
                     "poteto": {"digest": "sha256:" + "b" * 64},
                 }
             ),
+            encoding="utf-8",
+        )
+        (perfil / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
             encoding="utf-8",
         )
         with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.raiz)}):
@@ -539,8 +568,9 @@ class StoreCompartido(Base):
             ),
             encoding="utf-8",
         )
-        # El despacho exige el paquete poteto del perfil (H4b2, I08); el
-        # managed.json vive en profiles bajo la raiz.
+        # El despacho exige el paquete poteto del perfil (H4b2, I08) y los
+        # toolsets efectivos la interseccion con el config real (H4b3); el
+        # managed.json y el config viven en profiles bajo la raiz.
         perfil_codex = self.raiz / "profiles" / "codex"
         perfil_codex.mkdir(parents=True)
         (perfil_codex / "goncloud-managed.json").write_text(
@@ -551,6 +581,10 @@ class StoreCompartido(Base):
                     "poteto": {"digest": "sha256:" + "b" * 64},
                 }
             ),
+            encoding="utf-8",
+        )
+        (perfil_codex / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
             encoding="utf-8",
         )
 

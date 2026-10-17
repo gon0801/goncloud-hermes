@@ -37,8 +37,9 @@ def ruta_del_store(home=None):
 
 def abrir_tienda(home=None):
     """El store con los permisos de H de la misma fuente que el cron
-    (<raiz>/raices/permisos.json via hogar; I07): el resume recontrasta lo
-    que va a correr con esos permisos, no con un None que niega todo."""
+    (<raiz>/raices/permisos.json via hogar, con los toolsets intersectados
+    contra el config real; I07/H4b3): el resume recontrasta lo que va a correr
+    con esos permisos, no con un None que niega todo."""
     return store.Store(ruta_del_store(home), permisos_h=hogar.leer_permisos(home))
 
 
