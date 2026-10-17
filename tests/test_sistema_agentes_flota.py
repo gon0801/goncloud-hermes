@@ -17,6 +17,11 @@ sys.path.insert(0, str(REPO / "tests"))
 
 from conexiones import rastrear_conexiones  # noqa: E402
 
+try:
+    import yaml as yaml_real
+except ImportError:  # en la Mac de pruebas no hay PyYAML; en la Gon-pc sí
+    yaml_real = None
+
 compartido = importlib.import_module("raices.compartido")
 contrato = compartido.contrato
 flota = importlib.import_module("raices.flota")
@@ -37,12 +42,16 @@ FLOTA_DIR = compartido.G_DIR / "scripts/tests/fixtures/sistema-agentes/flota"
 class YamlDePrueba:
     """El PyYAML del runtime de Hermes, representado en la Mac: el subset que
     configure_team escribe (bloques anidados de dos niveles, mapa en flujo)
-    y YAML roto."""
+    y YAML roto. Igual que el real, el error de parseo es YAMLError y no
+    hereda de ValueError."""
+
+    class YAMLError(Exception):
+        pass
 
     @staticmethod
     def safe_load(texto):
         if "[" in texto and "]" not in texto:
-            raise ValueError("yaml roto")
+            raise YamlDePrueba.YAMLError("yaml roto")
         datos: dict = {}
         bloque = None
         subbloque = None
@@ -402,6 +411,9 @@ class ModeloDelPerfil(EscenarioBase):
         self.assertEqual(doc["model"], {"id": "proveedor-01/modelo-a"})
 
     def test_yaml_roto_da_razon(self):
+        """Con el YAML real (y con el doble, que lanza YAMLError igual), un
+        config roto no puede revientar la vuelta del ticker: la flota queda
+        null con razon y la tarjeta se crea igual."""
         escribir_perfil(
             self.home,
             "codex",
@@ -412,7 +424,8 @@ class ModeloDelPerfil(EscenarioBase):
             "model: [proveedor-01, modelo-a\n", encoding="utf-8"
         )
         self.ligar_a()
-        self.vuelta()
+        informe = self.vuelta()
+        self.assertEqual(informe.tarjetas_creadas, 1, "la vuelta no se cae")
         doc = self.flota_de_vista()
         self.assertIsNone(doc["model"]["id"])
         self.assertEqual(doc["model"]["reason"], "config-ilegible")
@@ -498,6 +511,45 @@ class MuerteSinResultado(EscenarioBase):
         )
         tarjeta_2 = self.kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 2))
         self.assertIsNotNone(tarjeta_2)
+
+
+@unittest.skipUnless(
+    yaml_real is not None and getattr(flota, "yaml", None) is not None,
+    "sin PyYAML en esta Mac; el coordinador lo corre en la Gon-pc",
+)
+class ConPyYAMLReal(unittest.TestCase):
+    """El mismo camino con el PyYAML real del runtime: roto, en bloque y en
+    flujo. En la Mac se salta (no hay PyYAML) y en la PC corre."""
+
+    def _perfil(self, tmp, texto):
+        perfil = Path(tmp) / "profiles" / "codex"
+        perfil.mkdir(parents=True)
+        (perfil / "config.yaml").write_text(texto, encoding="utf-8")
+        return perfil
+
+    def test_config_roto_da_razon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = flota.modelo_de(self._perfil(tmp, "model: [proveedor-01, modelo-a\n"))
+        self.assertIsNone(doc["id"])
+        self.assertEqual(doc["reason"], "config-ilegible")
+
+    def test_config_en_bloque_da_el_modelo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = flota.modelo_de(
+                self._perfil(
+                    tmp, "model:\n  provider: proveedor-01\n  default: modelo-a\n"
+                )
+            )
+        self.assertEqual(doc, {"id": "proveedor-01/modelo-a"})
+
+    def test_config_en_flujo_da_el_modelo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = flota.modelo_de(
+                self._perfil(
+                    tmp, "model: {provider: proveedor-01, default: modelo-a}\n"
+                )
+            )
+        self.assertEqual(doc, {"id": "proveedor-01/modelo-a"})
 
 
 if __name__ == "__main__":
