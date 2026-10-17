@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import NamedTuple
@@ -68,10 +69,17 @@ class Hechos(NamedTuple):
     home: str
 
 
-def _correr_hermes_version() -> str | None:
+def _correr_hermes_version(resolvedor=None) -> str | None:
+    """El texto de `--version` vía la RUTA que devuelve shutil.which: en
+    Windows el CLI es hermes.CMD y CreateProcess sin shell no resuelve el
+    nombre pelado (WinError 2). Sin ruta resoluble no se invoca nada y no
+    hay texto (fail-closed, igual que un CLI roto)."""
+    ejecutable = (resolvedor or shutil.which)("hermes")
+    if not ejecutable:
+        return None
     try:
         terminado = subprocess.run(
-            ["hermes", "--version"], capture_output=True, text=True, timeout=10
+            [ejecutable, "--version"], capture_output=True, text=True, timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return None

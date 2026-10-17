@@ -35,21 +35,10 @@ PRUEBAS = "tests.test_sistema_agentes_kanban_real"
 _RESUMEN = re.compile(r"^Ran (\d+) tests?", re.MULTILINE)
 
 
-def _texto_de_version() -> str | None:
-    try:
-        terminado = subprocess.run(
-            ["hermes", "--version"], capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if terminado.returncode != 0:
-        return None
-    return terminado.stdout.strip() or None
-
-
 def _leer_par_vivo():
     """El par segun los lectores reales de la puerta, con el texto crudo de
-    --version para la evidencia."""
+    --version para la evidencia (el lector único vive en capacidades: es el
+    que resuelve el ejecutable, no el nombre pelado)."""
     hechos = capacidades.hechos_vivos()
     abierta, causa = capacidades.decidir(hechos)
     par = None
@@ -57,7 +46,7 @@ def _leer_par_vivo():
         par = {
             "version": hechos.version.version,
             "code_sha": hechos.gateway.code_sha,
-            "texto_version": _texto_de_version(),
+            "texto_version": capacidades._correr_hermes_version(),
         }
     return abierta, causa, par
 
@@ -122,6 +111,10 @@ def main(
         help="agrega la candidata a certificadas.json (sin esta bandera solo imprime)",
     )
     argumentos = analizador.parse_args(argv)
+
+    if not str(os.environ.get("HERMES_HOME", "")).strip():
+        print("HERMES_HOME no esta definido; sin el no hay raíces")
+        return 1
 
     abierta, causa, par = leer_par()
     if abierta:
