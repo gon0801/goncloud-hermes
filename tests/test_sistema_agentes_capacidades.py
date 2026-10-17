@@ -10,10 +10,13 @@ home, nunca en perfiles.
 
 import importlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
@@ -135,6 +138,54 @@ class LeerVersion(unittest.TestCase):
         self.assertIsNone(
             capacidades.leer_version(lambda: "Hermes Agent v0.21.5 (2026.9.24)")
         )
+
+
+class ElEjecutableDeVersion(unittest.TestCase):
+    """Windows: el CLI vive en %LOCALAPPDATA%\\hermes\\bin\\hermes.CMD y
+    CreateProcess sin shell no resuelve el nombre pelado (WinError 2). El
+    lector único llama a la ruta que devuelve shutil.which (respeta PATHEXT)
+    y sin ruta no llama a nada: fail-closed."""
+
+    def test_subprocess_recibe_la_ruta_resuelta_no_el_nombre_pelado(self):
+        recibido = {}
+
+        def falso_run(argv, **kwargs):
+            recibido["argv"] = list(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=TEXTO_VERSION, stderr="")
+
+        with mock.patch.object(capacidades.subprocess, "run", falso_run):
+            texto = capacidades._correr_hermes_version(
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD"
+            )
+        self.assertEqual(texto, TEXTO_VERSION)
+        self.assertEqual(recibido["argv"][0], "/su/camino/bin/hermes.CMD")
+        self.assertEqual(recibido["argv"][1], "--version")
+
+    def test_sin_ruta_resuelta_no_invoca_subprocess_y_da_none(self):
+        llamadas = []
+
+        def falso_run(argv, **kwargs):
+            llamadas.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout=TEXTO_VERSION)
+
+        with mock.patch.object(capacidades.subprocess, "run", falso_run):
+            self.assertIsNone(
+                capacidades._correr_hermes_version(resolvedor=lambda nombre: None)
+            )
+        self.assertEqual(llamadas, [])
+
+    @unittest.skipUnless(os.name == "posix", "el doble de CLI es un script sh")
+    def test_la_resolucion_por_omision_honra_el_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            falso = Path(tmp) / "hermes"
+            falso.write_text(
+                "#!/bin/sh\necho 'Hermes Agent v0.21.5+5822.gaabbccd (2026.9.24)'\n"
+            )
+            falso.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": tmp}):
+                texto = capacidades._correr_hermes_version()
+        self.assertIsNotNone(texto, "el hermes del PATH temporal debe correr")
+        self.assertIn("v0.21.5", texto)
 
 
 class LeerGateway(unittest.TestCase):
