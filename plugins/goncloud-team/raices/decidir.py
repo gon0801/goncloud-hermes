@@ -507,13 +507,14 @@ def decidir(
                         "evidenceId": digesto(
                             [root_id, excepcion["exceptionId"], opcion]
                         ),
+                        "rootId": root_id,
                         "planRevision": revision,
                         "unitId": sujeto["unitId"],
                         "attempt": sujeto["attempt"],
                         "criterionId": criterion_id,
                         "artifactRef": {
                             "ref": f"exception:{excepcion['exceptionId']}",
-                            "digest": digesto(respuesta),
+                            "digest": f"sha256:{digesto(respuesta)}",
                         },
                         "environment": {"host": "gateway", "versions": {}},
                         "verifier": {
