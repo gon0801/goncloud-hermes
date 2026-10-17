@@ -113,10 +113,13 @@ def resolver_excepcion(argumentos, perfil, home=None):
     _exigir_claw(perfil)
     datos = dict(argumentos or {})
     exception_id = str(datos.get("exceptionId", ""))
+    root_id = datos.get("rootId")
+    if not isinstance(root_id, str) or not root_id:
+        return {"error": "root-id-requerido", "detalle": {"exceptionId": exception_id}}
     tienda = abrir_tienda(home)
     try:
         respuesta = tienda.responder_excepcion(
-            datos.get("rootId"),
+            root_id,
             exception_id,
             str(datos.get("optionId", "")),
             datos.get("by"),
