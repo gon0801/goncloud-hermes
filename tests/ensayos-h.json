@@ -23,7 +23,8 @@
   "H0b",
   "H1",
   "H3",
-  "H4b1"
+  "H4b1",
+  "H4b2"
  ],
  "filas": [
   {
@@ -191,22 +192,22 @@
    "ensayo": "I08",
    "clausula": "I08.1",
    "texto": "poteto completo llega al turno de claw",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.CopiaFijada.test_el_bloque_cita_generacion_y_digest_y_cabe",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I08",
    "clausula": "I08.2",
    "texto": "poteto completo llega al hijo CLI por tarjeta",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.PuertaDePoteto.test_con_poteto_despacha_y_la_flota_trae_la_atestacion",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I08",
    "clausula": "I08.3",
    "texto": "sin poteto, la ruta no se admite",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.PuertaDePoteto.test_sin_poteto_el_ticker_no_despacha_y_la_causa_sale_en_read",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I09",
