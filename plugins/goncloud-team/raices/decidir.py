@@ -187,6 +187,14 @@ def _perfil_de(target: Mapping) -> str:
     return str(identidad)
 
 
+def _target_de(assignment):
+    if isinstance(assignment, Mapping):
+        target = assignment.get("target")
+        if isinstance(target, Mapping):
+            return target
+    return {}
+
+
 def _decision_vacia(revision: int, epoch: int) -> dict:
     return {
         "expected_plan_revision": revision,
@@ -339,8 +347,12 @@ def decidir(
         for indice, hecho in enumerate(vista["hechos"]["asignaciones"]):
             if indice in hechos_usados:
                 continue
-            if hecho["unitId"] == unit_id and (
-                relevo is None or hecho["relay"] == relevo
+            if not isinstance(hecho, Mapping) or not isinstance(
+                hecho.get("assignment"), Mapping
+            ):
+                continue
+            if hecho.get("unitId") == unit_id and (
+                relevo is None or hecho.get("relay") == relevo
             ):
                 return indice, hecho
         return None
@@ -358,7 +370,7 @@ def decidir(
 
     def autores_de(unit_id):
         return {
-            _perfil_de(documento["assignment"]["target"])
+            _perfil_de(_target_de(documento.get("assignment")))
             for documento in intentos_de(unit_id)
         }
 
@@ -399,7 +411,33 @@ def decidir(
     # Los claims de los hechos entran primero: los resultados de abajo se juzgan con
     # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo).
     for claim_hecho in vista["hechos"]["claims"]:
+        if not isinstance(claim_hecho, Mapping):
+            continue
         if claim_hecho.get("role", "verifier") not in ("verifier", "ci"):
+            continue
+        if any(
+            clave not in claim_hecho
+            for clave in (
+                "unitId",
+                "attempt",
+                "criterionId",
+                "outcome",
+                "expiresAt",
+                "artifactRef",
+            )
+        ):
+            continue
+        artifact_ref = claim_hecho["artifactRef"]
+        if (
+            not isinstance(artifact_ref, Mapping)
+            or not isinstance(artifact_ref.get("ref"), str)
+            or not isinstance(artifact_ref.get("digest"), str)
+        ):
+            continue
+        expiracion = claim_hecho["expiresAt"]
+        if expiracion is not None and (
+            not isinstance(expiracion, str) or _FECHA.fullmatch(expiracion) is None
+        ):
             continue
         resto = {k: v for k, v in claim_hecho.items() if k not in ("role",)}
         sembrar_claim(
@@ -703,7 +741,7 @@ def decidir(
 
     def caben_en_plazas(assignment, ya_ligados):
         plazas = vista["plazas"]
-        perfil = _perfil_de(assignment["target"])
+        perfil = _perfil_de(_target_de(assignment))
         por_perfil = plazas.get("por_perfil") or {}
         cabe = (
             ya_ligados + 1 <= int(plazas.get("raiz", 0))
