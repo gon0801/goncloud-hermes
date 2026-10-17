@@ -89,7 +89,10 @@ class Aislamiento(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporal:
             proceso = subprocess.run(
                 [sys.executable, "-c", guion],
-                env={"PATH": "/usr/bin:/bin"},
+                # Un PATH a un directorio propio vacio: en Windows,
+                # "/usr/bin:/bin" no existe ni usa el separador correcto, y la
+                # prueba quedaba sin efecto real como aislamiento.
+                env={"PATH": str(temporal)},
                 cwd=temporal,
                 capture_output=True,
                 text=True,
