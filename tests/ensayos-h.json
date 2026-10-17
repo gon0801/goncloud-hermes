@@ -22,7 +22,8 @@
  "rebanadasCerradas": [
   "H0b",
   "H1",
-  "H3"
+  "H3",
+  "H4b1"
  ],
  "filas": [
   {
@@ -211,15 +212,15 @@
    "ensayo": "I09",
    "clausula": "I09.1",
    "texto": "el modelo efectivo es el pedido (perfil y router contra el modelo que corrió)",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.ModeloDelPerfil.test_modelo_exacto_y_documento_valido",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I09",
    "clausula": "I09.2",
    "texto": "un intento nuevo conserva su snapshot",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.ModeloDelPerfil.test_snapshot_congelado_tras_cambiar_config",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I09",
@@ -423,15 +424,15 @@
    "ensayo": "I18",
    "clausula": "I18.1",
    "texto": "un perfil sin eventos declara cobertura unknown",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.Advisor.test_perfil_sin_eventos_declara_cobertura_y_read_la_muestra",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I18",
    "clausula": "I18.2",
    "texto": "su caída no aprueba ni despacha",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.Advisor.test_revision_muerta_no_aprueba_ni_despacha",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I20",
