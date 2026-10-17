@@ -65,13 +65,10 @@ class CopiaFijada(unittest.TestCase):
             copia = Path(tmp) / "poteto"
             shutil.copytree(POTETO, copia)
             poteto.comprobar_copia(copia)
-            victima = next(
-                f for f in (copia / "skills/poteto-mode/SKILL.md").read_bytes().split()
-            )
-            contenido = (copia / "skills/poteto-mode/SKILL.md").read_text(
-                encoding="utf-8"
-            )
-            (copia / "skills/poteto-mode/SKILL.md").write_text(
+            ruta = copia / "skills/poteto-mode/SKILL.md"
+            contenido = ruta.read_text(encoding="utf-8")
+            victima = contenido.split()[0]
+            ruta.write_text(
                 contenido.replace(victima, victima + "x", 1), encoding="utf-8"
             )
             with self.assertRaises(poteto.CopiaRota):
@@ -268,7 +265,14 @@ class PuertaDePoteto(unittest.TestCase):
         )
 
     def vuelta(self):
-        return self.ticker.vuelta(self.tienda, self.kanban, {}, home=self.home)
+        permisos = {
+            "acciones": ["read", "implement", "review", "push"],
+            "toolsets": {"codex": ["read", "write"]},
+            "comandos": ["git", "python3"],
+        }
+        return self.ticker.vuelta(
+            self.tienda, self.kanban, {}, permisos_h=permisos, home=self.home
+        )
 
     def test_sin_poteto_el_ticker_no_despacha_y_la_causa_sale_en_read(self):
         self.ligar()
@@ -358,12 +362,11 @@ class Sonda(unittest.TestCase):
         shutil.copytree(POTETO, copia)
         bloque = (copia / "bloque-soul-hermes.md").read_text(encoding="utf-8")
         (home / "SOUL.md").write_text("alma local\n\n" + bloque, encoding="utf-8")
-        skills = home / "skills/poteto-mode"
-        skills.mkdir(parents=True)
-        shutil.copy(
-            POTETO / "skills/poteto-mode/SKILL.md",
-            skills / "SKILL.md",
-        )
+        for ruta in poteto.skills_a_publicar("codex"):
+            origen = POTETO / ruta
+            final = home / ruta
+            final.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(origen, final)
         (home / "goncloud-managed.json").write_text(
             json.dumps(
                 {
@@ -378,6 +381,7 @@ class Sonda(unittest.TestCase):
 
     def test_un_perfil_bien_desplegado_no_da_fallas(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self.perfil_desplegado(tmp)
             self.assertEqual(poteto.sonar(Path(tmp), "codex"), [])
 
     def test_un_soul_sin_el_bloque_da_falla(self):

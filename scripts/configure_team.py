@@ -813,6 +813,10 @@ def configure(
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
     plugin_root = ROOT / "plugins" / "goncloud-team"
+    if str(plugin_root) not in sys.path:
+        sys.path.insert(0, str(plugin_root))
+    from raices import poteto
+
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
             "Workflow plugin is missing; finish the build before applying profiles"
@@ -885,14 +889,31 @@ def configure(
             ).read_bytes(),
         }
         if is_team:
-            files["SOUL.md"] = "\n\n".join(
-                (ROOT / name).read_text(encoding="utf-8")
-                for name in (
-                    "shared/CONTRACT.md",
-                    "shared/BUSINESS.md",
-                    f"roles/{role}.md",
+            # La copia de poteto se verifica antes de preparar el paquete:
+            # una CopiaRota propaga y no se escribe nada (falla cerrada, sin
+            # despliegue parcial).
+            poteto.comprobar_copia()
+            files["SOUL.md"] = (
+                "\n\n".join(
+                    (ROOT / name).read_text(encoding="utf-8")
+                    for name in (
+                        "shared/CONTRACT.md",
+                        "shared/BUSINESS.md",
+                        f"roles/{role}.md",
+                    )
                 )
+                + "\n\n"
+                + poteto.bloque()
             )
+            origen_poteto = ROOT / "shared" / "sistema-agentes" / "poteto"
+            # Las rutas del manifiesto ya traen el prefijo skills/: la clave
+            # es la ruta tal cual, para que la skill caiga en
+            # skills/<skill>/SKILL.md y no en skills/skills/...
+            for ruta in poteto.skills_a_publicar(role):
+                files[ruta] = (origen_poteto / ruta).read_text(encoding="utf-8")
+            files["skills/poteto-hermes/SKILL.md"] = (
+                origen_poteto / "adaptacion-hermes.md"
+            ).read_text(encoding="utf-8")
         for source in plugin_files:
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
@@ -1075,6 +1096,8 @@ def configure(
         recorded = {
             "config": desired,
             "source_revision": revision,
+            "generation": poteto.siguiente_generation(state, recorded_files),
+            "poteto": {"digest": poteto.digest_de_manifiesto()},
             "files": recorded_files,
         }
         adopted = adoptions.get(profile.name)

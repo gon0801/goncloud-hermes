@@ -2,12 +2,13 @@
 
 El ticker lo arma al admitir el intento y el store lo congela en la tabla
 flotas: el replay de la admisión no reescribe. HOST es gon-pc y EXECUTOR cli
-porque el despacho Mac lanza los hijos por la CLI del gateway. La attestación
-de poteto llega en H4b2; el contrato acepta la lista vacía.
+porque el despacho Mac lanza los hijos por la CLI del gateway. La atestación
+de poteto (H4b2) cita el digest del paquete que goncloud-managed.json
+registra; sin paquete no hay atestación y el ticker no admite la ruta.
 
-Decisión de SIN_GENERACION: goncloud-managed.json de configure_team hoy no
-escribe "generation" y el contrato exige un entero >= 1, así que un perfil sin
-el campo declara la primera generación.
+Decisión de SIN_GENERACION: goncloud-managed.json de configure_team hoy
+no escribe "generation" y el contrato exige un entero >= 1, así que un
+perfil sin el campo declara la primera generación.
 """
 
 from __future__ import annotations
@@ -62,21 +63,36 @@ def modelo_de(perfil: Path) -> dict:
     return {"id": None, "reason": "modelo-incompleto"}
 
 
-def generacion_de(perfil: Path) -> tuple[int, str | None]:
-    """(generation, source_revision) de goncloud-managed.json, con guardas."""
+def gestionado_de(perfil: Path) -> dict:
+    """goncloud-managed.json del perfil como dict; vacío si no se puede leer.
+    La generación, la revisión y el paquete poteto salen del mismo archivo."""
     try:
         datos = json.loads(
             (Path(perfil) / "goncloud-managed.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError):
-        return SIN_GENERACION, None
-    if not isinstance(datos, dict):
-        return SIN_GENERACION, None
-    crudo = datos.get("generation")
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def generacion_de(gestionado: dict) -> tuple[int, str | None]:
+    """(generation, source_revision) del managed leído, con guardas."""
+    crudo = gestionado.get("generation")
     if isinstance(crudo, bool) or not isinstance(crudo, int) or crudo < 1:
         crudo = SIN_GENERACION
-    revision = datos.get("source_revision")
+    revision = gestionado.get("source_revision")
     return crudo, revision if isinstance(revision, str) else None
+
+
+def atestaciones_de(gestionado: dict) -> list:
+    """La atestación de poteto: solo con paquete dict y digest no vacío."""
+    paquete = gestionado.get("poteto")
+    if not isinstance(paquete, dict):
+        return []
+    digest = paquete.get("digest")
+    if isinstance(digest, str) and digest:
+        return [{"what": "poteto", "digest": digest}]
+    return []
 
 
 def construir(root_id, unit_id, attempt, specialist, home, permisos_h=None) -> dict:
@@ -84,10 +100,11 @@ def construir(root_id, unit_id, attempt, specialist, home, permisos_h=None) -> d
     if home is not None:
         perfil = Path(home) / "profiles" / specialist
         modelo = modelo_de(perfil)
-        generacion, revision = generacion_de(perfil)
+        gestionado = gestionado_de(perfil)
     else:
         modelo = {"id": None, "reason": "sin-home"}
-        generacion, revision = SIN_GENERACION, None
+        gestionado = {}
+    generacion, revision = generacion_de(gestionado)
     toolsets = (permisos_h or {}).get("toolsets") or {}
     lista = toolsets.get(specialist)
     return {
@@ -102,6 +119,6 @@ def construir(root_id, unit_id, attempt, specialist, home, permisos_h=None) -> d
         "model": modelo,
         "generation": generacion,
         "permissions": sorted(lista) if isinstance(lista, list) else [],
-        "attestations": [],
+        "attestations": atestaciones_de(gestionado),
         "sourceRevision": revision,
     }

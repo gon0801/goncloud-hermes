@@ -123,6 +123,12 @@ class Base(unittest.TestCase):
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": str(self.home)})
         parche.start()
         self.addCleanup(parche.stop)
+        # La puerta real de H4a cierra en la Mac (no hay gateway vivo): el
+        # comportamiento general se prueba con la puerta inyectada abierta y
+        # las clases de la puerta la cierran a propósito.
+        puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
+        puerta.start()
+        self.addCleanup(puerta.stop)
 
 
 class Script(Base):
@@ -137,6 +143,19 @@ class Script(Base):
         raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(self.PERMISOS if datos is None else datos), encoding="utf-8"
+        )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08).
+        perfil = self.home / "profiles" / "codex"
+        perfil.mkdir(parents=True, exist_ok=True)
+        (perfil / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
         )
 
     def dejar_intencion_pendiente(self):
@@ -456,6 +475,20 @@ class StoreCompartido(Base):
             ),
             encoding="utf-8",
         )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08); el
+        # managed.json vive en profiles bajo la raiz.
+        perfil = self.raiz / "profiles" / "codex"
+        perfil.mkdir(parents=True)
+        (perfil / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
         with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.raiz)}):
             cron = importlib.import_module("raices.cron_ticker")
             salida = StringIO()
@@ -502,6 +535,20 @@ class StoreCompartido(Base):
                     "acciones": ["read", "implement", "review"],
                     "toolsets": {"codex": ["read", "write"]},
                     "comandos": ["git", "python3"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08); el
+        # managed.json vive en profiles bajo la raiz.
+        perfil_codex = self.raiz / "profiles" / "codex"
+        perfil_codex.mkdir(parents=True)
+        (perfil_codex / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
                 }
             ),
             encoding="utf-8",

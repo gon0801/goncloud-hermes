@@ -6,7 +6,9 @@ Cada paso es idempotente por filas: una vuelta interrumpida en cualquier punto l
 completa la siguiente (I04). El despacho pasa por la bandeja de salida: la intención
 en sistema-agentes.db, buscar-o-crear la tarjeta en UN write_txn del kanban y, recién
 entonces, marcar la intención cumplida (I03). Las raíces con control != active no
-despachan: sus intenciones quedan cercadas.
+despachan: sus intenciones quedan cercadas. Con home y sin datos de permisos
+de H, el despacho exige el paquete poteto del perfil (H4b2): sin él se levanta
+NECESITA_DAVID con causa poteto:<perfil> y no se despacha.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ kanban_port = importlib.import_module("raices.kanban_port")
 store_module = importlib.import_module("raices.store")
 autoridad = importlib.import_module("raices.autoridad")
 flota = importlib.import_module("raices.flota")
+poteto = importlib.import_module("raices.poteto")
 
 CaidaInyectada = kanban_port.CaidaInyectada
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -109,21 +112,39 @@ def vuelta(
                 estado = "done"
 
         for intencion in tienda.intenciones_pendientes():
+            target = intencion.assignment.get("target") or {}
+            specialist = str(
+                target.get("agentId") or target.get("adapterId") or "sin-perfil"
+            )
             vista_de = vistas.get(intencion.root_id)
             if vista_de is not None:
                 razon = _negar_arranque(vista_de, permisos, intencion)
                 if razon is not None:
-                    _levantar_arranque(tienda, vista_de, intencion, razon, conflictos)
+                    _levantar_arranque(
+                        tienda,
+                        vista_de,
+                        intencion,
+                        autoridad.causa_de(razon),
+                        conflictos,
+                    )
+                    continue
+                if (
+                    home is not None
+                    and poteto.paquete_del_perfil(home, specialist) is None
+                ):
+                    # H4b2 (I08): sin el paquete poteto del perfil la ruta no
+                    # se admite; la causa queda visible en read. El gate de
+                    # I07 ya pasó: poteto no concede permisos, exigir el
+                    # paquete no los cercena.
+                    _levantar_arranque(
+                        tienda, vista_de, intencion, f"poteto:{specialist}", conflictos
+                    )
                     continue
             reclamo = tienda.reclamar_intencion(
                 intencion.root_id, intencion.unit_id, intencion.attempt
             )
             if hasattr(reclamo, "codigo"):
                 continue
-            target = intencion.assignment.get("target") or {}
-            specialist = str(
-                target.get("agentId") or target.get("adapterId") or "sin-perfil"
-            )
             spec = SpecDeTarjeta(
                 f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
                 str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
@@ -173,7 +194,7 @@ def _negar_arranque(vista, permisos, intencion) -> str | None:
     )
 
 
-def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
+def _levantar_arranque(tienda, vista, intencion, causa, conflictos) -> None:
     """La pregunta por un arranque negado. Un sujeto de INTENTO no ofrece
     `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
     igual que en R, donde permission-required sale con
@@ -190,7 +211,7 @@ def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
             "kind": "attempt",
             "unitId": intencion.unit_id,
             "attempt": intencion.attempt,
-            "cause": autoridad.causa_de(razon),
+            "cause": causa,
         },
         ["listo", "omitir", "cancelar"],
     )

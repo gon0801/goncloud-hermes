@@ -1,0 +1,15 @@
+{
+  "schema": "sistema-agentes.poteto-hermes.v1",
+  "generation": 2,
+  "manifest": {
+    "repo": "https://github.com/poteto/pstack-claude",
+    "commit": "990cd7b02ac6f3e8f825716f7c72e2f06d8f4a92",
+    "version": "0.9.84",
+    "digest": "sha256:b612e4b83e73c488d708ee9e6dba1586a95e636d50971f93a5337cc66e9f9003"
+  },
+  "adaptacion": "sha256:ab069bf52a7b1fd5d9f0b686f6750f797ad0393c04dba50f4a76207768bb83b4",
+  "bloque": "sha256:b39796290a323018653434f7dd7d6f48f561a953024ad9242fd146f74883f6ae",
+  "excluidos": {
+    "skills/poteto-openclaw/SKILL.md": "adaptacion de OpenClaw: su fuente no esta en G ni en pstack; Hermes usa adaptacion-hermes.md"
+  }
+}

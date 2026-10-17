@@ -226,7 +226,21 @@ def escribir_perfil(home, perfil, config=None, gestionado=None, bytes_config=Non
         (base / "goncloud-managed.json").write_text(
             json.dumps(gestionado), encoding="utf-8"
         )
+    desplegar_poteto(home, perfil)
     return base
+
+
+def desplegar_poteto(home, perfil, digest="sha256:" + "b" * 64):
+    """El paquete poteto desplegado del perfil (H4b2): sin él el ticker no
+    despacha, así que los escenarios de flota lo traen por omisión."""
+    base = Path(home) / "profiles" / perfil
+    base.mkdir(parents=True, exist_ok=True)
+    ruta = base / "goncloud-managed.json"
+    datos = {}
+    if ruta.exists():
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    datos.setdefault("poteto", {"digest": digest})
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
 
 
 class EscenarioBase(unittest.TestCase):
@@ -239,6 +253,7 @@ class EscenarioBase(unittest.TestCase):
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de())
         self.kanban = DobleKanban()
+        desplegar_poteto(self.home, "codex")
         parche = mock.patch.object(flota, "yaml", YamlDePrueba, create=True)
         parche.start()
         self.addCleanup(parche.stop)
@@ -291,7 +306,7 @@ class ModeloDelPerfil(EscenarioBase):
                 "model": {"id": "proveedor-01/modelo-a"},
                 "generation": 3,
                 "permissions": ["read", "write"],
-                "attestations": [],
+                "attestations": [{"what": "poteto", "digest": "sha256:" + "b" * 64}],
                 "sourceRevision": "abc123",
             },
         )
