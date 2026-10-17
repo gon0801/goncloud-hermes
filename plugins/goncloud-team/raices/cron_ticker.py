@@ -14,15 +14,20 @@ y el argumento es el nombre pelado.
 
 Convencion de los scripts no_agent (README): nada en la salida si la vuelta
 sale bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la
-ruta de raices cerrada no corre y sale 0: no es un fallo, la puerta de
-capacidades (H4) aun no abre. El store vive en la RAIZ del home de Hermes
-(raices/hogar.py la resuelve: el home de un perfil sube a su raiz) y el
-kanban, HERMES_KANBAN_DB o <raiz>/kanban.db.
+ruta de raices cerrada (H4a) el cron avisa CAPACIDAD_INCIERTA una vez por
+cambio de causa y sale 0: no es un fallo. Si la causa es un par (incierto o
+sin certificar) la vuelta corre igual pero cerrada: bloquea y concilia sin
+decidir ni despachar y sin correr la pasada del emisor; si falta una
+capacidad ni siquiera abre el store. El store vive en la RAIZ del home de
+Hermes (raices/hogar.py la resuelve: el home de un perfil sube a su raiz) y
+el kanban, HERMES_KANBAN_DB o <raiz>/kanban.db.
 
 Tras las vueltas del ticker va la pasada del emisor (SUA-07 H3, §3.5/§3.6):
 proyecta cada raiz en <raiz>/raices/proyecciones y avisa las excepciones por
 el Telegram del perfil claw, desde el MISMO estado. Sus errores van a stderr
-y no tumban las vueltas ni la salida del cron.
+y no tumban las vueltas ni la salida del cron. Con la puerta cerrada la
+pasada no corre: el aviso CAPACIDAD_INCIERTA es el unico mensaje del estado
+cerrado.
 """
 
 from __future__ import annotations
@@ -48,13 +53,59 @@ STALE_DESPUES_MS = 300_000
 INTERVALO_MS = 300_000
 
 
-def ruta_de_raices_abierta():
-    return True, None
+def ruta_de_raices_abierta(home=None):
+    capacidades = importlib.import_module("raices.capacidades")
+    return capacidades.abrir_ruta(home=home)
+
+
+def _aviso_por_consola(causa):
+    def enviar(_texto):
+        # stderr y no stdout: el stdout del no_agent se entrega como salida
+        # del agente; el aviso de la puerta cerrada no es salida de agente.
+        print(f"ticker-raices: CAPACIDAD_INCIERTA ({causa})", file=sys.stderr)
+        return 1
+
+    return enviar
 
 
 def ruta_del_kanban(home):
     elegida = os.environ.get("HERMES_KANBAN_DB")
     return Path(elegida) if elegida else Path(home) / "kanban.db"
+
+
+def _vuelta_cerrada(base, causa) -> int:
+    """La vuelta con la puerta cerrada (H4a): avisa CAPACIDAD_INCIERTA una vez
+    por cambio de causa y, salvo capacidad-faltante (sin write_txn no hay
+    bloqueo ni conciliacion posibles y ni siquiera abre el store), corre la
+    vuelta cerrada: bloqueos y conciliacion, sin decidir, despachar ni
+    levantar el gate de arranque. La pasada del emisor no corre: el aviso
+    CAPACIDAD_INCIERTA es el unico mensaje del estado cerrado."""
+    proyeccion = importlib.import_module("raices.proyeccion")
+    proyeccion.avisar_capacidad_incierta(
+        base / "raices" / "capacidad-incierta.json",
+        causa,
+        datetime.now(timezone.utc),
+        _aviso_por_consola(causa),
+    )
+    if causa.startswith("capacidad-faltante"):
+        # Sin write_txn del kanban no hay bloqueo ni conciliacion posible:
+        # salir temprano ni siquiera abre el store.
+        print(f"ticker-raices: ruta de raices cerrada ({causa})", file=sys.stderr)
+        return 0
+    store = importlib.import_module("raices.store")
+    ticker = importlib.import_module("raices.ticker")
+    kanban = importlib.import_module("raices.kanban")
+    tienda = store.Store(base / "sistema-agentes.db")
+    try:
+        puerto = kanban.KanbanHermes(ruta_del_kanban(base))
+        try:
+            ticker.vuelta(tienda, puerto, ruta_abierta=False)
+        finally:
+            puerto.cerrar()
+    finally:
+        tienda.cerrar()
+    print(f"ticker-raices: ruta de raices cerrada ({causa})", file=sys.stderr)
+    return 0
 
 
 def emisor_de_telegram(base, resolvedor=None, corredor=None):
@@ -152,10 +203,10 @@ def _pasada_del_emisor(tienda, base, enviar):
 def correr(home=None, ruta_abierta=None, enviar=None):
     hogar = importlib.import_module("raices.hogar")
     base = hogar.raiz_del_hogar(home)
-    abierta, causa = (ruta_abierta or ruta_de_raices_abierta)()
+    puerta = ruta_abierta or (lambda: ruta_de_raices_abierta(base))
+    abierta, causa = puerta()
     if not abierta:
-        print(f"ticker-raices: ruta de raices cerrada ({causa})", file=sys.stderr)
-        return 0
+        return _vuelta_cerrada(base, causa)
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")
     kanban = importlib.import_module("raices.kanban")
