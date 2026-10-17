@@ -78,6 +78,7 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
             continue
         propuesta = decidir.decidir(vista)
         decision = propuesta.decision
+        resultado = None
         if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
             resultado = tienda.aplicar(
                 root_id, decision, _decision_id(vista, propuesta)
@@ -86,8 +87,18 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
                 conflictos.append((root_id, resultado.codigo))
             else:
                 aplicadas += 1
-        if propuesta.avisar:
-            tienda.notificar(root_id, propuesta.avisar)
+        # Si aplicar devolvió conflicto, las excepciones nuevas de esta decisión
+        # no entraron a la base: avisarlas tumba el lote entero (F13). Los ids
+        # que ya estaban guardados siguen su renotice, y un conflicto del propio
+        # notificar no se descarta.
+        avisar = propuesta.avisar
+        if hasattr(resultado, "codigo"):
+            nuevas = {e["exceptionId"] for e in decision["excepciones"]}
+            avisar = [x for x in avisar if x not in nuevas]
+        if avisar:
+            aviso = tienda.notificar(root_id, avisar)
+            if hasattr(aviso, "codigo"):
+                conflictos.append((root_id, aviso.codigo))
         if propuesta.estado == "done":
             estado = "done"
 
