@@ -644,7 +644,7 @@ class Store:
             claims = [
                 json.loads(fila["evidence_json"])
                 for fila in self._conexion.execute(
-                    "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY created_at",
+                    "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY rowid",
                     (root_id,),
                 )
             ]
@@ -1502,8 +1502,7 @@ class Store:
         evidencia = [
             json.loads(f["evidence_json"])
             for f in self._conexion.execute(
-                "SELECT evidence_json FROM evidencia WHERE root_id = ?"
-                " ORDER BY created_at, evidence_id",
+                "SELECT evidence_json FROM evidencia WHERE root_id = ? ORDER BY rowid",
                 (root_id,),
             )
         ]
