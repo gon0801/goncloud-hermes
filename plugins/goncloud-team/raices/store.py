@@ -1125,26 +1125,35 @@ class Store:
         return Ok(True)
 
     def responder_excepcion(self, root_id, exception_id, option_id, by) -> object:
-        fila = self._una_fila(
-            "SELECT options_json, response_json FROM excepciones WHERE exception_id = ?",
-            (exception_id,),
-        )
-        if fila is None:
-            return Conflicto("exception-unknown", {"exceptionId": exception_id})
-        if fila["response_json"] is not None:
-            return Conflicto("exception-answered", {"exceptionId": exception_id})
-        ofrecidas = {o["optionId"] for o in json.loads(fila["options_json"])}
-        if option_id not in ofrecidas:
-            return Conflicto("option-not-offered", {"exceptionId": exception_id})
         self._begin()
         try:
-            self._conexion.execute(
-                "UPDATE excepciones SET response_json = ? WHERE exception_id = ?",
+            fila = self._una_fila(
+                "SELECT options_json, response_json FROM excepciones"
+                " WHERE exception_id = ? AND root_id = ?",
+                (exception_id, root_id),
+            )
+            if fila is None:
+                self._rollback()
+                return Conflicto("exception-unknown", {"exceptionId": exception_id})
+            if fila["response_json"] is not None:
+                self._rollback()
+                return Conflicto("exception-answered", {"exceptionId": exception_id})
+            ofrecidas = {o["optionId"] for o in json.loads(fila["options_json"])}
+            if option_id not in ofrecidas:
+                self._rollback()
+                return Conflicto("option-not-offered", {"exceptionId": exception_id})
+            cambio = self._conexion.execute(
+                "UPDATE excepciones SET response_json = ?"
+                " WHERE exception_id = ? AND root_id = ? AND response_json IS NULL",
                 (
                     _a_json({"optionId": option_id, "by": by, "at": self.reloj()}),
                     exception_id,
+                    root_id,
                 ),
             )
+            if cambio.rowcount != 1:
+                self._rollback()
+                return Conflicto("exception-answered", {"exceptionId": exception_id})
             self._commit()
         except Exception:
             self._rollback()
