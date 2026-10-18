@@ -86,6 +86,19 @@ class Certificadas(unittest.TestCase):
         entradas = json.loads(CERTIFICADAS.read_text(encoding="utf-8"))
         self.assertEqual(capacidades.validar_certificadas(entradas), [])
 
+    def test_la_evidencia_hermes_version_parsea_con_el_lector_y_cruza_el_par(self):
+        # Una copia recodificada (cp437, mojibake) del texto de --version no
+        # puede haber salido del lector que certifica: hermes#33.
+        for entrada in json.loads(CERTIFICADAS.read_text(encoding="utf-8")):
+            texto = entrada.get("evidencia", {}).get("hermesVersion")
+            if texto is None:
+                continue
+            with self.subTest(version=entrada["version"]):
+                leida = capacidades.leer_version(lambda texto=texto: texto)
+                self.assertIsNotNone(leida)
+                self.assertEqual(leida.version, entrada["version"])
+                self.assertTrue(entrada["code_sha"].startswith(leida.sufijo))
+
 
 class ValidarCertificadas(unittest.TestCase):
     def test_acepta_la_lista_vacia_y_una_entrada_valida(self):
