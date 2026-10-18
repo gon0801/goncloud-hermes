@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. The eleven specialists run the operaciones row and carry no per-model thinking there.",
+  "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. 2026-10-17: rows renamed to the v6 lanes (carriles) of the new table; the thinking flags are still the values measured on 2026-10-12, not new measurements.",
   "second_account_suffix": "-2",
   "id_overrides": {},
   "agents": {
     "main": {
-      "row": "main",
+      "row": "dirigir-claw",
       "thinking": true
     },
     "operaciones": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": true
     },
     "ingenieria": {
-      "row": "ingenieria",
+      "row": "planear",
       "thinking": true
     },
     "implementer": {
-      "row": "implementer",
+      "row": "codigo",
       "thinking": true
     },
     "reviewer": {
-      "row": "reviewer",
+      "row": "planear",
       "thinking": true
     },
     "adversary": {
@@ -29,55 +29,55 @@
       "thinking": true
     },
     "verifier": {
-      "row": "verifier",
+      "row": "verificar",
       "thinking": true
     },
     "scout": {
-      "row": "scout",
+      "row": "investigar",
       "thinking": true
     },
     "amazon": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": false
     },
     "pers": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": false
     },
     "meli": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": false
     },
     "mail": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     },
     "limpia": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     },
     "odoo": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": false
     },
     "arras": {
-      "row": "operaciones",
+      "row": "operativo",
       "thinking": false
     },
     "gonserver": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     },
     "skillverif": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     },
     "tinkabot": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     },
     "eggbot": {
-      "row": "operaciones",
+      "row": "simples",
       "thinking": false
     }
   }

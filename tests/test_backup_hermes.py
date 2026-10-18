@@ -51,6 +51,78 @@ def corrupt_index(path):
     path.write_bytes(bytes(data))
 
 
+class Punto12Tests(unittest.TestCase):
+    """The PC's live backup script (2026-10-16 hand patch) the repo must own.
+
+    Without these rules the nightly backup fails again on the vault lock, on
+    the list-denied empty pending_messages folder and on cron output pruned
+    between listing and reading; and configure_team refuses to deploy over the
+    live copy because its bytes differ from the repo's.
+    """
+
+    def setUp(self):
+        self.selection = backup_hermes.Selection()
+
+    def test_the_vault_lock_is_a_live_file(self):
+        self.assertEqual(
+            backup_hermes._transient_reason(
+                Path("vault/.vault.lock"), ("vault", ".vault.lock")
+            ),
+            backup_hermes._LIVE_FILE,
+        )
+        self.assertEqual(
+            backup_hermes._transient_reason(
+                Path("x"), ("profiles", "claw", "vault", ".vault.lock")
+            ),
+            backup_hermes._LIVE_FILE,
+        )
+
+    def test_the_empty_pending_messages_folder_is_skipped_not_lost(self):
+        error = PermissionError(13, "Permiso denegado")
+
+        self.selection.cannot_read("home/pending_messages", Path("x"), error)
+
+        self.assertEqual(self.selection.unreadable, [])
+        self.assertEqual(
+            self.selection.skipped,
+            [
+                {
+                    "path": "home/pending_messages",
+                    "reason": "carpeta vacia sin permiso de listado (0 archivos)",
+                }
+            ],
+        )
+
+    def test_a_file_pruned_during_the_copy_is_skipped_not_lost(self):
+        error = FileNotFoundError(2, "El sistema no puede encontrar el archivo")
+
+        self.selection.cannot_read(
+            "home/profiles/claw/cron/output/a1/fresh.md", Path("x"), error
+        )
+
+        self.assertEqual(self.selection.unreadable, [])
+        self.assertEqual(
+            self.selection.skipped,
+            [
+                {
+                    "path": "home/profiles/claw/cron/output/a1/fresh.md",
+                    "reason": "desaparecio durante la copia",
+                }
+            ],
+        )
+
+    def test_any_other_unreadable_file_still_fails_the_run(self):
+        error = PermissionError(13, "Permiso denegado")
+
+        self.selection.cannot_read("home/auth.json", Path("x"), error)
+
+        self.assertEqual(self.selection.skipped, [])
+        self.assertEqual(
+            self.selection.unreadable,
+            [{"path": "home/auth.json", "error": "Permiso denegado"}],
+        )
+
+
 class BackupTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -360,8 +432,10 @@ class BackupTest(unittest.TestCase):
             (code, line),
             (
                 1,
-                "ERROR respaldo Hermes: subido, pero 1 sin leer, "
-                "p. ej. home/profiles/claw/memories\n",
+                (
+                    "ERROR respaldo Hermes: subido, pero 1 sin leer, "
+                    "p. ej. home/profiles/claw/memories\n"
+                ),
             ),
         )
 
@@ -449,8 +523,10 @@ class BackupTest(unittest.TestCase):
             (code, line),
             (
                 1,
-                "ERROR respaldo Hermes: se acabo el tiempo (--budget 0 s) juntando "
-                "home; no se subio nada\n",
+                (
+                    "ERROR respaldo Hermes: se acabo el tiempo (--budget 0 s) "
+                    "juntando home; no se subio nada\n"
+                ),
             ),
         )
         self.assertEqual(list(self.out.iterdir()), [])
@@ -468,8 +544,10 @@ class BackupTest(unittest.TestCase):
             (code, line),
             (
                 1,
-                "ERROR respaldo Hermes: se acabo el tiempo (--budget 100 s) "
-                "escribiendo home/.env; no se subio nada\n",
+                (
+                    "ERROR respaldo Hermes: se acabo el tiempo (--budget 100 s) "
+                    "escribiendo home/.env; no se subio nada\n"
+                ),
             ),
         )
         self.assertEqual(list(self.out.iterdir()), [])

@@ -46,11 +46,12 @@ def replace_label(source, old, new):
     if not cells:
         raise ValueError(f"no cell uses {old}")
     name = new.split("/", 1)[-1]
-    direct = [cell for cell in cells if int(cell.rsplit(":", 1)[1]) >= 2]
-    if direct and family_of(name) is None:
+    # Every position binds by family now (v6 table, 2026-10-17): an unknown
+    # family would take the whole row down at compile time.
+    if family_of(name) is None:
         raise ValueError(
             f"{name} is not a family the router binds, and these cells pick "
-            f"their adapter from the name: {', '.join(direct)}"
+            f"their adapter from the name: {', '.join(cells)}"
         )
     return cells
 
@@ -66,20 +67,55 @@ def release_claw(mapping, new):
     del mapping["id_overrides"][new]
 
 
-def probe_routes(source, cells):
-    """``(position, label)`` for one real probe per route the change touches."""
-    wanted = {}
+#: Higher wins: the probe runs the model at the highest effort the table
+#: gives it (owner call, 2026-10-18 — one probe per model, or grok-4.7's
+#: three efforts blew the watcher's cron budget and never moved).
+_EFFORT_RANK = {"max": 5, "xhigh": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def probe_plan(source, cells):
+    """``(probes, unprobed)``: one real probe per MODEL, the rest recorded.
+
+    ``probes`` is ``(position, label)`` with the label at the model's highest
+    effort; ``unprobed`` maps the model to the efforts of its other labels,
+    which are answered by the same probe result.
+    """
+    best, others = {}, {}
     for cell in cells:
         row, position = cell.rsplit(":", 1)
         label = source["chains"][row][int(position)]
-        # Each OpenCode Go account is its own route; a direct label is one
-        # route wherever it sits.
-        key = (int(position), label) if int(position) < 2 else (None, label)
-        wanted.setdefault(key, int(position))
-    return [
+        model, effort = split_label(label)
+        effort = effort.strip().strip("()")
+        rank = _EFFORT_RANK.get(effort, 0)
+        if model not in best:
+            best[model] = (int(position), label, rank)
+            others[model] = []
+        elif rank > best[model][2]:
+            position0, label0, _ = best[model]
+            others[model].append(split_label(label0)[1].strip().strip("()"))
+            best[model] = (int(position), label, rank)
+        elif rank < best[model][2]:
+            others[model].append(effort)
+    probes = [
         (position, label)
-        for (_, label), position in sorted(wanted.items(), key=lambda item: item[1])
+        for position, label, _ in sorted(best.values(), key=lambda item: item[0])
     ]
+    unprobed = {
+        model: list(dict.fromkeys(efforts))
+        for model, efforts in others.items()
+        if efforts
+    }
+    return probes, unprobed
+
+
+def probe_routes(source, cells):
+    """``(position, label)`` for one real probe per route the change touches."""
+    return probe_plan(source, cells)[0]
+
+
+def unprobed_efforts(source, cells):
+    """``{model: [efforts]}`` the model probe does not answer for."""
+    return probe_plan(source, cells)[1]
 
 
 def probes(source, cells):

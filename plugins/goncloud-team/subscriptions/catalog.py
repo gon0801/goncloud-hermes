@@ -10,13 +10,12 @@ from typing import Any, Mapping
 
 from .types import RouteSpec
 
-#: The primary position and its copy on the owner's second OpenCode Go account
-#: (added 2026-09-27) are bound by slot. Later positions bind by family.
-_SLOT_FORCED_ADAPTERS = {0: "opencode_go", 1: "opencode_go_2"}
-
-#: Later slots bind by model family regardless of the recorded prefix. Each
-#: family is a pattern matched at the start of the id: Kimi's own releases are
-#: ``k<digits>`` (k3, k4, k3-256k), so a literal "k3" would drop k4.
+#: Every position binds by model family (v6 table, 2026-10-17: four positions
+#: of primary + 3 fallbacks, Anthropic on the owner's Claude subscription).
+#: Each family is a pattern matched at the start of the id: Kimi's own releases
+#: are ``k<digits>`` (k3, k4, k3-256k), so a literal "k3" would drop k4.
+#: DeepSeek Flash rides the owner's OpenCode Go subscription; the pay-per-token
+#: ``deepseek`` adapter is deliberately unbound (owner, 2026-10-17).
 _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("muse-", "muse"),
     ("claude-", "claude"),
@@ -27,15 +26,16 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     # HTTP zai adapter has none. Same Coding Plan subscription either way.
     ("glm-", "opencode_zai"),
     ("grok-", "grok"),
-    ("deepseek-", "deepseek"),
+    ("deepseek-", "opencode_go"),
 )
 
-SLOT_COUNT = 8
-SLOT_RANGE_LABEL = "Primary..F7"
+SLOT_COUNT = 4
+SLOT_RANGE_LABEL = "Primary..F3"
 
 #: Effort markers on the source label, never part of the vendor model id.
+#: ``(off)`` means the position runs with no reasoning parameter at all.
 _TRAILING_ANNOTATION = re.compile(r"\s+\(([^)]+)\)\s*$")
-_REASONING_EFFORTS = frozenset({"high", "xhigh", "max"})
+_REASONING_EFFORTS = frozenset({"high", "xhigh", "max", "medium", "low", "off"})
 
 
 def _family_adapter(model: str) -> str:
@@ -53,7 +53,7 @@ def _runtime_model_and_effort(raw_model: str) -> tuple[str, str | None]:
     effort = annotation.group(1)
     if effort not in _REASONING_EFFORTS:
         raise ValueError(f"unknown reasoning effort: {effort}")
-    return model[: annotation.start()], effort
+    return model[: annotation.start()], None if effort == "off" else effort
 
 
 def _compile_route(slot: int, label: str) -> RouteSpec:
@@ -63,7 +63,7 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
         raise ValueError(f"route label must be provider/model: {label}") from error
     # ``dup`` is provenance; effort is both provenance and runtime policy.
     model, reasoning_effort = _runtime_model_and_effort(raw_model)
-    adapter = _SLOT_FORCED_ADAPTERS.get(slot) or _family_adapter(model)
+    adapter = _family_adapter(model)
     if adapter == "muse":
         # ``-free`` names OpenCode Zen's free tier, where it is a real model id.
         # The Muse subscription serves the same family without it and refuses
@@ -81,12 +81,27 @@ def _compile_route(slot: int, label: str) -> RouteSpec:
     )
 
 
+def _source_role(profile: str, source: Mapping[str, Any]) -> str:
+    """The chain row a profile runs: its lane, named by ``profile_inheritance``."""
+    entry = source.get("profile_inheritance", {}).get(profile)
+    if entry:
+        return entry
+    if profile in source.get("chains", {}):
+        return profile
+    owned = next(
+        (row for row, who in source.get("profile_names", {}).items() if who == profile),
+        None,
+    )
+    if owned:
+        return owned
+    raise ValueError(f"No model chain configured for profile: {profile}")
+
+
 def compile_profile_routes(
     profile: str, source: Mapping[str, Any]
 ) -> tuple[RouteSpec, ...]:
-    """Compile one agent's exact eight-position chain from the source table."""
-    source_role = "main" if profile in {"claw", "entrega"} else profile
-    chain = source.get("chains", {}).get(source_role)
+    """Compile one agent's exact four-position chain from the source table."""
+    chain = source.get("chains", {}).get(_source_role(profile, source))
     if chain is None:
         raise ValueError(f"No model chain configured for profile: {profile}")
     if len(chain) != SLOT_COUNT:

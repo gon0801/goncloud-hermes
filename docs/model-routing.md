@@ -1,22 +1,48 @@
 # Enrutador de suscripciones: aceptacion local 2026-09-14
 
-Fuente autoritativa: `model-routing.source.json` (tabla del propietario,
-2026-09-19). Ocho agentes por siete posiciones: 56 celdas; `main` corresponde
-a `claw` y `entrega` hereda `main`. La columna vacia que era OpenCode Zen se
-omitio; no hay octavo slot. Los nueve perfiles instalan esa fuente literal y
-no tienen cadenas nativas administradas `model`/`fallback_providers`. Copilot
-y Copilot ACP estan excluidos.
+Fuente autoritativa: `model-routing.source.json` (tabla v6 del propietario,
+2026-10-17). Ocho carriles de cuatro posiciones: primario + 3 respaldos; el
+mapa `profile_inheritance` reparte los 21 perfiles de Hermes (`default`
+incluido) asi: `claw` -> `dirigir-claw` (el carril DIRIGIR con effort medium
+en el primario), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->
+`planear`, `implementer` -> `codigo`, `verifier` -> `verificar`, `scout` ->
+`investigar`, `operaciones`, `amazon`, `meli`, `odoo`, `pers` y `arras` ->
+`operativo`, `mail`, `limpia`, `gonserver`, `skillverif`, `tinkabot`,
+`eggbot` y `default` -> `simples`, y `adversary` -> `adversary`. Copilot y
+Copilot ACP siguen excluidos.
 
-Primary (slot 0) usa OpenCode Go (el prefijo `opencode-go-resp` se ata igual).
-F1-F6 usan la suscripcion de la familia correspondiente, sin reinterpretar
-los prefijos; `kimi-for-coding` entra por familia Kimi y `glm-5.3-flash` por
-Z.AI. Las etiquetas repetidas son intentos distintos. Los marcadores `(max)`,
-`(xhigh)` y `(high)` se conservan en la etiqueta y no forman parte del
-identificador que se envia al proveedor. Solo el adaptador DeepSeek factura
-como API; un modelo DeepSeek servido por Go sigue siendo suscripcion. Verifier
-tiene esa ruta API en F6 y scout en F4; adversary ya no.
+## Tabla v6: Anthropic por suscripcion (2026-10-17)
 
-## Toda etapa necesita manos: los slots se atan a un CLI
+Decision del propietario: los perfiles de Hermes van con Anthropic por SU
+SUSCRIPCION de Claude, no por una API de pago por token; ninguna posicion
+resuelve a una ruta API. `opencode-go` solo sirve DeepSeek Flash (y Muse
+Spark, que salio de la tabla); Fable queda fuera hasta confirmar el plan de
+Claude. El binding es por familia del modelo en TODAS las posiciones (ya no
+hay slots atados a cuentas). Los marcadores `(high)`, `(medium)` y `(low)`
+compilan a `agent.reasoning_overrides: {model: effort}`; `(off)` es una
+posicion sin parametro de razonamiento; todo marcador desconocido bloquea la
+compilacion. Kimi queda sin carriles automaticos de lotes
+(operativo/simples).
+
+Ese dia alguien reescribio a mano en la PC la ruta de los 20 perfiles vivos
+(transcripcion congelada en
+`tests/fixtures/rutas-vivas-20261017.json`), asi que el vivo dejo de coincidir
+con lo gestionado (`source_revision` 4e4112e) y `configure_team --check`
+fallaba con `user-managed model conflict`. La salida acordada es
+`configure_team.py --adoptar-ruteo-manual`: SOLO para el bloque de ruteo
+(`model`, `fallback_providers` y `agent.reasoning_overrides`) acepta el vivo
+como previo, lo registra en `goncloud-managed.json` con fecha y motivo y luego
+aplica la tabla; sin la bandera el rechazo sigue igual. Cada perfil de equipo
+lleva ahora su cadena nativa compilada de su carril; `specialist_row`
+desaparecio.
+
+## Aceptacion local 2026-09-14 (historica)
+
+Ocho agentes por siete posiciones: 56 celdas; `main` correspondia a `claw` y
+`entrega` heredaba `main`. Esa estructura y sus probes se conservan como
+registro; para decisiones operativas rige la tabla v6 de arriba.
+
+## Toda etapa necesita manos: las familias se atan a un CLI
 
 Cada etapa trabaja sobre un repositorio, asi que su modelo necesita herramientas
 de leer archivo, grep y shell apuntadas al workspace. Seis adaptadores lanzan un
@@ -35,36 +61,34 @@ parser exige para aceptar el terminal) y reporto `cost: 0`, o sea lo sirve la
 suscripcion y no una API medida. La tabla del propietario no cambio: `glm-5.3` y
 `glm-5.3-flash` siguen en los slots donde estan, solo que ahora llegan con manos.
 
-`deepseek` se dejo como esta a proposito. Ese modelo ya tiene camino con
-herramientas y el slot 0 lo usa (`opencode-go/deepseek-v4.1-flash`, suscripcion),
-mientras que el adaptador HTTP homonimo es la unica ruta que factura como API,
-declarada asi para verifier F6 y scout F4. Migrarlo al CLI cambiaria esa
-decision de facturacion, asi que queda pendiente de una orden explicita.
+`deepseek` se dejo como esta a proposito (2026-09-26, historico): entonces el
+adaptador HTTP homonimo era la unica ruta que facturaba como API, declarada
+para verifier F6 y scout F4. Con la tabla v6 (2026-10-17) no queda ninguna
+ruta facturada por API: DeepSeek Flash corre solo por la suscripcion de
+OpenCode Go (`opencode-go/deepseek-v4.1-flash (off)` en operativo y simples)
+y el adaptador HTTP `deepseek` queda deliberadamente sin binding; la matriz
+de probes lo conserva solo como gemelo HTTP para verificar la llave
+guardada (`DEEPSEEK_API_KEY`), con `billing_mode=api` en esa sonda.
 
-## Cadena conversacional del director en proveedores nativos (2026-09-28)
+## Cadena nativa por perfil (2026-10-17; el director desde 2026-09-28)
 
-`claw` conversa por proveedores Hermes nativos, con llamadas a herramientas
-nativas; ya no pasa por un proveedor local que escribe la llamada como texto.
-`configure_team.py` compila su `model` + `fallback_providers` directamente de
-la fila `main` de la misma fuente que usan los workflows: `opencode-go`
-(slots 0 y 1, una entrada con un pool de dos credenciales), `anthropic`,
-`meta-ai`, `xai-oauth`, `zai` sobre el endpoint del Coding Plan, `openai-codex`
-y `kimi-coding` sobre su endpoint OpenAI `/coding/v1` (`chat_completions`): el
+Todos los perfiles conversan por proveedores Hermes nativos, con llamadas a
+herramientas nativas; `configure_team.py` compila el `model` +
+`fallback_providers` + `agent.reasoning_overrides` de cada uno directamente de
+su carril de la misma fuente que usan los workflows: `anthropic` (la
+suscripcion Claude del propietario), `zai` sobre el endpoint del Coding Plan,
+`kimi-coding` sobre su endpoint OpenAI `/coding/v1` (`chat_completions`: el
 wire Anthropic Messages que Hermes elige para toda URL `/coding` le perdia 5
-de 12 llamadas a herramienta a K3, el OpenAI solo 1. Si Primary no esta
-disponible, la posicion inmediata es Claude; no existe un salto especial a
-Kimi. Los trabajadores, `entrega` incluida, siguen conversando por el router
-de suscripciones de esta pagina, sin cambio. Detalle en
-[spec](superpowers/specs/2026-09-28-director-native-chain-design.md).
+de 12 llamadas a herramienta a K3, el OpenAI solo 1), `xai-oauth` y
+`opencode-go` para DeepSeek Flash. No hay posiciones `meta-ai` en la v6, asi
+que la copia de la llave de `muse login` a `.env` queda inactiva. La cadena
+de vision del director (siguiente seccion) sigue siendo una decision aparte
+del propietario. Los workflows siguen ejecutandose por el router de
+suscripciones de esta pagina.
 
-Los marcadores son politica de ejecucion, no texto decorativo: compilan a
-`agent.reasoning_overrides: {model: effort}` (Claude `xhigh`, Muse Wonder `high`,
-igual para el resto de la fila), que Hermes re-resuelve si un fallback se
-activa. Cualquier marcador desconocido bloquea la compilacion de la tabla.
+## Cadena de vision del director (2026-09-28, vigente)
 
-## Cadena de vision del director (2026-09-28)
-
-La cadena conversacional arriba es para codigo y tareas generales. Para
+La cadena conversacional de arriba es para codigo y tareas generales. Para
 `vision_analyze`, el director obtiene una cadena de vision separada del
 propietario: `zai/glm-5.3-flash` (primario), luego `kimi-coding/kimi-for-coding`,
 luego `anthropic/claude-opus-5`. El primario rechaza `vision_analyze` con

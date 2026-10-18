@@ -66,9 +66,9 @@ class ReplaceTests(unittest.TestCase):
             module.replace_label(copy.deepcopy(SOURCE), "meta/muse-spark-9", "meta/x")
 
     def test_a_direct_cell_needs_a_family_the_router_binds(self):
-        # Positions 2+ pick their adapter from the model name; an unknown
-        # family would take down the whole row at compile time.
-        with self.assertRaisesRegex(ValueError, "wonder-1.0.*main:3"):
+        # Every position binds by family now (v6 table), so an unknown family
+        # would take down the whole row at compile time wherever it sits.
+        with self.assertRaisesRegex(ValueError, "wonder-1.0.*main:3.*scout:2"):
             module.replace_label(
                 copy.deepcopy(SOURCE), "meta/muse-spark-1.3", "meta/wonder-1.0"
             )
@@ -81,13 +81,22 @@ class ReplaceTests(unittest.TestCase):
         self.assertEqual(cells, ["scout:3"])
         self.assertEqual(source["chains"]["scout"][3], "kimi/k4")
 
-    def test_an_opencode_go_cell_takes_any_model_name(self):
+    def test_an_opencode_go_cell_still_needs_a_bound_family(self):
+        # Go is a provider, not a family escape hatch: the cell compiles by
+        # the model name like any other.
+        with self.assertRaisesRegex(ValueError, "qwen3.9-max.*scout:0"):
+            module.replace_label(
+                copy.deepcopy(SOURCE),
+                "opencode-go/deepseek-v4.1-flash",
+                "opencode-go/qwen3.9-max",
+            )
+
         source = copy.deepcopy(SOURCE)
-
         cells = module.replace_label(
-            source, "opencode-go/deepseek-v4.1-flash", "opencode-go/qwen3.9-max"
+            source,
+            "opencode-go/deepseek-v4.1-flash",
+            "opencode-go/deepseek-v4.2-flash",
         )
-
         self.assertEqual(cells, ["scout:0", "scout:1"])
 
 
@@ -140,20 +149,34 @@ class ProbeListTests(unittest.TestCase):
             ['python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"'],
         )
 
-    def test_a_model_on_both_go_accounts_is_probed_on_each(self):
-        source = copy.deepcopy(SOURCE)
-        cells = module.replace_label(
-            source,
-            "opencode-go-resp/muse-spark-1.3-contributor",
-            "opencode-go-resp/muse-wonder-1.0-contributor",
-        )
+    def test_one_probe_per_model_at_the_highest_effort_the_table_uses(self):
+        # Owner call, 2026-10-18: probing grok-4.7's three efforts blew the
+        # watcher's cron budget (3330 s > 3300 s) and the model never moved.
+        # One probe per model, at its highest effort; the rest go unprobed.
+        source = {
+            "chains": {
+                "a": [
+                    "xai/grok-4.7 (high)",
+                    "anthropic/claude-sonnet-5",
+                    "zai/glm-5.3",
+                    "xai/grok-4.7 (medium)",
+                ],
+                "b": [
+                    "xai/grok-4.7 (low)",
+                    "anthropic/claude-sonnet-5",
+                    "zai/glm-5.3",
+                    "kimi/k3",
+                ],
+            }
+        }
+        cells = module.replace_label(source, "xai/grok-4.7", "xai/grok-4.8")
 
         self.assertEqual(
             module.probes(source, cells),
-            [
-                'python scripts/probe_route.py --position 0 "opencode-go-resp/muse-wonder-1.0-contributor"',
-                'python scripts/probe_route.py --position 1 "opencode-go-resp/muse-wonder-1.0-contributor"',
-            ],
+            ['python scripts/probe_route.py --position 0 "xai/grok-4.8 (high)"'],
+        )
+        self.assertEqual(
+            module.unprobed_efforts(source, cells), {"xai/grok-4.8": ["medium", "low"]}
         )
 
 

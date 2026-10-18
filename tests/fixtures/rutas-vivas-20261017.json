@@ -1,0 +1,1074 @@
+{
+ "adversary": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-opus-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "amazon": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "arras": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "claw": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-opus-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-sol": "xhigh",
+     "claude-opus-5-5": "xhigh",
+     "muse-wonder-1.0": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "muse-spark-1.3-contributor"
+   },
+   "fallback_providers": [
+    {
+     "provider": "anthropic",
+     "model": "claude-opus-5-5"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-sol"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "eggbot": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "entrega": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-opus-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "gonserver": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "implementer": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "ingenieria": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-opus-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "limpia": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "mail": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "meli": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "odoo": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "operaciones": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "medium"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "pers": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-sonnet-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "reviewer": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-opus-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "scout": {
+  "vivo": {
+   "model": {
+    "provider": "xai-oauth",
+    "default": "grok-4.7"
+   },
+   "fallback_providers": [
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "medium",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "skillverif": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "tinkabot": {
+  "vivo": {
+   "model": {
+    "provider": "anthropic",
+    "default": "claude-haiku-5-5"
+   },
+   "fallback_providers": [
+    {
+     "provider": "opencode-go",
+     "model": "deepseek-v4.1-flash"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
+   }
+  },
+  "gestionado_previo": {
+   "model": {
+    "provider": "opencode-go",
+    "default": "deepseek-v4.1-flash"
+   },
+   "fallback_providers": [
+    {
+     "provider": "zai",
+     "base_url": "https://api.z.ai/api/coding/paas/v4",
+     "model": "glm-5.3-flash"
+    },
+    {
+     "provider": "openai-codex",
+     "model": "gpt-5.6-terra"
+    },
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "xai-oauth",
+     "model": "grok-4.7"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "kimi-for-coding"
+    },
+    {
+     "provider": "meta-ai",
+     "model": "muse-wonder-1.0"
+    }
+   ]
+  },
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ },
+ "verifier": {
+  "vivo": {
+   "model": {
+    "provider": "xai-oauth",
+    "default": "grok-4.7"
+   },
+   "fallback_providers": [
+    {
+     "provider": "anthropic",
+     "model": "claude-sonnet-5-5"
+    },
+    {
+     "provider": "kimi-coding",
+     "base_url": "https://api.kimi.com/coding/v1",
+     "api_mode": "chat_completions",
+     "model": "k3"
+    },
+    {
+     "provider": "zai",
+     "model": "glm-5.3",
+     "base_url": "https://api.z.ai/api/coding/paas/v4"
+    }
+   ],
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "high",
+     "k3": "high"
+    }
+   }
+  },
+  "gestionado_previo": {},
+  "source_revision": "4e4112e8094638a6208b1b501a56c8bd4b1658a0"
+ }
+}

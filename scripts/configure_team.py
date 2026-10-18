@@ -6,6 +6,7 @@ import copy
 import csv
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
@@ -157,6 +158,46 @@ def remove_owned_native_routing(existing, previous):
     return cleaned
 
 
+#: Why a run with --adoptar-ruteo-manual accepted the live routing as its
+#: previous. Recorded verbatim in every goncloud-managed.json it touches.
+ADOPTION_REASON = (
+    "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude "
+    "subscription; ruteo vivo aceptado como previo con --adoptar-ruteo-manual"
+)
+ADOPTION_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def live_routing_changes(existing, previous):
+    """The routing keys the owner changed by hand since the last deploy.
+
+    Only the routing block counts: ``model``, ``fallback_providers`` and the
+    chain's ``agent.reasoning_overrides``. Anything absent from the live
+    config is not adopted; deleting a managed key stays a conflict.
+    """
+    adopted = {}
+    for key in ("model", "fallback_providers"):
+        if key in existing and existing[key] != previous.get(key):
+            adopted[key] = existing[key]
+    overrides = existing.get("agent", {}).get("reasoning_overrides")
+    before = previous.get("agent", {}).get("reasoning_overrides")
+    if overrides is not None and overrides != before:
+        adopted["agent.reasoning_overrides"] = overrides
+    return adopted
+
+
+def with_adopted_routing(previous, adopted):
+    """``previous`` with the live routing values recorded in it."""
+    effective = copy.deepcopy(previous)
+    for key, value in adopted.items():
+        if key == "agent.reasoning_overrides":
+            effective.setdefault("agent", {})["reasoning_overrides"] = copy.deepcopy(
+                value
+            )
+        else:
+            effective[key] = copy.deepcopy(value)
+    return effective
+
+
 def merge_profile_config(existing, desired, previous, *, fresh=False):
     existing = dict(existing)
     desired = dict(desired)
@@ -185,7 +226,10 @@ def merge_profile_config(existing, desired, previous, *, fresh=False):
 def merge_owned(existing, desired, previous, fresh=False, prefix=""):
     if not isinstance(existing, dict):
         raise ValueError(f"Non-mapping configuration section: {prefix}")
-    result = copy.deepcopy(existing)
+    # The result keeps the desired key order, not the existing one: a second
+    # deploy must read back what the first one wrote and produce byte-identical
+    # output, or every redeploy would rewrite every profile's config.yaml.
+    result = {}
     for key, value in desired.items():
         location = f"{prefix}.{key}".strip(".")
         current = existing.get(key, MISSING)
@@ -209,6 +253,11 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
             raise ValueError(
                 f"Local configuration conflict: {location}; preserve and reconcile manually"
             )
+    # Keys the user owns and this script never managed keep their values,
+    # after the managed ones.
+    for key, value in existing.items():
+        if key not in result:
+            result[key] = copy.deepcopy(value)
     # A key this script owned last time and no longer ships is retired, unless
     # the user changed it, which is a conflict like any other.
     for key, before in previous.items():
@@ -224,16 +273,26 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
 
 
 def check_file(target, desired, previous=None):
-    if target.exists():
-        current = (
-            target.read_bytes()
-            if isinstance(desired, bytes)
-            else target.read_text(encoding="utf-8")
-        )
-        if isinstance(desired, bytes) and isinstance(previous, str):
-            previous = previous.encode("utf-8")
-        if current != desired and current != previous:
-            raise ValueError(f"Local managed-file conflict: {target}")
+    if not target.exists():
+        return
+    raw = target.read_bytes()
+    wanted = desired if isinstance(desired, bytes) else desired.encode("utf-8")
+    before = previous.encode("utf-8") if isinstance(previous, str) else previous
+    if raw == wanted or (before is not None and raw == before):
+        return
+
+    def normalized(data):
+        if data is None:
+            return None
+        return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+    # A Windows checkout can leave a managed text file in CRLF with content
+    # identical to the managed bytes: that is the same file, and the deploy
+    # rewrites it with the canonical line endings instead of blocking behind
+    # a manual reconciliation. Any other difference is still a conflict.
+    if normalized(raw) in (normalized(wanted), normalized(before)):
+        return
+    raise ValueError(f"Local managed-file conflict: {target}")
 
 
 def _prune_empty_dirs(directory, stop):
@@ -359,11 +418,8 @@ def apply_root_kanban(text, policy):
 
 
 def write_changed(path, content, *, backup=True):
-    if path.exists() and (
-        path.read_bytes() == content
-        if isinstance(content, bytes)
-        else path.read_text(encoding="utf-8") == content
-    ):
+    raw = content if isinstance(content, bytes) else content.encode("utf-8")
+    if path.exists() and path.read_bytes() == raw:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     # A recoverable copy; no credentials are included in the ownership manifest.
@@ -543,13 +599,15 @@ def autoupdate_setup(runtime_home):
 
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
+    routing_source = json.loads(
+        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+    )
     desired = {
         "plugins": {"enabled": ["goncloud-team"]},
         # Copilot and Copilot ACP are out of scope for this team. deepseek is
-        # the one adapter that bills as API: the subscription router reaches
-        # it deliberately at two slots through its own adapter, so leaving it
-        # in a native catalog would let an agent spend outside that decision.
-        # opencode-free is not one of the owner's accounts.
+        # the one adapter that bills as API: leaving it in a native catalog
+        # would let an agent spend outside that decision. opencode-free is
+        # not one of the owner's accounts.
         "model_catalog": {
             "excluded_providers": [
                 "copilot",
@@ -569,17 +627,11 @@ def desired_profile_config(role, team, runtime_home):
         },
         "kanban": team["kanban"],
     }
+    # Every team profile converses on native providers compiled from its own
+    # v6 row (2026-10-17: the owner moved every profile to Anthropic on his
+    # Claude subscription), so no hand-written chain can contradict the table.
+    desired.update(native_config(routing_source, role))
     if role == team["director"]:
-        # The director converses on native providers (native tool calls),
-        # compiled from the authoritative main row so no hand-written chain
-        # can contradict the table.
-        desired.update(
-            director_native_config(
-                json.loads(
-                    (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-                )
-            )
-        )
         # The director carries the full toolset over Telegram by owner decision
         # (browser, computer_use and the rest): it drives Odoo and Edge and runs
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
@@ -653,6 +705,75 @@ def with_env_value(text, name, value):
     return "\n".join(lines) + "\n"
 
 
+#: The home ROOT is Hermes' `default` profile (measured on the PC,
+#: 2026-10-18): the deploy manages only its routing keys there, never the
+#: owner's platforms, gateway, plugins or secrets.
+_ROOT_ROUTING_KEYS = ("model", "fallback_providers", "agent")
+
+
+def _block_lines(key, value):
+    """The top-level YAML block for one key, without the trailing newline."""
+    import yaml
+
+    rendered = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True).rstrip(
+        "\n"
+    )
+    return rendered.split("\n")
+
+
+def _top_level_ranges(lines):
+    """``{key: (start, end)}`` for every top-level block of the text.
+
+    A ``- item`` line at column zero belongs to the block above it (safe_dump
+    renders sequences that way), never to a key of its own.
+    """
+    ranges = {}
+    index, total = 0, len(lines)
+    while index < total:
+        line = lines[index]
+        if line and line[0] not in " \t#-" and ":" in line:
+            key = line.split(":", 1)[0]
+            end = index + 1
+            while end < total and (
+                not lines[end] or lines[end][0] in " \t" or lines[end].startswith("- ")
+            ):
+                end += 1
+            ranges[key] = (index, end)
+            index = end
+        else:
+            index += 1
+    return ranges
+
+
+def with_root_routing(text, routing):
+    """The root config text with the routing keys replaced in place.
+
+    Everything else — comments, key order, the owner's own keys — stays byte
+    for byte; new blocks use the file's own line ending. Inline values for a
+    managed key are replaced by the full block.
+    """
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(newline)
+    for key in _ROOT_ROUTING_KEYS:
+        block = _block_lines(key, routing[key])
+        ranges = _top_level_ranges(lines)
+        if key in ranges:
+            start, end = ranges[key]
+            # A block that runs to the end of the file has trailing blank
+            # lines inside its range: keep them where they were.
+            blanks = []
+            cut = end
+            while cut > start and lines[cut - 1] == "":
+                blanks.append("")
+                cut -= 1
+            lines[start:end] = [*block, *blanks]
+        elif lines and lines[-1] == "":
+            lines[-1:-1] = block
+        else:
+            lines.extend(block)
+    return newline.join(lines)
+
+
 def configure(
     runtime_home,
     install_dir,
@@ -661,6 +782,7 @@ def configure(
     allow_regression=False,
     preserve_local_soul=False,
     check_only=False,
+    adopt_manual_routing=False,
 ):
     import yaml
 
@@ -686,6 +808,7 @@ def configure(
         (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
     )
     prepared = []
+    adoptions = {}
     # Team profiles are created and fully shaped here. A specialist profile is
     # the owner's: it is never created, and only its native model chain, its
     # copy of the plugin and its Muse key line are managed, so a card
@@ -718,9 +841,17 @@ def configure(
         desired = (
             desired_profile_config(role, team, runtime_home)
             if is_team
-            else native_config(routing_source, team["specialist_row"])
+            else native_config(routing_source, role)
         )
         previous_config = state.get("config", {})
+        adopted = (
+            live_routing_changes(existing or {}, previous_config)
+            if adopt_manual_routing
+            else {}
+        )
+        if adopted:
+            previous_config = with_adopted_routing(previous_config, adopted)
+            adoptions[role] = adopted
         existing = remove_owned_native_routing(existing or {}, previous_config)
         merged = merge_profile_config(
             existing,
@@ -799,6 +930,29 @@ def configure(
     root_config = contained(runtime_home / "config.yaml", runtime_home)
     root_text = root_config.read_bytes().decode("utf-8") if root_config.exists() else ""
     root_desired = apply_root_kanban(root_text, root_kanban_policy(team))
+    # The `default` profile is the home ROOT: manage exactly its lane's
+    # routing there and nothing else of the owner's root config.
+    import yaml
+
+    desired_root = native_config(routing_source, "default")
+    root_state_path = contained(runtime_home / "goncloud-managed.json", runtime_home)
+    root_state = (
+        json.loads(root_state_path.read_text(encoding="utf-8"))
+        if root_state_path.exists()
+        else {}
+    )
+    refuse_regression(root_state, allow_regression=allow_regression)
+    root_live = yaml.safe_load(root_text) or {}
+    root_previous = root_state.get("config", {})
+    root_adoptions = (
+        live_routing_changes(root_live, root_previous) if adopt_manual_routing else {}
+    )
+    if root_adoptions:
+        root_previous = with_adopted_routing(root_previous, root_adoptions)
+    root_cleaned = remove_owned_native_routing(dict(root_live), root_previous)
+    root_merged = merge_profile_config(root_cleaned, desired_root, root_previous)
+    root_routing = {key: root_merged[key] for key in _ROOT_ROUTING_KEYS}
+    root_text_routed = with_root_routing(root_desired, root_routing)
     # Every profile validated above; nothing has been written yet.
     keyed = [entry[0] for entry in prepared if uses_meta_ai(entry[5])]
     key = muse_login_key() if keyed else None
@@ -816,9 +970,18 @@ def configure(
     ensure_tools_executable(runtime_home, check_only=check_only)
     if check_only:
         print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
+        if adoptions:
+            listed = ", ".join(sorted(adoptions))
+            print(f"Ruteo manual a adoptar como previo en: {listed}")
+        if root_adoptions:
+            print("Ruteo manual a adoptar en la raiz (default)")
         print(
             "Root dispatch allowlist: "
             + ("up to date" if root_desired == root_text else "would be written")
+        )
+        print(
+            "Root default routing: "
+            + ("up to date" if root_text_routed == root_text else "would be written")
         )
         if env_files:
             stale = [
@@ -836,7 +999,26 @@ def configure(
             )
         return
     # The allowlist goes first: it is what keeps the gateway off stage cards.
-    write_changed(root_config, root_desired.encode("utf-8"))
+    write_changed(root_config, root_text_routed.encode("utf-8"))
+    adoption_stamp = datetime.now(timezone.utc).strftime(ADOPTION_STAMP)
+    root_record = {
+        "config": desired_root,
+        "source_revision": revision,
+    }
+    if root_adoptions:
+        root_record["adopted_manual_routing"] = {
+            **(root_state.get("adopted_manual_routing") or {}),
+            adoption_stamp: {
+                "reason": ADOPTION_REASON,
+                "keys": sorted(root_adoptions),
+            },
+        }
+    elif "adopted_manual_routing" in root_state:
+        root_record["adopted_manual_routing"] = root_state["adopted_manual_routing"]
+    write_changed(
+        root_state_path,
+        json.dumps(root_record, indent=2, ensure_ascii=False) + "\n",
+    )
     for (
         profile,
         config_path,
@@ -870,14 +1052,26 @@ def configure(
             if target.exists():
                 target.unlink()
             _prune_empty_dirs(target.parent, profile)
+        recorded = {
+            "config": desired,
+            "source_revision": revision,
+            "files": recorded_files,
+        }
+        adopted = adoptions.get(profile.name)
+        if adopted:
+            recorded["adopted_manual_routing"] = {
+                **(state.get("adopted_manual_routing") or {}),
+                adoption_stamp: {
+                    "reason": ADOPTION_REASON,
+                    "keys": sorted(adopted),
+                },
+            }
+        elif "adopted_manual_routing" in state:
+            recorded["adopted_manual_routing"] = state["adopted_manual_routing"]
         write_changed(
             state_path,
             json.dumps(
-                {
-                    "config": desired,
-                    "source_revision": revision,
-                    "files": recorded_files,
-                },
+                recorded,
                 indent=2,
                 ensure_ascii=False,
             )
@@ -919,6 +1113,15 @@ def main():
         help="Overwrite profiles deployed from a commit this checkout does not contain",
     )
     parser.add_argument(
+        "--adoptar-ruteo-manual",
+        action="store_true",
+        help=(
+            "Accept the live model/fallback_providers/reasoning_overrides the "
+            "owner set by hand as the managed previous (recorded with date and "
+            "reason), then apply the table; without it the conflict remains"
+        ),
+    )
+    parser.add_argument(
         "--preserve-local-soul",
         action="store_true",
         help=(
@@ -939,6 +1142,7 @@ def main():
         allow_regression=args.allow_regression,
         preserve_local_soul=args.preserve_local_soul,
         check_only=args.check,
+        adopt_manual_routing=args.adoptar_ruteo_manual,
     )
 
 

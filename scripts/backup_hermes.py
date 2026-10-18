@@ -238,6 +238,11 @@ TRANSIENT = (
     # Held by the running Hermes gateway and its kanban dispatcher (seen on the PC).
     ("**/gateway.lock", _LIVE_FILE),
     ("**/.dispatcher.lock", _LIVE_FILE),
+    # Punto 12 (2026-10-16): lock de la boveda, lo sostiene un proceso vivo.
+    ("**/vault/.vault.lock", _LIVE_FILE),
+    # Carpeta vacia (0 archivos) con ACL solo SYSTEM/Administrators: el usuario
+    # no puede listarla y no hay nada que copiar; no cuenta como "sin leer".
+    ("pending_messages", "carpeta vacia sin permiso de listado (0 archivos)"),
 )
 RECENT_OUTPUT = "**/cron/output"
 RECENT_SECONDS = 60
@@ -319,6 +324,10 @@ class Selection:
 
     def cannot_read(self, arcname, path, error):
         reason = _transient_reason(path, tuple(arcname.split("/")[1:]))
+        if not reason and isinstance(error, FileNotFoundError):
+            # Punto 12: el archivo desaparecio entre listar y leer (p. ej. salida
+            # de cron podada); un archivo que ya no existe no es dato perdido.
+            reason = "desaparecio durante la copia"
         if reason:
             self.skipped.append({"path": arcname, "reason": reason})
         else:

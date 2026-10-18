@@ -1,109 +1,100 @@
 {
   "schema_version": 1,
-  "source": "User-provided routing table, 2026-09-19; seven slots (former OpenCode Zen column dropped). 2026-09-27: owner added a second OpenCode Go account as an exact copy of Primary right after it, eight slots",
+  "source": "Lista de modelos v6 del propietario (2026-10-17): 8 carriles de 4 posiciones (primario + 3 respaldos), transcrita en ~/.local/state/encargos-loop/artifacts/H-tabla/lista-v6.md. Los perfiles de Hermes van con Anthropic por SU SUSCRIPCION de Claude (no API por token). 2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription",
   "status": "applied_with_native_provider_aliases",
   "columns": [
     "Primary",
-    "Primary Go 2",
     "F1",
     "F2",
-    "F3",
-    "F4",
-    "F5",
-    "F6"
+    "F3"
   ],
   "profile_names": {
-    "main": "claw"
+    "dirigir-claw": "claw"
   },
   "profile_inheritance": {
-    "entrega": "main"
+    "claw": "dirigir-claw",
+    "entrega": "dirigir",
+    "ingenieria": "planear",
+    "reviewer": "planear",
+    "implementer": "codigo",
+    "verifier": "verificar",
+    "scout": "investigar",
+    "adversary": "adversary",
+    "operaciones": "operativo",
+    "amazon": "operativo",
+    "meli": "operativo",
+    "odoo": "operativo",
+    "pers": "operativo",
+    "arras": "operativo",
+    "mail": "simples",
+    "limpia": "simples",
+    "gonserver": "simples",
+    "skillverif": "simples",
+    "tinkabot": "simples",
+    "eggbot": "simples",
+    "default": "simples"
   },
   "chains": {
-    "main": [
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "anthropic/claude-opus-5-5 (xhigh)",
-      "meta/muse-wonder-1.0 (max)",
-      "xai/grok-4.7",
-      "zai/glm-5.3",
-      "openai/gpt-5.6-sol (xhigh)",
-      "kimi/k3"
+    "dirigir": [
+      "anthropic/claude-opus-5-5 (high)",
+      "anthropic/claude-sonnet-5-5 (high)",
+      "zai/glm-5.3 (high)",
+      "kimi/k3 (high)"
     ],
-    "operaciones": [
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/deepseek-v4.1-flash",
-      "zai/glm-5.3-flash",
-      "openai/gpt-5.6-terra (xhigh)",
-      "anthropic/claude-sonnet-5-5 (xhigh)",
-      "xai/grok-4.7",
-      "kimi/kimi-for-coding (high)",
-      "meta/muse-wonder-1.0 (max)"
+    "dirigir-claw": [
+      "anthropic/claude-opus-5-5 (medium)",
+      "anthropic/claude-sonnet-5-5 (high)",
+      "zai/glm-5.3 (high)",
+      "kimi/k3 (high)"
     ],
-    "ingenieria": [
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "openai/gpt-5.6-sol (xhigh)",
-      "kimi/k3",
-      "zai/glm-5.3",
-      "meta/muse-wonder-1.0 (max)",
-      "anthropic/claude-opus-5-5 (xhigh)",
-      "xai/grok-4.7"
+    "planear": [
+      "anthropic/claude-opus-5-5 (high)",
+      "kimi/k3 (high)",
+      "zai/glm-5.3 (high)",
+      "xai/grok-4.7 (high)"
     ],
-    "implementer": [
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "opencode-go-resp/muse-spark-1.3-contributor",
-      "meta/muse-wonder-1.0 (max)",
-      "zai/glm-5.3-flash",
-      "xai/grok-4.7",
-      "anthropic/claude-sonnet-5-5 (xhigh)",
-      "openai/gpt-5.6-terra (xhigh)",
-      "kimi/kimi-for-coding (high)"
+    "codigo": [
+      "anthropic/claude-sonnet-5-5 (high)",
+      "kimi/k3 (high)",
+      "zai/glm-5.3 (high)",
+      "xai/grok-4.7 (medium)"
     ],
-    "reviewer": [
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/deepseek-v4.1-flash",
-      "anthropic/claude-fable-5-1",
-      "kimi/k3",
-      "openai/gpt-6-astra",
-      "meta/muse-wonder-1.0 (max)",
-      "xai/grok-4.7",
-      "zai/glm-5.3"
+    "verificar": [
+      "zai/glm-5.3 (high)",
+      "xai/grok-4.7 (high)",
+      "anthropic/claude-sonnet-5-5 (high)",
+      "kimi/k3 (high)"
+    ],
+    "investigar": [
+      "xai/grok-4.7 (medium)",
+      "kimi/k3 (high)",
+      "zai/glm-5.3 (high)",
+      "anthropic/claude-sonnet-5-5 (medium)"
+    ],
+    "operativo": [
+      "anthropic/claude-sonnet-5-5 (medium)",
+      "zai/glm-5.3 (low)",
+      "xai/grok-4.7 (low)",
+      "opencode-go/deepseek-v4.1-flash (off)"
+    ],
+    "simples": [
+      "anthropic/claude-haiku-5-5 (low)",
+      "opencode-go/deepseek-v4.1-flash (off)",
+      "zai/glm-5.3-flash (low)",
+      "xai/grok-4.7 (low)"
     ],
     "adversary": [
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/deepseek-v4.1-flash",
-      "xai/grok-4.7",
-      "kimi/k3",
-      "zai/glm-5.3",
-      "meta/muse-wonder-1.0 (max)",
-      "anthropic/claude-opus-5-5 (xhigh)",
-      "openai/gpt-5.6-sol (xhigh)"
-    ],
-    "verifier": [
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/deepseek-v4.1-flash",
-      "zai/glm-5.3-flash",
-      "meta/muse-wonder-1.0 (max)",
-      "kimi/kimi-for-coding (high)",
-      "anthropic/claude-sonnet-5-5 (xhigh)",
-      "openai/gpt-5.6-terra (xhigh)",
-      "deepseek/deepseek-flash"
-    ],
-    "scout": [
-      "opencode-go/deepseek-v4.1-flash",
-      "opencode-go/deepseek-v4.1-flash",
-      "zai/glm-5.3-flash",
-      "meta/muse-wonder-1.0 (max)",
-      "kimi/kimi-for-coding",
-      "deepseek/deepseek-flash",
-      "anthropic/claude-sonnet-5-5 (xhigh)",
-      "openai/gpt-5.6-terra (xhigh)"
+      "anthropic/claude-opus-5-5 (high)",
+      "xai/grok-4.7 (high)",
+      "kimi/k3 (high)",
+      "zai/glm-5.3 (high)"
     ]
   },
   "bindings": {
-    "trailing_annotation": "Parenthetical markers such as (max), (xhigh) and (high) are preserved on the label and stripped from the runtime model ID",
-    "duplicate_positions": "Repeated labels are distinct attempts; they do not need a dup suffix",
-    "entrega": "Confirmed by the user to inherit main",
-    "go_2": "Position 2 copies Primary exactly and runs on the second OpenCode Go account (OPENCODE_GO_2_API_KEY)"
+    "trailing_annotation": "Parenthetical markers (high), (medium), (low) and (off) are preserved on the label and stripped from the runtime model ID; (off) means no reasoning parameter at all",
+    "carriles": "DIRIGIR = dirigir (entrega) y dirigir-claw (claw, effort medium en el primario en vez de high); PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Kimi sin carriles automaticos de lotes (operativo/simples). Fable fuera hasta confirmar plan de Claude; opencode-go solo para DeepSeek Flash (Muse Spark ya no esta en la v6)",
+    "claude_subscription": "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription; every anthropic position rides that subscription, never a pay-per-token API key",
+    "posiciones": "Cuatro posiciones por carril (primario + 3 respaldos); el binding es por familia del modelo en todas las posiciones",
+    "rutas_vivas": "El vivo de la PC del 2026-10-17 (tests/fixtures/rutas-vivas-20261017.json) ya no coincide con lo gestionado (source_revision 4e4112e): el dueno cambio los modelos a mano; adoptelo con configure_team.py --adoptar-ruteo-manual"
   }
 }

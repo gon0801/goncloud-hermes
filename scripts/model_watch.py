@@ -51,22 +51,22 @@ BLIND_AFTER = 3
 
 
 def models_in_use(source):
-    """Model ID -> the ``row:position`` cells of the table that use it."""
+    """Model ID -> {"go": [row:position...], "vendor": [...]} per label provider.
+
+    A label whose provider is OpenCode Go runs on the Go list; every other
+    label follows its vendor's catalog (v6 table, 2026-10-17: binding by
+    family on all four positions, Go only for DeepSeek Flash).
+    """
     in_use = {}
     for row, labels in source["chains"].items():
         for position, label in enumerate(labels):
-            model = _EFFORT.sub("", label).split("/", 1)[-1].strip()
-            in_use.setdefault(model, []).append(f"{row}:{position}")
+            ref = _EFFORT.sub("", label).strip()
+            provider, _, model = ref.rpartition("/")
+            kind = "go" if provider.startswith(GO) else "vendor"
+            in_use.setdefault(model, {"go": [], "vendor": []})[kind].append(
+                f"{row}:{position}"
+            )
     return in_use
-
-
-def _on_go(uses):
-    # Positions 0 and 1 always run on OpenCode Go; the rest go to the vendor.
-    return [use for use in uses if int(use.rsplit(":", 1)[1]) < 2]
-
-
-def _direct(uses):
-    return [use for use in uses if int(use.rsplit(":", 1)[1]) >= 2]
 
 
 def compare(previous, current, in_use, pins=None):
@@ -95,9 +95,9 @@ def compare(previous, current, in_use, pins=None):
                 )
     for model, uses in sorted(in_use.items()):
         family = family_of(model)
-        routes = [(GO, _on_go(uses))]
+        routes = [(GO, uses["go"])]
         if family is not None:
-            routes.append((FAMILIES[family], _direct(uses)))
+            routes.append((FAMILIES[family], uses["vendor"]))
         for source, cells in routes:
             if not cells or source not in previous or source not in current:
                 continue

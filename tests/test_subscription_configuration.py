@@ -1370,7 +1370,9 @@ class LiveEvidenceTests(unittest.TestCase):
             for profile in routing["chains"]
             for route in compile_profile_routes(profile, routing)
         }
-        # The HTTP twins are probed with a table model of their family.
+        # The HTTP twins are probed with a table model of their family; the
+        # deepseek twin keeps API billing (configure_subscriptions) even
+        # though the v6 table binds the family to the Go subscription.
         expected = bound | {"zai", "deepseek"}
         adapters = {name: ReadyAdapter() for name in expected | {"opencode_zen"}}
         with (
@@ -1424,9 +1426,9 @@ class Adapter:
             time.sleep(.01)
         with closing(sqlite3.connect(fixture/'counts.db')) as conn,conn:
             conn.execute('UPDATE counts SET active=active-1')
-        return InvocationResult(True,'GONCLOUD_PROBE_OK','codex','fixture','subscription')
-with patch.object(module,'read_private_env',return_value={}),patch('subscriptions.adapters.build_adapter_registry',return_value={'codex':Adapter()}):
-    sys.argv=['probe','--live-probe-all','--only','codex']
+        return InvocationResult(True,'GONCLOUD_PROBE_OK','kimi','fixture','subscription')
+with patch.object(module,'read_private_env',return_value={}),patch('subscriptions.adapters.build_adapter_registry',return_value={'kimi':Adapter()}):
+    sys.argv=['probe','--live-probe-all','--only','kimi']
     sys.exit(module.main())
 """
         command = [sys.executable, "-c", code, str(ROOT), str(root)]
@@ -1608,9 +1610,9 @@ while True:
         from test_subscription_router import ScriptedAdapter, completed
 
         entered, release = threading.Event(), threading.Event()
-        adapter = ScriptedAdapter("codex")
+        adapter = ScriptedAdapter("kimi")
         adapter.timeout_seconds, adapter.probe_timeout_seconds = 300, 30
-        adapter.result = completed("GONCLOUD_PROBE_OK", "codex")
+        adapter.result = completed("GONCLOUD_PROBE_OK", "kimi")
         original = SubscriptionStateStore._save_live_health_locked
 
         def publish(store, *args, **kwargs):
@@ -1622,7 +1624,7 @@ while True:
             patch.object(module, "read_private_env", return_value={}),
             patch(
                 "subscriptions.adapters.build_adapter_registry",
-                return_value={"codex": adapter},
+                return_value={"kimi": adapter},
             ),
             patch.object(
                 SubscriptionStateStore, "_save_live_health_locked", new=publish
@@ -1630,11 +1632,11 @@ while True:
             redirect_stdout(io.StringIO()),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
-            first = pool.submit(module.run_live_probe_all, only="codex")
+            first = pool.submit(module.run_live_probe_all, only="kimi")
             try:
                 self.assertTrue(entered.wait(10))
                 with self.assertRaises(SubscriptionBusy):
-                    module.run_live_probe_all(only="codex")
+                    module.run_live_probe_all(only="kimi")
                 self.assertEqual(len(adapter.requests), 1)
             finally:
                 release.set()
@@ -1761,7 +1763,7 @@ while True:
             self.assertEqual(adapters["opencode_go"].requests, [])
             self.assertEqual(adapters["opencode_go"].probes, [])
             attempts = store.stage_attempts("wf-6", "st-6")
-            self.assertEqual([item["slot"] for item in attempts], [0, 2])
+            self.assertEqual([item["slot"] for item in attempts], [0, 1])
             self.assertNotIn("sk-private", repr(store.health("opencode_go")))
             self.assertNotIn("owner@", repr(store.health("opencode_go")))
             store.set_cooldown("opencode_go", hours=1)
@@ -1771,7 +1773,7 @@ while True:
             self.assertTrue(result.success)
             self.assertEqual(
                 [item["slot"] for item in store.stage_attempts("wf-6", "cooldown")],
-                [0, 2],
+                [0, 1],
             )
             adapters["opencode_go"].result = completed(
                 "GONCLOUD_PROBE_OK extra", adapter="opencode_go"
@@ -1868,7 +1870,8 @@ while True:
             )
             self.assertEqual(json.loads(zai.requests[0]["body"])["model"], "glm-5.3")
             self.assertEqual(
-                json.loads(deepseek.requests[0]["body"])["model"], "deepseek-flash"
+                json.loads(deepseek.requests[0]["body"])["model"],
+                "deepseek-v4.1-flash",
             )
             with self.assertRaises(MigrationError):
                 probe("GLM_API_KEY", "different-fixture")
@@ -1994,15 +1997,15 @@ while True:
             patch.object(module, "read_private_env", return_value={}),
             patch(
                 "subscriptions.adapters.build_adapter_registry",
-                return_value={"codex": adapter},
+                return_value={"kimi": adapter},
             ),
             redirect_stdout(io.StringIO()) as output,
         ):
             target = Path(tmp) / "report.json"
-            result = module.run_live_probe_all(target, only="codex")
+            result = module.run_live_probe_all(target, only="kimi")
             serialized = target.read_text()
         expected = {
-            "adapter": "codex",
+            "adapter": "kimi",
             "status": "failed",
             "failure": "task_failure",
             "billing_mode": "subscription",
@@ -2017,7 +2020,8 @@ while True:
 
     def test_live_matrix_keeps_the_probe_window_an_adapter_declared(self):
         # Shrinking a declared window here reports a slow-launching but healthy
-        # account as failed; the ceiling belongs to the adapter contract.
+        # account as failed; the ceiling belongs to the adapter contract. The
+        # adapter must be one the v6 table binds (muse is out since 2026-10-17).
         from subscriptions.adapters import SubscriptionAdapter
 
         class ColdStartAdapter(SubscriptionAdapter):
@@ -2033,11 +2037,11 @@ while True:
             patch.object(module, "read_private_env", return_value={}),
             patch(
                 "subscriptions.adapters.build_adapter_registry",
-                return_value={"muse": adapter},
+                return_value={"kimi": adapter},
             ),
             redirect_stdout(io.StringIO()),
         ):
-            module.run_live_probe_all(only="muse")
+            module.run_live_probe_all(only="kimi")
 
         self.assertEqual(adapter.observed, 120)
 
@@ -2096,12 +2100,14 @@ class DeploymentTests(unittest.TestCase):
             self.assertTrue(routing.is_file())
             self.assertEqual(
                 json.loads(routing.read_text(encoding="utf-8"))["columns"],
-                ["Primary", "Primary Go 2", "F1", "F2", "F3", "F4", "F5", "F6"],
+                ["Primary", "F1", "F2", "F3"],
             )
             claw_config = yaml.safe_load(
                 (claw / "config.yaml").read_text(encoding="utf-8")
             )
-            self.assertEqual(claw_config["model"]["provider"], "opencode-go")
+            # v6 (2026-10-17): Anthropic on the owner's Claude subscription.
+            self.assertEqual(claw_config["model"]["provider"], "anthropic")
+            self.assertEqual(claw_config["model"]["default"], "claude-opus-5-5")
 
             secrets = claw / "subscription-router.env"
             second = subprocess.run(

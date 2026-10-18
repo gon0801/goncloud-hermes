@@ -147,14 +147,14 @@ class WatcherPinsTests(unittest.TestCase):
     def test_a_pin_that_is_also_in_the_table_is_reported_once(self):
         before = {"opencode-go": {"deepseek-v4.1-flash": {}}}
         now = {"opencode-go": {}}
-        in_use = {"deepseek-v4.1-flash": ["scout:0"]}
+        in_use = {"deepseek-v4.1-flash": {"go": ["operativo:3"], "vendor": []}}
 
         notices = model_watch.compare(
             before, now, in_use, {"deepseek-v4.1-flash": ["review.py:75"]}
         )
 
         self.assertEqual(len(notices), 1)
-        self.assertEqual(notices[0]["uses"], ["scout:0", "review.py:75"])
+        self.assertEqual(notices[0]["uses"], ["operativo:3", "review.py:75"])
 
 
 if __name__ == "__main__":

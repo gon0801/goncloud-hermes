@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import hermes_autoupdate  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 import model_watch  # noqa: E402
+import promote_model  # noqa: E402
 from model_lines import Promotion, Ran  # noqa: E402
 
 FIXTURE = ROOT / "tests/fixtures/model-routing.source.json"
@@ -22,24 +23,56 @@ PONG_TURN = "PONG\n\nsession_id: 20261015_113404_1e7391\n"
 
 
 GROK_ONLY = {"xai": {"grok-4.7": {}, "grok-4.8": {}}}
+#: One effort on every cell, so the promotion is one route and one probe.
+K_ONLY = {"kimi-code-plan-global": {"k3": {}, "k4": {}}}
+
+
+class BudgetTests(unittest.TestCase):
+    def test_cada_modelo_de_la_v6_cabe_en_el_presupuesto_del_cron(self):
+        # Owner call, 2026-10-18: with one probe per effort grok-4.7 needed
+        # 3330 s against a 3300 s budget and never moved. One probe per model
+        # must leave every model of the real v6 table inside the budget.
+        source = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+        cells_by_ref = {}
+        for row, labels in source["chains"].items():
+            for position, label in enumerate(labels):
+                ref, _ = promote_model.split_label(label)
+                cells_by_ref.setdefault(ref, []).append(f"{row}:{position}")
+        self.assertIn("xai/grok-4.7", cells_by_ref)
+        for ref, cells in cells_by_ref.items():
+            with self.subTest(ref=ref):
+                routes, unprobed = promote_model.probe_plan(source, cells)
+                worst = (
+                    len(routes) * hermes_autoupdate.PROBE_TIMEOUT
+                    + 3 * hermes_autoupdate.DEPLOY_TIMEOUT
+                    + 2 * hermes_autoupdate.TURN_TIMEOUT
+                    + hermes_autoupdate._GIT_STEPS * hermes_autoupdate.GIT_TIMEOUT
+                )
+                self.assertLessEqual(
+                    worst,
+                    hermes_autoupdate.SCRIPT_LIMIT - hermes_autoupdate.SAFETY,
+                    f"{ref} no cabe ({worst} s)",
+                )
+        grok = cells_by_ref["xai/grok-4.7"]
+        routes, unprobed = promote_model.probe_plan(source, grok)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(unprobed, {"xai/grok-4.7": ["medium", "low"]})
 
 
 class PlanTableTests(unittest.TestCase):
     def test_each_label_follows_the_catalog_of_the_route_it_runs_on(self):
         source = json.loads(FIXTURE.read_text(encoding="utf-8"))
         catalogs = {
-            "opencode-go": {
-                "muse-spark-1.3-contributor": {},
-                "muse-spark-1.4-contributor": {},
-                "deepseek-v4.1-flash": {},
-            },
+            "opencode-go": {"deepseek-v4.1-flash": {}, "deepseek-v4.2-flash": {}},
             "xai": {"grok-4.7": {}, "grok-4.8": {}, "grok-4.20-0309-reasoning": {}},
-            "openai": {
-                "gpt-5.6-sol": {},
-                "gpt-6-sol": {},
-                "gpt-6.1-sol": {"status": "deprecated"},
+            "anthropic": {
+                "claude-opus-5-5": {},
+                "claude-opus-6": {},
+                "claude-opus-5-5-20260922": {},
             },
-            "anthropic": {"claude-opus-5-5": {}, "claude-opus-5-5-20260922": {}},
+            "zai-coding-plan": {"glm-5.3": {}, "glm-5.4": {}},
             "kimi-code-plan-global": {"k3": {}, "k4": {}},
         }
 
@@ -49,75 +82,107 @@ class PlanTableTests(unittest.TestCase):
             promotions,
             [
                 Promotion(
-                    "opencode-go-resp/muse-spark-1.3-contributor",
-                    "opencode-go-resp/muse-spark-1.4-contributor",
+                    "anthropic/claude-opus-5-5",
+                    "anthropic/claude-opus-6",
+                    ("dirigir:0", "dirigir-claw:0", "planear:0", "adversary:0"),
+                ),
+                Promotion(
+                    "opencode-go/deepseek-v4.1-flash",
+                    "opencode-go/deepseek-v4.2-flash",
+                    ("operativo:3", "simples:1"),
+                ),
+                Promotion(
+                    "zai/glm-5.3",
+                    "zai/glm-5.4",
                     (
-                        "main:0",
-                        "main:1",
-                        "ingenieria:0",
-                        "ingenieria:1",
-                        "implementer:0",
-                        "implementer:1",
+                        "dirigir:2",
+                        "dirigir-claw:2",
+                        "planear:2",
+                        "codigo:2",
+                        "verificar:0",
+                        "investigar:2",
+                        "operativo:1",
+                        "adversary:3",
                     ),
                 ),
                 Promotion(
                     "xai/grok-4.7",
                     "xai/grok-4.8",
                     (
-                        "main:4",
-                        "operaciones:5",
-                        "ingenieria:7",
-                        "implementer:4",
-                        "reviewer:6",
-                        "adversary:2",
+                        "planear:3",
+                        "codigo:3",
+                        "verificar:1",
+                        "investigar:0",
+                        "operativo:2",
+                        "simples:3",
+                        "adversary:1",
                     ),
-                ),
-                Promotion(
-                    "openai/gpt-5.6-sol",
-                    "openai/gpt-6-sol",
-                    ("main:6", "ingenieria:2", "adversary:7"),
                 ),
                 Promotion(
                     "kimi/k3",
                     "kimi/k4",
-                    ("main:7", "ingenieria:3", "reviewer:3", "adversary:3"),
+                    (
+                        "dirigir:3",
+                        "dirigir-claw:3",
+                        "planear:1",
+                        "codigo:1",
+                        "verificar:3",
+                        "investigar:1",
+                        "adversary:2",
+                    ),
                 ),
             ],
         )
         self.assertEqual(mixed, [])
 
-    def test_a_go_release_never_moves_a_direct_cell_and_the_reverse(self):
+    def test_a_go_label_moves_on_the_go_list_and_a_vendor_label_never_does(self):
         source = {
             "chains": {
-                "scout": [
-                    "opencode-go/glm-5.3",
-                    "opencode-go/glm-5.3",
-                    "zai/glm-5.3",
+                "operativo": [
+                    "anthropic/claude-sonnet-5-5 (medium)",
+                    "zai/glm-5.3 (low)",
+                    "xai/grok-4.7 (low)",
+                    "opencode-go/deepseek-v4.1-flash (off)",
                 ]
             }
         }
 
         promotions, _ = hermes_autoupdate.plan_table(
-            source, {"opencode-go": {"glm-5.4": {}}}
+            source,
+            {
+                "opencode-go": {"deepseek-v4.2-flash": {}, "glm-5.4": {}},
+                "zai-coding-plan": {"glm-5.3": {}},
+            },
         )
 
         self.assertEqual(
             promotions,
             [
                 Promotion(
-                    "opencode-go/glm-5.3", "opencode-go/glm-5.4", ("scout:0", "scout:1")
+                    "opencode-go/deepseek-v4.1-flash",
+                    "opencode-go/deepseek-v4.2-flash",
+                    ("operativo:3",),
                 )
             ],
         )
 
     def test_a_label_on_both_routes_is_skipped_and_named(self):
-        source = {"chains": {"scout": ["zai/glm-5.3", "zai/glm-5.3", "zai/glm-5.3"]}}
+        source = {
+            "chains": {
+                "operativo": [
+                    "zai/glm-5.3",
+                    "opencode-go/glm-5.3",
+                    "zai/glm-5.3",
+                    "zai/glm-5.3",
+                ]
+            }
+        }
 
         promotions, mixed = hermes_autoupdate.plan_table(
             source, {"opencode-go": {"glm-5.4": {}}, "zai-coding-plan": {"glm-5.4": {}}}
         )
 
-        self.assertEqual((promotions, mixed), ([], ["zai/glm-5.3"]))
+        self.assertEqual((promotions, mixed), ([], ["glm-5.3"]))
 
 
 class FakeRun:
@@ -126,7 +191,7 @@ class FakeRun:
     def __init__(self, answers=None):
         self.answers = {
             "git status": Ran(0, "", ""),
-            "probe 4": Ran(0, PROBE_OK, ""),
+            "probe 3": Ran(0, PROBE_OK, ""),
             "git commit": Ran(0, "", ""),
             "configure": Ran(0, "Configured claw\n", ""),
             "configure --check": Ran(0, "Check passed\n", ""),
@@ -170,33 +235,63 @@ class RunnerTests(unittest.TestCase):
         self.setup = hermes_autoupdate.Setup(
             self.checkout, "venv-python", "hermes.cmd", "git"
         )
-        self.grok = hermes_autoupdate.plan_table(self.table(), GROK_ONLY)[0]
+        self.k3 = hermes_autoupdate.plan_table(self.table(), K_ONLY)[0]
 
     def table(self):
         return json.loads(
             (self.checkout / "model-routing.source.json").read_text(encoding="utf-8")
         )
 
-    def go(self, run, budget=10_000):
+    def go(self, run, budget=10_000, promotion=None):
         return hermes_autoupdate.autoupdate(
-            self.setup, self.grok, run=run, clock=lambda: 0, deadline=budget
+            self.setup,
+            self.k3 if promotion is None else promotion,
+            run=run,
+            clock=lambda: 0,
+            deadline=budget,
+        )
+
+    def test_una_promocion_de_grok_sondea_una_vez_y_nombra_lo_sin_sondar(self):
+        grok = hermes_autoupdate.plan_table(self.table(), GROK_ONLY)[0]
+        run = FakeRun()
+
+        outcomes = self.go(run, promotion=grok)
+
+        self.assertEqual(
+            run.calls,
+            [
+                "git status",
+                "probe 3",
+                "turn",
+                "git commit",
+                "configure",
+                "configure --check",
+                "turn",
+                "git pull",
+                "git push",
+            ],
+        )
+        self.assertEqual(run.argv[1][-2:], ["3", "xai/grok-4.8 (high)"])
+        self.assertEqual(
+            [(o.status, o.detail) for o in outcomes],
+            [("cambiado", "sin sondar: (medium), (low)")],
         )
 
     def test_a_failed_probe_writes_nothing(self):
         before = self.table()
-        run = FakeRun({"probe 4": Ran(1, PROBE_QUOTA, "")})
+        run = FakeRun({"probe 3": Ran(1, PROBE_QUOTA, "")})
 
         outcomes = self.go(run)
 
-        self.assertEqual(run.calls, ["git status", "probe 4"])
+        self.assertEqual(run.calls, ["git status", "probe 3"])
         self.assertEqual(self.table(), before)
         self.assertEqual(
             [(o.status, o.detail) for o in outcomes],
-            [("no cambiado", "sonda posicion 4: quota")],
+            [("no cambiado", "sonda posicion 3: quota")],
         )
 
     def test_the_probe_runs_the_new_label_through_the_checkout(self):
-        run = FakeRun({"probe 4": Ran(1, PROBE_QUOTA, "")})
+        run = FakeRun({"probe 3": Ran(1, PROBE_QUOTA, "")})
 
         self.go(run)
 
@@ -206,8 +301,8 @@ class RunnerTests(unittest.TestCase):
                 "venv-python",
                 str(self.checkout / "scripts/probe_route.py"),
                 "--position",
-                "4",
-                "xai/grok-4.8",
+                "3",
+                "kimi/k4 (high)",
             ],
         )
 
@@ -227,7 +322,7 @@ class RunnerTests(unittest.TestCase):
             run.calls,
             [
                 "git status",
-                "probe 4",
+                "probe 3",
                 "turn",
                 "git commit",
                 "configure",
@@ -271,7 +366,7 @@ class RunnerTests(unittest.TestCase):
             run.calls,
             [
                 "git status",
-                "probe 4",
+                "probe 3",
                 "turn",
                 "git commit",
                 "configure",
@@ -289,14 +384,14 @@ class RunnerTests(unittest.TestCase):
                 str(self.checkout),
                 "commit",
                 "-m",
-                "auto(modelos): xai/grok-4.7 -> xai/grok-4.8",
+                "auto(modelos): kimi/k3 -> kimi/k4",
                 "--",
                 "model-routing.source.json",
             ],
         )
-        self.assertEqual(self.table()["chains"]["main"][4], "xai/grok-4.8")
-        self.assertEqual(self.table()["chains"]["adversary"][2], "xai/grok-4.8")
-        self.assertNotIn("xai/grok-4.7", json.dumps(self.table()))
+        self.assertEqual(self.table()["chains"]["dirigir"][3], "kimi/k4 (high)")
+        self.assertEqual(self.table()["chains"]["adversary"][2], "kimi/k4 (high)")
+        self.assertNotIn("kimi/k3", json.dumps(self.table()))
         self.assertEqual([(o.status, o.detail) for o in outcomes], [("cambiado", "")])
 
     def test_a_turn_that_already_fails_before_the_switch_changes_nothing(self):
@@ -307,7 +402,7 @@ class RunnerTests(unittest.TestCase):
 
         outcomes = self.go(run)
 
-        self.assertEqual(run.calls, ["git status", "probe 4", "turn"])
+        self.assertEqual(run.calls, ["git status", "probe 3", "turn"])
         self.assertEqual(self.table(), before)
         self.assertEqual(
             [(o.status, o.detail) for o in outcomes],
@@ -334,7 +429,7 @@ class RunnerTests(unittest.TestCase):
 
         outcomes = self.go(run)
 
-        self.assertEqual(self.table()["chains"]["main"][4], "xai/grok-4.8")
+        self.assertEqual(self.table()["chains"]["dirigir"][3], "kimi/k4 (high)")
         self.assertEqual(
             [(o.status, o.detail) for o in outcomes],
             [("cambiado", "sin push (salida 1: rejected: fetch first)")],
@@ -362,11 +457,13 @@ class RunnerTests(unittest.TestCase):
 
 class ReportTests(unittest.TestCase):
     def test_switches_are_said_and_failures_only_when_their_words_change(self):
-        grok = Promotion("xai/grok-4.7", "xai/grok-4.8", ("main:4", "scout:5"))
-        sol = Promotion("openai/gpt-5.6-sol", "openai/gpt-6-sol", ("main:6",))
+        grok = Promotion("xai/grok-4.7", "xai/grok-4.8", ("planear:3", "operativo:2"))
+        sol = Promotion(
+            "anthropic/claude-opus-5-5", "anthropic/claude-opus-6", ("dirigir:0",)
+        )
         outcomes = [
             hermes_autoupdate.Outcome(grok, "cambiado"),
-            hermes_autoupdate.Outcome(sol, "no cambiado", "sonda posicion 6: quota"),
+            hermes_autoupdate.Outcome(sol, "no cambiado", "sonda posicion 0: quota"),
         ]
 
         lines, remembered = hermes_autoupdate.report(outcomes, [], {})
@@ -375,17 +472,17 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en main:4, scout:5.",
-                "- No cambiado: openai/gpt-5.6-sol -> openai/gpt-6-sol "
-                "(sonda posicion 6: quota).",
+                "- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en planear:3, operativo:2.",
+                "- No cambiado: anthropic/claude-opus-5-5 -> anthropic/claude-opus-6 "
+                "(sonda posicion 0: quota).",
             ],
         )
         self.assertEqual(
             remembered,
             {
-                "openai/gpt-5.6-sol -> openai/gpt-6-sol": (
-                    "- No cambiado: openai/gpt-5.6-sol -> openai/gpt-6-sol "
-                    "(sonda posicion 6: quota)."
+                "anthropic/claude-opus-5-5 -> anthropic/claude-opus-6": (
+                    "- No cambiado: anthropic/claude-opus-5-5 -> "
+                    "anthropic/claude-opus-6 (sonda posicion 0: quota)."
                 )
             },
         )
@@ -413,10 +510,10 @@ class WatcherHookTests(unittest.TestCase):
         for _ in range(3):
             lines, last = hermes_autoupdate.step(
                 self.here,
-                GROK_ONLY,
+                K_ONLY,
                 last,
                 started=0,
-                run=FakeRun({"probe 4": Ran(1, PROBE_QUOTA, "")}),
+                run=FakeRun({"probe 3": Ran(1, PROBE_QUOTA, "")}),
                 clock=lambda: 0,
             )
             said.append(lines)
@@ -424,10 +521,7 @@ class WatcherHookTests(unittest.TestCase):
         self.assertEqual(
             said,
             [
-                [
-                    "- No cambiado: xai/grok-4.7 -> xai/grok-4.8 "
-                    "(sonda posicion 4: quota)."
-                ],
+                ["- No cambiado: kimi/k3 -> kimi/k4 (sonda posicion 3: quota)."],
                 [],
                 [],
             ],
@@ -441,7 +535,7 @@ class WatcherHookTests(unittest.TestCase):
                 {"turn": [Ran(0, PONG_TURN, ""), Ran(0, "Error: provider\n", "")]}
             )
             lines, last = hermes_autoupdate.step(
-                self.here, GROK_ONLY, last, started=0, run=run, clock=lambda: 0
+                self.here, K_ONLY, last, started=0, run=run, clock=lambda: 0
             )
             said.append(lines)
             calls.append(run.calls)
@@ -449,35 +543,33 @@ class WatcherHookTests(unittest.TestCase):
             shutil.copy(FIXTURE, checkout / "model-routing.source.json")
 
         notice = (
-            "- Revertido: xai/grok-4.7 -> xai/grok-4.8 (turno PONG: no dijo PONG). "
+            "- Revertido: kimi/k3 -> kimi/k4 (turno PONG: no dijo PONG). "
             "No lo vuelvo a intentar hasta que lo revises."
         )
         self.assertEqual(said, [[notice], []])
         self.assertEqual(calls[1], [])
-        self.assertEqual(last, {"revertido:xai/grok-4.7 -> xai/grok-4.8": notice})
+        self.assertEqual(last, {"revertido:kimi/k3 -> kimi/k4": notice})
 
     def test_without_its_setup_file_the_watcher_switches_nothing(self):
         (self.here / "autoupdate.json").unlink()
 
         self.assertEqual(
-            hermes_autoupdate.step(self.here, GROK_ONLY, {}, started=0), ([], {})
+            hermes_autoupdate.step(self.here, K_ONLY, {}, started=0), ([], {})
         )
 
     def test_a_crash_in_the_autoupdate_is_reported_and_the_report_goes_on(self):
         (self.here / "autoupdate.json").write_text("{", encoding="utf-8")
-        held = {"revertido:xai/grok-4.7 -> xai/grok-4.8": "- Revertido: ..."}
+        held = {"revertido:kimi/k3 -> kimi/k4": "- Revertido: ..."}
 
-        lines, remembered = model_watch.follow_releases(self.here, GROK_ONLY, held, 0)
+        lines, remembered = model_watch.follow_releases(self.here, K_ONLY, held, 0)
 
         self.assertEqual(len(lines), 1)
         self.assertTrue(
             lines[0].startswith("- La autoactualizacion fallo: JSONDecodeError")
         )
+        self.assertEqual(remembered["revertido:kimi/k3 -> kimi/k4"], "- Revertido: ...")
         self.assertEqual(
-            remembered["revertido:xai/grok-4.7 -> xai/grok-4.8"], "- Revertido: ..."
-        )
-        self.assertEqual(
-            model_watch.follow_releases(self.here, GROK_ONLY, remembered, 0)[0], []
+            model_watch.follow_releases(self.here, K_ONLY, remembered, 0)[0], []
         )
 
     def test_the_message_carries_the_switch_and_no_promise_that_nothing_changed(self):
@@ -485,13 +577,13 @@ class WatcherHookTests(unittest.TestCase):
             [],
             {},
             "2026-10-15",
-            ["- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en main:4."],
+            ["- Cambiado: kimi/k3 -> kimi/k4 en dirigir:3."],
         )
 
         self.assertEqual(
             text,
             "Modelos: novedades del 2026-10-15\n"
-            "- Cambiado: xai/grok-4.7 -> xai/grok-4.8 en main:4.",
+            "- Cambiado: kimi/k3 -> kimi/k4 en dirigir:3.",
         )
 
 

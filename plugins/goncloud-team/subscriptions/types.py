@@ -29,14 +29,14 @@ class FailureKind(StrEnum):
 
 @dataclass(frozen=True)
 class RouteSpec:
-    """One compiled Primary-to-F6 table position."""
+    """One compiled Primary-to-F3 table position."""
 
     slot: int
     label: str
     adapter: str
     model: str
     billing_mode: Literal["subscription", "api"]
-    reasoning_effort: Literal["high", "xhigh", "max"] | None = None
+    reasoning_effort: Literal["high", "xhigh", "max", "medium", "low"] | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ class InvocationResult:
     failure: FailureKind | None = None
     slot: int | None = None
     route_label: str = ""
-    reasoning_effort: Literal["high", "xhigh", "max"] | None = None
+    reasoning_effort: Literal["high", "xhigh", "max", "medium", "low"] | None = None
     skipped_routes: tuple[SkippedRoute, ...] = ()
     #: The vendor's own "retry after N s" on a throttle, when it named one.
     retry_after_seconds: float | None = None

@@ -208,60 +208,68 @@ class ConfigurationTests(unittest.TestCase):
             without_dispatch(director["kanban"]), without_dispatch(worker["kanban"])
         )
 
-    def test_only_the_director_converses_natively_and_workers_carry_nothing(self):
+    def test_every_team_profile_converses_natively_on_its_v6_lane(self):
+        # Owner, 2026-10-17: every profile moved to Anthropic on his Claude
+        # subscription, so every team profile owns the native chain compiled
+        # from its lane; only the director adds vision and the full toolset.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         table = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
         )
-        self.assertNotIn("director_model", team)
-        self.assertNotIn("director_fallbacks", team)
-        native = module.director_native_config(table)
 
         for role in team["profiles"]:
+            desired = module.desired_profile_config(role, team, Path("C:/runtime-home"))
+            native = module.native_config(table, role)
             with self.subTest(role=role):
-                desired = module.desired_profile_config(
-                    role, team, Path("C:/runtime-home")
+                self.assertEqual(desired["model"], native["model"])
+                self.assertEqual(
+                    desired["fallback_providers"], native["fallback_providers"]
+                )
+                self.assertEqual(
+                    desired["agent"]["reasoning_overrides"],
+                    native["agent"]["reasoning_overrides"],
                 )
                 if role == team["director"]:
-                    self.assertEqual(desired["model"], native["model"])
+                    self.assertIn("auxiliary", desired)
                     self.assertEqual(
-                        desired["fallback_providers"], native["fallback_providers"]
-                    )
-                    self.assertEqual(
-                        desired["agent"]["reasoning_overrides"],
-                        native["agent"]["reasoning_overrides"],
-                    )
-                    # The primary rejects vision (400 ModelProtocolUnsupported);
-                    # the owner sends the director's vision calls through a chain:
-                    # GLM 5.3 Flash, then Kimi For Coding, then Claude Opus 5.
-                    # Only the director gets this override.
-                    self.assertEqual(
-                        desired["auxiliary"],
-                        {
-                            "vision": {
-                                "provider": "zai",
-                                "model": "glm-5.3-flash",
-                                "base_url": "https://api.z.ai/api/coding/paas/v4",
-                                "fallback_chain": [
-                                    {
-                                        "provider": "kimi-coding",
-                                        "model": "kimi-for-coding",
-                                        "base_url": "https://api.kimi.com/coding/v1",
-                                        "api_mode": "chat_completions",
-                                    },
-                                    {
-                                        "provider": "anthropic",
-                                        "model": "claude-opus-5-5",
-                                    },
-                                ],
-                            }
-                        },
+                        desired["platform_toolsets"]["cli"],
+                        list(module._DIRECTOR_TOOLSETS),
                     )
                 else:
-                    self.assertNotIn("model", desired)
-                    self.assertNotIn("fallback_providers", desired)
-                    self.assertNotIn("agent", desired)
                     self.assertNotIn("auxiliary", desired)
+                    self.assertEqual(
+                        desired["platform_toolsets"]["cli"],
+                        list(module._WORKER_TOOLSETS),
+                    )
+
+    def test_the_director_keeps_the_owner_vision_chain(self):
+        # The primary rejects vision (400 ModelProtocolUnsupported); the owner
+        # sends the director's vision calls through a chain: GLM 5.3 Flash,
+        # then Kimi For Coding, then Claude Opus 5. Owner decision 2026-09-28,
+        # untouched by the 2026-10-17 rerouting.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+
+        desired = module.desired_profile_config(team["director"], team, Path("C:/h"))
+
+        self.assertEqual(
+            desired["auxiliary"],
+            {
+                "vision": {
+                    "provider": "zai",
+                    "model": "glm-5.3-flash",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "fallback_chain": [
+                        {
+                            "provider": "kimi-coding",
+                            "model": "kimi-for-coding",
+                            "base_url": "https://api.kimi.com/coding/v1",
+                            "api_mode": "chat_completions",
+                        },
+                        {"provider": "anthropic", "model": "claude-opus-5-5"},
+                    ],
+                }
+            },
+        )
 
     def test_no_profile_is_configured_through_the_text_bridge(self):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
@@ -392,27 +400,24 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
         )
 
-    def test_director_chain_is_the_main_row_on_native_providers(self):
+    def test_director_chain_is_its_v6_row_on_native_providers(self):
         config = module.director_native_config(self.table())
 
-        # Slots 0 and 1 are the owner's two OpenCode Go accounts: one native
-        # provider whose credential pool rotates between them.
+        # v6 lane dirigir-claw (owner, 2026-10-17): Anthropic on his Claude
+        # subscription with effort medium, then Sonnet, GLM 5.3 and K3.
         self.assertEqual(
             config["model"],
-            {"provider": "opencode-go", "default": "muse-spark-1.3-contributor"},
+            {"provider": "anthropic", "default": "claude-opus-5-5"},
         )
         self.assertEqual(
             config["fallback_providers"],
             [
-                {"provider": "anthropic", "model": "claude-opus-5-5"},
-                {"provider": "meta-ai", "model": "muse-wonder-1.0"},
-                {"provider": "xai-oauth", "model": "grok-4.7"},
+                {"provider": "anthropic", "model": "claude-sonnet-5-5"},
                 {
                     "provider": "zai",
                     "model": "glm-5.3",
                     "base_url": "https://api.z.ai/api/coding/paas/v4",
                 },
-                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
                 {
                     "provider": "kimi-coding",
                     "model": "k3",
@@ -425,47 +430,51 @@ class DirectorNativeChainTests(unittest.TestCase):
             config["agent"],
             {
                 "reasoning_overrides": {
-                    "claude-opus-5-5": "xhigh",
-                    "muse-wonder-1.0": "max",
-                    "gpt-5.6-sol": "xhigh",
+                    "claude-opus-5-5": "medium",
+                    "claude-sonnet-5-5": "high",
+                    "glm-5.3": "high",
+                    "k3": "high",
                 }
             },
         )
 
-    def test_the_specialists_reach_muse_on_meta_ai(self):
+    def test_every_profile_compiles_its_own_lane_and_none_reaches_meta_ai(self):
         table = self.table()
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
 
-        config = module.native_config(table, team["specialist_row"])
-
-        self.assertIn(
-            {"provider": "meta-ai", "model": "muse-wonder-1.0"},
-            config["fallback_providers"],
-        )
-        self.assertTrue(module.uses_meta_ai(config))
+        for role in team["profiles"]:
+            with self.subTest(role=role):
+                config = module.native_config(table, role)
+                self.assertNotIn("meta-ai", json.dumps(config), role)
+                self.assertFalse(module.uses_meta_ai(config))
 
     def test_reordering_the_table_reorders_the_chain(self):
         table = self.table()
-        main = table["chains"]["main"]
-        main[3], main[4] = main[4], main[3]
+        row = table["chains"]["dirigir-claw"]
+        row[1], row[2] = row[2], row[1]
 
         chain = module.director_native_config(table)["fallback_providers"]
 
         self.assertEqual(
             [entry["provider"] for entry in chain[:3]],
-            ["anthropic", "xai-oauth", "meta-ai"],
+            ["zai", "anthropic", "kimi-coding"],
         )
 
     def test_a_position_without_native_binding_fails_naming_the_label(self):
-        table = self.table()
-        table["chains"]["main"][5] = "deepseek/deepseek-flash"
+        from unittest import mock
 
-        with self.assertRaisesRegex(ValueError, "deepseek/deepseek-flash"):
-            module.director_native_config(table)
+        table = self.table()
+
+        with mock.patch.dict(module._NATIVE_PROVIDERS):
+            del module._NATIVE_PROVIDERS["opencode_go"]
+            with self.assertRaisesRegex(
+                ValueError, "opencode-go/deepseek-v4.1-flash \\(off\\)"
+            ):
+                module.native_config(table, "mail")
 
     def test_one_model_with_two_efforts_is_refused(self):
         table = self.table()
-        table["chains"]["main"][6] = "anthropic/claude-opus-5-5 (high)"
+        table["chains"]["dirigir-claw"][3] = "anthropic/claude-opus-5-5 (high)"
 
         with self.assertRaisesRegex(ValueError, "claude-opus-5-5"):
             module.director_native_config(table)
@@ -591,6 +600,38 @@ class DirectorNativeChainTests(unittest.TestCase):
                 module.check_file(target, "desired", "previous")
             self.assertEqual(target.read_text(encoding="utf-8"), "user edit")
 
+    def test_a_line_ending_only_difference_is_not_a_conflict(self):
+        # The move to Windows left profile copies in CRLF with content
+        # identical to the managed (LF) bytes: that is the same file, and the
+        # deploy rewrites it with the canonical line endings instead of
+        # refusing and blocking every deploy behind a manual reconciliation.
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two\r\n")
+
+            module.check_file(target, "line one\nline two\n", None)
+
+            # A previous record in LF also matches its CRLF copy.
+            module.check_file(target, "otro\n", "line one\nline two\n")
+
+    def test_a_changed_line_is_a_conflict_even_with_crlf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two EDITED\r\n")
+
+            with self.assertRaises(ValueError):
+                module.check_file(target, "line one\nline two\n", None)
+
+    def test_write_changed_rewrites_crlf_to_the_canonical_lf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two\r\n")
+
+            module.check_file(target, "line one\nline two\n", None)
+            module.write_changed(target, "line one\nline two\n")
+
+            self.assertEqual(target.read_bytes(), b"line one\nline two\n")
+
     def test_check_validates_without_writing(self):
         import yaml
 
@@ -709,10 +750,9 @@ class DirectorNativeChainTests(unittest.TestCase):
 
     def test_a_specialist_gets_its_native_chain_and_keeps_everything_else(self):
         # The eleven specialist profiles are the owner's: made and shaped by
-        # hand, never created here. Until 2026-10-12 they had no `model:`, so
-        # a card dispatched to one ran on whatever provider its environment
-        # selected. Only the chain (the row team.json names) and the plugin
-        # copy are managed; SOUL, toolsets and the rest stay untouched.
+        # hand, never created here. Each one owns the native chain compiled
+        # from its own v6 lane (2026-10-17) and its copy of the plugin;
+        # SOUL, toolsets and the rest stay untouched.
         import yaml
 
         upstream = Path(
@@ -725,11 +765,11 @@ class DirectorNativeChainTests(unittest.TestCase):
             (upstream / "hermes_cli/profiles.py").is_file(),
             "Run tests with the installed Hermes runtime",
         )
-        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         source = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
         )
-        chain = module.native_config(source, team["specialist_row"])
+        chain = module.native_config(source, "amazon")
+        self.assertEqual(chain["model"]["provider"], "anthropic")
         self.assertEqual(
             module.native_config(source, "claw"), module.director_native_config(source)
         )
@@ -772,7 +812,6 @@ class DirectorNativeChainTests(unittest.TestCase):
                 (amazon / "config.yaml").read_text(encoding="utf-8")
             )
             self.assertEqual(config["model"], chain["model"])
-            self.assertEqual(config["model"]["provider"], "opencode-go")
             self.assertEqual(config["fallback_providers"], chain["fallback_providers"])
             self.assertEqual(
                 config["agent"]["reasoning_overrides"],
@@ -787,11 +826,8 @@ class DirectorNativeChainTests(unittest.TestCase):
                 (amazon / "plugins/goncloud-team/model-routing.source.json").is_file()
             )
             self.assertFalse((amazon / "skills").exists())
-            # Its chain has meta-ai, so it gets the Muse login key.
-            self.assertEqual(
-                (amazon / ".env").read_text(encoding="utf-8"),
-                f"MODEL_API_KEY={FAKE_MUSE_KEY}\n",
-            )
+            # No v6 lane carries meta-ai, so no Muse login key is written.
+            self.assertFalse((amazon / ".env").exists())
 
             again = run()
             self.assertEqual(again.returncode, 0, again.stderr)
@@ -851,13 +887,12 @@ class DirectorNativeChainTests(unittest.TestCase):
                 )
                 self.assertFalse((profile / "plugins/model-providers").exists())
                 self.assertTrue((profile / "memories").is_dir())
-                if role != "claw":
-                    # Workers have no native chain: the key never reaches them.
-                    env_file = profile / ".env"
-                    self.assertFalse(
-                        env_file.exists()
-                        and "MODEL_API_KEY" in env_file.read_text(encoding="utf-8")
-                    )
+                # No v6 lane carries meta-ai, so no Muse key ever ships.
+                env_file = profile / ".env"
+                self.assertFalse(
+                    env_file.exists()
+                    and "MODEL_API_KEY" in env_file.read_text(encoding="utf-8")
+                )
             credentials = runtime / "profiles/claw/.env"
             loader = subprocess.run(
                 [
@@ -873,22 +908,44 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
             self.assertEqual(loader.returncode, 0, loader.stderr)
             credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
-            # A worker's model is the user's: unmanaged, so it survives reapply.
             scout_path = runtime / "profiles/scout/config.yaml"
-            scout = yaml.safe_load(scout_path.read_text(encoding="utf-8"))
-            scout["model"] = {"provider": "test-provider", "default": "test-model"}
-            scout_path.write_text(yaml.safe_dump(scout), encoding="utf-8")
             second = subprocess.run(
                 command, capture_output=True, text=True, env=env, timeout=120
             )
             self.assertEqual(second.returncode, 0, second.stderr)
-            # The deploy owns one line there, the Muse login key for meta-ai.
-            self.assertEqual(credentials.read_text(), SENTINEL_AND_MUSE_KEY)
+            # No meta-ai position anywhere: the deploy leaves the .env alone.
+            self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
             self.assertFalse(credentials.with_name(".env.goncloud-backup").exists())
+            # A worker's model is owned since the v6 table (2026-10-17): a
+            # hand edit is a conflict like any other profile's, and the
+            # refused deploy leaves the edit in place.
+            scout = yaml.safe_load(scout_path.read_text(encoding="utf-8"))
+            scout["model"] = {"provider": "test-provider", "default": "test-model"}
+            scout_path.write_text(yaml.safe_dump(scout), encoding="utf-8")
+            third = subprocess.run(
+                command, capture_output=True, text=True, env=env, timeout=120
+            )
+            self.assertNotEqual(third.returncode, 0)
+            self.assertIn("user-managed model conflict", third.stderr)
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
             )
-            # --check reads the key but writes nothing, even to a stale .env.
+            adopted = subprocess.run(
+                [*command, "--adoptar-ruteo-manual"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+            table = json.loads(
+                (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                yaml.safe_load(scout_path.read_text())["model"],
+                module.native_config(table, "scout")["model"],
+            )
+            # --check writes nothing, even to a stale .env: no meta-ai lane.
             credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
             checked = subprocess.run(
                 [*command, "--check"],
@@ -898,11 +955,9 @@ class DirectorNativeChainTests(unittest.TestCase):
                 timeout=120,
             )
             self.assertEqual(checked.returncode, 0, checked.stderr)
-            self.assertIn(
-                "Muse login key: would be written to 1 profiles", checked.stdout
-            )
+            self.assertNotIn("Muse login key", checked.stdout)
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
-            # An unreadable login leaves every .env as it is.
+            # The Muse login is never read at all: no lane carries meta-ai.
             unreadable = subprocess.run(
                 command,
                 capture_output=True,
@@ -911,7 +966,7 @@ class DirectorNativeChainTests(unittest.TestCase):
                 timeout=120,
             )
             self.assertEqual(unreadable.returncode, 0, unreadable.stderr)
-            self.assertIn("Muse login key: unreadable", unreadable.stdout)
+            self.assertNotIn("Muse login key", unreadable.stdout)
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
             # Runtime-only role instructions may evolve independently. An
             # explicit preserve flag must still deploy routing artifacts and
