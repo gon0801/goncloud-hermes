@@ -110,6 +110,13 @@ MUSE_KEY_VARIABLE = "MODEL_API_KEY"
 #: A login file read instead of WSL's: the tests point it at a fake one so a
 #: deploy under test never copies the owner's key.
 MUSE_LOGIN_OVERRIDE = "GONCLOUD_MUSE_LOGIN"
+#: A manifest read instead of the repo's: the suites that deploy throwaway
+#: homes for other features (the v6 table, the root config) point it at an
+#: empty fixture, so the director-plugin reconciliation never demands the two
+#: external repos at their pinned commits inside those homes. The plugin
+#: behavior itself is exercised by tests/test_director_plugins.py with the
+#: real manifest (2026-10-18).
+DIRECTOR_PLUGINS_OVERRIDE = "GONCLOUD_DIRECTOR_PLUGINS"
 
 
 def archivos_compartidos():
@@ -619,9 +626,9 @@ def autoupdate_setup(runtime_home):
 
 def director_plugins_manifest():
     """The external director plugins pinned in director-plugins.json."""
-    return json.loads((ROOT / "director-plugins.json").read_text(encoding="utf-8"))[
-        "plugins"
-    ]
+    override = os.environ.get(DIRECTOR_PLUGINS_OVERRIDE)
+    ruta = Path(override) if override else ROOT / "director-plugins.json"
+    return json.loads(ruta.read_text(encoding="utf-8"))["plugins"]
 
 
 def conciliar_plugins_director(perfil, plugins, *, aplicar):
