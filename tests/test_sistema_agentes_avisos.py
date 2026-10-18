@@ -473,5 +473,42 @@ class OptionsInvalidos(Emisor):
         self.assertNotIn("exc-options-null", mensajes[0])
 
 
+class EmisorQueLanza(Emisor):
+    """C4 (r6e): si enviar lanza, no sube: error "el aviso no se confirmó:
+    <tipo>", ningún checkpoint avanza y la pasada no pierde nada."""
+
+    @staticmethod
+    def enviar_que_lanza(_texto):
+        raise ValueError("boom")
+
+    def test_un_emisor_que_lanza_deja_error_y_no_avanza_nada(self):
+        informe = proyeccion.avisar_excepciones(
+            self.tienda, ahora=AHORA, enviar=self.enviar_que_lanza
+        )
+        self.assertIn("el aviso no se confirmó: ValueError", informe["errores"])
+        self.assertEqual(informe["avisadas"], [])
+        self.assertIsNone(informe["messageId"])
+        fila = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (self.exception_id,),
+        )
+        self.assertIsNone(fila["noticed_at"])
+
+    def test_la_pasada_sobrevive_al_emisor_que_lanza(self):
+        informe = proyeccion.pasada(
+            self.tienda,
+            ahora=AHORA,
+            dir_destino=Path(self.directorio.name) / "raices",
+            enviar=self.enviar_que_lanza,
+            stale_after_ms=300000,
+            intervalo_ms=300000,
+            host_gateway="mac-local",
+        )
+        self.assertIn(RAIZ, informe["proyecciones"])
+        self.assertTrue(
+            any("el aviso no se confirmó" in e for e in informe["errores"]), informe
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

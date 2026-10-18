@@ -247,7 +247,14 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     if not debidas:
         return informe
     texto, mostradas = _mensaje_excepciones(debidas)
-    message_id = enviar(texto)
+    # C4: si el emisor lanza (no falla: LANZA), no sube: el aviso no se
+    # confirmó y ningún checkpoint avanza; la pasada no pierde lo suyo.
+    try:
+        message_id = enviar(texto)
+    except Exception as fallo:  # noqa: BLE001 - el emisor es frontera
+        errores.append(f"el aviso no se confirmó: {type(fallo).__name__}")
+        informe["errores"] = errores
+        return informe
     if (
         not isinstance(message_id, int)
         or isinstance(message_id, bool)
