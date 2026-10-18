@@ -234,6 +234,27 @@ class Script(Base):
         ]
         self.assertEqual(causas, ["permiso-h:perfil-sin-toolset"])
 
+    def test_permisos_con_tipos_rotos_fallan_cerrado(self):
+        hogar = importlib.import_module("raices.hogar")
+        rotos = ({"toolsets": []}, {"acciones": 3}, {"comandos": "git"}, [])
+        for datos in rotos:
+            with self.subTest(datos=datos):
+                self.instalar_permisos(datos=datos)
+                self.assertIsNone(hogar.leer_permisos(str(self.home)))
+
+    def test_permisos_rotos_el_cron_no_revienta_y_no_despacha(self):
+        tienda = self.dejar_intencion_pendiente()
+        self.instalar_permisos(datos={"acciones": 3})
+        tienda.cerrar()
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            codigo = cron.correr()
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        self.assertIsNone(self.tarjeta_en_el_kanban())
+
     def test_sin_hermes_home_sale_en_error(self):
         # Sin hermes_constants: en la PC el real existiria y get_hermes_home
         # caeria al default de la plataforma; lo probado aqui es la guarda del

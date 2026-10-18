@@ -53,13 +53,41 @@ def raiz_del_hogar(home=None) -> Path:
     return base
 
 
+def _forma_de_permisos(datos: object) -> bool:
+    """F5: la forma que PermisosH sabe leer. Un tipo roto (acciones escalar,
+    toolsets lista, comandos texto, perfiles o herramientas no textuales) no
+    entra a los gates: se trata como documento ilegible."""
+    if not isinstance(datos, dict):
+        return False
+
+    def lista_de_texto(valor):
+        return isinstance(valor, list) and all(isinstance(item, str) for item in valor)
+
+    acciones = datos.get("acciones")
+    if acciones is not None and not lista_de_texto(acciones):
+        return False
+    toolsets = datos.get("toolsets")
+    if toolsets is not None:
+        if not isinstance(toolsets, dict):
+            return False
+        if any(
+            not isinstance(perfil, str) or not lista_de_texto(lista)
+            for perfil, lista in toolsets.items()
+        ):
+            return False
+    comandos = datos.get("comandos")
+    if comandos is not None and not lista_de_texto(comandos):
+        return False
+    return True
+
+
 def leer_permisos(home=None) -> dict | None:
     """Los permisos de H para los gates de arranque y reanudacion (I07).
 
     Viven como datos junto al store, en <raiz>/raices/permisos.json (la misma
     raiz que resuelve raiz_del_hogar: un home de perfil sube, nunca HERMES_HOME
-    pelado). Sin archivo legible, o con uno que no sea un objeto JSON, devuelve
-    None y los gates fallan cerrado.
+    pelado). Sin archivo legible, con uno que no sea un objeto JSON o con tipos
+    que PermisosH no sabe leer (F5), devuelve None y los gates fallan cerrado.
     """
     try:
         texto = (raiz_del_hogar(home) / "raices" / "permisos.json").read_text(
@@ -68,4 +96,4 @@ def leer_permisos(home=None) -> dict | None:
         datos = json.loads(texto)
     except (OSError, ValueError):
         return None
-    return datos if isinstance(datos, dict) else None
+    return datos if _forma_de_permisos(datos) else None
