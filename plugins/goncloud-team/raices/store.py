@@ -962,7 +962,10 @@ class Store:
         llave, es documento-invalido y no una excepción en la transacción."""
         hallazgos = []
         for seccion, llaves in (
-            ("claims", ()),
+            # F6 (hermes#34): un claim sin forma es documento-invalido
+            # tipado antes de tocar la base, nunca un claim-ajeno ni un
+            # KeyError dentro de la transacción.
+            ("claims", ("unitId", "attempt", "criterionId")),
             ("bindings", ("unitId",)),
             ("outcomes", ("unitId", "attempt", "outcome")),
         ):

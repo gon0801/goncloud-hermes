@@ -771,9 +771,8 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         self.assertEqual(distinta.codigo, "operation-conflict")
 
     def test_un_claim_verifier_no_cubre_un_criterio_owner(self):
-        # F2 (hermes#34): la guarda de aceptación también compara el rol del
-        # claim con el verifier declarado del criterio (la misma regla que
-        # decidir, via claim_vigente).
+        # F2/F5 (hermes#34): lo reservado al dueño es autoridad y no se
+        # relaja; un claim verifier no cubre un criterio owner.
         owner = store.Store(
             Path(self.directorio.name) / "owner.db",
             permisos_h=permisos_de_prueba(),
@@ -812,6 +811,18 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         )
         self.assertEqual(negada.codigo, "criteria-unproven")
         self.assertEqual(negada.detalle, {"unitId": "a", "criterionId": "o1"})
+
+    def test_un_claim_sin_forma_es_documento_invalido_y_no_claim_ajeno(self):
+        # F6 (hermes#34): un claim de decisión sin unitId/attempt/criterionId
+        # es documento-invalido tipado en la validación previa, nunca un
+        # claim-ajeno (ni un KeyError).
+        negada = self.tienda.aplicar(
+            RAIZ,
+            decision(claims=[{"outcome": "passed"}]),
+            "dec-forma",
+        )
+        self.assertEqual(negada.codigo, "documento-invalido")
+        self.assertIn("claims", negada.detalle["hallazgos"])
 
     def test_el_claim_mas_nuevo_de_la_decision_gana_al_guardado(self):
         self.assertIsInstance(

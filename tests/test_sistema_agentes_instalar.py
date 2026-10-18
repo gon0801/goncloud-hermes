@@ -1181,6 +1181,33 @@ class CreateSinIdNiAlmacen(HermesFalsoDeCrones):
         return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
 
 
+class DespertarRechazadoYEscribeJobsRoto(HermesFalsoDeCrones):
+    """F1(1): el create rechazado deja el almacén ilegible (el CLI real a
+    medias): la relectura de la limpieza devuelve None."""
+
+    def _crear(self, argv):
+        if argv[argv.index("--name") + 1] == "despertar-raices":
+            self.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+            self.ruta_jobs.write_bytes(b"\xff\xfe{")
+            return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
+        return super()._crear(argv)
+
+
+class RemoveDeLimpiezaRotoSobreEstadoV1(HermesFalsoDeCrones):
+    """F1(2): la limpieza falla con un estado v1 previo ya en el home."""
+
+    def _crear(self, argv):
+        if argv[argv.index("--name") + 1] == "despertar-raices":
+            return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
+        return super()._crear(argv)
+
+    def __call__(self, argv):
+        if argv[:2] == ["cron", "remove"]:
+            self.llamadas.append(list(argv))
+            return 1, "Failed to remove job: PermissionError"
+        return super().__call__(argv)
+
+
 class AplicarParcial(InstaladorDeRaices):
     """F1: al fallar el n-ésimo create no queda un cron vivo apuntando a un
     envoltorio borrado ni un desastre que --revertir no pueda retirar."""
@@ -1332,6 +1359,117 @@ class AplicarParcial(InstaladorDeRaices):
         )
         self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
         self.assertIn("aviso", bufer.getvalue(), "el aviso del id sigue saliendo")
+
+    def test_el_ticker_creado_sin_id_deja_estado_parcial_con_id_nulo(self):
+        # F7 (hermes#34): cron creado sin id + sin estado previo → estado
+        # parcial con cron_id null, para que --revertir lo busque por nombre
+        # como ya promete el aviso.
+        sin_id = CreateSinIdNiAlmacen(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(
+                self.modulo.main(
+                    ["--aplicar", "--home", str(self.home)], corredor=sin_id
+                ),
+                1,
+            )
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(estado["version"], 2)
+        self.assertEqual(
+            estado["crons"],
+            [
+                {
+                    "cron": "ticker-raices",
+                    "cron_id": None,
+                    "deliver": "local",
+                    "envoltorio": "scripts/ticker-raices.py",
+                    "script_del_cron": "ticker-raices.py",
+                }
+            ],
+        )
+        # --revertir lo busca por nombre: sin job vivo, desenlaza lo nuestro.
+        self.corredor = HermesFalsoDeCrones(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.revertir(), 0)
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [],
+            "sin id no hay remove",
+        )
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+
+    def test_relectura_rota_tras_el_rechazo_no_desenlaza_nada(self):
+        # F1(1): si la relectura de jobs.json devuelve None, fail-closed: no
+        # se desenlaza el envoltorio de ningún cron que no se retiró con
+        # éxito en esta corrida.
+        self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.corredor.ruta_jobs.write_text(
+            json.dumps({"jobs": [{"id": "d8588736c185", "name": "ticker-raices"}]}),
+            encoding="utf-8",
+        )
+        roto = DespertarRechazadoYEscribeJobsRoto(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=roto
+            )
+        self.assertEqual(codigo, 1)
+        self.assertTrue(
+            (self.home / "scripts" / "ticker-raices.py").exists(),
+            "el envoltorio del ticker preexistente queda",
+        )
+
+    def test_remove_de_limpieza_roto_con_estado_previo_fusiona_el_id_vivo(self):
+        # F1(2): con instalacion.json previo y un remove de limpieza fallido,
+        # el id vivo que no se pudo retirar se FUSIONA en el estado existente
+        # (sin perder lo demás) para que --revertir lo retire por ese id.
+        (self.home / "raices").mkdir(exist_ok=True)
+        (self.home / "raices" / "instalacion.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "cron": "ticker-raices",
+                    "cron_id": "muerto000001",
+                    "envoltorio": "scripts/ticker-raices.py",
+                    "script_del_cron": "ticker-raices.py",
+                }
+            ),
+            encoding="utf-8",
+        )
+        roto = RemoveDeLimpiezaRotoSobreEstadoV1(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=roto
+            )
+        self.assertEqual(codigo, 1)
+        self.assertIn("ticker-raices", bufer.getvalue())
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        crons = {e["cron"]: e["cron_id"] for e in estado["crons"]}
+        self.assertEqual(crons.get("ticker-raices"), ID_FALSO, "el id vivo fusionado")
+        # --revertir retira por el id fusionado.
+        self.corredor = HermesFalsoDeCrones(self.home, ids=[ID_FALSO])
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.revertir(), 0)
+        removes = [
+            llamada[2]
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        ]
+        self.assertEqual(removes, [ID_FALSO])
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
 
 
 if __name__ == "__main__":

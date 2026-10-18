@@ -478,7 +478,10 @@ class I13Aceptacion(unittest.TestCase):
             [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
         )
 
-    def test_un_claim_verifier_no_cierra_un_criterio_reviewer(self):
+    def test_un_claim_verifier_cierra_un_criterio_reviewer(self):
+        # F5 (hermes#34, decisión del coordinador): el revisor de H es un
+        # perfil que corre y claw verifica su resultado, así que un claim
+        # verifier passed acredita un criterio declarado reviewer.
         propuesta = decidir.decidir(
             vista(
                 [unidad("a", roles=("reviewer",))],
@@ -487,10 +490,9 @@ class I13Aceptacion(unittest.TestCase):
                 evidencia=[claim("a", 1, "a1", "passed", rol="verifier")],
             )
         )
-        self.assertEqual(propuesta.decision["outcomes"], [])
         self.assertEqual(
-            [e["type"] for e in propuesta.decision["excepciones"]],
-            ["SIN_REVISOR"],
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
         )
 
     def test_ci_sin_claim_pide_verificacion_y_vencido_no_cuenta(self):

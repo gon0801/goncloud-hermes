@@ -327,6 +327,52 @@ def chequear(home: Path, plugin: Path) -> int:
     return 0
 
 
+def _fusionar_estado(home: Path, ids_vivos: dict) -> bool:
+    """F1(2): fusiona en el instalacion.json EXISTENTE los ids vivos que la
+    limpieza no pudo retirar, sin perder lo demás del estado. False si el
+    estado no se pudo leer (el llamador avisa; nunca se corrompe)."""
+    ruta = home / RUTA_DE_ESTADO
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        if not isinstance(datos, dict):
+            raise ValueError
+    except (OSError, ValueError):
+        return False
+    crons = datos.get("crons") if isinstance(datos.get("crons"), list) else []
+    entradas = {}
+    for entrada in crons:
+        if isinstance(entrada, dict) and isinstance(entrada.get("cron"), str):
+            entradas[entrada["cron"]] = entrada
+    for nombre, cron_id in ids_vivos.items():
+        cron = POR_NOMBRE.get(nombre)
+        if cron is None:
+            continue
+        entrada = entradas.get(
+            nombre,
+            {
+                "cron": nombre,
+                "cron_id": None,
+                "deliver": cron.deliver,
+                "envoltorio": cron.envoltorio,
+                "script_del_cron": cron.script,
+            },
+        )
+        entrada["cron_id"] = cron_id
+        entradas[nombre] = entrada
+    documento = {
+        "version": 2,
+        "crons": [entradas[nombre] for nombre in sorted(entradas)],
+        "permisos_de_plantilla": bool(datos.get("permisos_de_plantilla")),
+    }
+    try:
+        ruta.write_text(
+            json.dumps(documento, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return True
+
+
 def _limpieza_de_creacion(
     home: Path, corredor, creados: list, rechazado: str, codigo: int, salida: str
 ) -> int:
@@ -334,49 +380,68 @@ def _limpieza_de_creacion(
     envoltorio borrado ni un desastre que --revertir no pueda retirar. Retira
     los crons creados EN ESTA corrida (los que ya estaban en jobs.json no se
     tocan) y después desenlaza SOLO los envoltorios cuyo nombre ya no tiene
-    job vivo en jobs.json releído: un cron creado sin id no pierde su
-    envoltorio (el aviso del id ya salió) y el estado previo (v1/v2) que ya
-    existía no se borra ni se degrada."""
+    job vivo en jobs.json releído — y si la relectura devuelve None,
+    fail-closed: no se desenlaza ninguno. Un cron creado sin id conserva su
+    envoltorio y deja estado parcial con cron_id null (F7) para que
+    --revertir lo busque por nombre; el estado previo (v1/v2) que ya existía
+    no se degrada: los ids vivos que no se pudieron retirar se FUSIONAN en él
+    (F1-2)."""
     print(
         f"instalar-raices: hermes rechazó el cron {rechazado} "
         f"(código {codigo}): {salida.strip()}"
     )
-    vivos: list = []
+    quedan: list = []
     for cron in CRONES:
         for nombre, cron_id in creados:
-            if nombre != cron.nombre or cron_id is None:
+            if nombre != cron.nombre or cron.nombre in {c.nombre for c, _ in quedan}:
+                continue
+            if cron_id is None:
+                quedan.append((cron, None))
                 continue
             codigo_rm, salida_rm = corredor(["cron", "remove", cron_id])
             if codigo_rm != 0:
-                vivos.append(cron)
+                quedan.append((cron, cron_id))
                 print(
                     f"instalar-raices: la limpieza del cron {nombre} falló "
                     f"(código {codigo_rm}): {salida_rm.strip()}; quedó vivo y "
                     f"queda registrado en {RUTA_DE_ESTADO} para que "
                     "--revertir lo retire"
                 )
-    if vivos:
+    if quedan:
+        ids_por_nombre = {cron.nombre: cron_id for cron, cron_id in quedan}
         if (home / RUTA_DE_ESTADO).exists():
-            print(
-                f"instalar-raices: AVISO: había un estado previo en "
-                f"{RUTA_DE_ESTADO} y no se toca; el cron "
-                f"{', '.join(c.nombre for c in vivos)} quedó vivo sin "
-                "registro nuevo"
-            )
+            fusionables = {
+                nombre: cron_id for nombre, cron_id in ids_por_nombre.items() if cron_id
+            }
+            if fusionables and _fusionar_estado(home, fusionables):
+                print(
+                    f"instalar-raices: el estado previo de {RUTA_DE_ESTADO} "
+                    f"conserva lo suyo y fusiona el id vivo de: "
+                    f"{', '.join(sorted(fusionables))}"
+                )
+            if any(cron_id is None for cron_id in ids_por_nombre.values()):
+                print(
+                    f"instalar-raices: AVISO: había un estado previo en "
+                    f"{RUTA_DE_ESTADO}; el cron creado sin id no dejó "
+                    "registro nuevo"
+                )
         else:
             _registrar_estado(
                 home,
                 con_plantilla=False,
-                ids={cron.nombre: dict(creados).get(cron.nombre) for cron in vivos},
-                crones=tuple(vivos),
+                ids=ids_por_nombre,
+                crones=tuple(cron for cron, _ in quedan),
             )
     tras_limpiar = _leer_jobs(home)
-    sin_id = {nombre for nombre, cron_id in creados if cron_id is None}
+    if tras_limpiar is None:
+        # F1(1): sin almacén legible no se sabe qué está vivo: fail-closed,
+        # ningún envoltorio de cron no retirado con éxito se desenlaza.
+        return 1
+    quedan_nombres = {cron.nombre for cron, _ in quedan}
     for cron in CRONES:
-        quedo_vivo = cron in vivos or cron.nombre in sin_id
-        if quedo_vivo:
+        if cron.nombre in quedan_nombres:
             continue
-        if tras_limpiar is not None and _hay_cron(tras_limpiar, cron.nombre):
+        if _hay_cron(tras_limpiar, cron.nombre):
             continue
         (home / cron.envoltorio).unlink(missing_ok=True)
     return 1

@@ -187,15 +187,20 @@ def instante(texto: str) -> datetime:
 def rol_compatible(role_del_claim: str, verifier_requerido: str | None) -> bool:
     """F2 (hermes#34): el claim solo cuenta si su rol es compatible con el
     verifier declarado del criterio — verifier/ci con claim verifier o ci,
-    reviewer solo con claim reviewer, owner solo con claim owner. La MISMA
-    regla para decidir y para la guarda de aceptación del store, via
+    reviewer con claim reviewer o verifier, owner solo con claim owner. La
+    MISMA regla para decidir y para la guarda de aceptación del store, via
     claim_vigente (que es la función compartida)."""
+    # F5 (hermes#34), decisión de diseño del coordinador: reviewer acepta
+    # claim reviewer o verifier (el revisor de H es un perfil que corre y
+    # claw verifica su resultado); owner es autoridad y no se relaja.
     if verifier_requerido is None:
         return True
     if verifier_requerido in ("verifier", "ci"):
         return role_del_claim in ("verifier", "ci")
-    if verifier_requerido in ("reviewer", "owner"):
-        return role_del_claim == verifier_requerido
+    if verifier_requerido == "reviewer":
+        return role_del_claim in ("reviewer", "verifier")
+    if verifier_requerido == "owner":
+        return role_del_claim == "owner"
     return True
 
 
