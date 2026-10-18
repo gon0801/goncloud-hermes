@@ -15,6 +15,7 @@ MODULOS = (
     "hermes_cli.kanban_db_connect",
     "hermes_cli.kanban_db",
     "hermes_cli.kanban_db_graph",
+    "hermes_constants",
 )
 
 

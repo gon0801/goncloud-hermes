@@ -149,7 +149,13 @@ class Script(Base):
         self.assertEqual(tarjeta.estado, "pendiente")
 
     def test_sin_hermes_home_sale_en_error(self):
-        with mock.patch.dict("os.environ", {}, clear=True):
+        # Sin hermes_constants: en la PC el real existiria y get_hermes_home
+        # caeria al default de la plataforma; lo probado aqui es la guarda del
+        # fallback sin home definido.
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.dict(sys.modules, {"hermes_constants": None}),
+        ):
             cron = importlib.import_module("raices.cron_ticker")
             salida = StringIO()
             with redirect_stdout(salida):
@@ -194,18 +200,113 @@ class Script(Base):
             )
 
 
+class StoreCompartido(Base):
+    """F6: el store vive en la RAIZ del home de Hermes, una sola ruta para el
+    perfil claw (el gateway, que no define HERMES_HOME: resuelve el home con
+    un override de contexto) y el cron del perfil default (que si lo trae)."""
+
+    def setUp(self):
+        super().setUp()
+        self.raiz = Path(self.temporal.name) / "hermes-raiz"
+        self.perfil_claw = self.raiz / "profiles" / "claw"
+        self.perfil_claw.mkdir(parents=True)
+
+    def instalar_doble(self):
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        return sys.modules["hermes_constants"]
+
+    def test_un_home_de_perfil_sube_a_la_raiz_sin_hermes_constants(self):
+        constants = self.instalar_doble()
+        constants.set_override(None)
+        with (
+            mock.patch.dict(sys.modules, {"hermes_constants": None}),
+            mock.patch.dict("os.environ", {"HERMES_HOME": str(self.perfil_claw)}),
+        ):
+            herramientas = importlib.import_module("raices.herramientas")
+            self.assertEqual(
+                herramientas.ruta_del_store(),
+                self.raiz / "sistema-agentes.db",
+            )
+
+    def test_herramientas_de_claw_y_cron_de_la_raiz_abren_el_mismo_store(self):
+        constants = self.instalar_doble()
+        herramientas = importlib.import_module("raices.herramientas")
+        # El gateway sirve a claw: sin HERMES_HOME en el entorno, solo el
+        # override de contexto resuelve el home del perfil.
+        constants.set_override(str(self.perfil_claw))
+        with mock.patch.dict("os.environ", {}, clear=True):
+            desde_claw = herramientas.ruta_del_store()
+        # El cron del perfil default llega con HERMES_HOME = la raiz.
+        constants.set_override(None)
+        with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.raiz)}):
+            desde_el_cron = herramientas.ruta_del_store()
+        self.assertEqual(desde_claw, desde_el_cron)
+        self.assertEqual(desde_claw, self.raiz / "sistema-agentes.db")
+
+    def test_submit_de_claw_y_una_vuelta_del_ticker_despachan_la_raiz(self):
+        constants = self.instalar_doble()
+        # 1) El gateway sirve a claw: solo el override de contexto.
+        constants.set_override(str(self.perfil_claw))
+        herramientas = importlib.import_module("raices.herramientas")
+        with mock.patch.dict("os.environ", {}, clear=True):
+            recibo = herramientas.enviar_raiz({"plan": META}, "claw")
+        self.assertNotIn("error", recibo)
+        # 2) La decision con el hecho de asignacion, como la aplicaria el
+        #    gateway: reabrir por la raiz tambien demuestra donde escribio el
+        #    submit.
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.raiz / "sistema-agentes.db")
+        self.addCleanup(tienda.cerrar)
+        hecho = {
+            "principal": [],
+            "asignaciones": [
+                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        self.assertFalse(hasattr(dictamen, "codigo"))
+        intenciones = tienda.intenciones_pendientes()
+        self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
+        tienda.cerrar()
+        # 3) El cron del perfil default: HERMES_HOME = la raiz, sin override.
+        constants.set_override(None)
+        with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.raiz)}):
+            cron = importlib.import_module("raices.cron_ticker")
+            salida = StringIO()
+            with redirect_stdout(salida):
+                codigo = cron.correr()
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        # 4) La tarjeta quedo en el kanban de la raiz y el perfil queda limpio.
+        kanban = importlib.import_module("raices.kanban")
+        puerto = kanban.KanbanHermes(self.raiz / "kanban.db")
+        self.addCleanup(puerto.cerrar)
+        tarjeta = puerto.leer_estado(f"sa:{RAIZ}:a:1")
+        self.assertIsNotNone(tarjeta)
+        self.assertEqual(tarjeta.estado, "pendiente")
+        self.assertFalse((self.perfil_claw / "sistema-agentes.db").exists())
+
+
 class Arranque(Base):
-    def probar_subprocess(self, extra_env=None):
+    def entorno(self, extra=None):
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HERMES_HOME": str(self.home),
-            "PYTHONPATH": f"{DOBLE}:{PLUGIN}",
+            # F7: ':' no separa en Windows; el doble debe quedar importable
+            # con el separador real de la plataforma.
+            "PYTHONPATH": os.pathsep.join([str(DOBLE), str(PLUGIN)]),
             "PYTHONUTF8": "1",
         }
-        env.update(extra_env or {})
+        env.update(extra or {})
+        return env
+
+    def probar_subprocess(self, extra_env=None):
         return subprocess.run(
             [sys.executable, str(SCRIPT)],
-            env=env,
+            env=self.entorno(extra_env),
             capture_output=True,
             text=True,
             timeout=60,
@@ -216,6 +317,24 @@ class Arranque(Base):
         self.assertEqual(proceso.returncode, 0, proceso.stderr)
         self.assertEqual(proceso.stdout, "")
         self.assertTrue((self.home / "sistema-agentes.db").exists())
+
+    def test_el_doble_de_hermes_cli_importa_con_ese_pythonpath(self):
+        # F7: con un store vacio la vuelta nunca importa hermes_cli y el
+        # arranque pasa aunque el PYTHONPATH no sirva; la sonda si lo prueba.
+        proceso = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import pathlib, hermes_cli.kanban_db; "
+                "print(pathlib.Path(hermes_cli.kanban_db.__file__).parent.parent)",
+            ],
+            env=self.entorno(),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proceso.returncode, 0, proceso.stderr)
+        self.assertEqual(Path(proceso.stdout.strip()), DOBLE)
 
     def test_el_script_sin_hermes_home_dice_error_y_sale_1(self):
         proceso = self.probar_subprocess({"HERMES_HOME": ""})

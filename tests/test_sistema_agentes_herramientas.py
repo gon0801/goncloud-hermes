@@ -465,7 +465,12 @@ class RutaDelStore(unittest.TestCase):
 
     def test_sin_hermes_home_falla_y_no_crea_archivo_en_el_cwd(self):
         herramientas = importlib.import_module("raices.herramientas")
-        with mock.patch.dict("os.environ", {}, clear=True):
+        # Sin hermes_constants: en la PC el real existiria y caeria al default
+        # de la plataforma; lo probado aqui es la guarda del fallback (F1).
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch.dict(sys.modules, {"hermes_constants": None}),
+        ):
             with self.assertRaises(ValueError):
                 herramientas.ruta_del_store(None)
             with self.assertRaises(ValueError):
@@ -486,48 +491,59 @@ class CargaComoPaquete(unittest.TestCase):
     def test_las_herramientas_raiz_responden_sin_path_previo(self):
         import importlib
 
+        temporal = tempfile.TemporaryDirectory()
+        self.addCleanup(temporal.cleanup)
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
-        for nombre in [m for m in list(sys.modules) if m.split(".")[0] == "raices"]:
-            del sys.modules[nombre]
-        plugins = str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
-        sys.path[:] = [
-            p
-            for p in sys.path
-            if str(Path(p).resolve()) != str(Path(plugins).resolve())
-        ]
-        spec = importlib.util.spec_from_file_location(
-            "goncloud_team_paquete",
-            Path(__file__).resolve().parents[1] / "plugins/goncloud-team/__init__.py",
-            submodule_search_locations=[
-                str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
-            ],
-        )
-        modulo = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = modulo
-        spec.loader.exec_module(modulo)
+        # F9: con HERMES_HOME fijado al temporal el manejador abre el store de
+        # ahi (y con el doble de hermes_constants, no el real de la PC), no el
+        # home vivo del dueno.
+        with mock.patch.dict("os.environ", {"HERMES_HOME": temporal.name}):
+            for nombre in [m for m in list(sys.modules) if m.split(".")[0] == "raices"]:
+                del sys.modules[nombre]
+            plugins = str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
+            sys.path[:] = [
+                p
+                for p in sys.path
+                if str(Path(p).resolve()) != str(Path(plugins).resolve())
+            ]
+            spec = importlib.util.spec_from_file_location(
+                "goncloud_team_paquete",
+                Path(__file__).resolve().parents[1]
+                / "plugins/goncloud-team/__init__.py",
+                submodule_search_locations=[
+                    str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
+                ],
+            )
+            modulo = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = modulo
+            spec.loader.exec_module(modulo)
 
-        class Ctx:
-            profile_name = "claw"
+            class Ctx:
+                profile_name = "claw"
 
-            def __init__(self):
-                self.herramientas = {}
+                def __init__(self):
+                    self.herramientas = {}
 
-            def register_tool(self, **kwargs):
-                self.herramientas[kwargs["name"]] = kwargs
+                def register_tool(self, **kwargs):
+                    self.herramientas[kwargs["name"]] = kwargs
 
-            def register_hook(self, nombre, funcion):
-                pass
+                def register_hook(self, nombre, funcion):
+                    pass
 
-        ctx = Ctx()
-        modulo.register(ctx)
-        respuesta = json.loads(
-            ctx.herramientas["goncloud_root_read"]["handler"]({"rootId": "root-x"})
-        )
-        self.assertNotIn(
-            "No module named", json.dumps(respuesta), "las herramientas responden"
-        )
-        self.assertIn("error", respuesta)
+            ctx = Ctx()
+            modulo.register(ctx)
+            respuesta = json.loads(
+                ctx.herramientas["goncloud_root_read"]["handler"]({"rootId": "root-x"})
+            )
+            self.assertNotIn(
+                "No module named", json.dumps(respuesta), "las herramientas responden"
+            )
+            self.assertIn("error", respuesta)
+            self.assertTrue(
+                (Path(temporal.name) / "sistema-agentes.db").exists(),
+                "el store se abre en el temporal, no en el home vivo",
+            )
 
 
 if __name__ == "__main__":
