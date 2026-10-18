@@ -8,7 +8,9 @@ Hermes el perfil default ES la raíz del home (medido en la Gon-pc:
 profiles/default no existe y los scripts de sus crones viven en
 %HERMES_HOME%\\scripts, junto a backup-claw.sh; el help de `hermes cron
 create` dice "--script Path to a script under ~/.hermes/scripts/"), y el
-cron sin -p corre con el HERMES_HOME de esa raíz, donde gateway_state.json
+CLI resuelve el perfil ACTIVO pegajoso por encima de HERMES_HOME (medido
+en la Gon-pc: sin -p el cron cayó en claw), así que toda llamada lleva
+"-p default" aunque HERMES_HOME apunte a la raíz, donde gateway_state.json
 (vivo la puerta de H4a) espera estar. El instalador nunca crea
 profiles/default ni toca scripts ajenos de scripts/.
 
@@ -43,8 +45,8 @@ vacíos. El operador la abre a mano; H no tiene otra fuente para esos
 datos.
 
 Los flags del CLI se confirman en la PC en H5; el create es el que fija
-el plan: hermes cron create "every 1m" --name ticker-raices --script
-<nombre> --no-agent --deliver local (sin -p = default).
+el plan: hermes -p default cron create "every 1m" --name ticker-raices
+--script <nombre> --no-agent --deliver local.
 """
 
 from __future__ import annotations
@@ -103,9 +105,10 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
     omision, como capacidades._correr_hermes_version): en Windows el CLI es
     hermes.CMD y CreateProcess sin shell no resuelve el nombre pelado
     (WinError 2). Sin ruta resoluble no se invoca nada: error claro y codigo
-    1, nunca FileNotFoundError. Cada llamada lleva HERMES_HOME=<home> en el
-    entorno (el default profile ES la raíz: sin esto el create/remove
-    aterrizaría en el jobs.json del home del proceso) y decodifica utf-8
+    1, nunca FileNotFoundError. Toda llamada lleva "-p default" (el CLI
+    resuelve el perfil ACTIVO pegajoso por encima de HERMES_HOME: medido
+    en la Gon-pc, sin -p el cron cayó en claw) y HERMES_HOME=<home> en el
+    entorno, y decodifica utf-8
     con replace (la code page local revienta en un Windows no UTF-8). Un
     CLI colgado (timeout) no tumba al instalador con un traceback: sale
     código != 0 con la causa, para que aplicar desenlace el envoltorio y
@@ -122,7 +125,7 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
         entorno["HERMES_HOME"] = str(Path(home))
     try:
         resultado = subprocess.run(
-            [ejecutable, *argv],
+            [ejecutable, "-p", "default", *argv],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -132,7 +135,11 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
         )
     except subprocess.TimeoutExpired:
         return 1, f"timeout: hermes no contesto en 60 segundos ({' '.join(argv)})"
-    return resultado.returncode, resultado.stdout
+    # La causa puede venir por stdout o por stderr (a veces ruido en uno y
+    # causa en el otro): la salida es ambas, sin tapar ninguna.
+    return resultado.returncode, "\n".join(
+        p for p in (resultado.stdout, resultado.stderr) if p
+    )
 
 
 def _leer_jobs(home: Path):
@@ -297,7 +304,10 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
         )
         if codigo != 0:
             (home / ENVOLTORIO).unlink(missing_ok=True)
-            print(f"instalar-raices: hermes rechazó el cron (código {codigo})")
+            print(
+                f"instalar-raices: hermes rechazó el cron (código {codigo}): "
+                f"{salida.strip()}"
+            )
             return 1
         # El id sale de releyendo jobs.json por nombre (la fuente viva);
         # la línea "Created job: <id>" del CLI es el respaldo.

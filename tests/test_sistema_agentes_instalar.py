@@ -112,6 +112,18 @@ class HermesFalsoDeCrones:
         return 0, f"Removed job: ticker-raices ({job_id})"
 
 
+class CreateRechazado(HermesFalsoDeCrones):
+    """H5: el CLI real rechazó el create en la Gon-pc (el perfil pegajoso
+    resolvió otro home y el script no estaba ahí)."""
+
+    def _crear(self, argv):
+        return (
+            1,
+            "Failed to create job: Script file not found: "
+            "C:\\Users\\ehven\\AppData\\Local\\hermes\\scripts\\ticker-raices.py.",
+        )
+
+
 class CreateSinAlmacen(HermesFalsoDeCrones):
     """R4: un create que anuncia la salida que le toca pero NO escribe
     jobs.json: solo el stdout puede dar el id (o nadie)."""
@@ -296,7 +308,6 @@ class Aplicar(InstaladorDeRaices):
             if llamada[:2] == ["cron", "create"]
         ]
         self.assertEqual(len(create), 1, "un solo create")
-        self.assertNotIn("-p", create[0], "el cron es del perfil default")
         self.assertEqual(
             create[0],
             [
@@ -348,6 +359,23 @@ class Aplicar(InstaladorDeRaices):
         ]
         self.assertEqual(len(creates), 1, "el segundo aplicar no crea otro cron")
         self.assertEqual(self.corredor.nombres().count("ticker-raices"), 1)
+
+    def test_aplicar_con_create_rechazado_imprime_la_salida_del_cli(self):
+        # H5: "hermes rechazó el cron (código 1)" a secas no dice nada: la
+        # causa del CLI ("Failed to create job: ...") sale impresa, igual
+        # que el remove fallido.
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)],
+                corredor=CreateRechazado(self.home),
+            )
+        self.assertEqual(codigo, 1)
+        self.assertIn("Failed to create job: Script file not found:", bufer.getvalue())
+        self.assertFalse(
+            (self.home / "scripts" / "ticker-raices.py").exists(),
+            "el create falló: el envoltorio se desenlaza",
+        )
 
     def test_aplicar_con_el_cron_ya_presente_reusa_su_id_y_no_crea_otro(self):
         self.sembrar_jobs_del_fixture()
@@ -786,9 +814,16 @@ class ElEjecutableDelCron(unittest.TestCase):
             )
         self.assertEqual(codigo, 0)
         self.assertEqual(
-            llamadas[0][:2],
-            ["/su/camino/bin/hermes.CMD", "cron"],
-            "argv[0] es la ruta resuelta, no 'hermes'",
+            llamadas[0],
+            [
+                "/su/camino/bin/hermes.CMD",
+                "-p",
+                "default",
+                "cron",
+                "remove",
+                ID_FALSO,
+            ],
+            "argv[0] es la ruta resuelta y el perfil va explícito",
         )
         self.assertEqual(
             kwargs_vistos.get("env", {}).get("HERMES_HOME"),
@@ -838,6 +873,77 @@ class ElEjecutableDelCron(unittest.TestCase):
         self.assertNotEqual(codigo, 0)
         self.assertIn("timeout", salida.lower())
         self.assertIn("60", salida)
+
+    def test_con_stdout_vacio_la_salida_es_el_stderr(self):
+        # H5: el error del create llegó por stdout en la Gon-pc, pero si un
+        # CLI lo imprime solo en stderr, la salida que entrega el corredor
+        # (create y remove) es ese stderr.
+        instalador = cargar_instalador()
+
+        def falso_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="el error del CLI"
+            )
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            codigo, salida = instalador.correr_por_subprocess(
+                ["cron", "create", "every 1m"],
+                home=Path("/su/raiz/hermes"),
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+            )
+        self.assertEqual(codigo, 1)
+        self.assertEqual(salida, "el error del CLI")
+
+    def test_con_ruido_en_stdout_la_causa_del_stderr_tambien_sale(self):
+        # r2 (bot): un CLI que suelta ruido por stdout y la causa por stderr
+        # no puede tapar la causa: la salida que entrega el corredor trae
+        # ambas.
+        instalador = cargar_instalador()
+
+        def falso_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="aviso inofensivo", stderr="la causa real"
+            )
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            codigo, salida = instalador.correr_por_subprocess(
+                ["cron", "create", "every 1m"],
+                home=Path("/su/raiz/hermes"),
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+            )
+        self.assertEqual(codigo, 1)
+        self.assertIn("aviso inofensivo", salida)
+        self.assertIn("la causa real", salida)
+
+    def test_toda_llamada_lleva_p_default_antes_de_cron(self):
+        # H5: el CLI resuelve el perfil ACTIVO pegajoso por encima de
+        # HERMES_HOME (medido en la Gon-pc: sin -p el cron cayó en claw);
+        # toda llamada por subprocess.run va con -p default explícito,
+        # en create y en remove.
+        instalador = cargar_instalador()
+        llamadas = []
+
+        def falso_run(argv, **kwargs):
+            llamadas.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            for llamada in (
+                ["cron", "create", "every 1m", "--name", "ticker-raices"],
+                ["cron", "remove", ID_FALSO],
+            ):
+                instalador.correr_por_subprocess(
+                    llamada,
+                    home=Path("/su/raiz/hermes"),
+                    resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+                )
+        self.assertEqual(len(llamadas), 2, "create y remove pasaron por subprocess")
+        for argv in llamadas:
+            self.assertEqual(
+                argv[argv.index("cron") - 2 : argv.index("cron")],
+                ["-p", "default"],
+                "el perfil va explícito: -p default justo antes de cron",
+            )
 
 
 if __name__ == "__main__":

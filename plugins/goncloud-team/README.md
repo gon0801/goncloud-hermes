@@ -62,11 +62,11 @@ El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
 salida. El instalador (H4b3) copia `raices/cron_ticker.py` a
 `<home>/scripts/ticker-raices.py` y registra el trabajo sin agente en el perfil
-default (la raíz del home, sin `-p`; el scheduler le pone `HERMES_HOME` = home del
-perfil y `gateway_state.json`, que lee la puerta de H4a, vive en la raíz):
+default (la raíz del home; toda llamada lleva `-p default` porque el CLI usa el
+perfil activo por encima de `HERMES_HOME`):
 
 ```powershell
-hermes cron create "every 1m" --name ticker-raices --script "ticker-raices.py" --no-agent --deliver local
+hermes -p default cron create "every 1m" --name ticker-raices --script "ticker-raices.py" --no-agent --deliver local
 ```
 
 `--script` se resuelve contra `<home del perfil>/scripts`
