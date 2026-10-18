@@ -347,7 +347,11 @@ def contained(path, parent):
 def _git(root, *args):
     try:
         return subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, text=True
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except OSError:
         return None

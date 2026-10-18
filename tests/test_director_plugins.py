@@ -98,6 +98,8 @@ class ManifiestoTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except OSError:
@@ -170,6 +172,8 @@ def _git_en(ruta, *args):
         ["git", "-C", str(ruta), "-c", "core.autocrlf=false", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
 
@@ -445,6 +449,10 @@ class DespliegueFrescoTests(unittest.TestCase):
             "HOME": str(self.temporary / "home"),
             "LOCALAPPDATA": str(self.temporary / "local-app-data"),
             "PYTHONUTF8": "1",
+            # Los mensajes de configure_team van en UTF-8; sin esta variable
+            # el hijo de 3.11 los escribe en la code page y el stderr capturado
+            # sale mojibake ("estÃ¡") y la prueba no encuentra el texto.
+            "PYTHONIOENCODING": "utf-8",
         }
         usersite = site.getusersitepackages()
         if Path(usersite).is_dir():
@@ -464,6 +472,8 @@ class DespliegueFrescoTests(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             env=env,
         )
