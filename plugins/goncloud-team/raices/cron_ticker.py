@@ -1,11 +1,13 @@
 """Una vuelta del ticker de raices como script de cron de Hermes (SUA-07 H2).
 
-El coordinador la registra en la PC (H5) como trabajo sin agente del perfil
-claw; el cron de Hermes resuelve --script bajo profiles/claw, donde
-configure_team copia el plugin:
+El instalador (H4b3) deja el script en <home del perfil>/scripts/ticker-raices.py
+y registra el trabajo sin agente del perfil claw:
 
   hermes -p claw cron create "* * * * *" --name ticker-raices --script
-      profiles/claw/plugins/goncloud-team/raices/cron_ticker.py --no-agent
+      "ticker-raices.py" --no-agent
+
+--script se resuelve contra <home del perfil>/scripts (hermes_cli/cron.py:604-618)
+y el argumento es el nombre pelado.
 
 Convencion de los scripts no_agent (README): nada en la salida si la vuelta
 sale bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la
@@ -42,7 +44,7 @@ def correr(home=None, ruta_abierta=None):
     base = Path(base_texto)
     abierta, causa = (ruta_abierta or ruta_de_raices_abierta)()
     if not abierta:
-        print(f"ticker-raices: ruta de raices cerrada ({causa})")
+        print(f"ticker-raices: ruta de raices cerrada ({causa})", file=sys.stderr)
         return 0
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")

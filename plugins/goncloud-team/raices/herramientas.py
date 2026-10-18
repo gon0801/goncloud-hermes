@@ -30,10 +30,10 @@ def _exigir_claw(perfil):
 
 
 def ruta_del_store(home=None):
-    base = Path(home or os.environ.get("HERMES_HOME", ""))
-    if not str(base):
+    texto = str(home or os.environ.get("HERMES_HOME", "")).strip()
+    if not texto:
         raise ValueError("HERMES_HOME is not set; no raices store to open")
-    return base / "sistema-agentes.db"
+    return Path(texto) / "sistema-agentes.db"
 
 
 def abrir_tienda(home=None):

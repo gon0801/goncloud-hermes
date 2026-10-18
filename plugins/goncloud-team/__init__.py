@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 from .muse_bridge import delegate_to_muse
@@ -29,8 +31,9 @@ def _raiz_handler(ctx, funcion):
     def handle(args: dict, **kwargs) -> str:
         del kwargs
         try:
-            import importlib
-
+            raiz = Path(__file__).resolve().parent
+            if str(raiz) not in sys.path:
+                sys.path.insert(0, str(raiz))
             herramientas = importlib.import_module("raices.herramientas")
             resultado = getattr(herramientas, funcion)(
                 dict(args or {}), ctx.profile_name

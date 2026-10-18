@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+import sys
 from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 
@@ -143,10 +144,16 @@ class _EscrituraReal:
             if bien:
                 self._pila.close()
             else:
-                # ExitStack.close() no conoce la excepcion viva: sin esta linea
-                # el write_txn de upstream haria COMMIT del despacho a medias.
-                with suppress(sqlite3.Error):
-                    self._conexion.execute("ROLLBACK")
+                _, exc, tb = sys.exc_info()
+                if exc is not None:
+                    # Upstream recibe __exit__ con la excepcion viva: hace su
+                    # rollback y limpieza; un ROLLBACK a mano tragaria un
+                    # sqlite3.Error y dejaria la pila sin cerrar.
+                    self._pila.__exit__(type(exc), exc, tb)
+                else:
+                    with suppress(sqlite3.Error):
+                        self._conexion.execute("ROLLBACK")
+                    self._pila.close()
             self._pila = None
         if bien:
             self._puerto.creaciones.extend(tarjeta.clave for tarjeta in self._creadas)

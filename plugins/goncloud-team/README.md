@@ -60,14 +60,15 @@ recibo de `control.v1` (un reintento exacto devuelve el original con
 
 El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
-salida. El script es `raices/cron_ticker.py` de este plugin (queda copiado en
-`profiles/claw/plugins/goncloud-team/raices/`); se registra como trabajo sin
-agente de claw:
+salida. El instalador (H4b3) copia `raices/cron_ticker.py` a
+`<home>/scripts/ticker-raices.py` y registra el trabajo sin agente de claw:
 
 ```powershell
-hermes -p claw cron create "* * * * *" --name ticker-raices --script
-  profiles/claw/plugins/goncloud-team/raices/cron_ticker.py --no-agent
+hermes -p claw cron create "* * * * *" --name ticker-raices --script "ticker-raices.py" --no-agent
 ```
+
+`--script` se resuelve contra `<home del perfil>/scripts`
+(hermes_cli/cron.py:604-618) y el argumento es el nombre pelado.
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
