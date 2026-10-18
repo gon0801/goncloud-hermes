@@ -1202,6 +1202,9 @@ class ReasoningProbeBudgetTests(unittest.TestCase):
             ).live_probe(route_for("zai", "glm-5.3", slot=5))
 
         self.assertFalse(result.success)
+        # Exact identity, not membership: task_failure also advances now, so
+        # membership alone cannot catch a regression to it.
+        self.assertIs(result.failure, FailureKind.TRANSPORT)
         self.assertIn(result.failure, _ADVANCING_FAILURES)
 
 
@@ -1249,7 +1252,11 @@ class ProbeFailureClassificationTests(unittest.TestCase):
 
         for name, (adapter, route) in self.probes().items():
             with self.subTest(adapter=name):
-                self.assertIn(adapter.probe(route).failure, _ADVANCING_FAILURES)
+                failure = adapter.probe(route).failure
+                # Exact identity, not membership: task_failure also advances
+                # now, so membership alone cannot catch a regression to it.
+                self.assertIs(failure, FailureKind.TIMEOUT)
+                self.assertIn(failure, _ADVANCING_FAILURES)
 
 
 class ClaudeCommandTests(unittest.TestCase):

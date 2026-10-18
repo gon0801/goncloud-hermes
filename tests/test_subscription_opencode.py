@@ -235,10 +235,8 @@ class OpenCodeAdapterTests(unittest.TestCase):
     def test_exit_zero_without_a_valid_envelope_is_invalid_terminal(self):
         """The vendor answered, just not in the terminal contract.
 
-        ``task_failure`` is never auto-advanced, so classifying a rejected
-        envelope that way blocks the stage at slot 0 with every healthy account
-        untried. ``invalid_terminal`` is the kind that says the route produced
-        nothing usable without claiming the task itself failed.
+        ``invalid_terminal`` is the kind that says the vendor responded and
+        delivered nothing usable, without claiming the task itself failed.
         """
         adapter = OpenCodeAdapter(
             runner=FakeCliRunner(

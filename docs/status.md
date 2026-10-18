@@ -645,9 +645,10 @@ ahora se conserva. Regresion:
 
 No se cambio el flag `terminal` de un intento fallido. Marcarlo es deliberado y
 `test_terminal_task_failure_survives_crash_without_reinvocation` lo fija: evita
-re-invocar al modelo tras un fallo real de tarea, donde el trabajo pudo haberse
-hecho. Con los arreglos de arriba la cadena agota sus slots dentro de la misma
-corrida, asi que ese flag ya no sella una etapa que nunca hizo failover.
+re-invocar al modelo tras un fallo que muto el workspace, unico caso donde el
+trabajo pudo haberse hecho. Un `task_failure` sin mutacion avanza de slot
+dentro de la misma corrida, asi que ese flag ya no sella una etapa que nunca
+hizo failover.
 
 Queda un residual declarado: una etapa ya bloqueada no se puede reintentar
 reusando el mismo `request_key`. `LocalOrchestrator.resume` devuelve `blocked`
