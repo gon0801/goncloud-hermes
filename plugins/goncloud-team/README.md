@@ -61,10 +61,12 @@ recibo de `control.v1` (un reintento exacto devuelve el original con
 El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
 salida. El instalador (H4b3) copia `raices/cron_ticker.py` a
-`<home>/scripts/ticker-raices.py` y registra el trabajo sin agente de claw:
+`<home>/scripts/ticker-raices.py` y registra el trabajo sin agente en el perfil
+default (la raíz del home, sin `-p`; el scheduler le pone `HERMES_HOME` = home del
+perfil y `gateway_state.json`, que lee la puerta de H4a, vive en la raíz):
 
 ```powershell
-hermes -p claw cron create "* * * * *" --name ticker-raices --script "ticker-raices.py" --no-agent
+hermes cron create "every 1m" --name ticker-raices --script "ticker-raices.py" --no-agent --deliver local
 ```
 
 `--script` se resuelve contra `<home del perfil>/scripts`
