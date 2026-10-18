@@ -357,6 +357,22 @@ class I07UnAvisoPorEfecto(TiendaCerrada, unittest.TestCase):
             if e["type"] == "NECESITA_DAVID" and e["response"] is None
         ]
 
+    def test_solo_la_vuelta_deja_una_excepcion_abierta_con_la_causa(self):
+        # F1 (r5): nadie llama a iniciar_efecto en producción; la vuelta del
+        # ticker es quien pregunta. Sin iniciar_efecto tiene que quedar
+        # EXACTAMENTE UNA NECESITA_DAVID abierta, con la causa permiso-h:*.
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
+            store.Ok,
+        )
+        ticker.vuelta(self.tienda, kanban_port.DobleKanban(), {})
+        vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        abiertas = self.abiertas(vista)
+        self.assertEqual(len(abiertas), 1)
+        self.assertEqual(
+            abiertas[0]["subject"].get("cause"), "permiso-h:accion-preguntar"
+        )
+
     def test_un_efecto_negado_pregunta_una_sola_vez_con_la_causa(self):
         self.assertIsInstance(
             self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
@@ -382,6 +398,37 @@ class I07UnAvisoPorEfecto(TiendaCerrada, unittest.TestCase):
             self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
         vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
         self.assertEqual(len(self.abiertas(vista)), 1)
+
+    def test_la_vuelta_y_luego_la_reanudacion_dejan_una(self):
+        permisosa = store.Store(
+            self.ruta.parent / "reanudacion.db", permisos_h=permisos()
+        )
+        self.addCleanup(permisosa.cerrar)
+        permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))
+        self.assertIsInstance(
+            permisosa.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            permisosa.control(comando("pause", "cmd-01", 1)), store.Ok
+        )
+        permisosa.cerrar()
+
+        endurecida = store.Store(
+            self.ruta.parent / "reanudacion.db",
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(endurecida.cerrar)
+        ticker.vuelta(endurecida, kanban_port.DobleKanban(), {})
+        self.assertIsInstance(
+            endurecida.control(comando("resume", "cmd-02", 2)), store.Ok
+        )
+        vista = endurecida.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        abiertas = self.abiertas(vista)
+        self.assertEqual(len(abiertas), 1)
+        self.assertEqual(
+            abiertas[0]["subject"].get("cause"), "permiso-h:accion-preguntar"
+        )
 
 
 class EfectoMalFormado(TiendaCerrada, unittest.TestCase):

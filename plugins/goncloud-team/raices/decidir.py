@@ -147,6 +147,12 @@ def _autoridad_de_vista(vista: Vista) -> Callable[[Mapping], str | None]:
     return modulo.interseccion(vista["meta"].get("authority"), permisos, vista["ahora"])
 
 
+def _causa_de(razon: str) -> str:
+    """La causa del sujeto, la misma traducción que hace el gate del store."""
+    modulo = importlib.import_module("raices.autoridad")
+    return modulo.causa_de(razon)
+
+
 def digesto(partes: object) -> str:
     canonico = json.dumps(
         partes, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -837,17 +843,29 @@ def decidir(
             levantar("INESPERADO", sujeto)
 
     # Efectos: los nuevos siempre se preparan, así una pregunta nombra un efecto real.
-    # Quien pregunta por un efecto denegado es el gate del store (I07, iniciar_efecto
-    # y la reanudación): es el punto donde la negación de verdad ocurre, con la causa
-    # vigente y un sujeto con `cause`. Aquí no se repite la pregunta: con la excepción
-    # del store y la de decidir conviviendo, los sujetos no coincidían y la pregunta
-    # quedaba doble (una abierta para siempre).
+    # La pregunta por un efecto denegado la levanta decidir (es la única que llega a
+    # producción: nada llama a Store.iniciar_efecto), con el MISMO sujeto que el gate
+    # del store: {kind, effectId, cause}. Los dos usan la misma intersección (I07/F3),
+    # así que la razón, la causa y el exceptionId coinciden y la excepción se
+    # deduplica: una sola pregunta aunque pregunten los dos.
     for efecto in vista["efectos"]:
         if efecto["state"] == "uncertain":
             levantar(
                 "EVIDENCIA_INCIERTA",
                 {"kind": "effect", "effectId": efecto["effectId"]},
             )
+        elif efecto["state"] == "prepared":
+            razon = autoridad(efecto["intent"])
+            if razon is not None:
+                levantar(
+                    "NECESITA_DAVID",
+                    {
+                        "kind": "effect",
+                        "effectId": efecto["effectId"],
+                        "cause": _causa_de(razon),
+                    },
+                    ["autorizar", "listo", "omitir", "cancelar"],
+                )
     for intent in vista["hechos"]["efectos"]:
         if not isinstance(intent, Mapping) or not isinstance(
             intent.get("effectId"), str
@@ -860,6 +878,17 @@ def decidir(
         if ya_visto:
             continue
         decision["efectos"].append(intent)
+        razon = autoridad(intent)
+        if razon is not None:
+            levantar(
+                "NECESITA_DAVID",
+                {
+                    "kind": "effect",
+                    "effectId": intent["effectId"],
+                    "cause": _causa_de(razon),
+                },
+                ["autorizar", "listo", "omitir", "cancelar"],
+            )
 
     # Correcciones: `rondas` cuenta por la vida de la unidad; el tope crece un bloque
     # cada vez que el dueño responde `seguir`.
