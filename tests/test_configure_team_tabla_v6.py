@@ -7,6 +7,7 @@ subscription (never a pay-per-token API route), "off" = no reasoning, no Fable,
 OpenCode Go only for Muse Spark (absent) and DeepSeek Flash.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -524,8 +525,12 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
 
     @classmethod
     def snapshot(cls):
+        # SHA-256 per file: any byte change shows up and a mismatching dict
+        # still renders a diff fast (raw bytes would choke difflib).
         return {
-            p.relative_to(cls.runtime): p.read_bytes()
+            p.relative_to(cls.runtime).as_posix(): hashlib.sha256(
+                p.read_bytes()
+            ).hexdigest()
             for p in cls.runtime.rglob("*")
             if p.is_file()
         }
