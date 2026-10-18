@@ -26,8 +26,8 @@ def guardar(dir_instrucciones: Path, texto: str) -> tuple[str, str]:
     final = dir_instrucciones / hex64
     pendiente = dir_instrucciones / f".pending-{uuid.uuid4().hex}"
     try:
-        with open(pendiente, "x", encoding="utf-8") as archivo:
-            archivo.write(texto)
+        with open(pendiente, "xb") as archivo:
+            archivo.write(texto.encode("utf-8"))
             archivo.flush()
             os.fsync(archivo.fileno())
         try:
@@ -44,15 +44,19 @@ def resolver(
     dir_instrucciones: Path, ref: str, digest: str
 ) -> tuple[str | None, str | None]:
     """(texto, None) si el ref matchea, el archivo existe y su sha256 es el
-    hex del ref y del digest; si no, (None, motivo)."""
+    hex del ref y del digest; si no, (None, motivo). Bytes que no decodifican
+    como UTF-8: (None, "no-utf8")."""
     hallado = REF.fullmatch(ref) if isinstance(ref, str) else None
     if hallado is None:
         return None, "ref-invalida"
     try:
-        texto = (Path(dir_instrucciones) / hallado.group(1)).read_text(encoding="utf-8")
+        crudo = (Path(dir_instrucciones) / hallado.group(1)).read_bytes()
     except OSError:
         return None, "instruccion-ausente"
-    real = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+    real = hashlib.sha256(crudo).hexdigest()
     if real != hallado.group(1) or f"sha256:{real}" != digest:
         return None, "digest-distinto"
-    return texto, None
+    try:
+        return crudo.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "no-utf8"
