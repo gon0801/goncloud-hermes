@@ -131,6 +131,7 @@ def main(
         print(salida)
         return 1
 
+    texto_version = par.get("texto_version")
     candidata = {
         "version": par["version"],
         "code_sha": par["code_sha"],
@@ -138,7 +139,9 @@ def main(
         "evidencia": {
             "pruebas": PRUEBAS,
             "resumen": resumen,
-            "hermesVersion": par.get("texto_version"),
+            "hermesVersion": (
+                texto_version.strip() if isinstance(texto_version, str) else None
+            ),
             "corridoEn": store.ahora_utc(),
         },
     }

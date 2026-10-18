@@ -596,6 +596,28 @@ class PuertaDeCapacidades(Base):
         self.assertEqual(respuesta["error"], "raiz-desconocida")
         puerta.assert_not_called()
 
+    def test_la_puerta_del_submit_recibe_la_raiz_de_hogar(self):
+        # F8: el gateway_state.json vive en la RAIZ. El submit con el home de
+        # un perfil le pasa a la puerta la raiz resuelta por hogar, nunca el
+        # home pelado (perfiles/claw no tiene gateway_state.json).
+        raiz = Path(self.temporal.name) / "hermes-raiz"
+        (raiz / "profiles" / "claw").mkdir(parents=True)
+        consultada = []
+        puerta = mock.MagicMock(return_value=(True, None))
+
+        def capturar(home=None, **kwargs):
+            consultada.append(Path(home) if home is not None else None)
+            return puerta(home=home, **kwargs)
+
+        herramientas = importlib.import_module("raices.herramientas")
+        with mock.patch("raices.capacidades.abrir_ruta", capturar):
+            herramientas.enviar_raiz(
+                {"plan": meta_de()},
+                "claw",
+                home=str(raiz / "profiles" / "claw"),
+            )
+        self.assertEqual(consultada, [raiz])
+
 
 class Permisos(Base):
     """La tienda de las herramientas abre con los mismos permisos del ticker

@@ -375,6 +375,11 @@ class Script(Base):
         self.assertIn("CAPACIDAD_INCIERTA (version-no-certificada)", texto)
         self.assertIn("ruta de raices cerrada (version-no-certificada)", texto)
         self.assertTrue((self.home / "sistema-agentes.db").exists())
+        # Con la puerta cerrada la pasada del emisor no corre: ni
+        # proyeccion ni aviso, el CAPACIDAD_INCIERTA es el unico mensaje.
+        self.assertFalse(
+            (self.home / "raices" / "proyecciones" / f"{RAIZ}.json").exists()
+        )
 
         kanban = importlib.import_module("raices.kanban")
         puerto = kanban.KanbanHermes(self.home / "kanban.db")
@@ -603,6 +608,82 @@ class StoreCompartido(Base):
         tarjeta = puerto.leer_estado(f"sa:{RAIZ}:a:1")
         self.assertIsNotNone(tarjeta)
         self.assertEqual(tarjeta.estado, "pendiente")
+
+    def test_cron_de_perfil_y_de_raiz_llegan_a_la_misma_puerta_y_permisos(self):
+        # La puerta (H4a) y los permisos (I07/H4b3) se resuelven sobre la
+        # RAIZ: correr el cron con el home del perfil claw y con la raiz
+        # consulta el MISMO gateway_state.json y el MISMO permisos.json. Si
+        # alguien leyera el home pelado, perfiles/claw no tiene raices/ y la
+        # puerta cerraria y los permisos serian None.
+        hogar = importlib.import_module("raices.hogar")
+        capacidades = importlib.import_module("raices.capacidades")
+        raices = self.raiz / "raices"
+        raices.mkdir()
+        (raices / "permisos.json").write_text(
+            json.dumps(
+                {
+                    "acciones": ["read", "implement"],
+                    "toolsets": {"codex": ["write"]},
+                    "comandos": ["git"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        perfil_codex = self.raiz / "profiles" / "codex"
+        perfil_codex.mkdir(parents=True)
+        (perfil_codex / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n",
+            encoding="utf-8",
+        )
+        # gateway_state.json vive en la raiz, nunca en el home del perfil.
+        (self.raiz / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "kind": "hermes-gateway",
+                    "gateway_state": "running",
+                    "code_version": "0.21.5",
+                    "code_sha": "b" * 40,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        puertas, consultadas, permisos = [], [], []
+
+        def capturar(home=None, **kwargs):
+            # La puerta REAL por dentro: hechos_vivos + decidir, sin pasar
+            # por el parche del Base.
+            consultadas.append(Path(home))
+            resultado = capacidades.decidir(capacidades.hechos_vivos(home=home))
+            puertas.append(resultado)
+            return resultado
+
+        for hermes_home in (str(self.perfil_claw), str(self.raiz)):
+            with mock.patch.object(capacidades, "abrir_ruta", capturar):
+                cron = importlib.import_module("raices.cron_ticker")
+                abierta, _causa = cron.ruta_de_raices_abierta(
+                    hogar.raiz_del_hogar(hermes_home)
+                )
+                self.assertIsInstance(abierta, bool)
+            permisos.append(hogar.leer_permisos(hermes_home))
+
+        # La MISMA puerta: ambas corridas consultaron la raiz y la puerta
+        # real decidio lo MISMO y cerrada (el gateway_state.json de la raiz
+        # es el leido en ambos casos; la causa concreta depende del entorno:
+        # capacidad-faltante sin doble, par-incierto con el).
+        self.assertEqual(consultadas, [self.raiz, self.raiz])
+        self.assertEqual(puertas[0], puertas[1])
+        self.assertFalse(puertas[0][0])
+        self.assertIsInstance(puertas[0][1], str)
+        # Los MISMOS permisos: toolsets efectivos (write declarado y coding
+        # real) leidos del permisos.json de la raiz en ambos casos.
+        esperados = {
+            "acciones": ["read", "implement"],
+            "toolsets": {"codex": ["write"]},
+            "comandos": ["git"],
+        }
+        self.assertEqual(permisos[0], esperados)
+        self.assertEqual(permisos[0], permisos[1])
 
 
 class Arranque(Base):

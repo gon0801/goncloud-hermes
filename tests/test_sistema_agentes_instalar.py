@@ -9,6 +9,9 @@ no escribe nada."""
 
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,6 +163,51 @@ class InstaladorDeRaices(unittest.TestCase):
         ]
         self.assertEqual(len(creates), 1, "el segundo aplicar no crea otro cron")
         self.assertEqual(self.corredor.crons.count("ticker-raices"), 1)
+
+    def test_aplicar_deja_un_envoltorio_que_corre_el_cron_real(self):
+        # El instalador y el cron_ticker juntos en un home temporal: aplicar
+        # escribe el envoltorio y registra el cron; el envoltorio delega en
+        # el cron_ticker real del plugin, que con la puerta cerrada (no hay
+        # gateway vivo) avisa CAPACIDAD_INCIERTA por stderr, corre la vuelta
+        # cerrada y sale 0 sin crear tarjetas.
+        self.assertEqual(self.aplicar(), 0)
+        envoltorio = self.home / "scripts" / "ticker-raices.py"
+        self.assertTrue(envoltorio.exists(), "aplicar escribio el envoltorio")
+        self.assertIn("ticker-raices", self.corredor.crons)
+
+        entorno = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HERMES_HOME": str(self.home),
+            # El doble del hermes_cli para el kanban y las capacidades: el
+            # mismo arreglo del arranque del cron (F7).
+            "PYTHONPATH": os.pathsep.join(
+                [
+                    str(REPO / "tests/fake_hermes_cli"),
+                    str(REPO / "plugins/goncloud-team"),
+                ]
+            ),
+            "PYTHONUTF8": "1",
+        }
+        proceso = subprocess.run(
+            [sys.executable, str(envoltorio)],
+            env=entorno,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proceso.returncode, 0, proceso.stderr)
+        self.assertEqual(proceso.stdout, "", "el stdout del no_agent se entrega")
+        self.assertIn("CAPACIDAD_INCIERTA (par-incierto)", proceso.stderr)
+        self.assertIn("ruta de raices cerrada (par-incierto)", proceso.stderr)
+        # La vuelta cerrada abrio el store (par-incierto, no
+        # capacidad-faltante) y no despacho nada.
+        self.assertTrue((self.home / "sistema-agentes.db").exists())
+        self.assertFalse(
+            list((self.home / "raices" / "proyecciones").glob("*.json"))
+            if (self.home / "raices" / "proyecciones").exists()
+            else False,
+            "con la puerta cerrada la pasada del emisor no corre",
+        )
 
     def test_aplicar_no_pisa_el_permisos_del_operador_y_sin_el_crea_la_plantilla(self):
         self.crear_datos_del_operador()

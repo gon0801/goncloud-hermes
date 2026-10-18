@@ -107,6 +107,22 @@ class Certificar(unittest.TestCase):
         self.assertNotEqual(self.pruebas[0][0], str(self.home))
         self.assertEqual(self.pruebas[0][2], [])
 
+    def test_la_evidencia_hermes_version_sale_recortada(self):
+        texto = f"Hermes Agent v0.21.5+5822.g{SHA[:7]} (2026.9.24)\n"
+        self.assertNotEqual(texto, texto.strip(), "el repro necesita ruido alrededor")
+        par_ruidoso = {**PAR, "texto_version": texto}
+        codigo, salida = self.certificar(
+            self.argv(),
+            leer_par=lambda: (False, "version-no-certificada", par_ruidoso),
+        )
+        self.assertEqual(codigo, 0)
+        candidata = json.loads(salida)
+        self.assertEqual(
+            candidata["evidencia"]["hermesVersion"],
+            texto.strip(),
+            "la evidencia trae el texto sin newline ni espacios de borde",
+        )
+
     def test_corre_en_un_home_temporal_vacio_y_el_home_vivo_queda_igual(self):
         (self.home / "backup-key").write_text("llave-secreta", encoding="utf-8")
         grande = self.home / "memories.bin"

@@ -79,7 +79,15 @@ def _correr_hermes_version(resolvedor=None) -> str | None:
         return None
     try:
         terminado = subprocess.run(
-            [ejecutable, "--version"], capture_output=True, text=True, timeout=10
+            [ejecutable, "--version"],
+            capture_output=True,
+            text=True,
+            # text=True sin encoding usa la code page local: en un Windows no
+            # UTF-8 el texto de --version revienta decodeando (mojibake) y la
+            # lectura de la version se pierde por un detalle de codificacion.
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return None

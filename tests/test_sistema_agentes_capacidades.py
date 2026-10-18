@@ -151,6 +151,7 @@ class ElEjecutableDeVersion(unittest.TestCase):
 
         def falso_run(argv, **kwargs):
             recibido["argv"] = list(argv)
+            recibido["kwargs"] = kwargs
             return subprocess.CompletedProcess(argv, 0, stdout=TEXTO_VERSION, stderr="")
 
         with mock.patch.object(capacidades.subprocess, "run", falso_run):
@@ -160,6 +161,11 @@ class ElEjecutableDeVersion(unittest.TestCase):
         self.assertEqual(texto, TEXTO_VERSION)
         self.assertEqual(recibido["argv"][0], "/su/camino/bin/hermes.CMD")
         self.assertEqual(recibido["argv"][1], "--version")
+        # La lectura es text=True pero con encoding fijo: sin el, Windows
+        # decodea con la code page local y el texto de --version se rompe
+        # (mojibake) en una PC no UTF-8.
+        self.assertEqual(recibido["kwargs"].get("encoding"), "utf-8")
+        self.assertEqual(recibido["kwargs"].get("errors"), "replace")
 
     def test_sin_ruta_resuelta_no_invoca_subprocess_y_da_none(self):
         llamadas = []

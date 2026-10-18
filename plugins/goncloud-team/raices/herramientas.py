@@ -59,9 +59,12 @@ def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
         }
     # submit crea trabajo nuevo y la puerta de capacidades (H4a) lo niega con
     # la ruta cerrada, sin abrir la tienda; el dueño sigue leyendo y frenando
-    # con read, control y resolve.
+    # con read, control y resolve. La puerta mira el gateway_state.json de la
+    # RAIZ (hogar.raiz_del_hogar: el home de un perfil sube, nunca HERMES_HOME
+    # pelado; cierra el F8 del bot).
     capacidades = importlib.import_module("raices.capacidades")
-    puerta = ruta_abierta or (lambda: capacidades.abrir_ruta(home=home))
+    raiz = hogar.raiz_del_hogar(home)
+    puerta = ruta_abierta or (lambda: capacidades.abrir_ruta(home=raiz))
     abierta, causa = puerta()
     if not abierta:
         return {"error": "ruta-cerrada", "detalle": {"causa": causa}}
