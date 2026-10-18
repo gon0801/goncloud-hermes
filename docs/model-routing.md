@@ -126,10 +126,11 @@ cuenta ni una inferencia basada en la existencia de credenciales.
 | deepseek | ready | api | no | 2.48 s |
 
 Los fallos que avanzan de slot son `auth`, `quota`, `rate_limit`,
-`model_unavailable`, `timeout`, `transport` e `invalid_terminal` (el proveedor
-respondio pero fuera del contrato terminal); `transport` e `invalid_terminal`
-bloquean en cuanto el workspace cambio. `task_failure` e `invalid_request`
-bloquean siempre.
+`model_unavailable`, `timeout`, `transport`, `invalid_terminal` y
+`task_failure`: `invalid_terminal` es el proveedor que respondio fuera del
+contrato terminal; `task_failure`, la corrida que ejecuto sin entregar un
+veredicto del modelo. `transport`, `invalid_terminal` y `task_failure`
+bloquean en cuanto el workspace cambio. `invalid_request` bloquea siempre.
 
 `quota` y `rate_limit` son cosas distintas. `quota` es el plan agotado ("The
 usage limit has been reached.", el limite semanal de kimi, "insufficient

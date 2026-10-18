@@ -207,8 +207,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 session_id=parsed["session_id"] or "",
             )
         # The CLI answered, it just did not answer in the terminal
-        # contract. task_failure is never auto-advanced, so classifying
-        # a rejected envelope that way pins the stage to this slot with
-        # every healthy account untried. Nothing here shows the task
-        # itself failed, which is exactly invalid_terminal.
+        # contract: the vendor responded and delivered nothing usable.
+        # Nothing here shows the task itself failed, which is exactly
+        # invalid_terminal.
         return self._failed_result(route, FailureKind.INVALID_TERMINAL)

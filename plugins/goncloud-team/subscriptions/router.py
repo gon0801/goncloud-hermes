@@ -39,10 +39,19 @@ _ADVANCING_FAILURES = {
     FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
     FailureKind.INVALID_TERMINAL,
+    # An executed attempt that delivered nothing usable (launch failure,
+    # unclassifiable exit, unreadable output) is a dead route, not a verdict:
+    # a model verdict always arrives as success with a terminal envelope, so
+    # an unmutated workspace tries the next position (owner, 2026-10-17).
+    FailureKind.TASK_FAILURE,
 }
 #: Advancing failures that must still block once the workspace changed: the
 #: next slot would otherwise redo work on top of an unreported mutation.
-_BLOCK_AFTER_MUTATION = {FailureKind.TRANSPORT, FailureKind.INVALID_TERMINAL}
+_BLOCK_AFTER_MUTATION = {
+    FailureKind.TRANSPORT,
+    FailureKind.INVALID_TERMINAL,
+    FailureKind.TASK_FAILURE,
+}
 _QUOTA_COOLDOWN_MINUTES = 15
 # A hung endpoint (no output to its deadline) stays hung a while; cool it down
 # so a multi-stage workflow skips it instead of hanging the full deadline at
@@ -536,7 +545,7 @@ class SubscriptionRouter:
                 return result
             last_failure = result
             if result.failure not in _ADVANCING_FAILURES:
-                # Task/invalid failures never auto-advance; the stage blocks
+                # The kinds that never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
                 return result
             if result.failure in _BLOCK_AFTER_MUTATION and mutated:
@@ -824,6 +833,10 @@ class SubscriptionRouter:
             FailureKind.MODEL_UNAVAILABLE,
             # A throttle is the vendor answering "not this minute".
             FailureKind.RATE_LIMIT,
+            # Nothing usable came back, but no vendor verdict blamed the
+            # account either; a health bench here would skip every later
+            # position sharing the adapter and undo the advance (2026-10-17).
+            FailureKind.TASK_FAILURE,
         }
         self.store.save_health(
             adapter,
