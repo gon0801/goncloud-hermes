@@ -44,6 +44,9 @@ PATCH_SHA = "fb7c8aa20f8f6cfd85fd4035777e3215c1c716eaf429fb11f0223f4d1c89d879"
 MCP_SERVER = "src/jev_skill_router/mcp_server.py"
 PRISTINE_SHA = "eb28e49d7815d1e200f42ae52c6545c529ecbfb28fb31f935d28f4c8d1aa4e04"
 PATCHED_SHA = "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b"
+PATCH2 = ROOT / "patches/claw/jev-skill-router-mcp/0002-skills-root.patch"
+PATCH2_SHA = "f3d67ea61c8fb50e851e5b7af1d0a28a9b592dd9caab59ca219e40d6a14ae7e6"
+FINAL_SHA = "d6b95558301f5435f4b675ba4bb687e16caec7e4d0b46b37055d0f6b62f21b98"
 JEV_PATCH = ROOT / "patches/claw/jev/0001-secret-scope.patch"
 JEV_PATCH_SHA = "4a82061e6241dc7f64c41aeb13d7115f32be44f7b23b7e93d4112a8a62f0306c"
 JEV_CLIENT = "client.py"
@@ -87,7 +90,13 @@ class ManifiestoTests(unittest.TestCase):
                     "patch": "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch",
                     "sha256_pristine": PRISTINE_SHA,
                     "sha256_patched": PATCHED_SHA,
-                }
+                },
+                {
+                    "file": MCP_SERVER,
+                    "patch": "patches/claw/jev-skill-router-mcp/0002-skills-root.patch",
+                    "sha256_pristine": PATCHED_SHA,
+                    "sha256_patched": FINAL_SHA,
+                },
             ],
         )
 
@@ -95,6 +104,7 @@ class ManifiestoTests(unittest.TestCase):
         for ruta, sha, archivo in (
             (JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),
             (PATCH, PATCH_SHA, MCP_SERVER),
+            (PATCH2, PATCH2_SHA, MCP_SERVER),
         ):
             with self.subTest(patch=ruta.name):
                 self.assertTrue(ruta.is_file())
@@ -174,6 +184,15 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
 
 PRISTINA = "def call_adapter():\n    return {}\n"
 PATCHADA = "def call_adapter():\n    document = {'model': 'x'}\n    return {}\n"
+FINAL = (
+    "def call_adapter():\n"
+    "    document = {'model': 'x'}\n"
+    "    return {}\n"
+    "\n"
+    "\n"
+    "def _skills_root():\n"
+    "    return 'skills'\n"
+)
 MCP_SERVIDOR = "src/jev_skill_router/mcp_server.py"
 JEV_CLIENTE = "client.py"
 PRISTINA_JEV = "def get_secret(nombre):\n    return os.environ[nombre]\n"
@@ -298,7 +317,21 @@ class ConciliacionTests(unittest.TestCase):
         ).stdout
         (base / "0001-sintetico.patch").write_bytes(diff.encode("utf-8"))
         self.sha256_parchado = _sha256(PATCHADA.encode())
-        _git_en(repo_jsr, "checkout", "--", MCP_SERVIDOR)
+        # El segundo parche de la cadena nace del estado intermedio: P1 al
+        # indice, P2 al worktree y el diff entre ambos es 0002-sintetico.
+        _git_en(repo_jsr, "add", MCP_SERVIDOR)
+        (repo_jsr / MCP_SERVIDOR).write_text(FINAL, encoding="utf-8")
+        diff_2 = _git_en(
+            repo_jsr,
+            "diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--",
+            MCP_SERVIDOR,
+        ).stdout
+        (base / "0002-sintetico.patch").write_bytes(diff_2.encode("utf-8"))
+        self.sha256_final = _sha256(FINAL.encode())
+        _git_en(repo_jsr, "reset", "-q", "--hard")
         self.plugins = [
             {
                 "name": "jev",
@@ -325,7 +358,13 @@ class ConciliacionTests(unittest.TestCase):
                         "patch": str(base / "0001-sintetico.patch"),
                         "sha256_pristine": self.sha256_pristino,
                         "sha256_patched": self.sha256_parchado,
-                    }
+                    },
+                    {
+                        "file": MCP_SERVIDOR,
+                        "patch": str(base / "0002-sintetico.patch"),
+                        "sha256_pristine": self.sha256_parchado,
+                        "sha256_patched": self.sha256_final,
+                    },
                 ],
             },
         ]
@@ -340,7 +379,9 @@ class ConciliacionTests(unittest.TestCase):
         self.cliente.write_bytes(PATCHADA_JEV.encode("utf-8"))
 
     def test_parchado_esta_verde_y_apply_no_hace_nada(self):
-        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        # El estado final de la cadena (los dos parches) esta verde y el
+        # apply no toca un byte.
+        self.servidor.write_bytes(FINAL.encode("utf-8"))
         self.assertEqual(
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
             [],
@@ -357,8 +398,8 @@ class ConciliacionTests(unittest.TestCase):
             notas, [f"Parche por aplicar: jev-skill-router-mcp: {MCP_SERVIDOR}"]
         )
         module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
-        self.assertEqual(self.servidor.read_text(), PATCHADA)
-        self.assertEqual(_sha256(self.servidor.read_bytes()), self.sha256_parchado)
+        self.assertEqual(self.servidor.read_text(), FINAL)
+        self.assertEqual(_sha256(self.servidor.read_bytes()), self.sha256_final)
         segunda = module.conciliar_plugins_director(
             self.perfil, self.plugins, aplicar=True
         )
@@ -366,11 +407,30 @@ class ConciliacionTests(unittest.TestCase):
         self.assertEqual(segunda, [])
         self.assertEqual(self.servidor.read_bytes(), estable)
 
+    def test_solo_el_primer_parche_se_reporta_y_apply_termina_el_trabajo(self):
+        # El estado que dejó el r1 en la PC antes del segundo cambio: el
+        # check lo reporta como pendiente y un apply corre la cadena y deja
+        # el archivo final.
+        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        notas = module.conciliar_plugins_director(
+            self.perfil, self.plugins, aplicar=False
+        )
+        self.assertEqual(
+            notas, [f"Parche por aplicar: jev-skill-router-mcp: {MCP_SERVIDOR}"]
+        )
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_bytes(), FINAL.encode("utf-8"))
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
+            [],
+        )
+
     def test_jev_parchado_esta_verde_y_apply_no_hace_nada(self):
         # El estado que dejó el parche manual de la PC (encargo H-jev2): el
         # client.py de jev ya trae el secret_scope, check verde y apply es
-        # un no-op byte a byte.
-        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        # un no-op byte a byte. El router va en su estado final para que el
+        # reporte sea solo de jev.
+        self.servidor.write_bytes(FINAL.encode("utf-8"))
         self.assertEqual(
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
             [],
@@ -380,7 +440,7 @@ class ConciliacionTests(unittest.TestCase):
         self.assertEqual(self.cliente.read_bytes(), antes)
 
     def test_jev_pristino_reporta_y_apply_lo_deja_parchado(self):
-        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        self.servidor.write_bytes(FINAL.encode("utf-8"))
         self.cliente.write_bytes(PRISTINA_JEV.encode("utf-8"))
         notas = module.conciliar_plugins_director(
             self.perfil, self.plugins, aplicar=False
@@ -405,7 +465,8 @@ class ConciliacionTests(unittest.TestCase):
     def test_prisitino_con_crlf_aplica_y_queda_en_lf(self):
         # Lo que ve la PC: `hermes plugins` clono con autocrlf=true y el
         # archivo prístino esta en CRLF. El contenido es prístino, el check
-        # lo reporta y el apply canóniza y deja los bytes LF del sha.
+        # lo reporta y el apply canóniza y deja los bytes LF del sha; con la
+        # cadena, el apply corre hasta el estado final.
         self.servidor.write_bytes(PRISTINA.replace("\n", "\r\n").encode("utf-8"))
         notas = module.conciliar_plugins_director(
             self.perfil, self.plugins, aplicar=False
@@ -414,20 +475,22 @@ class ConciliacionTests(unittest.TestCase):
             notas, [f"Parche por aplicar: jev-skill-router-mcp: {MCP_SERVIDOR}"]
         )
         module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
-        self.assertEqual(self.servidor.read_bytes(), PATCHADA.encode("utf-8"))
+        self.assertEqual(self.servidor.read_bytes(), FINAL.encode("utf-8"))
         self.assertEqual(
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True),
             [],
         )
 
     def test_el_parchado_en_crlf_canoniza_a_lf(self):
-        self.servidor.write_bytes(PATCHADA.replace("\n", "\r\n").encode("utf-8"))
+        # Estado final en CRLF (clon autocrlf=true y los dos parches a mano):
+        # verde para los dos parches de la cadena y el apply solo canóniza.
+        self.servidor.write_bytes(FINAL.replace("\n", "\r\n").encode("utf-8"))
         self.assertEqual(
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
             [],
         )
         module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
-        self.assertEqual(self.servidor.read_bytes(), PATCHADA.encode("utf-8"))
+        self.assertEqual(self.servidor.read_bytes(), FINAL.encode("utf-8"))
 
     def test_otro_sha_es_rojo_con_instruccion(self):
         self.plugins[1]["sha"] = "0" * 40
@@ -455,7 +518,7 @@ class ConciliacionTests(unittest.TestCase):
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
 
     def test_lo_untracked_se_tolera(self):
-        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        self.servidor.write_bytes(FINAL.encode("utf-8"))
         (self.perfil / "plugins" / "jev" / ".hermes-catalog.json").write_text(
             "{}", encoding="utf-8"
         )

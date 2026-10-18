@@ -27,6 +27,12 @@
           "patch": "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch",
           "sha256_pristine": "eb28e49d7815d1e200f42ae52c6545c529ecbfb28fb31f935d28f4c8d1aa4e04",
           "sha256_patched": "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b"
+        },
+        {
+          "file": "src/jev_skill_router/mcp_server.py",
+          "patch": "patches/claw/jev-skill-router-mcp/0002-skills-root.patch",
+          "sha256_pristine": "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b",
+          "sha256_patched": "d6b95558301f5435f4b675ba4bb687e16caec7e4d0b46b37055d0f6b62f21b98"
         }
       ]
     }
