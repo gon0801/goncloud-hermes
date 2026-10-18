@@ -1,0 +1,13 @@
+diff --git a/src/jev_skill_router/mcp_server.py b/src/jev_skill_router/mcp_server.py
+index a9e82ff..64f3237 100644
+--- a/src/jev_skill_router/mcp_server.py
++++ b/src/jev_skill_router/mcp_server.py
+@@ -157,6 +157,8 @@ def call_adapter(document: dict) -> dict:
+                 "set JEV_SKILL_ADAPTER_URL + JEV_SKILL_ADAPTER_TOKEN (adapter mode) "
+                 "or JEV_TYPESAFE_API_KEY (direct mode)")
+         headers["Authorization"] = f"Bearer {TYPESAFE_API_KEY}"
++        # Parche local Goncloud (2026-10-18): la API de TypeSafe ahora exige "model" (HTTP 422 sin él).
++        document = {"model": os.environ.get("JEV_SKILL_MODEL", "jev-latest"), **document}
+     req = urllib.request.Request(
+         url,
+         data=json.dumps(document).encode("utf-8"),

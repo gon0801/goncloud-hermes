@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -28,6 +29,11 @@ LIVE = json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8
 VIVO = json.loads(
     (ROOT / "tests/fixtures/rutas-vivas-20261017.json").read_text(encoding="utf-8")
 )
+#: These homes model the PC before the JEV plugins (2026-10-18): the
+#: reconciliation would demand both external repos at their pinned commits,
+#: which a throwaway home never has. The plugin behavior has its own suite,
+#: tests/test_director_plugins.py, against the real manifest.
+MANIFIESTO_VACIO = str(ROOT / "tests/fixtures/director-plugins-vacio.json")
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
 )
@@ -359,6 +365,11 @@ class AdopcionEndToEndTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        activo = mock.patch.dict(
+            os.environ, {configure_team.DIRECTOR_PLUGINS_OVERRIDE: MANIFIESTO_VACIO}
+        )
+        activo.start()
+        cls.addClassCleanup(activo.stop)
         cls.tmp = tempfile.TemporaryDirectory()
         cls.runtime_ok = Path(cls.tmp.name) / "con-bandera"
         cls.runtime_rechazo = Path(cls.tmp.name) / "sin-bandera"
@@ -514,6 +525,11 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        activo = mock.patch.dict(
+            os.environ, {configure_team.DIRECTOR_PLUGINS_OVERRIDE: MANIFIESTO_VACIO}
+        )
+        activo.start()
+        cls.addClassCleanup(activo.stop)
         cls.tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cleanup_temp_directory, cls.tmp)
         cls.runtime = Path(cls.tmp.name) / "runtime"
@@ -711,6 +727,11 @@ class RaizDefaultTests(unittest.TestCase):
     )
 
     def setUp(self):
+        activo = mock.patch.dict(
+            os.environ, {configure_team.DIRECTOR_PLUGINS_OVERRIDE: MANIFIESTO_VACIO}
+        )
+        activo.start()
+        self.addCleanup(activo.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
         self.runtime = Path(self.tmp.name) / "runtime"
