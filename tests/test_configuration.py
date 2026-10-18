@@ -233,7 +233,7 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertIn("auxiliary", desired)
                     self.assertEqual(
                         desired["platform_toolsets"]["cli"],
-                        list(module._DIRECTOR_TOOLSETS),
+                        [*module._DIRECTOR_TOOLSETS, "jev"],
                     )
                 else:
                     self.assertNotIn("auxiliary", desired)
@@ -288,7 +288,7 @@ class ConfigurationTests(unittest.TestCase):
         for role in team["profiles"]:
             desired = module.desired_profile_config(role, team, Path("C:/home"))
             expected = (
-                module._DIRECTOR_TOOLSETS
+                [*module._DIRECTOR_TOOLSETS, "jev"]
                 if role == team["director"]
                 else module._WORKER_TOOLSETS
             )
@@ -307,8 +307,10 @@ class ConfigurationTests(unittest.TestCase):
         # toolset. kanban_create is how it hands work to a specialist profile,
         # and unlike the CLI it subscribes the chat so the gateway reports
         # back when the card finishes. Its 14 schemas cost 23.9 KB of every
-        # director call. The order is the live one: a redeploy compares the
-        # whole list.
+        # director call. The order is the live one on the PC today
+        # (2026-10-18, encargo H-jev r1): _DIRECTOR_TOOLSETS + jev, the
+        # plugin's toolset from the manifest; a redeploy compares the whole
+        # list.
         self.assertEqual(
             director["platform_toolsets"]["telegram"],
             [
@@ -329,6 +331,7 @@ class ConfigurationTests(unittest.TestCase):
                 "todo",
                 "vision",
                 "web",
+                "jev",
             ],
         )
         self.assertIn("kanban", worker["platform_toolsets"]["telegram"])

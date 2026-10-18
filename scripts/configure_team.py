@@ -616,6 +616,13 @@ def autoupdate_setup(runtime_home):
     )
 
 
+def director_plugins_manifest():
+    """The external director plugins pinned in director-plugins.json."""
+    return json.loads((ROOT / "director-plugins.json").read_text(encoding="utf-8"))[
+        "plugins"
+    ]
+
+
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
     routing_source = json.loads(
@@ -654,11 +661,18 @@ def desired_profile_config(role, team, runtime_home):
         # The director carries the full toolset over Telegram by owner decision
         # (browser, computer_use and the rest): it drives Odoo and Edge and runs
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
-        # not a narrow toolset, keeps it out of logs and plugin code.
-        desired["platform_toolsets"] = {
-            "cli": list(_DIRECTOR_TOOLSETS),
-            "telegram": list(_DIRECTOR_TOOLSETS),
+        # not a narrow toolset, keeps it out of logs and plugin code. The
+        # plugins and their toolsets come from the pinned manifest (H-jev r1,
+        # 2026-10-18): jev last, the live order on the PC.
+        plugins = director_plugins_manifest()
+        toolsets = [
+            *_DIRECTOR_TOOLSETS,
+            *(toolset for plugin in plugins for toolset in plugin["toolsets"]),
+        ]
+        desired["plugins"] = {
+            "enabled": ["goncloud-team", *(plugin["name"] for plugin in plugins)]
         }
+        desired["platform_toolsets"] = {"cli": toolsets, "telegram": list(toolsets)}
         # Not the dispatcher's switch (that is the root config, see
         # apply_root_kanban): in a profile this only tells `hermes kanban
         # create` whether to warn that nobody will run the card. The

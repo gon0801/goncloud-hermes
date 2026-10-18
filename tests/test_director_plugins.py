@@ -8,6 +8,7 @@ parche con git, en bytes LF tal como los deja git (encargo H-jev r1,
 """
 
 import hashlib
+import importlib.util
 import json
 import sys
 import unittest
@@ -15,6 +16,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
+
+SPEC = importlib.util.spec_from_file_location(
+    "configure_team", ROOT / "scripts/configure_team.py"
+)
+module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(module)
 
 MANIFIESTO = json.loads((ROOT / "director-plugins.json").read_text(encoding="utf-8"))
 PATCH = ROOT / "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch"
@@ -69,3 +76,50 @@ class ManifiestoTests(unittest.TestCase):
         self.assertIn(f"diff --git a/{MCP_SERVER} b/{MCP_SERVER}", lineas)
         self.assertIn(f"--- a/{MCP_SERVER}", lineas)
         self.assertIn(f"+++ b/{MCP_SERVER}", lineas)
+
+
+class ConfiguracionDelDirectorTests(unittest.TestCase):
+    def test_solo_el_director_declara_los_plugins_y_su_toolset(self):
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        for role in team["profiles"]:
+            with self.subTest(rol=role):
+                desired = module.desired_profile_config(role, team, Path("C:/home"))
+                if role == team["director"]:
+                    self.assertEqual(
+                        desired["plugins"]["enabled"],
+                        ["goncloud-team", "jev", "jev-skill-router-mcp"],
+                    )
+                    esperados = [*module._DIRECTOR_TOOLSETS, "jev"]
+                    self.assertEqual(desired["platform_toolsets"]["cli"], esperados)
+                    self.assertEqual(
+                        desired["platform_toolsets"]["telegram"], esperados
+                    )
+                    self.assertEqual(desired["platform_toolsets"]["cli"][-1], "jev")
+                else:
+                    self.assertEqual(desired["plugins"]["enabled"], ["goncloud-team"])
+                    self.assertNotIn("jev", desired["platform_toolsets"]["cli"])
+                    self.assertNotIn("jev", desired["platform_toolsets"]["telegram"])
+
+    def test_el_config_vivo_de_claw_hoy_mergea_sin_conflicto(self):
+        # El config.yaml vivo de la PC ya declara los plugins del manifiesto y
+        # el toolset con jev al final; el deploy debe leerlo como reconciliado,
+        # sin conflicto y sin diff (encargo H-jev r1, 2026-10-18).
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        con_jev = [*module._DIRECTOR_TOOLSETS, "jev"]
+        existing = {
+            "plugins": {"enabled": ["goncloud-team", "jev", "jev-skill-router-mcp"]},
+            "platform_toolsets": {"cli": con_jev, "telegram": list(con_jev)},
+        }
+        previous = {
+            "plugins": {"enabled": ["goncloud-team"]},
+            "platform_toolsets": {
+                "cli": list(module._DIRECTOR_TOOLSETS),
+                "telegram": list(module._DIRECTOR_TOOLSETS),
+            },
+        }
+        desired = module.desired_profile_config("claw", team, Path("C:/home"))
+
+        merged = module.merge_profile_config(existing, desired, previous)
+
+        self.assertEqual(merged["plugins"], existing["plugins"])
+        self.assertEqual(merged["platform_toolsets"], existing["platform_toolsets"])
