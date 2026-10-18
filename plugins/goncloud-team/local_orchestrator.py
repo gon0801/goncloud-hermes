@@ -87,14 +87,25 @@ MAX_INSTRUCTION_CHARS = 32768
 #: The detached driver: only paths and identifiers reach it through argv, it
 #: prints nothing (vendor diagnostics are not a public channel) and writes one
 #: bounded JSON result atomically for goncloud_local_status to read.
+# The driver runs isolated (-I), so it sees none of the launcher's packages.
+# Hermes now selects its third-party dependencies at boot (hermes_bootstrap ->
+# pm.environments.activate_dependencies); without that step the plugin import
+# died on `ruamel` before writing any result, and every chain stayed at zero
+# attempts (live 2026-10-17, t_220bd43c). The imports sit inside the try so an
+# unloadable driver still leaves a bounded error result instead of vanishing.
 _DRIVER_BOOTSTRAP = (
     "import json, os, sys\n"
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "sys.path.insert(0, hermes)\n"
-    "sys.path.insert(0, plugin)\n"
-    "from local_orchestrator import LocalOrchestrator\n"
     "try:\n"
+    "    try:\n"
+    "        import hermes_bootstrap\n"
+    "    except ModuleNotFoundError as exc:\n"
+    "        if exc.name != 'hermes_bootstrap':\n"
+    "            raise\n"
+    "    sys.path.insert(0, plugin)\n"
+    "    from local_orchestrator import LocalOrchestrator\n"
     "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after)\n"
     "except Exception:\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"

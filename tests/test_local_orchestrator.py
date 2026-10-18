@@ -410,6 +410,104 @@ class TransportEntryPointTests(unittest.TestCase):
         self.assertFalse((self.root / "goncloud-local").exists())
 
 
+class DriverBootstrapTests(unittest.TestCase):
+    """Run the real detached-driver bootstrap the way launch_detached does.
+
+    Live 2026-10-17 (t_220bd43c): after Hermes moved its third-party packages
+    behind hermes_bootstrap, the isolated (-I) driver died importing the
+    plugin, wrote no result, and every chain stayed at zero attempts.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.root = Path(self.tmp.name)
+        self.hermes = self.root / "hermes"
+        self.plugin = self.root / "plugin"
+        self.deps = self.root / "deps"
+        for directory in (self.hermes, self.plugin, self.deps):
+            directory.mkdir()
+        self.out = self.root / "result.json"
+
+    def run_driver(self, *extra):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                local_orchestrator_module._DRIVER_BOOTSTRAP,
+                str(self.plugin),
+                str(self.hermes),
+                "t_boot",
+                str(self.out),
+                *extra,
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def write_plugin(self, header):
+        (self.plugin / "local_orchestrator.py").write_text(
+            header + "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None):\n"
+            "        return {'workflow_id': workflow_id, 'outcome': 'completed',\n"
+            "                'stop_after': stop_after}\n",
+            encoding="utf-8",
+        )
+
+    def test_driver_activates_hermes_dependencies_before_loading_the_plugin(self):
+        # The plugin needs a package only hermes_bootstrap puts on sys.path,
+        # exactly like kanban_db -> hermes_yaml -> ruamel in the live failure.
+        (self.deps / "only_after_bootstrap.py").write_text("VALUE = 1\n")
+        (self.hermes / "hermes_bootstrap.py").write_text(
+            f"import sys\nsys.path.insert(0, {str(self.deps)!r})\n"
+        )
+        self.write_plugin("import only_after_bootstrap\n")
+
+        self.run_driver("scout")
+
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(result["stop_after"], "scout")
+
+    def test_an_unloadable_driver_still_leaves_an_error_result(self):
+        # Failing to load must surface in goncloud_local_status as an error,
+        # never as a driver that vanished with the workflow still pending.
+        cases = {
+            "plugin import fails": ("import missing_vendor_package\n", None),
+            "bootstrap import fails": (
+                "",
+                "import missing_vendor_package\n",
+            ),
+        }
+        for name, (plugin_header, bootstrap) in cases.items():
+            with self.subTest(name):
+                self.out.unlink(missing_ok=True)
+                boot = self.hermes / "hermes_bootstrap.py"
+                boot.unlink(missing_ok=True)
+                if bootstrap is not None:
+                    boot.write_text(bootstrap)
+                self.write_plugin(plugin_header)
+
+                self.run_driver()
+
+                result = json.loads(self.out.read_text(encoding="utf-8"))
+                self.assertEqual(result["outcome"], "error")
+                self.assertEqual(result["workflow_id"], "t_boot")
+
+    def test_a_hermes_tree_without_a_bootstrap_still_drives(self):
+        # Older Hermes trees have no hermes_bootstrap; the driver must not
+        # turn its absence into a failure.
+        self.write_plugin("")
+
+        self.run_driver()
+
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["outcome"], "completed")
+
+
 class LocalOrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
