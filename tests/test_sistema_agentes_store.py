@@ -770,6 +770,49 @@ class I13AceptacionEnElStore(AlmacenDePrueba):
         distinta = self.tienda.abrir_raiz(otra)
         self.assertEqual(distinta.codigo, "operation-conflict")
 
+    def test_un_claim_verifier_no_cubre_un_criterio_owner(self):
+        # F2 (hermes#34): la guarda de aceptación también compara el rol del
+        # claim con el verifier declarado del criterio (la misma regla que
+        # decidir, via claim_vigente).
+        owner = store.Store(
+            Path(self.directorio.name) / "owner.db",
+            permisos_h=permisos_de_prueba(),
+        )
+        self.addCleanup(owner.cerrar)
+        self.assertIsInstance(
+            owner.abrir_raiz(meta_de([unidad("a", "o1", rol="owner")])), store.Ok
+        )
+        self.assertIsInstance(
+            owner.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"), store.Ok
+        )
+        owner.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        owner.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            owner.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        negada = owner.aplicar(
+            RAIZ,
+            decision(
+                claims=[claim("a", 1, "o1", rol="verifier")],
+                outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+            ),
+            "dec-1",
+        )
+        self.assertEqual(negada.codigo, "criteria-unproven")
+        self.assertEqual(negada.detalle, {"unitId": "a", "criterionId": "o1"})
+
     def test_el_claim_mas_nuevo_de_la_decision_gana_al_guardado(self):
         self.assertIsInstance(
             self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
@@ -883,7 +926,25 @@ class EntradasDelMundo(AlmacenDePrueba):
         )
 
     def test_un_claim_owner_respaldado_por_la_respuesta_del_dueno_acepta(self):
-        self._intento_reportado()
+        # F2 (hermes#34): el claim owner cuenta en el criterio que lo declara;
+        # la prueba usa una raiz con criterio owner para seguir probando lo
+        # suyo: el respaldo de la respuesta del dueno.
+        owner = store.Store(
+            Path(self.directorio.name) / "owner.db",
+            permisos_h=permisos_de_prueba(),
+        )
+        self.addCleanup(owner.cerrar)
+        self.assertIsInstance(
+            owner.abrir_raiz(meta_de([unidad("a", "a1", rol="owner")])), store.Ok
+        )
+        self.assertIsInstance(
+            owner.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"), store.Ok
+        )
+        owner.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        owner.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            owner.reportar_resultado(self.resultado(DIGEST)), store.Ok
+        )
         borrador = decidir.borrador_excepcion(
             RAIZ,
             "NECESITA_DAVID",
@@ -897,9 +958,9 @@ class EntradasDelMundo(AlmacenDePrueba):
         )
         dec = decidir._decision_vacia(1, 1)
         dec["excepciones"] = [borrador]
-        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        self.assertIsInstance(owner.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
         self.assertIsInstance(
-            self.tienda.responder_excepcion(
+            owner.responder_excepcion(
                 RAIZ, borrador["exceptionId"], "aceptar", ["david"]
             ),
             store.Ok,
@@ -914,13 +975,28 @@ class EntradasDelMundo(AlmacenDePrueba):
             claims=[claim_dueno],
             outcomes=[{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
         )
-        self.assertIsInstance(self.tienda.aplicar(RAIZ, aceptacion, "dec-ok"), store.Ok)
+        self.assertIsInstance(owner.aplicar(RAIZ, aceptacion, "dec-ok"), store.Ok)
 
     def test_un_claim_owner_sin_respuesta_del_dueno_no_acepta(self):
-        self._intento_reportado()
+        owner = store.Store(
+            Path(self.directorio.name) / "owner-sin.db",
+            permisos_h=permisos_de_prueba(),
+        )
+        self.addCleanup(owner.cerrar)
+        self.assertIsInstance(
+            owner.abrir_raiz(meta_de([unidad("a", "a1", rol="owner")])), store.Ok
+        )
+        self.assertIsInstance(
+            owner.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"), store.Ok
+        )
+        owner.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        owner.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            owner.reportar_resultado(self.resultado(DIGEST)), store.Ok
+        )
         claim_falso = claim("a", 1, "a1")
         claim_falso["verifier"] = {"principal": ["claw"], "role": "owner"}
-        negada = self.tienda.aplicar(
+        negada = owner.aplicar(
             RAIZ,
             decision(
                 claims=[claim_falso],
@@ -929,7 +1005,7 @@ class EntradasDelMundo(AlmacenDePrueba):
             "dec-falsa",
         )
         self.assertEqual(negada.codigo, "criteria-unproven")
-        vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
+        vista = owner.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
         self.assertEqual(vista["unidades"][0]["state"], "reported")
 
     def test_reportar_resultado_pone_reported_en_su_misma_transaccion(self):
@@ -1285,7 +1361,26 @@ class LaGuardaValidaLosClaimsDeLaDecision(AlmacenDePrueba):
 
 
 class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
-    """F7: la guarda de aceptación del store aplica revisorExcluyeAutores."""
+    """F7: la guarda de aceptación del store aplica revisorExcluyeAutores.
+    F2 (hermes#34): un claim reviewer cuenta en criterios declarados
+    reviewer, así que la exclusión se prueba sobre criterio reviewer."""
+
+    def setUp(self):
+        rastrear_conexiones(self)
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(
+            meta_de(
+                [
+                    unidad("a", "a1", rol="reviewer"),
+                    unidad("c", "c1", ["a"]),
+                    unidad("d", "d1"),
+                ]
+            )
+        )
 
     def _intento_reportado(self):
         self.assertIsInstance(
@@ -1339,9 +1434,40 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
         self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
 
     def test_un_claim_de_verificador_autor_sigue_aceptando(self):
-        self._intento_reportado()
+        # F2 (hermes#34): la exclusión es para claims reviewer; un claim
+        # verifier del autor no está excluido, pero solo cuenta en criterios
+        # verifier: la prueba corre sobre su propio criterio verifier.
+        tienda_verifier = store.Store(
+            Path(self.directorio.name) / "verifier.db",
+            permisos_h=permisos_de_prueba(),
+        )
+        self.addCleanup(tienda_verifier.cerrar)
+        self.assertIsInstance(
+            tienda_verifier.abrir_raiz(meta_de([unidad("a", "a1")])), store.Ok
+        )
+        self.assertIsInstance(
+            tienda_verifier.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-v0"),
+            store.Ok,
+        )
+        tienda_verifier.transicionar_intento(RAIZ, "a", 1, "admitted", "t-1")
+        tienda_verifier.transicionar_intento(RAIZ, "a", 1, "running", "t-1")
+        self.assertIsInstance(
+            tienda_verifier.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "ready.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T11:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-1"},
+                    "payload": {"evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
         verificador = claim("a", 1, "a1", rol="verifier", principal=["codex"])
-        recibo = self.tienda.aplicar(
+        recibo = tienda_verifier.aplicar(
             RAIZ,
             decision(
                 claims=[verificador],
@@ -1422,7 +1548,7 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
     def test_con_la_politica_apagada_el_revisor_autor_acepta(self):
         tendera = politica_regla4(revisorExcluyeAutores=False)
         self.tienda.abrir_raiz(
-            {**meta_de([unidad("l", "l1")]), "rootId": "root-lenta"},
+            {**meta_de([unidad("l", "l1", rol="reviewer")]), "rootId": "root-lenta"},
             politicas={"quality-kit.regla4": tendera},
         )
         self.assertIsInstance(

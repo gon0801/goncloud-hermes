@@ -254,7 +254,9 @@ def _escribir_envoltorio(home: Path, cron: CronDeRaices, plugin: Path) -> None:
     )
 
 
-def _registrar_estado(home: Path, con_plantilla: bool, ids: dict) -> None:
+def _registrar_estado(
+    home: Path, con_plantilla: bool, ids: dict, crones=CRONES
+) -> None:
     raices = home / "raices"
     raices.mkdir(exist_ok=True)
     (raices / "instalacion.json").write_text(
@@ -269,7 +271,7 @@ def _registrar_estado(home: Path, con_plantilla: bool, ids: dict) -> None:
                         "envoltorio": cron.envoltorio,
                         "script_del_cron": cron.script,
                     }
-                    for cron in CRONES
+                    for cron in crones
                 ],
                 "permisos_de_plantilla": con_plantilla,
             },
@@ -325,6 +327,46 @@ def chequear(home: Path, plugin: Path) -> int:
     return 0
 
 
+def _limpieza_de_creacion(
+    home: Path, corredor, creados: list, rechazado: str, codigo: int, salida: str
+) -> int:
+    """F1 (hermes#34): un create parcial no deja un cron vivo apuntando a un
+    envoltorio borrado ni un desastre que --revertir no pueda retirar. Retira
+    los crons creados EN ESTA corrida y solo entonces desenlaza los
+    envoltorios; si un remove de la limpieza falla, escribe el estado parcial
+    con lo que quedó vivo (con sus envoltorios: el cron vivo no salta a
+    ciegas) para que --revertir lo retire, y lo nombra en el error."""
+    print(
+        f"instalar-raices: hermes rechazó el cron {rechazado} "
+        f"(código {codigo}): {salida.strip()}"
+    )
+    vivos: list = []
+    for cron in CRONES:
+        for nombre, cron_id in creados:
+            if nombre != cron.nombre or cron_id is None:
+                continue
+            codigo_rm, salida_rm = corredor(["cron", "remove", cron_id])
+            if codigo_rm != 0:
+                vivos.append(cron)
+                print(
+                    f"instalar-raices: la limpieza del cron {nombre} falló "
+                    f"(código {codigo_rm}): {salida_rm.strip()}; quedó vivo y "
+                    f"queda registrado en {RUTA_DE_ESTADO} para que "
+                    "--revertir lo retire"
+                )
+    if vivos:
+        _registrar_estado(
+            home,
+            con_plantilla=False,
+            ids={cron.nombre: dict(creados).get(cron.nombre) for cron in vivos},
+            crones=tuple(vivos),
+        )
+        return 1
+    for escrito in CRONES:
+        (home / escrito.envoltorio).unlink(missing_ok=True)
+    return 1
+
+
 def aplicar(home: Path, plugin: Path, corredor) -> int:
     jobs = _leer_jobs(home)
     if jobs is None:
@@ -334,6 +376,7 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
     for cron in CRONES:
         _escribir_envoltorio(home, cron, plugin)
     ids: dict = {}
+    creados: list = []
     for cron in CRONES:
         if not _hay_cron(jobs, cron.nombre):
             codigo, salida = corredor(
@@ -351,13 +394,9 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
                 ]
             )
             if codigo != 0:
-                for escrito in CRONES:
-                    (home / escrito.envoltorio).unlink(missing_ok=True)
-                print(
-                    f"instalar-raices: hermes rechazó el cron (código {codigo}): "
-                    f"{salida.strip()}"
+                return _limpieza_de_creacion(
+                    home, corredor, creados, cron.nombre, codigo, salida
                 )
-                return 1
             # El id sale de releyendo jobs.json por nombre (la fuente viva);
             # la línea "Created job: <id>" del CLI es el respaldo.
             tras_crear = _leer_jobs(home)
@@ -371,6 +410,7 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
             if cron_id is None:
                 _avisar_sin_id(cron.nombre)
             ids[cron.nombre] = cron_id
+            creados.append((cron.nombre, cron_id))
         else:
             cron_id = _id_del_cron(jobs, cron.nombre)
             if cron_id is None:

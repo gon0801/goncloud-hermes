@@ -450,7 +450,15 @@ class Store:
         self._conexion.execute("ROLLBACK")
 
     def _criterio_cubierto(
-        self, root_id, claims, unit_id, attempt, criterion_id, revision, ahora
+        self,
+        root_id,
+        claims,
+        unit_id,
+        attempt,
+        criterion_id,
+        revision,
+        ahora,
+        verifier_requerido=None,
     ) -> bool:
         excluye = None
         autores: set = set()
@@ -470,7 +478,15 @@ class Store:
                     autores.add(_perfil_de(documento))
             excluye = autores
         vigente = decidir.claim_vigente(
-            claims, root_id, revision, unit_id, attempt, criterion_id, ahora, excluye
+            claims,
+            root_id,
+            revision,
+            unit_id,
+            attempt,
+            criterion_id,
+            ahora,
+            excluye,
+            verifier_requerido=verifier_requerido,
         )
         if vigente is None or vigente["outcome"] != "passed":
             return False
@@ -1080,6 +1096,7 @@ class Store:
                         criterio["criterionId"],
                         revision,
                         ahora,
+                        verifier_requerido=criterio.get("verifier"),
                     )
                     if not cubierto:
                         self._rollback()

@@ -33,7 +33,8 @@ El cron te avisa en el chat qué raíz necesita qué. Léela con
 `goncloud_root_read` y contesta CADA necesidad:
 
 - `assignment` con razón `first`: perfil por modo y carril — `implement` →
-  `implementer`, `read` → `scout`, `design` → `ingenieria`. `target`
+  `implementer`, `read` → `scout`, `design` → `ingenieria`, `publish` →
+  `entrega` (el perfil de cierre y despliegue autorizado). `target`
   `{kind: "cli", hostId: "gon-pc", adapterId: <perfil>}`, `resultContract:
   "review.v1"`, `inputRevision` con el sha REAL del head (`git ls-remote` o
   `gh`; nunca inventado), `continuation` `{kind: "requester"}`, y el brief

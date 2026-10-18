@@ -436,6 +436,63 @@ class I13Aceptacion(unittest.TestCase):
         )
         self.assertEqual(propuesta.estado, "done")
 
+    def test_un_claim_verifier_no_cierra_un_criterio_owner(self):
+        # F2 (hermes#34): el claim solo cuenta si su rol es compatible con el
+        # verifier declarado del criterio; owner pide claim owner, así que el
+        # criterio sigue abierto y sale la pregunta que corresponde.
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("owner",))],
+                intentos=[intento("a", 1, "reported")],
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
+                evidencia=[claim("a", 1, "a1", "passed", rol="verifier")],
+            )
+        )
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        self.assertEqual(
+            [e["type"] for e in propuesta.decision["excepciones"]],
+            ["NECESITA_DAVID"],
+        )
+        self.assertEqual(
+            propuesta.decision["excepciones"][0]["subject"],
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "owner:a1"},
+        )
+        self.assertEqual(
+            propuesta.decision["excepciones"][0]["options"],
+            ["aceptar", "rechazar"],
+        )
+
+    def test_un_claim_owner_cierra_un_criterio_owner(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("owner",))],
+                intentos=[intento("a", 1, "reported")],
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
+                evidencia=[
+                    claim("a", 1, "a1", "passed", rol="owner", principal=["david"])
+                ],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "accepted"}],
+        )
+
+    def test_un_claim_verifier_no_cierra_un_criterio_reviewer(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[intento("a", 1, "reported")],
+                resultados=[resultado("a", 1, veredicto="approved", ref="artifact:ok")],
+                evidencia=[claim("a", 1, "a1", "passed", rol="verifier")],
+            )
+        )
+        self.assertEqual(propuesta.decision["outcomes"], [])
+        self.assertEqual(
+            [e["type"] for e in propuesta.decision["excepciones"]],
+            ["SIN_REVISOR"],
+        )
+
     def test_ci_sin_claim_pide_verificacion_y_vencido_no_cuenta(self):
         sin_claim = decidir.decidir(
             vista([unidad("a", roles=("ci",))], intentos=[intento("a", 1, "reported")])

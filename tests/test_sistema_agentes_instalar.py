@@ -1145,5 +1145,109 @@ class LosDosCrones(InstaladorDeRaices):
         self.assertEqual(proceso.stdout, "", "sin necesidades la corrida es silenciosa")
 
 
+class SegundoCronRechazado(HermesFalsoDeCrones):
+    """F1 del bot (hermes#34): el 1.er create sale bien y el 2.º falla
+    (p. ej. un Hermes que no acepta --deliver bot-chat:claw)."""
+
+    def _crear(self, argv):
+        if argv[argv.index("--name") + 1] == "despertar-raices":
+            return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
+        return super()._crear(argv)
+
+
+class RemoveDeLimpiezaRoto(HermesFalsoDeCrones):
+    """F1: la limpieza del create parcial tampoco sale (el CLI real puede
+    rechazar el remove igual que el create)."""
+
+    def _crear(self, argv):
+        if argv[argv.index("--name") + 1] == "despertar-raices":
+            return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
+        return super()._crear(argv)
+
+    def __call__(self, argv):
+        if argv[:2] == ["cron", "remove"]:
+            self.llamadas.append(list(argv))
+            return 1, "Failed to remove job: PermissionError"
+        return super().__call__(argv)
+
+
+class AplicarParcial(InstaladorDeRaices):
+    """F1: al fallar el n-ésimo create no queda un cron vivo apuntando a un
+    envoltorio borrado ni un desastre que --revertir no pueda retirar."""
+
+    def test_sin_cron_vivo_ni_envoltorios_cuando_la_limpieza_sale(self):
+        rechazo = SegundoCronRechazado(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=rechazo
+            )
+        self.assertEqual(codigo, 1)
+        salida = bufer.getvalue()
+        self.assertIn("despertar-raices", salida)
+        self.assertIn("deliver desconocido", salida)
+        # La limpieza retiró el cron creado en esta corrida: no queda vivo.
+        removes = [
+            llamada[2]
+            for llamada in rechazo.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        ]
+        self.assertEqual(removes, [ID_FALSO])
+        self.assertEqual(
+            sorted(
+                entrada.get("name", "")
+                for entrada in rechazo.jobs()
+                if entrada.get("name")
+            ),
+            [],
+            "sin cron vivo al final",
+        )
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
+        self.assertFalse(
+            (self.home / "raices" / "instalacion.json").exists(),
+            "nada vivo, nada que registrar",
+        )
+        # Y un --revertir posterior no encuentra nada y sale 0 sin tocar nada.
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.revertir(), 0)
+        self.assertIn("sin instalación registrada", bufer.getvalue())
+
+    def test_con_el_remove_de_limpieza_roto_queda_estado_parcial(self):
+        roto = RemoveDeLimpiezaRoto(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=roto
+            )
+        self.assertEqual(codigo, 1)
+        salida = bufer.getvalue()
+        self.assertIn("ticker-raices", salida, "el error nombra el cron vivo")
+        self.assertIn("PermissionError", salida, "el error nombra la causa del remove")
+        self.assertIn("instalacion.json", salida)
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(estado["version"], 2)
+        crons = {entrada["cron"]: entrada["cron_id"] for entrada in estado["crons"]}
+        self.assertEqual(crons, {"ticker-raices": ID_FALSO}, "solo lo que quedó vivo")
+        # El cron vivo conserva su envoltorio: el cron no salta a ciegas.
+        self.assertTrue((self.home / "scripts" / "ticker-raices.py").exists())
+        # --revertir retira lo que la limpieza no pudo.
+        self.corredor = HermesFalsoDeCrones(self.home, ids=[ID_FALSO])
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.revertir(), 0)
+        removes = [
+            llamada[2]
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        ]
+        self.assertEqual(removes, [ID_FALSO])
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
