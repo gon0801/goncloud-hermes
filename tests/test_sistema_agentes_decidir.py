@@ -1333,5 +1333,100 @@ class R9ElRelevoMideConElIntentoQueCancela(unittest.TestCase):
         self.assertIn("relay", necesitaciones(propuesta))
 
 
+class F12LaLiberacionSoloCuentaSiElIntentoVive(unittest.TestCase):
+    """F12: la liberacion de se_puede_ligar_liberando solo cuenta si el
+    intento a cancelar sigue vivo; terminar no emite outcome sobre un intento
+    ya terminal (o terminado en esta decision), y descontarlo abre una plaza
+    ficticia: se liga de mas y el store rechaza la decision entera con
+    capacity."""
+
+    def seguir_sobre_un_fallado(self, plazas):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        return decidir.decidir(
+            vista(
+                [unidad("a"), unidad("b")],
+                intentos=[intento("a", 1, "failed"), intento("b", 1, "running")],
+                plazas=plazas,
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "seguir",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+
+    def test_el_seguir_tardio_no_pasa_por_una_plaza_ficticia(self):
+        propuesta = self.seguir_sobre_un_fallado(
+            {"raiz": 0, "global": 8, "por_perfil": {"codex": 8}}
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [],
+            "el intento ya es failed: terminar no emite nada",
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "la unica plaza la ocupa el vivo de b: la unidad se difiere",
+        )
+        self.assertEqual(
+            propuesta.decision["respuestas_aplicadas"],
+            [],
+            "la respuesta queda para cuando haya plaza de verdad",
+        )
+
+    def test_el_relevo_tardio_tampoco_pasa_por_una_plaza_ficticia(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "reviewer:a1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[intento("a", 1, "failed")],
+                plazas={"raiz": 0, "global": 8, "por_perfil": {"codex": 8}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [
+                        hecho_de("a", asignacion("a-relevo"), relevo=True)
+                    ],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        self.assertEqual(propuesta.decision["bindings"], [])
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn("relay", necesitaciones(propuesta))
+
+
 if __name__ == "__main__":
     unittest.main()

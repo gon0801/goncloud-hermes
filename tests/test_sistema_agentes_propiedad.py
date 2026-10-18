@@ -416,6 +416,95 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             hasta_done=False,
         )
 
+    def test_el_seguir_tardio_no_liga_de_mas_ni_recibe_capacity(self):
+        """F12: el dueno responde seguir cuando el intento de la excepcion ya
+        murio (failed) y la unica plaza la ocupa OTRA unidad viva: la unidad
+        se difiere y el store acepta la decision. Descontar la plaza del
+        intento muerto liga una de mas y store.aplicar rechaza la decision
+        ENTERA con capacity."""
+        documento = meta([unidad("a"), unidad("b")])
+        documento["budget"]["maxConcurrentTasks"] = 1
+        tienda = store.Store(self.directorio.name + "/seguir-tardio.db")
+        self.addCleanup(tienda.cerrar)
+        self.assertIsInstance(tienda.abrir_raiz(documento), store.Ok)
+
+        numero = [0]
+
+        def decidir_y_aplicar(hechos_raiz):
+            numero[0] += 1
+            propuesta = decidir.decidir(tienda.leer_vista(RAIZ, hechos_raiz))
+            resultado = tienda.aplicar(RAIZ, propuesta.decision, f"dec-{numero[0]}")
+            self.assertFalse(
+                hasattr(resultado, "codigo"),
+                f"el store rechazo la decision: {getattr(resultado, 'codigo', None)}",
+            )
+            return propuesta
+
+        # La primera decision liga a1 y despachamos su tarjeta.
+        primera = decidir_y_aplicar(hechos(("a",)))
+        self.assertEqual([b["unitId"] for b in primera.decision["bindings"]], ["a"])
+        tienda.reclamar_intencion(RAIZ, "a", 1)
+        tienda.admitir_intento(RAIZ, "a", 1, "t-a1")
+        tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-a1")
+        # Una incidencia inesperada sobre a1 viva y un resultado aprobado.
+        tienda.registrar_incidencia(
+            RAIZ,
+            "a",
+            1,
+            "transporte-raro",
+            {"kind": "transport-unavailable", "episodeId": "raro"},
+        )
+        self.assertIsInstance(
+            tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "review.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T12:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-a1"},
+                    "payload": {"verdict": "approved", "evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        # La decision levanta NECESITA_DAVID(owner) e INESPERADO sobre a1.
+        segunda = decidir_y_aplicar(hechos(()))
+        por_tipo = {
+            e["type"]: e["exceptionId"] for e in segunda.decision["excepciones"]
+        }
+        self.assertIn("INESPERADO", por_tipo)
+        # El dueno rechaza a1 (muere) y solo entonces responde el seguir.
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, por_tipo["NECESITA_DAVID"], "rechazar", ["david"]
+            ),
+            store.Ok,
+        )
+        decidir_y_aplicar(hechos(("b",)))
+        estados = {
+            d["unitId"]: d["state"]
+            for d in tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+        }
+        self.assertEqual(estados.get("a"), "failed")
+        self.assertEqual(estados.get("b"), "ready")
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, por_tipo["INESPERADO"], "seguir", ["david"]
+            ),
+            store.Ok,
+        )
+        # El seguir tardio no puede abrir la plaza del intento muerto.
+        tardia = decidir_y_aplicar(hechos(()))
+        self.assertEqual(tardia.decision["bindings"], [])
+        vivos = tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+        self.assertEqual(
+            [d["attempt"] for d in vivos if d["unitId"] == "a"],
+            [1],
+            "no se liga un intento de mas para a",
+        )
+
     def test_el_claim_de_otra_revision_no_bloquea_la_aceptacion(self):
         claims = [
             claim_de_hecho("a", 1, "a1", "passed"),
