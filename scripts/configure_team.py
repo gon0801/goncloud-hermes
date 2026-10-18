@@ -705,6 +705,75 @@ def with_env_value(text, name, value):
     return "\n".join(lines) + "\n"
 
 
+#: The home ROOT is Hermes' `default` profile (measured on the PC,
+#: 2026-10-18): the deploy manages only its routing keys there, never the
+#: owner's platforms, gateway, plugins or secrets.
+_ROOT_ROUTING_KEYS = ("model", "fallback_providers", "agent")
+
+
+def _block_lines(key, value):
+    """The top-level YAML block for one key, without the trailing newline."""
+    import yaml
+
+    rendered = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True).rstrip(
+        "\n"
+    )
+    return rendered.split("\n")
+
+
+def _top_level_ranges(lines):
+    """``{key: (start, end)}`` for every top-level block of the text.
+
+    A ``- item`` line at column zero belongs to the block above it (safe_dump
+    renders sequences that way), never to a key of its own.
+    """
+    ranges = {}
+    index, total = 0, len(lines)
+    while index < total:
+        line = lines[index]
+        if line and line[0] not in " \t#-" and ":" in line:
+            key = line.split(":", 1)[0]
+            end = index + 1
+            while end < total and (
+                not lines[end] or lines[end][0] in " \t" or lines[end].startswith("- ")
+            ):
+                end += 1
+            ranges[key] = (index, end)
+            index = end
+        else:
+            index += 1
+    return ranges
+
+
+def with_root_routing(text, routing):
+    """The root config text with the routing keys replaced in place.
+
+    Everything else — comments, key order, the owner's own keys — stays byte
+    for byte; new blocks use the file's own line ending. Inline values for a
+    managed key are replaced by the full block.
+    """
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(newline)
+    for key in _ROOT_ROUTING_KEYS:
+        block = _block_lines(key, routing[key])
+        ranges = _top_level_ranges(lines)
+        if key in ranges:
+            start, end = ranges[key]
+            # A block that runs to the end of the file has trailing blank
+            # lines inside its range: keep them where they were.
+            blanks = []
+            cut = end
+            while cut > start and lines[cut - 1] == "":
+                blanks.append("")
+                cut -= 1
+            lines[start:end] = [*block, *blanks]
+        elif lines and lines[-1] == "":
+            lines[-1:-1] = block
+        else:
+            lines.extend(block)
+    return newline.join(lines)
+
+
 def configure(
     runtime_home,
     install_dir,
@@ -861,6 +930,29 @@ def configure(
     root_config = contained(runtime_home / "config.yaml", runtime_home)
     root_text = root_config.read_bytes().decode("utf-8") if root_config.exists() else ""
     root_desired = apply_root_kanban(root_text, root_kanban_policy(team))
+    # The `default` profile is the home ROOT: manage exactly its lane's
+    # routing there and nothing else of the owner's root config.
+    import yaml
+
+    desired_root = native_config(routing_source, "default")
+    root_state_path = contained(runtime_home / "goncloud-managed.json", runtime_home)
+    root_state = (
+        json.loads(root_state_path.read_text(encoding="utf-8"))
+        if root_state_path.exists()
+        else {}
+    )
+    refuse_regression(root_state)
+    root_live = yaml.safe_load(root_text) or {}
+    root_previous = root_state.get("config", {})
+    root_adoptions = (
+        live_routing_changes(root_live, root_previous) if adopt_manual_routing else {}
+    )
+    if root_adoptions:
+        root_previous = with_adopted_routing(root_previous, root_adoptions)
+    root_cleaned = remove_owned_native_routing(dict(root_live), root_previous)
+    root_merged = merge_profile_config(root_cleaned, desired_root, root_previous)
+    root_routing = {key: root_merged[key] for key in _ROOT_ROUTING_KEYS}
+    root_text_routed = with_root_routing(root_desired, root_routing)
     # Every profile validated above; nothing has been written yet.
     keyed = [entry[0] for entry in prepared if uses_meta_ai(entry[5])]
     key = muse_login_key() if keyed else None
@@ -881,9 +973,15 @@ def configure(
         if adoptions:
             listed = ", ".join(sorted(adoptions))
             print(f"Ruteo manual a adoptar como previo en: {listed}")
+        if root_adoptions:
+            print("Ruteo manual a adoptar en la raiz (default)")
         print(
             "Root dispatch allowlist: "
             + ("up to date" if root_desired == root_text else "would be written")
+        )
+        print(
+            "Root default routing: "
+            + ("up to date" if root_text_routed == root_text else "would be written")
         )
         if env_files:
             stale = [
@@ -901,8 +999,26 @@ def configure(
             )
         return
     # The allowlist goes first: it is what keeps the gateway off stage cards.
-    write_changed(root_config, root_desired.encode("utf-8"))
+    write_changed(root_config, root_text_routed.encode("utf-8"))
     adoption_stamp = datetime.now(timezone.utc).strftime(ADOPTION_STAMP)
+    root_record = {
+        "config": desired_root,
+        "source_revision": revision,
+    }
+    if root_adoptions:
+        root_record["adopted_manual_routing"] = {
+            **(root_state.get("adopted_manual_routing") or {}),
+            adoption_stamp: {
+                "reason": ADOPTION_REASON,
+                "keys": sorted(root_adoptions),
+            },
+        }
+    elif "adopted_manual_routing" in root_state:
+        root_record["adopted_manual_routing"] = root_state["adopted_manual_routing"]
+    write_changed(
+        root_state_path,
+        json.dumps(root_record, indent=2, ensure_ascii=False) + "\n",
+    )
     for (
         profile,
         config_path,

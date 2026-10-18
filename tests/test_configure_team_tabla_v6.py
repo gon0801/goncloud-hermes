@@ -604,5 +604,162 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
 
+class RaizDefaultTests(unittest.TestCase):
+    """The `default` profile is the home ROOT: only its routing is managed.
+
+    Measured on the PC (2026-10-18): %LOCALAPPDATA%\\hermes\\config.yaml is the
+    default profile and carries the owner's own keys (platforms, gateway,
+    secrets). The v6 lanes say default rides `simples`, so the deploy must set
+    exactly that lane's routing there — first adoption only with the flag,
+    idempotent after, and every other key byte-identical.
+    """
+
+    RAIZ = (
+        "# config del dueno\n"
+        "platforms:\n"
+        "  cli:\n"
+        "    - browser\n"
+        "gateway:\n"
+        "  port: 8734\n"
+        "model:\n"
+        "  provider: opencode-go\n"
+        "  default: muse-spark-1.3-contributor\n"
+        "secreto: no-tocar\n"
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.runtime = Path(self.tmp.name) / "runtime"
+        self.runtime.mkdir()
+        (self.runtime / "config.yaml").write_text(self.RAIZ, encoding="utf-8")
+
+    def raiz(self):
+        return (self.runtime / "config.yaml").read_text(encoding="utf-8")
+
+    @staticmethod
+    def claves_ajenas(texto):
+        # kanban is also managed at the root (the dispatch allowlist,
+        # apply_root_kanban, since before the v6 table).
+        doc = yaml.safe_load(texto) or {}
+        doc.pop("model", None)
+        doc.pop("fallback_providers", None)
+        doc.pop("agent", None)
+        doc.pop("kanban", None)
+        return doc
+
+    def deploy(self, *extra):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(self.runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+
+    def test_sin_bandera_la_raiz_conflicta_y_no_se_toca(self):
+        before = self.raiz()
+
+        result = self.deploy()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflict", result.stderr)
+        self.assertEqual(self.raiz(), before)
+        self.assertFalse((self.runtime / "goncloud-managed.json").exists())
+
+    def test_con_bandera_la_raiz_queda_en_el_carril_simples(self):
+        result = self.deploy("--adoptar-ruteo-manual")
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        despues = self.raiz()
+
+        config = yaml.safe_load(despues)
+        self.assertEqual(
+            config["model"],
+            {"provider": "anthropic", "default": "claude-haiku-5-5"},
+        )
+        self.assertEqual(
+            config["fallback_providers"],
+            [
+                {
+                    "provider": "opencode-go",
+                    "model": "deepseek-v4.1-flash",
+                },
+                {
+                    "provider": "zai",
+                    "model": "glm-5.3-flash",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                },
+                {"provider": "xai-oauth", "model": "grok-4.7"},
+            ],
+        )
+        self.assertEqual(
+            config["agent"]["reasoning_overrides"],
+            {
+                "claude-haiku-5-5": "low",
+                "glm-5.3-flash": "low",
+                "grok-4.7": "low",
+            },
+        )
+        # Every other key survives byte for byte, comments included.
+        self.assertEqual(self.claves_ajenas(despues), self.claves_ajenas(self.RAIZ))
+        for fragment in (
+            "# config del dueno\n",
+            "platforms:\n  cli:\n    - browser\n",
+            "gateway:\n  port: 8734\n",
+            "secreto: no-tocar\n",
+        ):
+            self.assertIn(fragment, despues, fragment)
+
+        # Its own record, with date and reason for the adopted live model.
+        state = json.loads(
+            (self.runtime / "goncloud-managed.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            state["config"],
+            configure_team.native_config(LIVE, "default"),
+        )
+        record = state["adopted_manual_routing"]
+        self.assertEqual(len(record), 1)
+        entry = next(iter(record.values()))
+        self.assertIn("2026-10-17", entry["reason"])
+        self.assertIn("model", entry["keys"])
+
+    def test_segunda_aplicacion_idempotente_y_check_verde(self):
+        self.deploy("--adoptar-ruteo-manual")
+        before = self.raiz()
+
+        second = self.deploy()
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.raiz(), before)
+        state = json.loads(
+            (self.runtime / "goncloud-managed.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(state["adopted_manual_routing"]), 1)
+        checked = self.deploy("--check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_una_raiz_sin_model_previo_recibe_el_carril_sin_bandera(self):
+        (self.runtime / "config.yaml").write_text(
+            "platforms:\n  cli: [web]\n", encoding="utf-8"
+        )
+
+        result = self.deploy()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = yaml.safe_load(self.raiz())
+        self.assertEqual(config["model"]["default"], "claude-haiku-5-5")
+        self.assertEqual(config["platforms"], {"cli": ["web"]})
+
+
 if __name__ == "__main__":
     unittest.main()
