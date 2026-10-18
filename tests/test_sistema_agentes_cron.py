@@ -31,6 +31,12 @@ DOBLE = REPO / "tests/fake_hermes_cli"
 
 RAIZ = "root-cron"
 DIGEST = "sha256:" + "a" * 64
+# El payload que imprime `hermes send --json` para Telegram, medido en la
+# fuente de la PC: _success(...) con message_id como TEXTO de dígitos.
+PAYLOAD_REAL = (
+    '{"success": true, "platform": "telegram", "chat_id": "6470689715",'
+    ' "message_id": "8123"}'
+)
 
 META = {
     "schema": "sistema-agentes.meta.v1",
@@ -634,18 +640,40 @@ class EmisorDeTelegram(unittest.TestCase):
 
             def corredor(*args, **kwargs):
                 llamadas.append((args, kwargs))
-                return self.Corrida(stdout='{"message_id": 77}')
+                return self.Corrida(stdout=PAYLOAD_REAL)
 
             enviar = cron.emisor_de_telegram(
                 base, resolvedor=lambda _nombre: "/bin/hermes", corredor=corredor
             )
-            self.assertEqual(enviar("⚠️ hola"), 77)
+            self.assertEqual(enviar("⚠️ hola"), 8123)
         comando, kwargs = llamadas[0]
         self.assertEqual(
             comando[0], ["/bin/hermes", "send", "--to", "telegram", "--json"]
         )
         self.assertEqual(kwargs["input"], "⚠️ hola")
         self.assertEqual(kwargs["env"]["HERMES_HOME"], str(base / "profiles" / "claw"))
+
+    def test_el_payload_real_de_hermes_da_el_message_id(self):
+        # Medido en la fuente de Hermes (PC, hermes-agent): send_message_tool
+        # imprime _success("telegram", chat_id, warnings,
+        # message_id=str(last_msg.message_id)) — el id llega como TEXTO de
+        # dígitos (tools/send_message_senders.py:305). Exit 0 si success o
+        # skipped sin error; 1 si error.
+        cron = importlib.import_module("raices.cron_ticker")
+        enviar = cron.emisor_de_telegram(
+            Path("/base"),
+            resolvedor=lambda _nombre: "/bin/hermes",
+            corredor=lambda *_a, **_k: self.Corrida(stdout=PAYLOAD_REAL),
+        )
+        self.assertEqual(enviar("hola"), 8123)
+        por_int = cron.emisor_de_telegram(
+            Path("/base"),
+            resolvedor=lambda _nombre: "/bin/hermes",
+            corredor=lambda *_a, **_k: self.Corrida(
+                stdout='{"success": true, "message_id": 77}'
+            ),
+        )
+        self.assertEqual(por_int("hola"), 77)
 
     def test_sin_hermes_resoluble_no_invoca_nada_y_devuelve_none(self):
         cron = importlib.import_module("raices.cron_ticker")
@@ -678,20 +706,26 @@ class EmisorDeTelegram(unittest.TestCase):
         )
         self.assertIsNone(enviar_salida_mala("hola"))
 
-    def test_una_salida_sin_message_id_entero_devuelve_none(self):
+    def test_un_payload_sin_exito_o_sin_message_id_valido_devuelve_none(self):
         cron = importlib.import_module("raices.cron_ticker")
-        por_stdout = (
+        por_payload = (
             "no soy json",
-            '{"message_id": "77"}',
-            '{"otra": 1}',
             "[]",
+            '{"skipped": true}',
+            '{"success": false, "error": "sin chat"}',
+            '{"success": true, "error": "algo falló"}',
+            '{"success": true, "message_id": "abc"}',
+            '{"success": true, "message_id": "0"}',
+            '{"success": true}',
+            '{"message_id": 8123}',
+            '{"success": "yes", "message_id": 8123}',
         )
-        for stdout in por_stdout:
-            with self.subTest(stdout=stdout):
+        for payload in por_payload:
+            with self.subTest(payload=payload):
                 enviar = cron.emisor_de_telegram(
                     Path("/base"),
                     resolvedor=lambda _nombre: "/bin/hermes",
-                    corredor=lambda *_a, **_k: self.Corrida(stdout=stdout),
+                    corredor=lambda *_a, **_k: self.Corrida(stdout=payload),
                 )
                 self.assertIsNone(enviar("hola"))
 

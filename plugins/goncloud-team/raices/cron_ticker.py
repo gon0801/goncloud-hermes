@@ -61,12 +61,20 @@ def emisor_de_telegram(base, resolvedor=None, corredor=None):
     """El emisor de produccion del aviso de excepciones (§3.5): `hermes send
     --to telegram --json` con el cuerpo por stdin y el HERMES_HOME del perfil
     claw (el home con el Telegram del dueno, home_channel). Devuelve el
-    message_id entero de la salida JSON, o None si falla: el checkpoint del
-    aviso (noticed_at) solo avanza con un id confirmado, asi que None se
-    traduce en "no se confirmo" y la pasada siguiente reintenta. El
-    ejecutable se resuelve con shutil.which: en Windows el CLI es hermes.CMD
-    y CreateProcess sin shell no resuelve el nombre pelado (como
-    capacidades._correr_hermes_version, H4a)."""
+    message_id entero, o None si falla: el checkpoint del aviso (noticed_at)
+    solo avanza con un id confirmado, asi que None se traduce en "no se
+    confirmo" y la pasada siguiente reintenta. El ejecutable se resuelve con
+    shutil.which: en Windows el CLI es hermes.CMD y CreateProcess sin shell
+    no resuelve el nombre pelado (como capacidades._correr_hermes_version,
+    H4a).
+
+    El payload lo fija la fuente de Hermes (medido en la PC, hermes-agent):
+    send_message_tool imprime _success("telegram", chat_id, warnings,
+    message_id=str(last_msg.message_id)) con exit 0 si success o skipped sin
+    error, 1 si error (tools/send_message_senders.py:305). Solo eso cuenta
+    como confirmado: success is True, sin "error", y un message_id que sea
+    entero (no bool) o texto de digitos ASCII, mayor que cero. Cualquier otra
+    cosa — incluido {"skipped": true} — es None."""
     resolvedor = resolvedor or shutil.which
     corredor = corredor or subprocess.run
     perfil_claw = Path(base) / "profiles" / "claw"
@@ -94,13 +102,21 @@ def emisor_de_telegram(base, resolvedor=None, corredor=None):
             datos = json.loads(terminado.stdout or "")
         except ValueError:
             return None
-        if not isinstance(datos, dict):
+        if (
+            not isinstance(datos, dict)
+            or datos.get("success") is not True
+            or "error" in datos
+        ):
             return None
-        for clave in ("message_id", "messageId", "id"):
-            valor = datos.get(clave)
-            if isinstance(valor, int) and not isinstance(valor, bool):
-                return valor
-        return None
+        crudo = datos.get("message_id")
+        if isinstance(crudo, bool):
+            return None
+        if isinstance(crudo, str) and not (crudo.isascii() and crudo.isdigit()):
+            return None
+        if not isinstance(crudo, (int, str)):
+            return None
+        message_id = int(crudo)
+        return message_id if message_id > 0 else None
 
     return enviar
 
