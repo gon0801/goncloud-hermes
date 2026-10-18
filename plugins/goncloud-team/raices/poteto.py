@@ -240,6 +240,24 @@ def sonar(home, perfil) -> list[str]:
         muestra = ", ".join(descuadradas[:5])
         resto = f" (y {len(descuadradas) - 5} mas)" if len(descuadradas) > 5 else ""
         fallas.append(f"skills que no cuadran con el manifiesto: {muestra}{resto}")
+    # La adaptación de Hermes publicada por perfil (configure_team la escribe
+    # en skills/poteto-hermes/SKILL.md): su sha va en el registro. Ausente o
+    # editada localmente es una falla: el hijo correría sin su adaptación o
+    # con una versión que la copia fijada no respalda.
+    adaptacion = home / "skills/poteto-hermes/SKILL.md"
+    try:
+        sha_adaptacion = hashlib.sha256(adaptacion.read_bytes()).hexdigest()
+    except OSError:
+        fallas.append(
+            "skills/poteto-hermes/SKILL.md ausente "
+            f"(adaptacion={registro['adaptacion']})"
+        )
+    else:
+        if f"sha256:{sha_adaptacion}" != registro["adaptacion"]:
+            fallas.append(
+                "skills/poteto-hermes/SKILL.md no cuadra con la adaptacion "
+                f"del registro ({registro['adaptacion']})"
+            )
     try:
         gestionado = json.loads(
             (home / "goncloud-managed.json").read_text(encoding="utf-8")

@@ -367,6 +367,10 @@ class Sonda(unittest.TestCase):
             final = home / ruta
             final.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(origen, final)
+        # La adaptación de Hermes que configure_team publica por perfil.
+        adaptacion = home / "skills/poteto-hermes/SKILL.md"
+        adaptacion.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(POTETO / "adaptacion-hermes.md", adaptacion)
         (home / "goncloud-managed.json").write_text(
             json.dumps(
                 {
@@ -398,6 +402,31 @@ class Sonda(unittest.TestCase):
             ruta.write_text(ruta.read_text(encoding="utf-8") + "x", encoding="utf-8")
             fallas = poteto.sonar(Path(tmp), "codex")
         self.assertTrue(any("skills" in f for f in fallas), fallas)
+
+    def test_la_adaptacion_de_hermes_ausente_da_falla(self):
+        # CR3: configure_team publica skills/poteto-hermes/SKILL.md por
+        # perfil; sin ella el hijo pierde la adaptación aunque las skills de
+        # la copia fijada estén intactas.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.perfil_desplegado(tmp)
+            (Path(tmp) / "skills/poteto-hermes/SKILL.md").unlink()
+            fallas = poteto.sonar(Path(tmp), "codex")
+        self.assertTrue(
+            any("adaptacion" in f or "adaptación" in f for f in fallas), fallas
+        )
+
+    def test_la_adaptacion_de_hermes_distinta_da_falla(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.perfil_desplegado(tmp)
+            ruta = Path(tmp) / "skills/poteto-hermes/SKILL.md"
+            ruta.write_text(
+                ruta.read_text(encoding="utf-8") + "\nedicion local\n",
+                encoding="utf-8",
+            )
+            fallas = poteto.sonar(Path(tmp), "codex")
+        self.assertTrue(
+            any("adaptacion" in f or "adaptación" in f for f in fallas), fallas
+        )
 
 
 if __name__ == "__main__":
