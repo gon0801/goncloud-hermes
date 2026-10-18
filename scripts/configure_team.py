@@ -941,7 +941,7 @@ def configure(
         if root_state_path.exists()
         else {}
     )
-    refuse_regression(root_state)
+    refuse_regression(root_state, allow_regression=allow_regression)
     root_live = yaml.safe_load(root_text) or {}
     root_previous = root_state.get("config", {})
     root_adoptions = (

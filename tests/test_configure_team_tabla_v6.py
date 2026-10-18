@@ -790,6 +790,26 @@ class RaizDefaultTests(unittest.TestCase):
         self.assertEqual(config["model"]["default"], "claude-haiku-5-5")
         self.assertEqual(config["platforms"], {"cli": ["web"]})
 
+    def test_la_raiz_respeta_allow_regression(self):
+        # A root record deployed from a revision this checkout does not
+        # contain must fail the run without the flag and pass with it —
+        # like every profile, not killing the whole deploy behind it.
+        foreign = "1" * 40
+        (self.runtime / "config.yaml").write_text(
+            "platforms:\n  cli: [web]\n", encoding="utf-8"
+        )
+        (self.runtime / "goncloud-managed.json").write_text(
+            json.dumps({"config": {}, "source_revision": foreign}),
+            encoding="utf-8",
+        )
+
+        sin_bandera = self.deploy("--check")
+        self.assertNotEqual(sin_bandera.returncode, 0)
+        self.assertIn("does not contain", sin_bandera.stderr)
+
+        con_bandera = self.deploy("--check", "--allow-regression")
+        self.assertEqual(con_bandera.returncode, 0, con_bandera.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
