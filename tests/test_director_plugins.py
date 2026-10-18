@@ -44,6 +44,11 @@ PATCH_SHA = "fb7c8aa20f8f6cfd85fd4035777e3215c1c716eaf429fb11f0223f4d1c89d879"
 MCP_SERVER = "src/jev_skill_router/mcp_server.py"
 PRISTINE_SHA = "eb28e49d7815d1e200f42ae52c6545c529ecbfb28fb31f935d28f4c8d1aa4e04"
 PATCHED_SHA = "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b"
+JEV_PATCH = ROOT / "patches/claw/jev/0001-secret-scope.patch"
+JEV_PATCH_SHA = "4a82061e6241dc7f64c41aeb13d7115f32be44f7b23b7e93d4112a8a62f0306c"
+JEV_CLIENT = "client.py"
+JEV_PRISTINE_SHA = "778a2ac4ec509e56ac4ddbb47f2344c48e2cd308adb0686793ac123f9430bf67"
+JEV_PATCHED_SHA = "b91c5be49e9a21d629406fe6057f41172ab1c5aca4b93dde533fd1ae3edabc74"
 
 
 class ManifiestoTests(unittest.TestCase):
@@ -61,7 +66,14 @@ class ManifiestoTests(unittest.TestCase):
                 "repo": JEV_REPO,
                 "sha": JEV_SHA,
                 "toolsets": ["jev"],
-                "patches": [],
+                "patches": [
+                    {
+                        "file": JEV_CLIENT,
+                        "patch": "patches/claw/jev/0001-secret-scope.patch",
+                        "sha256_pristine": JEV_PRISTINE_SHA,
+                        "sha256_patched": JEV_PATCHED_SHA,
+                    }
+                ],
             },
         )
         self.assertEqual(jsr["repo"], JSR_REPO)
@@ -80,12 +92,17 @@ class ManifiestoTests(unittest.TestCase):
         )
 
     def test_el_patch_del_repo_no_cambia_ni_se_pierde(self):
-        self.assertTrue(PATCH.is_file())
-        self.assertEqual(hashlib.sha256(PATCH.read_bytes()).hexdigest(), PATCH_SHA)
-        lineas = PATCH.read_text(encoding="utf-8").splitlines()
-        self.assertIn(f"diff --git a/{MCP_SERVER} b/{MCP_SERVER}", lineas)
-        self.assertIn(f"--- a/{MCP_SERVER}", lineas)
-        self.assertIn(f"+++ b/{MCP_SERVER}", lineas)
+        for ruta, sha, archivo in (
+            (JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),
+            (PATCH, PATCH_SHA, MCP_SERVER),
+        ):
+            with self.subTest(patch=ruta.name):
+                self.assertTrue(ruta.is_file())
+                self.assertEqual(hashlib.sha256(ruta.read_bytes()).hexdigest(), sha)
+                lineas = ruta.read_text(encoding="utf-8").splitlines()
+                self.assertIn(f"diff --git a/{archivo} b/{archivo}", lineas)
+                self.assertIn(f"--- a/{archivo}", lineas)
+                self.assertIn(f"+++ b/{archivo}", lineas)
 
     def test_los_parches_quedan_fuera_de_la_conversion_de_fin_de_linea(self):
         # Con autocrlf el .patch baja con CRLF y su sha256 cambia; peor: el
@@ -158,6 +175,11 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
 PRISTINA = "def call_adapter():\n    return {}\n"
 PATCHADA = "def call_adapter():\n    document = {'model': 'x'}\n    return {}\n"
 MCP_SERVIDOR = "src/jev_skill_router/mcp_server.py"
+JEV_CLIENTE = "client.py"
+PRISTINA_JEV = "def get_secret(nombre):\n    return os.environ[nombre]\n"
+PATCHADA_JEV = (
+    "def get_secret(nombre):\n    return agent.secret_scope.get_secret(nombre)\n"
+)
 
 
 def _sha256(datos):
@@ -245,7 +267,23 @@ class ConciliacionTests(unittest.TestCase):
         activo = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(hostil)})
         activo.start()
         self.addCleanup(activo.stop)
-        self.jev_sha = _repo(base / "jev", {"plugin.yaml": "name: jev\n"})
+        repo_jev = base / "jev"
+        self.jev_sha = _repo(
+            repo_jev, {"plugin.yaml": "name: jev\n", JEV_CLIENTE: PRISTINA_JEV}
+        )
+        self.jev_sha256_pristino = _sha256(PRISTINA_JEV.encode())
+        (repo_jev / JEV_CLIENTE).write_text(PATCHADA_JEV, encoding="utf-8")
+        diff_jev = _git_en(
+            repo_jev,
+            "diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--",
+            JEV_CLIENTE,
+        ).stdout
+        (base / "0001-jev-sintetico.patch").write_bytes(diff_jev.encode("utf-8"))
+        self.jev_sha256_parchado = _sha256(PATCHADA_JEV.encode())
+        _git_en(repo_jev, "checkout", "--", JEV_CLIENTE)
         repo_jsr = base / "jsr"
         self.jsr_sha = _repo(repo_jsr, {MCP_SERVIDOR: PRISTINA})
         self.sha256_pristino = _sha256(PRISTINA.encode())
@@ -267,7 +305,14 @@ class ConciliacionTests(unittest.TestCase):
                 "repo": "https://example.com/jev",
                 "sha": self.jev_sha,
                 "toolsets": ["jev"],
-                "patches": [],
+                "patches": [
+                    {
+                        "file": JEV_CLIENTE,
+                        "patch": str(base / "0001-jev-sintetico.patch"),
+                        "sha256_pristine": self.jev_sha256_pristino,
+                        "sha256_patched": self.jev_sha256_parchado,
+                    }
+                ],
             },
             {
                 "name": "jev-skill-router-mcp",
@@ -288,6 +333,11 @@ class ConciliacionTests(unittest.TestCase):
         for plugin, plantilla in zip(self.plugins, ("jev", "jsr")):
             shutil.copytree(base / plantilla, self.perfil / "plugins" / plugin["name"])
         self.servidor = self.perfil / "plugins" / "jev-skill-router-mcp" / MCP_SERVIDOR
+        self.cliente = self.perfil / "plugins" / "jev" / JEV_CLIENTE
+        # jev arranca parchado (verde) y jsr prístino ("Parche por aplicar"):
+        # el estado vivo del director tras el r1; cada prueba que necesita el
+        # otro estado lo escribe.
+        self.cliente.write_bytes(PATCHADA_JEV.encode("utf-8"))
 
     def test_parchado_esta_verde_y_apply_no_hace_nada(self):
         self.servidor.write_bytes(PATCHADA.encode("utf-8"))
@@ -315,6 +365,34 @@ class ConciliacionTests(unittest.TestCase):
         estable = self.servidor.read_bytes()
         self.assertEqual(segunda, [])
         self.assertEqual(self.servidor.read_bytes(), estable)
+
+    def test_jev_parchado_esta_verde_y_apply_no_hace_nada(self):
+        # El estado que dejó el parche manual de la PC (encargo H-jev2): el
+        # client.py de jev ya trae el secret_scope, check verde y apply es
+        # un no-op byte a byte.
+        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
+            [],
+        )
+        antes = self.cliente.read_bytes()
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.cliente.read_bytes(), antes)
+
+    def test_jev_pristino_reporta_y_apply_lo_deja_parchado(self):
+        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
+        self.cliente.write_bytes(PRISTINA_JEV.encode("utf-8"))
+        notas = module.conciliar_plugins_director(
+            self.perfil, self.plugins, aplicar=False
+        )
+        self.assertEqual(notas, [f"Parche por aplicar: jev: {JEV_CLIENTE}"])
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.cliente.read_text(), PATCHADA_JEV)
+        self.assertEqual(_sha256(self.cliente.read_bytes()), self.jev_sha256_parchado)
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True),
+            [],
+        )
 
     def test_otro_contenido_es_rojo_sin_tocar_nada(self):
         self.servidor.write_text("otro\n", encoding="utf-8")
