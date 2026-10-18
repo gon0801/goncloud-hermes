@@ -130,12 +130,29 @@ def perfil_de(assignment: Mapping) -> str:
     return str(identidad) if identidad else "sin-perfil"
 
 
+# F11: la acción del efecto sintético de arranque sale del modo de la unidad,
+# no de un "implement" fijo: una unidad read/design bajo una autoridad de solo
+# lectura arranca. R no tiene efecto sintético de arranque (authorityRefusal
+# sólo se llama sobre efectos reales: managed-root.effect.worker.ts:125 y
+# managed-root.decide.ts:561); este gate es de H (diseño §3.4) y su acción
+# sigue el mismo vocabulario de HERRAMIENTA_POR_MODO, que ya mapea design a
+# read. Un modo que el contrato no conoce no está en la tabla: conserva
+# "implement" y el rango de modo lo niega igual (modo-fuera-de-autoridad).
+ACCION_DE_MODO = {
+    "design": "read",
+    "read": "read",
+    "implement": "implement",
+    "publish": "publish",
+}
+
+
 def efecto_de_arranque(assignment: Mapping, unidad_plan: Mapping | None) -> dict:
     scope = (unidad_plan or {}).get("scope") or {}
+    modo = scope.get("mode", "implement")
     return {
-        "action": "implement",
+        "action": ACCION_DE_MODO.get(modo, "implement"),
         "repo": (assignment.get("inputRevision") or {}).get("repository"),
-        "mode": scope.get("mode", "implement"),
+        "mode": modo,
     }
 
 

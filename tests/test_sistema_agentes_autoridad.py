@@ -593,9 +593,17 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         self.assertEqual(len(self.kanban.creaciones), 2)
 
     def test_el_contrato_niega_el_arranque_por_modo(self):
-        tienda = store.Store(Path(self.directorio.name) / "modo.db")
+        # Con "publish" entre las acciones, la publish niega por RANGO de
+        # modo (publish > implement), igual que antes de F11.
+        tienda = store.Store(
+            Path(self.directorio.name) / "modo.db",
+            permisos_h=permisos(),
+        )
         self.addCleanup(tienda.cerrar)
-        meta = meta_de([unidad("p", "p1", modo="publish")])
+        meta = meta_de(
+            [unidad("p", "p1", modo="publish")],
+            autoridad_acciones=("read", "implement", "review", "push", "publish"),
+        )
         meta["rootId"] = "root-modo"
         tienda.abrir_raiz(meta)
         hechos = {
@@ -612,6 +620,24 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         vista = tienda.leer_vista("root-modo", hechos)
         causas = [e["subject"].get("cause") for e in vista["excepciones"]]
         self.assertIn("autoridad:modo-fuera-de-autoridad", causas)
+        # Sin "publish" entre las acciones (la forma típica), la misma unidad
+        # niega por acción: desde F11 el efecto de arranque ya no se hace
+        # pasar por un "implement" que la autoridad sí cubriría.
+        sin_publish = store.Store(
+            Path(self.directorio.name) / "sin-publish.db",
+            permisos_h=permisos(),
+        )
+        self.addCleanup(sin_publish.cerrar)
+        meta_tipica = meta_de([unidad("p", "p1", modo="publish")])
+        meta_tipica["rootId"] = "root-modo-tipico"
+        sin_publish.abrir_raiz(meta_tipica)
+        informe = ticker.vuelta(
+            sin_publish, kanban_port.DobleKanban(), {"root-modo-tipico": hechos}
+        )
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        vista = sin_publish.leer_vista("root-modo-tipico", hechos)
+        causas = [e["subject"].get("cause") for e in vista["excepciones"]]
+        self.assertIn("autoridad:accion-fuera-de-autoridad", causas)
 
 
 class ConcesionDeEfecto(TiendaCerrada, unittest.TestCase):
@@ -851,6 +877,43 @@ class SujetosDeIntentoSinAutorizar(TiendaCerrada, unittest.TestCase):
         self.assertNotIn(
             borrador["exceptionId"], propuesta.decision["respuestas_aplicadas"]
         )
+
+
+class ModoDeLaUnidadEnElArranque(TiendaCerrada, unittest.TestCase):
+    """F11: el efecto sintético de arranque toma la acción del modo de la
+    unidad: una unidad scope.mode "read" bajo una autoridad actions ["read"]
+    arranca; no se le endilga un "implement" que la autoridad no cubre."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(self.ruta, permisos_h=permisos(acciones=["read"]))
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+
+    def test_una_unidad_read_bajo_autoridad_read_arranca(self):
+        self.tienda.abrir_raiz(
+            meta_de([unidad("r", "r1", modo="read")], autoridad_acciones=("read",))
+        )
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {"unitId": "r", "assignment": asignacion(), "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        informe = ticker.vuelta(
+            self.tienda,
+            kanban_port.DobleKanban(),
+            {RAIZ: hechos},
+            permisos_h=permisos(acciones=["read"]),
+        )
+        self.assertEqual(informe.tarjetas_creadas, 1)
+        vista = self.tienda.leer_vista(RAIZ, hechos)
+        causas = [e["subject"].get("cause") for e in vista["excepciones"]]
+        self.assertEqual(causas, [])
 
 
 class I07Reanudacion(unittest.TestCase):
