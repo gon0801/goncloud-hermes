@@ -60,13 +60,13 @@ recibo de `control.v1` (un reintento exacto devuelve el original con
 
 `goncloud_root_instruction_put` y `goncloud_root_reconcile` (SUA-07 H6a,
 tambien solo claw) traen los hechos de asignacion que al ticker le faltaban:
-instruction_put guarda el TEXTO del brief en el store content-addressed
-`<raiz>/raices/instrucciones/<sha256>` (escritura atomica, idempotente por
-contenido: el mismo texto devuelve el mismo `artifact:<hex>`; tope de 32,768
-caracteres) y el texto NUNCA viaja dentro de la asignacion, solo su
-`{ref, digest}` (fixture G). reconcile valida cada assignment contra la copia
-fijada del contrato, exige que su `instructionRef` resuelva en ese store con
-el digest verificado y persiste por clave estable
+instruction_put guarda el TEXTO del brief o de la evidencia en el store
+content-addressed `<raiz>/raices/instrucciones/<sha256>` (escritura
+atomica, idempotente por contenido: el mismo texto devuelve el mismo
+`artifact:<hex>`; tope de 32,768 caracteres) y el texto NUNCA viaja dentro
+de la asignacion, solo su `{ref, digest}` (fixture G). reconcile valida cada
+assignment contra la copia fijada del contrato, exige que su `instructionRef`
+resuelva en ese store con el digest verificado y persiste por clave estable
 `(rootId, planRevision, unitId, relay)`: el reintento exacto es `replayed:
 true`, otra asignacion con la fila viva es `operation-conflict` y una fila ya
 consumida abre un ciclo nuevo de correccion o relevo. El recibo incluye las
@@ -74,6 +74,22 @@ necesidades vigentes de la raiz (el espejo de los `needs` de R), que
 `goncloud_root_read` tambien expone. El consumo de cada asignacion ocurre en
 la MISMA transaccion que liga el intento: una vuelta interrumpida nunca
 duplica la tarjeta.
+
+Desde H6b reconcile trae tambien los CLAIMS de verificacion, con la forma de
+`managedRootFactsSchema` de R (evidenceClaim sin `verifier` ni `evidenceId`,
+mas `role` en `verifier|ci`): el store pone `rootId` y `planRevision`, arma
+el `verifier {principal: ["claw"], role}` y deriva el `evidenceId` del
+contenido, con la misma vara con la que decidir siembra (contrato.validar
+EVIDENCIA sobre el sembrado y `artifactRef` resoluble en el MISMO store de
+instrucciones con su digest: la evidencia sube con instruction_put). Un claim
+que decidir descartaria se rechaza tipado (`documento-invalido` /
+`instruccion-invalida`), sin filas. Se persiste en tabla propia con clave
+estable `(rootId, planRevision, unitId, attempt, criterionId)` — replay
+exacto, `operation-conflict` con la fila viva, ciclo nuevo tras el consumo —
+y el consumo ocurre en la MISMA transaccion que persiste la evidencia en
+`aplicar`. `hechos_por_raiz` los transporta en `"claims"` con
+`principal = ["claw"]` (quien los trajo: el unico perfil que llama a la
+herramienta).
 
 El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
@@ -88,6 +104,24 @@ hermes -p default cron create "every 1m" --name ticker-raices --script "ticker-r
 
 `--script` se resuelve contra `<home del perfil>/scripts`
 (hermes_cli/cron.py:604-618) y el argumento es el nombre pelado.
+
+El despertar del dueño (H6b) es OTRO cron sin agente, `despertar-raices`
+(`raices/despertar.py`), con entrega al chat del director:
+
+```powershell
+hermes -p default cron create "every 1m" --name despertar-raices --script "despertar-raices.py" --no-agent --deliver bot-chat:claw
+```
+
+Con `--deliver bot-chat:claw` el stdout de la corrida entra como un turno en
+el chat "Bot Chat" de claw y stdout vacío es corrida silenciosa. En cada
+vuelta, para cada raíz viva (control active, no terminal) con necesidades no
+vacías, imprime un bloque si el `needs_digest` cambió desde el último aviso o
+si venció `RENOTICE_MS`; el asiento (`avisos_de_necesidades`) ocurre en la
+misma transacción del store que decide imprimir. El texto lleva el rootId,
+las necesidades y la línea que le dice a claw qué contestar: nada de briefs
+ni secretos. El instalador registra los DOS crons (estado versión 2 en
+`raices/instalacion.json`, una fila por cron con su id) y `--revertir` retira
+ambos con las mismas garantías que ticker-raices.
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de

@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """El instalador y la reversa de la ruta de raíces de Hermes (SUA-07 H4b3).
 
---aplicar deja el ticker andando en el perfil DEFAULT: el envoltorio que
-delega en raices/cron_ticker.py del plugin en <home>/scripts/ticker-raices.py
-y el cron "ticker-raices" cada minuto, sin agente y con entrega local. En
-Hermes el perfil default ES la raíz del home (medido en la Gon-pc:
+--aplicar deja andando DOS trabajos sin agente en el perfil DEFAULT, cada
+uno con su envoltorio que delega en el módulo del plugin:
+
+- ticker-raices (raices/cron_ticker.py) con entrega local: la vuelta que
+  concilia, decide y despacha.
+- despertar-raices (raices/despertar.py, H6b) con entrega bot-chat:claw: el
+  stdout de la corrida entra como un turno en el chat "Bot Chat" de claw y
+  stdout vacío es corrida silenciosa. Despierta al director con las
+  necesidades de las raíces vivas.
+
+En Hermes el perfil default ES la raíz del home (medido en la Gon-pc:
 profiles/default no existe y los scripts de sus crones viven en
 %HERMES_HOME%\\scripts, junto a backup-claw.sh; el help de `hermes cron
 create` dice "--script Path to a script under ~/.hermes/scripts/"), y el
@@ -22,19 +29,20 @@ importa el paquete `cron` de Hermes: sus constantes de ruta se fijan al
 importar con el HERMES_HOME del proceso. jobs.json ausente es un perfil
 sin crons; ilegible es fail-closed (código 1, nada escrito).
 
-El id del cron creado se guarda en raices/instalacion.json: sale de
-releer jobs.json por nombre tras el create (la línea "Created job: <id>"
-del CLI es el respaldo). --revertir borra con `cron remove <job_id>`:
-manda el id guardado si sigue vivo en jobs.json, y el nombre solo
-respalda cuando no hay id guardado (si un cron ajeno se llama
-ticker-raices, jamás se toca). Si el id guardado ya no vive en el
-almacén y no hay id por nombre, el job ya no está: ya retirado, se
-quita solo lo nuestro (envoltorio y estado) y se sale 0 avisándolo;
-llamar remove con un id obsoleto fallaría y atascaría la reversa para
-siempre. Un remove intentado y fallido sigue cerrando la ruta con
-código 1 sin borrar nada (F2 de #28).
+El id de cada cron creado se guarda en raices/instalacion.json (versión 2,
+una fila por cron): sale de releer jobs.json por nombre tras el create (la
+línea "Created job: <id>" del CLI es el respaldo). --revertir borra con
+`cron remove <job_id>` por cron: manda el id guardado si sigue vivo en
+jobs.json, y el nombre solo respalda cuando no hay id guardado (si un cron
+ajeno se llama igual, jamás se toca). Si el id guardado ya no vive en el
+almacén y no hay id por nombre, el job ya no está: ya retirado, se quita
+solo lo nuestro (envoltorios y estado) y se sale 0 avisándolo; llamar
+remove con un id obsoleto fallaría y atascaría la reversa para siempre.
+Un remove intentado y fallido sigue cerrando la ruta con código 1 sin
+borrar nada (F2 de #28). Un estado de la versión 1 (solo ticker-raices)
+se revierte igual: la migración lo lee tal cual.
 
---revertir quita SOLO lo instalado aquí (cron, envoltorio, archivo de
+--revertir quita SOLO lo instalado aquí (crons, envoltorios, archivo de
 estado) y deja la ruta cerrada: sistema-agentes.db, kanban.db,
 permisos.json y las proyecciones son datos del operador y jamás se tocan.
 --check no escribe nada y no invoca a hermes.
@@ -45,8 +53,8 @@ vacíos. El operador la abre a mano; H no tiene otra fuente para esos
 datos.
 
 Los flags del CLI se confirman en la PC en H5; el create es el que fija
-el plan: hermes -p default cron create "every 1m" --name ticker-raices
---script <nombre> --no-agent --deliver local.
+el plan: hermes -p default cron create "every 1m" --name <nombre>
+--script <nombre> --no-agent --deliver <local|bot-chat:claw>.
 """
 
 from __future__ import annotations
@@ -59,13 +67,27 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
-NOMBRE_DEL_CRON = "ticker-raices"
-ENVOLTORIO = "scripts/ticker-raices.py"
-# El argumento del cron es relativo al directorio de scripts, no al home:
-# Hermes resuelve --script contra <home>/scripts (hermes_cli/cron.py
-# 604-618) y los crons vivos citan el nombre pelado ("model_watch.py").
-SCRIPT_DEL_CRON = "ticker-raices.py"
+
+class CronDeRaices(NamedTuple):
+    nombre: str
+    script: str
+    deliver: str
+    modulo: str
+
+    @property
+    def envoltorio(self) -> str:
+        return f"scripts/{self.script}"
+
+
+CRONES = (
+    CronDeRaices("ticker-raices", "ticker-raices.py", "local", "cron_ticker"),
+    CronDeRaices(
+        "despertar-raices", "despertar-raices.py", "bot-chat:claw", "despertar"
+    ),
+)
+POR_NOMBRE = {cron.nombre: cron for cron in CRONES}
 RUTA_DE_ESTADO = "raices/instalacion.json"
 # El almacén de crons del perfil (cron/jobs.py de Hermes: JOBS_FILE =
 # <home>/cron/jobs.json). Lectura propia en solo lectura, nunca el paquete
@@ -82,9 +104,9 @@ PLANTILLA_DE_PERMISOS = {
 }
 
 ENVOLTORIO_TEXTO = '''#!/usr/bin/env python3
-"""El ticker de raíces como script del cron del perfil default.
+"""El {nombre} como script del cron del perfil default.
 
-Lo escribe scripts/instalar_raices.py; delega en el cron_ticker del
+Lo escribe scripts/instalar_raices.py; delega en el {modulo} del
 plugin goncloud-team. La ruta del plugin queda fija aquí abajo porque el
 instalador corre desde el checkout que la tiene.
 """
@@ -94,9 +116,9 @@ PLUGIN = {plugin!r}
 if PLUGIN not in sys.path:
     sys.path.insert(0, PLUGIN)
 
-from raices import cron_ticker
+from raices import {modulo}
 
-raise SystemExit(cron_ticker.main())
+raise SystemExit({modulo}.main())
 '''
 
 
@@ -111,7 +133,7 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
     entorno, y decodifica utf-8
     con replace (la code page local revienta en un Windows no UTF-8). Un
     CLI colgado (timeout) no tumba al instalador con un traceback: sale
-    código != 0 con la causa, para que aplicar desenlace el envoltorio y
+    codigo != 0 con la causa, para que aplicar desenlace el envoltorio y
     revertir la imprima."""
     ejecutable = (resolvedor or shutil.which)("hermes")
     if not ejecutable:
@@ -170,17 +192,15 @@ def _leer_jobs(home: Path):
     return [entrada for entrada in datos if isinstance(entrada, dict)]
 
 
-def _hay_cron(jobs) -> bool:
-    return any(entrada.get("name") == NOMBRE_DEL_CRON for entrada in jobs)
+def _hay_cron(jobs, nombre: str) -> bool:
+    return any(entrada.get("name") == nombre for entrada in jobs)
 
 
-def _id_del_cron(jobs):
+def _id_del_cron(jobs, nombre: str):
     """El id del job con el nombre del cron (los registros sin id legible
     no cuentan: no hay remove que puisse con ellos)."""
     for entrada in jobs:
-        if entrada.get("name") == NOMBRE_DEL_CRON and isinstance(
-            entrada.get("id"), str
-        ):
+        if entrada.get("name") == nombre and isinstance(entrada.get("id"), str):
             return entrada["id"]
     return None
 
@@ -190,43 +210,67 @@ def _id_desde_salida(salida):
     return hallado.group(1) if hallado else None
 
 
-def _id_del_estado(estado: Path):
+def _crons_del_estado(estado: Path) -> dict:
+    """{nombre: cron_id|None} según instalacion.json. La versión 1 (un solo
+    cron con las llaves planas) se lee tal cual: la reversa de una
+    instalación vieja no necesita reaplicar."""
     try:
         datos = json.loads(estado.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    if isinstance(datos, dict) and isinstance(datos.get("cron_id"), str):
-        return datos["cron_id"]
-    return None
+        return {}
+    if not isinstance(datos, dict):
+        return {}
+    if isinstance(datos.get("crons"), list):
+        leidos = {}
+        for entrada in datos["crons"]:
+            if isinstance(entrada, dict) and isinstance(entrada.get("cron"), str):
+                cron_id = entrada.get("cron_id")
+                leidos[entrada["cron"]] = cron_id if isinstance(cron_id, str) else None
+        return leidos
+    cron_id = datos.get("cron_id")
+    return {
+        datos.get("cron", NOMBRE_TICKER): cron_id if isinstance(cron_id, str) else None
+    }
 
 
-def _avisar_sin_id() -> None:
+NOMBRE_TICKER = "ticker-raices"
+
+
+def _avisar_sin_id(nombre: str) -> None:
     print(
         f"instalar-raices: aviso: no pude fijar el id de "
-        f"{NOMBRE_DEL_CRON}; --revertir lo buscará por nombre"
+        f"{nombre}; --revertir lo buscará por nombre"
     )
 
 
-def _escribir_envoltorio(home: Path, plugin: Path) -> None:
-    destino = home / ENVOLTORIO
+def _escribir_envoltorio(home: Path, cron: CronDeRaices, plugin: Path) -> None:
+    destino = home / cron.envoltorio
     destino.parent.mkdir(parents=True, exist_ok=True)
     destino.write_text(
-        ENVOLTORIO_TEXTO.format(plugin=str(plugin.resolve())),
+        ENVOLTORIO_TEXTO.format(
+            nombre=cron.nombre, modulo=cron.modulo, plugin=str(plugin.resolve())
+        ),
         encoding="utf-8",
     )
 
 
-def _registrar_estado(home: Path, con_plantilla: bool, cron_id) -> None:
+def _registrar_estado(home: Path, con_plantilla: bool, ids: dict) -> None:
     raices = home / "raices"
     raices.mkdir(exist_ok=True)
     (raices / "instalacion.json").write_text(
         json.dumps(
             {
-                "version": 1,
-                "cron": NOMBRE_DEL_CRON,
-                "cron_id": cron_id,
-                "envoltorio": ENVOLTORIO,
-                "script_del_cron": SCRIPT_DEL_CRON,
+                "version": 2,
+                "crons": [
+                    {
+                        "cron": cron.nombre,
+                        "cron_id": ids.get(cron.nombre),
+                        "deliver": cron.deliver,
+                        "envoltorio": cron.envoltorio,
+                        "script_del_cron": cron.script,
+                    }
+                    for cron in CRONES
+                ],
                 "permisos_de_plantilla": con_plantilla,
             },
             indent=2,
@@ -247,23 +291,25 @@ def chequear(home: Path, plugin: Path) -> int:
     if jobs is None:
         print(_jobs_ilegibles(home) + "; nada que hacer")
         return 1
-    print(
-        f"cron {NOMBRE_DEL_CRON}: "
-        + (
-            "presente"
-            if _hay_cron(jobs)
-            else "se crearía en el perfil default (every 1m, --no-agent, --deliver local)"
+    for cron in CRONES:
+        print(
+            f"cron {cron.nombre}: "
+            + (
+                "presente"
+                if _hay_cron(jobs, cron.nombre)
+                else f"se crearía en el perfil default (every 1m, --no-agent,"
+                f" --deliver {cron.deliver})"
+            )
         )
-    )
-    envoltorio = home / ENVOLTORIO
-    print(
-        f"envoltorio {ENVOLTORIO}: "
-        + (
-            "presente"
-            if envoltorio.exists()
-            else f"se escribiría delegando en {plugin}"
+        envoltorio = home / cron.envoltorio
+        print(
+            f"envoltorio {cron.envoltorio}: "
+            + (
+                "presente"
+                if envoltorio.exists()
+                else f"se escribiría delegando en {plugin}"
+            )
         )
-    )
     permisos = home / "raices" / "permisos.json"
     if permisos.exists():
         print("permisos.json: presente (no se toca)")
@@ -285,45 +331,53 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
         print(_jobs_ilegibles(home) + "; nada que hacer")
         return 1
     con_plantilla = False
-    _escribir_envoltorio(home, plugin)
-    cron_id = None
-    if not _hay_cron(jobs):
-        codigo, salida = corredor(
-            [
-                "cron",
-                "create",
-                "every 1m",
-                "--name",
-                NOMBRE_DEL_CRON,
-                "--script",
-                SCRIPT_DEL_CRON,
-                "--no-agent",
-                "--deliver",
-                "local",
-            ]
-        )
-        if codigo != 0:
-            (home / ENVOLTORIO).unlink(missing_ok=True)
-            print(
-                f"instalar-raices: hermes rechazó el cron (código {codigo}): "
-                f"{salida.strip()}"
+    for cron in CRONES:
+        _escribir_envoltorio(home, cron, plugin)
+    ids: dict = {}
+    for cron in CRONES:
+        if not _hay_cron(jobs, cron.nombre):
+            codigo, salida = corredor(
+                [
+                    "cron",
+                    "create",
+                    "every 1m",
+                    "--name",
+                    cron.nombre,
+                    "--script",
+                    cron.script,
+                    "--no-agent",
+                    "--deliver",
+                    cron.deliver,
+                ]
             )
-            return 1
-        # El id sale de releyendo jobs.json por nombre (la fuente viva);
-        # la línea "Created job: <id>" del CLI es el respaldo.
-        tras_crear = _leer_jobs(home)
-        if tras_crear is not None:
-            cron_id = _id_del_cron(tras_crear)
-        if cron_id is None:
-            cron_id = _id_desde_salida(salida)
-        if cron_id is None:
-            _avisar_sin_id()
-    else:
-        cron_id = _id_del_cron(jobs)
-        if cron_id is None:
-            # R3: el job ya está pero su registro no trae id textual: el
-            # mismo aviso que la rama de create; nunca null en silencio.
-            _avisar_sin_id()
+            if codigo != 0:
+                for escrito in CRONES:
+                    (home / escrito.envoltorio).unlink(missing_ok=True)
+                print(
+                    f"instalar-raices: hermes rechazó el cron (código {codigo}): "
+                    f"{salida.strip()}"
+                )
+                return 1
+            # El id sale de releyendo jobs.json por nombre (la fuente viva);
+            # la línea "Created job: <id>" del CLI es el respaldo.
+            tras_crear = _leer_jobs(home)
+            cron_id = (
+                _id_del_cron(tras_crear, cron.nombre)
+                if tras_crear is not None
+                else None
+            )
+            if cron_id is None:
+                cron_id = _id_desde_salida(salida)
+            if cron_id is None:
+                _avisar_sin_id(cron.nombre)
+            ids[cron.nombre] = cron_id
+        else:
+            cron_id = _id_del_cron(jobs, cron.nombre)
+            if cron_id is None:
+                # R3: el job ya está pero su registro no trae id textual: el
+                # mismo aviso que la rama de create; nunca null en silencio.
+                _avisar_sin_id(cron.nombre)
+            ids[cron.nombre] = cron_id
     permisos = home / "raices" / "permisos.json"
     if not permisos.exists():
         permisos.parent.mkdir(exist_ok=True)
@@ -332,11 +386,16 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
             encoding="utf-8",
         )
         con_plantilla = True
-    _registrar_estado(home, con_plantilla, cron_id)
-    print(
-        f"instalar-raices: cron {NOMBRE_DEL_CRON} en default, envoltorio en {ENVOLTORIO}"
-    )
+    _registrar_estado(home, con_plantilla, ids)
+    nombres = ", ".join(cron.nombre for cron in CRONES)
+    print(f"instalar-raices: crons {nombres} en default, envoltorios en scripts/")
     return 0
+
+
+def _quitar_envoltorios_y_estado(home: Path, estado: Path) -> None:
+    for cron in CRONES:
+        (home / cron.envoltorio).unlink(missing_ok=True)
+    estado.unlink()
 
 
 def _retirar_con_remove(home: Path, estado: Path, job_id: str, corredor) -> int:
@@ -347,30 +406,24 @@ def _retirar_con_remove(home: Path, estado: Path, job_id: str, corredor) -> int:
         # rechazado). No se borra nada y el error sale impreso (F2).
         print(f"instalar-raices: hermes rechazó el remove: {salida.strip()}")
         return 1
-    (home / ENVOLTORIO).unlink(missing_ok=True)
-    estado.unlink()
-    print(f"instalar-raices: {NOMBRE_DEL_CRON} retirado; datos del operador intactos")
     return 0
 
 
-def _desenlazar_y_avisar(home: Path, estado: Path, jobs) -> int:
+def _avisar_ya_retirado(nombre: str, jobs) -> None:
     # R1: el job de esta instalación ya no vive en el almacén = ya
     # retirado (el operador lo borró a mano o la store se fue). Un remove
     # con el id obsoleto fallaría y dejaría la reversa atascada en código 1
     # para siempre: no se llama, solo se quita lo nuestro.
     resto = ""
-    if _hay_cron(jobs):
+    if _hay_cron(jobs, nombre):
         resto = (
-            f" (un job llamado {NOMBRE_DEL_CRON} sigue en el almacén y no se "
+            f" (un job llamado {nombre} sigue en el almacén y no se "
             "toca: no es el de esta instalación)"
         )
     print(
-        f"instalar-raices: el job de esta instalación ya no está en el "
-        f"almacén: ya retirado{resto}; quito envoltorio y estado"
+        f"instalar-raices: el job de {nombre} ya no está en el "
+        f"almacén: ya retirado{resto}"
     )
-    (home / ENVOLTORIO).unlink(missing_ok=True)
-    estado.unlink()
-    return 0
 
 
 def revertir(home: Path, corredor) -> int:
@@ -382,34 +435,47 @@ def revertir(home: Path, corredor) -> int:
     if jobs is None:
         print(_jobs_ilegibles(home) + "; no se toca nada")
         return 1
-    guardado = _id_del_estado(estado)
+    guardados = _crons_del_estado(estado)
+    nombres = list(guardados) or [cron.nombre for cron in CRONES]
     vivos = {
         entrada.get("id") for entrada in jobs if isinstance(entrada.get("id"), str)
     }
-    if guardado is not None:
-        if guardado in vivos:
-            # R2: el id guardado vivo manda. Si otro cron ajeno se llama
-            # ticker-raices, el nombre no se toca.
-            return _retirar_con_remove(home, estado, guardado, corredor)
-        # R1: nuestro id ya no vive: ya retirado. El nombre queda fuera a
-        # propósito (podría ser un cron ajeno, R2).
-        return _desenlazar_y_avisar(home, estado, jobs)
-    if _hay_cron(jobs):
-        por_nombre = _id_del_cron(jobs)
-        if por_nombre is None:
-            # El job está en el almacén pero ni su registro ni el estado
-            # traen id textual: no hay remove seguro. Fail-closed.
-            print(
-                f"instalar-raices: el registro de {NOMBRE_DEL_CRON} en "
-                f"{Path(home) / RUTA_DE_JOBS} no trae id y el estado tampoco "
-                "lo guardó; no se toca nada"
-            )
-            return 1
-        # Sin id guardado, el nombre es el respaldo (R2).
-        return _retirar_con_remove(home, estado, por_nombre, corredor)
-    # R1: sin id guardado y sin el nombre en el almacén: nada que remove
-    # pueda borrar; solo queda lo nuestro.
-    return _desenlazar_y_avisar(home, estado, jobs)
+    for nombre in nombres:
+        guardado = guardados.get(nombre)
+        if guardado is not None:
+            if guardado in vivos:
+                # R2: el id guardado vivo manda. Si otro cron ajeno se llama
+                # igual, el nombre no se toca.
+                fallo = _retirar_con_remove(home, estado, guardado, corredor)
+                if fallo:
+                    return fallo
+                continue
+            # R1: nuestro id ya no vive: ya retirado. El nombre queda fuera a
+            # propósito (podría ser un cron ajeno, R2).
+            _avisar_ya_retirado(nombre, jobs)
+            continue
+        if _hay_cron(jobs, nombre):
+            por_nombre = _id_del_cron(jobs, nombre)
+            if por_nombre is None:
+                # El job está en el almacén pero ni su registro ni el estado
+                # traen id textual: no hay remove seguro. Fail-closed.
+                print(
+                    f"instalar-raices: el registro de {nombre} en "
+                    f"{Path(home) / RUTA_DE_JOBS} no trae id y el estado tampoco "
+                    "lo guardó; no se toca nada"
+                )
+                return 1
+            # Sin id guardado, el nombre es el respaldo (R2).
+            fallo = _retirar_con_remove(home, estado, por_nombre, corredor)
+            if fallo:
+                return fallo
+            continue
+        # R1: sin id guardado y sin el nombre en el almacén: nada que remove
+        # pueda borrar; solo queda lo nuestro.
+        _avisar_ya_retirado(nombre, jobs)
+    _quitar_envoltorios_y_estado(home, estado)
+    print("instalar-raices: crones de raíces retirados; datos del operador intactos")
+    return 0
 
 
 def main(argv=None, corredor=None) -> int:
@@ -417,7 +483,7 @@ def main(argv=None, corredor=None) -> int:
     modo = parser.add_mutually_exclusive_group(required=True)
     modo.add_argument("--check", action="store_true", help="no escribe; dice qué haría")
     modo.add_argument(
-        "--aplicar", action="store_true", help="instala cron y envoltorio"
+        "--aplicar", action="store_true", help="instala crons y envoltorios"
     )
     modo.add_argument("--revertir", action="store_true", help="quita solo lo instalado")
     parser.add_argument("--home", type=Path, required=True, help="HERMES_HOME objetivo")
@@ -425,7 +491,7 @@ def main(argv=None, corredor=None) -> int:
         "--plugin",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "plugins" / "goncloud-team",
-        help="ruta del plugin goncloud-team con raices/cron_ticker.py",
+        help="ruta del plugin goncloud-team con raices/",
     )
     args = parser.parse_args(argv)
     if corredor is None:

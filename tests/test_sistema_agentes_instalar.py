@@ -27,6 +27,17 @@ FIXTURE_JOBS = REPO / "tests" / "fixtures" / "hermes-cron-jobs.json"
 ID_FALSO = "aa11bb22cc33"
 
 
+ID_DESPERTAR = "ff00ff00ff00"
+
+
+def cron_id_del_estado(estado, nombre):
+    """El cron_id de un cron del instalacion.json (v2: lista de filas)."""
+    for entrada in estado["crons"]:
+        if entrada["cron"] == nombre:
+            return entrada["cron_id"]
+    return None
+
+
 def cargar_instalador():
     especificacion = importlib.util.spec_from_file_location(
         "instalar_raices", INSTALADOR
@@ -295,21 +306,20 @@ class ElAlmacenConBytesRotos(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(estado["cron_id"], "abc123def456")
+        self.assertEqual(cron_id_del_estado(estado, "ticker-raices"), "abc123def456")
         self.assertTrue((self.home / "scripts" / "ticker-raices.py").exists())
 
 
 class Aplicar(InstaladorDeRaices):
     def test_aplicar_crea_el_cron_en_default_y_el_envoltorio(self):
         self.assertEqual(self.aplicar(), 0)
-        create = [
-            llamada
-            for llamada in self.corredor.llamadas
-            if llamada[:2] == ["cron", "create"]
-        ]
-        self.assertEqual(len(create), 1, "un solo create")
+        creates = {}
+        for llamada in self.corredor.llamadas:
+            if llamada[:2] == ["cron", "create"]:
+                creates[llamada[llamada.index("--name") + 1]] = llamada
+        self.assertEqual(sorted(creates), ["despertar-raices", "ticker-raices"])
         self.assertEqual(
-            create[0],
+            creates["ticker-raices"],
             [
                 "cron",
                 "create",
@@ -326,6 +336,9 @@ class Aplicar(InstaladorDeRaices):
         envoltorio = self.home / "scripts" / "ticker-raices.py"
         self.assertTrue(envoltorio.exists())
         self.assertIn("cron_ticker", envoltorio.read_text(encoding="utf-8"))
+        envoltorio_despertar = self.home / "scripts" / "despertar-raices.py"
+        self.assertTrue(envoltorio_despertar.exists())
+        self.assertIn("despertar", envoltorio_despertar.read_text(encoding="utf-8"))
         self.assertFalse(
             (self.home / "profiles").exists(),
             "default es la raíz del home: nunca se crea profiles/default",
@@ -333,11 +346,13 @@ class Aplicar(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(estado["cron"], "ticker-raices")
-        self.assertEqual(estado["cron_id"], ID_FALSO)
-        self.assertEqual(estado["envoltorio"], "scripts/ticker-raices.py")
-        self.assertEqual(estado["script_del_cron"], "ticker-raices.py")
-        self.assertEqual(self.corredor.nombres(), ["ticker-raices"])
+        self.assertEqual(estado["version"], 2)
+        self.assertEqual(cron_id_del_estado(estado, "ticker-raices"), ID_FALSO)
+        self.assertEqual(cron_id_del_estado(estado, "despertar-raices"), ID_DESPERTAR)
+        self.assertEqual(
+            sorted(self.corredor.nombres()),
+            ["despertar-raices", "ticker-raices"],
+        )
 
     def test_aplicar_guarda_el_id_releyendo_jobs_json_no_del_stdout(self):
         # El stdout del create viene SIN "Created job: <id>": si el estado
@@ -347,7 +362,7 @@ class Aplicar(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(estado["cron_id"], ID_FALSO)
+        self.assertEqual(cron_id_del_estado(estado, "ticker-raices"), ID_FALSO)
 
     def test_doble_aplicar_no_duplica_el_cron(self):
         self.assertEqual(self.aplicar(), 0)
@@ -357,8 +372,9 @@ class Aplicar(InstaladorDeRaices):
             for llamada in self.corredor.llamadas
             if llamada[:2] == ["cron", "create"]
         ]
-        self.assertEqual(len(creates), 1, "el segundo aplicar no crea otro cron")
+        self.assertEqual(len(creates), 2, "el segundo aplicar no crea otro cron")
         self.assertEqual(self.corredor.nombres().count("ticker-raices"), 1)
+        self.assertEqual(self.corredor.nombres().count("despertar-raices"), 1)
 
     def test_aplicar_con_create_rechazado_imprime_la_salida_del_cli(self):
         # H5: "hermes rechazó el cron (código 1)" a secas no dice nada: la
@@ -380,19 +396,20 @@ class Aplicar(InstaladorDeRaices):
     def test_aplicar_con_el_cron_ya_presente_reusa_su_id_y_no_crea_otro(self):
         self.sembrar_jobs_del_fixture()
         self.assertEqual(self.aplicar(), 0)
+        creados = [
+            llamada[llamada.index("--name") + 1]
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "create"]
+        ]
         self.assertEqual(
-            [
-                llamada
-                for llamada in self.corredor.llamadas
-                if llamada[:2] == ["cron", "create"]
-            ],
-            [],
-            "el cron del fixture ya está: ni un create",
+            creados,
+            ["despertar-raices"],
+            "el cron del fixture ya está: solo se crea lo que falta",
         )
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(estado["cron_id"], "4c1f0e9d2b7a")
+        self.assertEqual(cron_id_del_estado(estado, "ticker-raices"), "4c1f0e9d2b7a")
 
     def test_aplicar_con_el_cron_presente_sin_id_avisa_y_deja_cron_id_nulo(self):
         # R3 (bot F3): el job ya está pero su registro no trae id textual.
@@ -410,14 +427,27 @@ class Aplicar(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertIsNone(estado["cron_id"])
+        self.assertIsNone(cron_id_del_estado(estado, "ticker-raices"))
         self.assertEqual(
             [
                 llamada
                 for llamada in self.corredor.llamadas
                 if llamada[:2] == ["cron", "create"]
             ],
-            [],
+            [
+                [
+                    "cron",
+                    "create",
+                    "every 1m",
+                    "--name",
+                    "despertar-raices",
+                    "--script",
+                    "despertar-raices.py",
+                    "--no-agent",
+                    "--deliver",
+                    "bot-chat:claw",
+                ]
+            ],
         )
 
     def test_el_id_respalda_del_stdout_cuando_el_create_no_escribe_jobs(self):
@@ -435,7 +465,7 @@ class Aplicar(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(estado["cron_id"], "zz99aa66bb44")
+        self.assertEqual(cron_id_del_estado(estado, "ticker-raices"), "zz99aa66bb44")
 
     def test_sin_id_en_ninguna_fuente_avisa_y_deja_cron_id_nulo(self):
         # R4: el create "funcionó" pero ni jobs.json ni el stdout traen id:
@@ -453,7 +483,8 @@ class Aplicar(InstaladorDeRaices):
         estado = json.loads(
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
-        self.assertIsNone(estado["cron_id"])
+        self.assertIsNone(cron_id_del_estado(estado, "ticker-raices"))
+        self.assertIsNone(cron_id_del_estado(estado, "despertar-raices"))
 
     def test_aplicar_con_jobs_ilegible_falla_cerrado_y_no_escribe_nada(self):
         self.sembrar_jobs_ilegible()
@@ -536,14 +567,14 @@ class Revertir(InstaladorDeRaices):
         self.crear_datos_del_operador()
         self.assertEqual(self.aplicar(), 0)
         self.assertEqual(self.revertir(), 0)
-        removes = [
-            llamada
+        removes = sorted(
+            llamada[2]
             for llamada in self.corredor.llamadas
             if llamada[:2] == ["cron", "remove"]
-        ]
+        )
         self.assertEqual(
             removes,
-            [["cron", "remove", ID_FALSO]],
+            sorted([ID_FALSO, ID_DESPERTAR]),
             "remove recibe el job_id de jobs.json, nunca el nombre",
         )
         self.assertEqual(self.corredor.nombres(), [], "el cron salió del jobs.json")
@@ -570,12 +601,12 @@ class Revertir(InstaladorDeRaices):
         jobs[0]["name"] = "renombrado-a-mano"
         self.corredor._guardar(jobs)
         self.assertEqual(self.revertir(), 0)
-        removes = [
-            llamada
+        removes = sorted(
+            llamada[2]
             for llamada in self.corredor.llamadas
             if llamada[:2] == ["cron", "remove"]
-        ]
-        self.assertEqual(removes, [["cron", "remove", ID_FALSO]])
+        )
+        self.assertEqual(removes, sorted([ID_FALSO, ID_DESPERTAR]))
         self.assertEqual(self.corredor.jobs(), [])
 
     def test_revertir_sin_huellas_del_cron_lo_da_por_retirado_y_sale_cero(self):
@@ -675,12 +706,14 @@ class Revertir(InstaladorDeRaices):
         jobs.append({"id": "ajeno1234567", "name": "ticker-raices", "enabled": True})
         self.corredor._guardar(jobs)
         self.assertEqual(self.revertir(), 0)
-        removes = [
-            llamada
+        removes = sorted(
+            llamada[2]
             for llamada in self.corredor.llamadas
             if llamada[:2] == ["cron", "remove"]
-        ]
-        self.assertEqual(removes, [["cron", "remove", ID_FALSO]])
+        )
+        self.assertEqual(removes, sorted([ID_FALSO, ID_DESPERTAR]))
+        # jobs[0] era nuestro ticker (renombrado a mano, MISMO id guardado):
+        # lo borra el id; el ajeno con el nombre queda intacto.
         self.assertEqual(self.corredor.nombres(), ["ticker-raices"], "el ajeno vive")
 
     def test_revertir_con_el_nombre_presente_sin_id_en_ninguna_parte_error_uno(self):
@@ -778,12 +811,16 @@ class RevertirRespetaElRemove(InstaladorDeRaices):
             (self.home / "raices" / "instalacion.json").exists(),
             "el estado queda: el remove falló",
         )
-        self.assertEqual(self.corredor.nombres(), ["ticker-raices"])
+        self.assertEqual(
+            sorted(self.corredor.nombres()),
+            ["despertar-raices", "ticker-raices"],
+        )
 
     def test_un_remove_exitoso_si_borra_todo(self):
         self.assertEqual(self.aplicar(), 0)
         self.assertEqual(self.revertir(), 0)
         self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
         self.assertFalse((self.home / "raices" / "instalacion.json").exists())
         self.assertEqual(self.corredor.nombres(), [])
 
@@ -944,6 +981,168 @@ class ElEjecutableDelCron(unittest.TestCase):
                 ["-p", "default"],
                 "el perfil va explícito: -p default justo antes de cron",
             )
+
+
+class LosDosCrones(InstaladorDeRaices):
+    """H6b: el instalador deja TAMBIÉN despertar-raices, con entrega al chat
+    del director (bot-chat:claw) y las mismas garantías que ticker-raices."""
+
+    def test_aplicar_crea_los_dos_crones_con_sus_entregas(self):
+        self.assertEqual(self.aplicar(), 0)
+        creates = {}
+        for llamada in self.corredor.llamadas:
+            if llamada[:2] == ["cron", "create"]:
+                creates[llamada[llamada.index("--name") + 1]] = llamada
+        self.assertEqual(
+            sorted(creates),
+            ["despertar-raices", "ticker-raices"],
+            "un create por cron propio",
+        )
+        self.assertEqual(
+            creates["ticker-raices"],
+            [
+                "cron",
+                "create",
+                "every 1m",
+                "--name",
+                "ticker-raices",
+                "--script",
+                "ticker-raices.py",
+                "--no-agent",
+                "--deliver",
+                "local",
+            ],
+        )
+        self.assertEqual(
+            creates["despertar-raices"],
+            [
+                "cron",
+                "create",
+                "every 1m",
+                "--name",
+                "despertar-raices",
+                "--script",
+                "despertar-raices.py",
+                "--no-agent",
+                "--deliver",
+                "bot-chat:claw",
+            ],
+        )
+        for nombre in ("ticker-raices.py", "despertar-raices.py"):
+            envoltorio = self.home / "scripts" / nombre
+            self.assertTrue(envoltorio.exists(), f"falta el envoltorio {nombre}")
+
+    def test_el_estado_guarda_el_id_de_cada_cron(self):
+        self.assertEqual(self.aplicar(), 0)
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(estado["version"], 2)
+        crons = estado["crons"]
+        self.assertEqual(
+            {entrada["cron"] for entrada in crons},
+            {"ticker-raices", "despertar-raices"},
+        )
+        por_nombre = {entrada["cron"]: entrada["cron_id"] for entrada in crons}
+        self.assertEqual(por_nombre["ticker-raices"], ID_FALSO)
+        self.assertEqual(por_nombre["despertar-raices"], "ff00ff00ff00")
+
+    def test_doble_aplicar_no_duplica_ninguno(self):
+        self.assertEqual(self.aplicar(), 0)
+        self.assertEqual(self.aplicar(), 0)
+        creates = [
+            llamada
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "create"]
+        ]
+        self.assertEqual(len(creates), 2, "el segundo aplicar no crea nada")
+        self.assertEqual(
+            sorted(self.corredor.nombres()),
+            ["despertar-raices", "ticker-raices"],
+        )
+
+    def test_el_check_reporta_los_dos(self):
+        codigo, salida = self.chequear()
+        self.assertEqual(codigo, 0)
+        self.assertIn("ticker-raices", salida)
+        self.assertIn("despertar-raices", salida)
+        self.assertIn("bot-chat:claw", salida)
+        self.assertEqual(self.corredor.llamadas, [])
+
+    def test_revertir_retira_los_dos_y_solo_lo_nuestro(self):
+        self.crear_datos_del_operador()
+        self.assertEqual(self.aplicar(), 0)
+        self.assertEqual(self.revertir(), 0)
+        removes = sorted(
+            llamada[2]
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        )
+        self.assertEqual(removes, sorted([ID_FALSO, "ff00ff00ff00"]))
+        self.assertEqual(self.corredor.nombres(), [])
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+        self.assertTrue((self.home / "sistema-agentes.db").exists())
+        self.assertTrue((self.home / "raices" / "permisos.json").exists())
+
+    def test_revertir_un_estado_viejo_de_un_solo_cron_lo_retira(self):
+        # Migración: un instalacion.json v1 (solo ticker) se revierte igual.
+        self.crear_datos_del_operador()
+        (self.home / "scripts").mkdir(exist_ok=True)
+        (self.home / "scripts" / "ticker-raices.py").write_text("# v1\n", "utf-8")
+        (self.home / "raices").mkdir(exist_ok=True)
+        (self.home / "raices" / "instalacion.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "cron": "ticker-raices",
+                    "cron_id": "4c1f0e9d2b7a",
+                    "envoltorio": "scripts/ticker-raices.py",
+                    "script_del_cron": "ticker-raices.py",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.sembrar_jobs_del_fixture()
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.revertir(), 0)
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [["cron", "remove", "4c1f0e9d2b7a"]],
+        )
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+
+    def test_el_envoltorio_de_despertar_corre_el_modulo_real(self):
+        self.assertEqual(self.aplicar(), 0)
+        envoltorio = self.home / "scripts" / "despertar-raices.py"
+        self.assertIn("despertar", envoltorio.read_text(encoding="utf-8"))
+        entorno = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HERMES_HOME": str(self.home),
+            "PYTHONPATH": os.pathsep.join(
+                [
+                    str(REPO / "tests/fake_hermes_cli"),
+                    str(REPO / "plugins/goncloud-team"),
+                ]
+            ),
+            "PYTHONUTF8": "1",
+        }
+        proceso = subprocess.run(
+            [sys.executable, str(envoltorio)],
+            env=entorno,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proceso.returncode, 0, proceso.stderr)
+        self.assertEqual(proceso.stdout, "", "sin necesidades la corrida es silenciosa")
 
 
 if __name__ == "__main__":

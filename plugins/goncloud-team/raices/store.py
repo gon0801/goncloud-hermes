@@ -14,7 +14,7 @@ import importlib
 import json
 import sqlite3
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -227,6 +227,12 @@ CREATE TABLE IF NOT EXISTS claims (
   consumed_at   TEXT,
   created_at    TEXT NOT NULL,
   PRIMARY KEY (root_id, plan_revision, unit_id, attempt, criterion_id)
+);
+CREATE TABLE IF NOT EXISTS avisos_de_necesidades (
+  root_id      TEXT NOT NULL REFERENCES raices(root_id),
+  needs_digest TEXT NOT NULL,
+  avisado_at   TEXT NOT NULL,
+  PRIMARY KEY (root_id)
 );
 """
 
@@ -1772,6 +1778,47 @@ class Store:
         if fila is None:
             return None
         return {"digest": fila["needs_digest"], "items": json.loads(fila["needs_json"])}
+
+    def avisos_de_necesidades(self, renotice_ms: int = RENOTICE_MS) -> list:
+        """Las necesidades que toca avisar: las de cada raíz viva (control
+        active, no terminal) con necesidades no vacías cuyo needs_digest
+        cambió desde el último aviso o cuyo RENOTICE_MS venció. El asiento
+        (avisos_de_necesidades) ocurre en la MISMA transacción que la
+        decisión: quien llama solo imprime lo que aquí sale."""
+        ahora = self.reloj()
+        self._begin()
+        try:
+            pendientes = []
+            for raiz in self.raices():
+                if raiz["state"] != "active":
+                    continue
+                necesidades = self.necesidades_de(raiz["rootId"])
+                if necesidades is None or not necesidades["items"]:
+                    continue
+                digest = necesidades["digest"]
+                fila = self._una_fila(
+                    "SELECT needs_digest, avisado_at FROM avisos_de_necesidades"
+                    " WHERE root_id = ?",
+                    (raiz["rootId"],),
+                )
+                if fila is not None:
+                    if fila["needs_digest"] == digest:
+                        vencido = (
+                            decidir.instante(ahora)
+                            - decidir.instante(fila["avisado_at"])
+                        ) >= timedelta(milliseconds=renotice_ms)
+                        if not vencido:
+                            continue
+                self._conexion.execute(
+                    "INSERT OR REPLACE INTO avisos_de_necesidades VALUES (?,?,?)",
+                    (raiz["rootId"], digest, ahora),
+                )
+                pendientes.append((raiz["rootId"], necesidades["items"]))
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return pendientes
 
     def texto_de_instruccion(self, ref: str, digest: str) -> object:
         """La única vía del ticker al disco de instrucciones: verifica el
