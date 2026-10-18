@@ -9,7 +9,6 @@ respuesta del dueno en la excepcion. Los nombres de campo son los del contrato.
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -18,6 +17,7 @@ if str(_PLUGIN) not in sys.path:
     sys.path.insert(0, str(_PLUGIN))
 
 store = importlib.import_module("raices.store")
+hogar = importlib.import_module("raices.hogar")
 
 PERFIL_AUTORIZADO = "claw"
 
@@ -30,10 +30,9 @@ def _exigir_claw(perfil):
 
 
 def ruta_del_store(home=None):
-    texto = str(home or os.environ.get("HERMES_HOME", "")).strip()
-    if not texto:
-        raise ValueError("HERMES_HOME is not set; no raices store to open")
-    return Path(texto) / "sistema-agentes.db"
+    """F6: el store vive en la RAIZ del home de Hermes (raices/hogar), la
+    misma ruta para el perfil claw del gateway y el cron del perfil default."""
+    return hogar.raiz_del_hogar(home) / "sistema-agentes.db"
 
 
 def abrir_tienda(home=None):

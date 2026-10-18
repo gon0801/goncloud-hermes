@@ -15,8 +15,9 @@ y el argumento es el nombre pelado.
 Convencion de los scripts no_agent (README): nada en la salida si la vuelta
 sale bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la
 ruta de raices cerrada no corre y sale 0: no es un fallo, la puerta de
-capacidades (H4) aun no abre. El store es %HERMES_HOME%/sistema-agentes.db y
-el kanban, HERMES_KANBAN_DB o %HERMES_HOME%/kanban.db.
+capacidades (H4) aun no abre. El store vive en la RAIZ del home de Hermes
+(raices/hogar.py la resuelve: el home de un perfil sube a su raiz) y el
+kanban, HERMES_KANBAN_DB o <raiz>/kanban.db.
 """
 
 from __future__ import annotations
@@ -41,10 +42,8 @@ def ruta_del_kanban(home):
 
 
 def correr(home=None, ruta_abierta=None):
-    base_texto = str(home or os.environ.get("HERMES_HOME", "")).strip()
-    if not base_texto:
-        raise RuntimeError("HERMES_HOME no esta definido; sin el no hay raices")
-    base = Path(base_texto)
+    hogar = importlib.import_module("raices.hogar")
+    base = hogar.raiz_del_hogar(home)
     abierta, causa = (ruta_abierta or ruta_de_raices_abierta)()
     if not abierta:
         print(f"ticker-raices: ruta de raices cerrada ({causa})", file=sys.stderr)

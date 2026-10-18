@@ -75,8 +75,10 @@ hermes cron create "every 1m" --name ticker-raices --script "ticker-raices.py" -
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
 raices cerrada (el par de Hermes sin certificar, H4) no corre y sale 0. El
-store es `%HERMES_HOME%\sistema-agentes.db`; el kanban, `HERMES_KANBAN_DB` o
-`%HERMES_HOME%\kanban.db`, y solo se abre si hay algo que despachar. La
+store vive en la raíz del home de Hermes (`raices/hogar.py` la resuelve con
+`hermes_constants`: el home de perfil del gateway y el del cron suben a la
+misma raíz); el kanban, `HERMES_KANBAN_DB` o `<raíz>\kanban.db`, y solo se
+abre si hay algo que despachar. La
 expresion `* * * * *` es el cada minuto estandar de cron; la referencia 0.21.5
 copiada fuera del repo solo trae `kanban_db*`, no el planificador del cron, asi
 que en H5 el coordinador confirma en la PC que el cron acepta cada minuto (si
