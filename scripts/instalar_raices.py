@@ -413,12 +413,23 @@ def _limpieza_de_creacion(
             fusionables = {
                 nombre: cron_id for nombre, cron_id in ids_por_nombre.items() if cron_id
             }
-            if fusionables and _fusionar_estado(home, fusionables):
-                print(
-                    f"instalar-raices: el estado previo de {RUTA_DE_ESTADO} "
-                    f"conserva lo suyo y fusiona el id vivo de: "
-                    f"{', '.join(sorted(fusionables))}"
-                )
+            if fusionables:
+                if _fusionar_estado(home, fusionables):
+                    print(
+                        f"instalar-raices: el estado previo de {RUTA_DE_ESTADO} "
+                        f"conserva lo suyo y fusiona el id vivo de: "
+                        f"{', '.join(sorted(fusionables))}"
+                    )
+                else:
+                    # F9 (hermes#34): el estado previo no se pudo leer ni
+                    # escribir: el fallo se dice; el vivo queda sin registro
+                    # y el error de arriba ya no promete lo que no pasó.
+                    print(
+                        f"instalar-raices: AVISO: no pude fusionar el id vivo "
+                        f"de {', '.join(sorted(fusionables))} en el estado "
+                        f"previo {RUTA_DE_ESTADO}: el cron quedó vivo y sin "
+                        "registro; retíralo a mano con `hermes cron remove`"
+                    )
             if any(cron_id is None for cron_id in ids_por_nombre.values()):
                 print(
                     f"instalar-raices: AVISO: había un estado previo en "
@@ -512,8 +523,20 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
     return 0
 
 
-def _quitar_envoltorios_y_estado(home: Path, estado: Path) -> None:
+def _quitar_envoltorios_y_estado(home: Path, estado: Path, jobs) -> None:
+    """F8 (hermes#34): desenlaza SOLO los envoltorios cuyo nombre ya no
+    tiene job vivo en los jobs releídos tras los remove — la misma
+    invariante de _limpieza_de_creacion; un vivo que el estado no listaba
+    se avisa por nombre y conserva su envoltorio (igual que un ajeno: R2).
+    Un almacén ilegible no llega aquí: revertir falla cerrado antes."""
     for cron in CRONES:
+        if _hay_cron(jobs, cron.nombre):
+            print(
+                f"instalar-raices: AVISO: un job llamado {cron.nombre} sigue "
+                f"vivo en el almacén y el estado no lo listaba: su envoltorio "
+                f"{cron.envoltorio} queda y no se toca"
+            )
+            continue
         (home / cron.envoltorio).unlink(missing_ok=True)
     estado.unlink()
 
@@ -593,7 +616,14 @@ def revertir(home: Path, corredor) -> int:
         # R1: sin id guardado y sin el nombre en el almacén: nada que remove
         # pueda borrar; solo queda lo nuestro.
         _avisar_ya_retirado(nombre, jobs)
-    _quitar_envoltorios_y_estado(home, estado)
+    tras_retirar = _leer_jobs(home)
+    if tras_retirar is None:
+        # F8: sin almacén legible tras los remove no se sabe qué sigue
+        # vivo: fail-closed, ningún envoltorio se desenlaza y el estado
+        # queda para una reversa futura.
+        print(_jobs_ilegibles(home) + "; no se desenlaza ningún envoltorio")
+        return 1
+    _quitar_envoltorios_y_estado(home, estado, tras_retirar)
     print("instalar-raices: crones de raíces retirados; datos del operador intactos")
     return 0
 

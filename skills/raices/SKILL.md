@@ -49,7 +49,10 @@ El cron te avisa en el chat qué raíz necesita qué. Léela con
   `claims`: `[{unitId, attempt, criterionId, artifactRef: {ref, digest},
   environment: {host, versions}, procedure, outcome, at, expiresAt,
   role: "verifier"|"ci"}]`. Si NO puedes comprobarlo, `outcome: "unknown"`,
-  nunca `passed`.
+  nunca `passed`. Si el criterio pide `verifier: "owner"`, NO mandes claim
+  (ningún rol tuyo lo acredita): la raíz levanta la excepción
+  `NECESITA_DAVID` y es la respuesta de David — que pasas con
+  `goncloud_root_resolve` — la que acredita el criterio.
 
 ## Lo que claw nunca hace
 

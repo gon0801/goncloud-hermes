@@ -204,6 +204,9 @@ class ReconcileDeClaims(Escenario):
         os_path = (
             self.dir_de_instrucciones / claim["artifactRef"]["ref"][len("artifact:") :]
         )
+        # El artefacto queda 0o444; Windows no borra un read-only: quitar el
+        # modo antes, como en las pruebas que lo adulteran.
+        os_path.chmod(0o644)
         os_path.unlink()
         recibo = self.reconciliar(tienda, [claim])
         self.assertEqual(recibo.codigo, "instruccion-invalida")
