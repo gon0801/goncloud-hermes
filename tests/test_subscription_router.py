@@ -134,6 +134,19 @@ class RouterTestCase(unittest.TestCase):
             )
         }
 
+    def git_workspace(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"],
+            cwd=self.workspace,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.workspace,
+            check=True,
+        )
+
     def router(self):
         self.sleeps = []
         router = SubscriptionRouter(
@@ -645,17 +658,7 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(router.calls, ["opencode_go", "claude"])
 
     def test_transport_failure_after_mutation_blocks_the_stage(self):
-        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "test@example.invalid"],
-            cwd=self.workspace,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test"],
-            cwd=self.workspace,
-            check=True,
-        )
+        self.git_workspace()
         router = self.router()
 
         def mutate_then_transport(request, route):
@@ -671,14 +674,95 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(result.failure, FailureKind.TRANSPORT)
         self.assertEqual(router.calls, ["opencode_go"])
 
-    def test_non_advancing_failure_blocks_the_stage(self):
+    def test_task_failure_without_mutation_advances_to_the_next_slot(self):
+        # Live 2026-10-17 (t_bc4ddc09): an executed attempt that came back
+        # task_failure with a clean workspace blocked the stage, so one dead
+        # route pinned the whole lane. Nothing usable was delivered and no
+        # verdict was reported, so the next position must try.
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TASK_FAILURE)
+        self.fake_adapters["claude"].result = completed("next ok", "claude")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "next ok")
+        self.assertEqual(result.slot, 1)
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        self.assertEqual(
+            result.skipped_routes,
+            (SkippedRoute(0, "opencode_go", FailureKind.TASK_FAILURE),),
+        )
+
+    def test_task_failure_on_every_slot_exhausts_the_lane_with_evidence(self):
+        router = self.router()
+        lane = ("opencode_go", "claude", "muse", "grok")
+        for name in lane:
+            self.fake_adapters[name].result = failed(FailureKind.TASK_FAILURE, name)
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(router.calls, list(lane))
+        self.assertEqual(
+            result.skipped_routes,
+            tuple(
+                SkippedRoute(slot, name, FailureKind.TASK_FAILURE)
+                for slot, name in enumerate(lane)
+            ),
+        )
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual([row["failure"] for row in attempts], ["task_failure"] * 4)
+        self.assertEqual([row.get("disposition") for row in attempts], ["executed"] * 4)
+
+    def test_task_failure_after_mutation_blocks_the_stage(self):
+        self.git_workspace()
+        router = self.router()
+
+        def mutate_then_task_failure(request, route):
+            (request.workspace / "partial.py").write_text("partial\n", encoding="utf-8")
+            return failed(FailureKind.TASK_FAILURE, route.adapter)
+
+        self.fake_adapters["opencode_go"].result = mutate_then_task_failure
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(router.calls, ["opencode_go"])
+
+    def test_timeout_then_rejected_envelope_advances_to_the_third_position(self):
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
+        self.fake_adapters["claude"].result = failed(FailureKind.INVALID_TERMINAL)
+        self.fake_adapters["muse"].result = completed("muse ok", "muse")
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "muse ok")
+        self.assertEqual(result.slot, 2)
+        self.assertEqual(router.calls, ["opencode_go", "claude", "muse"])
+        self.assertEqual(
+            result.skipped_routes,
+            (
+                SkippedRoute(0, "opencode_go", FailureKind.TIMEOUT),
+                SkippedRoute(1, "claude", FailureKind.INVALID_TERMINAL),
+            ),
+        )
+
+    def test_non_advancing_failure_blocks_the_stage(self):
+        # task_failure advances on a clean workspace now; the kinds left out
+        # of _ADVANCING_FAILURES (a refused request) still block outright.
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = failed(FailureKind.INVALID_REQUEST)
+
+        result = router.run(request(self.workspace), routes_for_main())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_REQUEST)
         self.assertEqual(router.calls, ["opencode_go"])
 
     def test_exhausted_chain_blocks_with_owner_facing_evidence(self):
