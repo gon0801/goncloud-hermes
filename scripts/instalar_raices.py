@@ -22,9 +22,15 @@ sin crons; ilegible es fail-closed (código 1, nada escrito).
 
 El id del cron creado se guarda en raices/instalacion.json: sale de
 releer jobs.json por nombre tras el create (la línea "Created job: <id>"
-del CLI es el respaldo). --revertir borra con `cron remove <job_id>`
-buscando el id por nombre en jobs.json o, si no, el guardado; sin id en
-ninguna parte, error claro y código 1 sin borrar el estado.
+del CLI es el respaldo). --revertir borra con `cron remove <job_id>`:
+manda el id guardado si sigue vivo en jobs.json, y el nombre solo
+respalda cuando no hay id guardado (si un cron ajeno se llama
+ticker-raices, jamás se toca). Si el id guardado ya no vive en el
+almacén y no hay id por nombre, el job ya no está: ya retirado, se
+quita solo lo nuestro (envoltorio y estado) y se sale 0 avisándolo;
+llamar remove con un id obsoleto fallaría y atascaría la reversa para
+siempre. Un remove intentado y fallido sigue cerrando la ruta con
+código 1 sin borrar nada (F2 de #28).
 
 --revertir quita SOLO lo instalado aquí (cron, envoltorio, archivo de
 estado) y deja la ruta cerrada: sistema-agentes.db, kanban.db,
@@ -100,7 +106,10 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
     1, nunca FileNotFoundError. Cada llamada lleva HERMES_HOME=<home> en el
     entorno (el default profile ES la raíz: sin esto el create/remove
     aterrizaría en el jobs.json del home del proceso) y decodifica utf-8
-    con replace (la code page local revienta en un Windows no UTF-8)."""
+    con replace (la code page local revienta en un Windows no UTF-8). Un
+    CLI colgado (timeout) no tumba al instalador con un traceback: sale
+    código != 0 con la causa, para que aplicar desenlace el envoltorio y
+    revertir la imprima."""
     ejecutable = (resolvedor or shutil.which)("hermes")
     if not ejecutable:
         print(
@@ -111,15 +120,18 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
     entorno = os.environ.copy()
     if home is not None:
         entorno["HERMES_HOME"] = str(Path(home))
-    resultado = subprocess.run(
-        [ejecutable, *argv],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        env=entorno,
-    )
+    try:
+        resultado = subprocess.run(
+            [ejecutable, *argv],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=entorno,
+        )
+    except subprocess.TimeoutExpired:
+        return 1, f"timeout: hermes no contesto en 60 segundos ({' '.join(argv)})"
     return resultado.returncode, resultado.stdout
 
 
@@ -135,7 +147,10 @@ def _leer_jobs(home: Path):
         crudo = ruta.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError no es OSError: bytes que no son utf-8 (un
+        # editor que dejó el archivo en UTF-16, por ejemplo) son un
+        # almacén ilegible, no una excepción que tumbe al instalador.
         return None
     try:
         datos = json.loads(crudo)
@@ -178,6 +193,13 @@ def _id_del_estado(estado: Path):
     return None
 
 
+def _avisar_sin_id() -> None:
+    print(
+        f"instalar-raices: aviso: no pude fijar el id de "
+        f"{NOMBRE_DEL_CRON}; --revertir lo buscará por nombre"
+    )
+
+
 def _escribir_envoltorio(home: Path, plugin: Path) -> None:
     destino = home / ENVOLTORIO
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +234,8 @@ def _jobs_ilegibles(home: Path) -> str:
     return f"instalar-raices: no pude leer {Path(home) / RUTA_DE_JOBS}"
 
 
-def chequear(home: Path, plugin: Path, corredor) -> int:
+def chequear(home: Path, plugin: Path) -> int:
+    """R7: la lectura es de jobs.json: el corredor sobra aquí."""
     jobs = _leer_jobs(home)
     if jobs is None:
         print(_jobs_ilegibles(home) + "; nada que hacer")
@@ -284,12 +307,13 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
         if cron_id is None:
             cron_id = _id_desde_salida(salida)
         if cron_id is None:
-            print(
-                f"instalar-raices: aviso: no pude fijar el id de "
-                f"{NOMBRE_DEL_CRON}; --revertir lo buscará por nombre"
-            )
+            _avisar_sin_id()
     else:
         cron_id = _id_del_cron(jobs)
+        if cron_id is None:
+            # R3: el job ya está pero su registro no trae id textual: el
+            # mismo aviso que la rama de create; nunca null en silencio.
+            _avisar_sin_id()
     permisos = home / "raices" / "permisos.json"
     if not permisos.exists():
         permisos.parent.mkdir(exist_ok=True)
@@ -305,6 +329,40 @@ def aplicar(home: Path, plugin: Path, corredor) -> int:
     return 0
 
 
+def _retirar_con_remove(home: Path, estado: Path, job_id: str, corredor) -> int:
+    codigo, salida = corredor(["cron", "remove", job_id])
+    if codigo != 0:
+        # El remove SE INTENTÓ y falló: tocar nada a medias dejaría un cron
+        # vivo sin estado que lo registre (igual que aplicar con create
+        # rechazado). No se borra nada y el error sale impreso (F2).
+        print(f"instalar-raices: hermes rechazó el remove: {salida.strip()}")
+        return 1
+    (home / ENVOLTORIO).unlink(missing_ok=True)
+    estado.unlink()
+    print(f"instalar-raices: {NOMBRE_DEL_CRON} retirado; datos del operador intactos")
+    return 0
+
+
+def _desenlazar_y_avisar(home: Path, estado: Path, jobs) -> int:
+    # R1: el job de esta instalación ya no vive en el almacén = ya
+    # retirado (el operador lo borró a mano o la store se fue). Un remove
+    # con el id obsoleto fallaría y dejaría la reversa atascada en código 1
+    # para siempre: no se llama, solo se quita lo nuestro.
+    resto = ""
+    if _hay_cron(jobs):
+        resto = (
+            f" (un job llamado {NOMBRE_DEL_CRON} sigue en el almacén y no se "
+            "toca: no es el de esta instalación)"
+        )
+    print(
+        f"instalar-raices: el job de esta instalación ya no está en el "
+        f"almacén: ya retirado{resto}; quito envoltorio y estado"
+    )
+    (home / ENVOLTORIO).unlink(missing_ok=True)
+    estado.unlink()
+    return 0
+
+
 def revertir(home: Path, corredor) -> int:
     estado = home / RUTA_DE_ESTADO
     if not estado.exists():
@@ -314,27 +372,34 @@ def revertir(home: Path, corredor) -> int:
     if jobs is None:
         print(_jobs_ilegibles(home) + "; no se toca nada")
         return 1
-    job_id = _id_del_cron(jobs) or _id_del_estado(estado)
-    if job_id is None:
-        # Sin id no hay remove seguro: borrar el estado dejaría el cron sin
-        # registro (igual que un remove fallido). No se toca nada.
-        print(
-            f"instalar-raices: no encuentro el id de {NOMBRE_DEL_CRON} "
-            f"(ni en {Path(home) / RUTA_DE_JOBS} ni guardado en el estado); "
-            "no se toca nada"
-        )
-        return 1
-    codigo, salida = corredor(["cron", "remove", job_id])
-    if codigo != 0:
-        # El remove falló: tocar nada a medias dejaría un cron vivo sin
-        # estado que lo registre (igual que aplicar con create
-        # rechazado). No se borra nada y el error sale impreso.
-        print(f"instalar-raices: hermes rechazó el remove: {salida.strip()}")
-        return 1
-    (home / ENVOLTORIO).unlink(missing_ok=True)
-    estado.unlink()
-    print(f"instalar-raices: {NOMBRE_DEL_CRON} retirado; datos del operador intactos")
-    return 0
+    guardado = _id_del_estado(estado)
+    vivos = {
+        entrada.get("id") for entrada in jobs if isinstance(entrada.get("id"), str)
+    }
+    if guardado is not None:
+        if guardado in vivos:
+            # R2: el id guardado vivo manda. Si otro cron ajeno se llama
+            # ticker-raices, el nombre no se toca.
+            return _retirar_con_remove(home, estado, guardado, corredor)
+        # R1: nuestro id ya no vive: ya retirado. El nombre queda fuera a
+        # propósito (podría ser un cron ajeno, R2).
+        return _desenlazar_y_avisar(home, estado, jobs)
+    if _hay_cron(jobs):
+        por_nombre = _id_del_cron(jobs)
+        if por_nombre is None:
+            # El job está en el almacén pero ni su registro ni el estado
+            # traen id textual: no hay remove seguro. Fail-closed.
+            print(
+                f"instalar-raices: el registro de {NOMBRE_DEL_CRON} en "
+                f"{Path(home) / RUTA_DE_JOBS} no trae id y el estado tampoco "
+                "lo guardó; no se toca nada"
+            )
+            return 1
+        # Sin id guardado, el nombre es el respaldo (R2).
+        return _retirar_con_remove(home, estado, por_nombre, corredor)
+    # R1: sin id guardado y sin el nombre en el almacén: nada que remove
+    # pueda borrar; solo queda lo nuestro.
+    return _desenlazar_y_avisar(home, estado, jobs)
 
 
 def main(argv=None, corredor=None) -> int:
@@ -359,7 +424,7 @@ def main(argv=None, corredor=None) -> int:
             return correr_por_subprocess(llamada, home=args.home)
 
     if args.check:
-        return chequear(args.home, args.plugin, corredor)
+        return chequear(args.home, args.plugin)
     if args.aplicar:
         return aplicar(args.home, args.plugin, corredor)
     return revertir(args.home, corredor)

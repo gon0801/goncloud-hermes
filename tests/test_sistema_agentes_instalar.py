@@ -112,6 +112,28 @@ class HermesFalsoDeCrones:
         return 0, f"Removed job: ticker-raices ({job_id})"
 
 
+class CreateSinAlmacen(HermesFalsoDeCrones):
+    """R4: un create que anuncia la salida que le toca pero NO escribe
+    jobs.json: solo el stdout puede dar el id (o nadie)."""
+
+    def __init__(self, home, salida):
+        super().__init__(home)
+        self.salida_del_create = salida
+
+    def _crear(self, argv):
+        return 0, self.salida_del_create
+
+
+class CreateEscribeBytesRotos(HermesFalsoDeCrones):
+    """R6: el create dice que hizo el job pero el almacén quedó con bytes
+    que no son utf-8: la relectura tras crear revienta decodeando."""
+
+    def _crear(self, argv):
+        self.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.ruta_jobs.write_bytes(b"\xff\xfe{")
+        return 0, "Created job: abc123def456"
+
+
 class InstaladorDeRaices(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
@@ -148,6 +170,12 @@ class InstaladorDeRaices(unittest.TestCase):
     def sembrar_jobs_ilegible(self):
         self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
         self.corredor.ruta_jobs.write_text("{jobs: [roto", encoding="utf-8")
+
+    def sembrar_jobs_bytes_rotos(self):
+        # R6: bytes que no son utf-8 (p. ej. un editor que dejó UTF-16):
+        # read_text revienta decodeando, no al parsear JSON.
+        self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.corredor.ruta_jobs.write_bytes(b"\xff\xfe{")
 
     def crear_datos_del_operador(self):
         (self.home / "raices").mkdir(exist_ok=True)
@@ -201,6 +229,62 @@ class ElCheck(InstaladorDeRaices):
         self.assertEqual(codigo, 1)
         self.assertIn("jobs.json", salida)
         self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+
+
+class ElAlmacenConBytesRotos(InstaladorDeRaices):
+    """R6 (CR 4306602154): jobs.json con bytes inválidos (b"\xff\xfe{") no
+    debe tumbar al instalador con UnicodeDecodeError: es un almacén
+    ilegible, fail-closed, código 1 en los tres modos."""
+
+    def test_check_con_bytes_invalidos_sale_uno(self):
+        self.sembrar_jobs_bytes_rotos()
+        codigo, salida = self.chequear()
+        self.assertEqual(codigo, 1)
+        self.assertIn("jobs.json", salida)
+
+    def test_aplicar_con_bytes_invalidos_sale_uno_y_no_escribe_nada(self):
+        self.sembrar_jobs_bytes_rotos()
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.aplicar()
+        self.assertEqual(codigo, 1)
+        self.assertIn("jobs.json", bufer.getvalue())
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+
+    def test_revertir_con_bytes_invalidos_sale_uno_y_no_borra_nada(self):
+        self.assertEqual(self.aplicar(), 0)
+        self.sembrar_jobs_bytes_rotos()
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.revertir()
+        self.assertEqual(codigo, 1)
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [],
+        )
+        self.assertTrue((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertTrue((self.home / "raices" / "instalacion.json").exists())
+
+    def test_la_relectura_rota_tras_el_create_usa_el_stdout_del_id(self):
+        # R6: si jobs.json revienta JUSTO después del create, el cron ya
+        # existe: no se revienta, el id sale del stdout y el estado queda.
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)],
+                corredor=CreateEscribeBytesRotos(self.home),
+            )
+        self.assertEqual(codigo, 0)
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(estado["cron_id"], "abc123def456")
+        self.assertTrue((self.home / "scripts" / "ticker-raices.py").exists())
 
 
 class Aplicar(InstaladorDeRaices):
@@ -281,6 +365,67 @@ class Aplicar(InstaladorDeRaices):
             (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
         )
         self.assertEqual(estado["cron_id"], "4c1f0e9d2b7a")
+
+    def test_aplicar_con_el_cron_presente_sin_id_avisa_y_deja_cron_id_nulo(self):
+        # R3 (bot F3): el job ya está pero su registro no trae id textual.
+        # Mismo aviso que la rama de create; nunca null en silencio.
+        self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.corredor.ruta_jobs.write_text(
+            json.dumps({"jobs": [{"name": "ticker-raices", "enabled": True}]}),
+            encoding="utf-8",
+        )
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(self.aplicar(), 0)
+        self.assertIn("aviso", bufer.getvalue())
+        self.assertIn("id", bufer.getvalue())
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertIsNone(estado["cron_id"])
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "create"]
+            ],
+            [],
+        )
+
+    def test_el_id_respalda_del_stdout_cuando_el_create_no_escribe_jobs(self):
+        # R4 (bot F4): el create anuncia "Created job: <id>" pero no dejó
+        # nada en jobs.json: el id sale del stdout de todos modos.
+        self.assertEqual(
+            self.modulo.main(
+                ["--aplicar", "--home", str(self.home)],
+                corredor=CreateSinAlmacen(
+                    self.home, "Created job: zz99aa66bb44\n  Name: ticker-raices"
+                ),
+            ),
+            0,
+        )
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(estado["cron_id"], "zz99aa66bb44")
+
+    def test_sin_id_en_ninguna_fuente_avisa_y_deja_cron_id_nulo(self):
+        # R4: el create "funcionó" pero ni jobs.json ni el stdout traen id:
+        # el estado queda null y el aviso sale impreso.
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            self.assertEqual(
+                self.modulo.main(
+                    ["--aplicar", "--home", str(self.home)],
+                    corredor=CreateSinAlmacen(self.home, "hecho sin id"),
+                ),
+                0,
+            )
+        self.assertIn("aviso", bufer.getvalue())
+        estado = json.loads(
+            (self.home / "raices" / "instalacion.json").read_text(encoding="utf-8")
+        )
+        self.assertIsNone(estado["cron_id"])
 
     def test_aplicar_con_jobs_ilegible_falla_cerrado_y_no_escribe_nada(self):
         self.sembrar_jobs_ilegible()
@@ -405,7 +550,10 @@ class Revertir(InstaladorDeRaices):
         self.assertEqual(removes, [["cron", "remove", ID_FALSO]])
         self.assertEqual(self.corredor.jobs(), [])
 
-    def test_revertir_sin_id_en_jobs_ni_en_el_estado_error_uno_y_no_borra(self):
+    def test_revertir_sin_huellas_del_cron_lo_da_por_retirado_y_sale_cero(self):
+        # R1: sin id guardado y sin el nombre en el almacén, el job ya no
+        # está: no se llama remove (fallaría para siempre), se desenlaza
+        # envoltorio y estado y se sale 0 avisándolo.
         self.crear_datos_del_operador()
         (self.home / "scripts").mkdir(exist_ok=True)
         (self.home / "scripts" / "ticker-raices.py").write_text(
@@ -416,6 +564,108 @@ class Revertir(InstaladorDeRaices):
             json.dumps(
                 {"jobs": [{"id": "a9606c0778dd", "name": "monday-pedidos-semanal"}]}
             ),
+            encoding="utf-8",
+        )
+        (self.home / "raices" / "instalacion.json").write_text(
+            json.dumps({"version": 1, "cron": "ticker-raices", "cron_id": None}),
+            encoding="utf-8",
+        )
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.revertir()
+        self.assertEqual(codigo, 0)
+        self.assertIn("retirado", bufer.getvalue())
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [],
+            "sin huellas no se invoca remove",
+        )
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+        self.assertTrue((self.home / "raices" / "permisos.json").exists())
+
+    def test_revertir_con_el_cron_borrado_a_mano_desatasca_la_reversa(self):
+        # R1 (bot F1): el operador borró el cron a mano (aquí: el almacén
+        # completo). El id guardado ya no vive: un remove con él fallaría y
+        # dejaría la reversa atascada en código 1 para siempre. Ahora: sin
+        # remove, desenlace y 0.
+        self.assertEqual(self.aplicar(), 0)
+        self.corredor.ruta_jobs.unlink()
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.revertir()
+        self.assertEqual(codigo, 0)
+        self.assertIn("retirado", bufer.getvalue())
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [],
+            "el id obsoleto no llega a remove",
+        )
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+
+    def test_revertir_con_id_muerto_no_borra_un_ajeno_con_el_nombre(self):
+        # R1+R2: nuestro id murió pero hay un job ajeno que se llama
+        # ticker-raices. Nunca se borra por nombre: se da por retirado lo
+        # nuestro y el ajeno queda intacto.
+        self.assertEqual(self.aplicar(), 0)
+        self.corredor._guardar(
+            [{"id": "ajeno1234567", "name": "ticker-raices", "enabled": True}]
+        )
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.revertir()
+        self.assertEqual(codigo, 0)
+        self.assertEqual(
+            [
+                llamada
+                for llamada in self.corredor.llamadas
+                if llamada[:2] == ["cron", "remove"]
+            ],
+            [],
+            "el ajeno con el nombre no se toca",
+        )
+        self.assertEqual(self.corredor.nombres(), ["ticker-raices"], "el ajeno vive")
+        self.assertIn("ticker-raices", bufer.getvalue(), "el aviso lo nombra")
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
+
+    def test_revertir_prefiere_el_id_guardado_vivo_sobre_el_nombre(self):
+        # R2: el cron_id guardado vivo manda. Nuestro job fue renombrado a
+        # mano y OTRO cron ajeno ocupa el nombre: se borra el nuestro por
+        # id y el ajeno jamás.
+        self.assertEqual(self.aplicar(), 0)
+        jobs = self.corredor.jobs()
+        jobs[0]["name"] = "renombrado-a-mano"
+        jobs.append({"id": "ajeno1234567", "name": "ticker-raices", "enabled": True})
+        self.corredor._guardar(jobs)
+        self.assertEqual(self.revertir(), 0)
+        removes = [
+            llamada
+            for llamada in self.corredor.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        ]
+        self.assertEqual(removes, [["cron", "remove", ID_FALSO]])
+        self.assertEqual(self.corredor.nombres(), ["ticker-raices"], "el ajeno vive")
+
+    def test_revertir_con_el_nombre_presente_sin_id_en_ninguna_parte_error_uno(self):
+        # El job SÍ está en el almacén (por nombre) pero ni su registro ni
+        # el estado traen id textual: no hay remove seguro. Fail-closed.
+        self.crear_datos_del_operador()
+        (self.home / "scripts").mkdir(exist_ok=True)
+        (self.home / "scripts" / "ticker-raices.py").write_text(
+            "# envoltorio\n", "utf-8"
+        )
+        self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.corredor.ruta_jobs.write_text(
+            json.dumps({"jobs": [{"name": "ticker-raices", "enabled": True}]}),
             encoding="utf-8",
         )
         (self.home / "raices" / "instalacion.json").write_text(
@@ -568,6 +818,26 @@ class ElEjecutableDelCron(unittest.TestCase):
         self.assertEqual(llamadas, [], "sin ejecutable no se invoca subprocess")
         self.assertIn("hermes", bufer.getvalue())
         self.assertIn("no", bufer.getvalue().lower())
+
+    def test_el_timeout_sale_con_codigo_distinto_de_cero_y_causa_clara(self):
+        # R5 (CR 4306602145): el CLI colgado no tumba al instalador con un
+        # traceback de TimeoutExpired: el corredor devuelve código != 0 con
+        # la causa, para que aplicar desenlace el envoltorio y revertir la
+        # imprima.
+        instalador = cargar_instalador()
+
+        def falso_run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=60)
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            codigo, salida = instalador.correr_por_subprocess(
+                ["cron", "create", "every 1m"],
+                home=Path("/su/raiz/hermes"),
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+            )
+        self.assertNotEqual(codigo, 0)
+        self.assertIn("timeout", salida.lower())
+        self.assertIn("60", salida)
 
 
 if __name__ == "__main__":
