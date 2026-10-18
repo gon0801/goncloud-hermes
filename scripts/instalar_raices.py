@@ -332,10 +332,11 @@ def _limpieza_de_creacion(
 ) -> int:
     """F1 (hermes#34): un create parcial no deja un cron vivo apuntando a un
     envoltorio borrado ni un desastre que --revertir no pueda retirar. Retira
-    los crons creados EN ESTA corrida y solo entonces desenlaza los
-    envoltorios; si un remove de la limpieza falla, escribe el estado parcial
-    con lo que quedó vivo (con sus envoltorios: el cron vivo no salta a
-    ciegas) para que --revertir lo retire, y lo nombra en el error."""
+    los crons creados EN ESTA corrida (los que ya estaban en jobs.json no se
+    tocan) y después desenlaza SOLO los envoltorios cuyo nombre ya no tiene
+    job vivo en jobs.json releído: un cron creado sin id no pierde su
+    envoltorio (el aviso del id ya salió) y el estado previo (v1/v2) que ya
+    existía no se borra ni se degrada."""
     print(
         f"instalar-raices: hermes rechazó el cron {rechazado} "
         f"(código {codigo}): {salida.strip()}"
@@ -355,15 +356,29 @@ def _limpieza_de_creacion(
                     "--revertir lo retire"
                 )
     if vivos:
-        _registrar_estado(
-            home,
-            con_plantilla=False,
-            ids={cron.nombre: dict(creados).get(cron.nombre) for cron in vivos},
-            crones=tuple(vivos),
-        )
-        return 1
-    for escrito in CRONES:
-        (home / escrito.envoltorio).unlink(missing_ok=True)
+        if (home / RUTA_DE_ESTADO).exists():
+            print(
+                f"instalar-raices: AVISO: había un estado previo en "
+                f"{RUTA_DE_ESTADO} y no se toca; el cron "
+                f"{', '.join(c.nombre for c in vivos)} quedó vivo sin "
+                "registro nuevo"
+            )
+        else:
+            _registrar_estado(
+                home,
+                con_plantilla=False,
+                ids={cron.nombre: dict(creados).get(cron.nombre) for cron in vivos},
+                crones=tuple(vivos),
+            )
+    tras_limpiar = _leer_jobs(home)
+    sin_id = {nombre for nombre, cron_id in creados if cron_id is None}
+    for cron in CRONES:
+        quedo_vivo = cron in vivos or cron.nombre in sin_id
+        if quedo_vivo:
+            continue
+        if tras_limpiar is not None and _hay_cron(tras_limpiar, cron.nombre):
+            continue
+        (home / cron.envoltorio).unlink(missing_ok=True)
     return 1
 
 

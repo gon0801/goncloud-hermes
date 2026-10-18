@@ -377,7 +377,14 @@ def sembrar_claim_de_hecho(
         or not isinstance(artifact_ref.get("digest"), str)
     ):
         return None
-    resto = {k: v for k, v in claim_hecho.items() if k != "role"}
+    resto = {k: v for k, v in claim_hecho.items() if k not in ("role", "schema")}
+    # F4 (hermes#34): "schema" se normaliza FUERA del sembrado. El digesto de
+    # la fila y el del consumo tienen que salir del MISMO documento, y aplicar
+    # le suma `schema` al documento de la decisión para validarlo; si el
+    # sembrado lo conservara, la fila nacería con un digesto que el consumo
+    # jamás recomputa y quedaría viva (operation-conflict) para siempre. El
+    # schema es etiqueta de transporte, no contenido del claim; el resto de
+    # campos viaja igual en los dos lados.
     sembrado = {
         **resto,
         "rootId": root_id,

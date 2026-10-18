@@ -1171,6 +1171,16 @@ class RemoveDeLimpiezaRoto(HermesFalsoDeCrones):
         return super().__call__(argv)
 
 
+class CreateSinIdNiAlmacen(HermesFalsoDeCrones):
+    """F1b: el create del ticker "sale bien" pero ni jobs.json ni el stdout
+    traen id (cron_id None, aviso existente); despertar-raices es rechazado."""
+
+    def _crear(self, argv):
+        if argv[argv.index("--name") + 1] == "ticker-raices":
+            return 0, "hecho sin id"
+        return 1, "Failed to create job: deliver desconocido: bot-chat:claw"
+
+
 class AplicarParcial(InstaladorDeRaices):
     """F1: al fallar el n-ésimo create no queda un cron vivo apuntando a un
     envoltorio borrado ni un desastre que --revertir no pueda retirar."""
@@ -1247,6 +1257,81 @@ class AplicarParcial(InstaladorDeRaices):
         self.assertEqual(removes, [ID_FALSO])
         self.assertFalse((self.home / "raices" / "instalacion.json").exists())
         self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+
+    def test_la_instalacion_previa_del_ticker_no_se_toca_cuando_despertar_falla(self):
+        # F1a (hermes#34, el caso de la PC real): ticker-raices YA instalado
+        # (cron vivo, estado v1). Aplicar no lo crea y si el create de
+        # despertar-raices falla, la limpieza no puede borrar el envoltorio
+        # del ticker vivo ni degradar el estado previo.
+        self.corredor.ruta_jobs.parent.mkdir(parents=True, exist_ok=True)
+        self.corredor.ruta_jobs.write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": "d8588736c185",
+                            "name": "ticker-raices",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.home / "raices").mkdir(exist_ok=True)
+        estado_v1 = {
+            "version": 1,
+            "cron": "ticker-raices",
+            "cron_id": "d8588736c185",
+            "envoltorio": "scripts/ticker-raices.py",
+            "script_del_cron": "ticker-raices.py",
+        }
+        ruta_estado = self.home / "raices" / "instalacion.json"
+        ruta_estado.write_text(json.dumps(estado_v1), encoding="utf-8")
+        rechazo = SegundoCronRechazado(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=rechazo
+            )
+        self.assertEqual(codigo, 1)
+        # El ticker sigue vivo con su envoltorio.
+        self.assertEqual(
+            sorted(rechazo.nombres()),
+            ["ticker-raices"],
+            "el cron previo no se toca",
+        )
+        removes = [
+            llamada[2]
+            for llamada in rechazo.llamadas
+            if llamada[:2] == ["cron", "remove"]
+        ]
+        self.assertEqual(removes, [], "la limpieza no toca crons ajenos a esta corrida")
+        self.assertTrue((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
+        self.assertEqual(
+            json.loads(ruta_estado.read_text(encoding="utf-8")),
+            estado_v1,
+            "el estado v1 queda intacto",
+        )
+
+    def test_el_ticker_creado_sin_id_no_pierde_su_envoltorio(self):
+        # F1b (hermes#34): create del ticker OK sin id resoluble (cron_id
+        # None, aviso existente) + despertar rechazado: no se borra el
+        # envoltorio de un cron que puede estar vivo sin registro.
+        sin_id = CreateSinIdNiAlmacen(self.home)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=sin_id
+            )
+        self.assertEqual(codigo, 1)
+        self.assertTrue(
+            (self.home / "scripts" / "ticker-raices.py").exists(),
+            "un cron creado sin id conserva su envoltorio",
+        )
+        self.assertFalse((self.home / "scripts" / "despertar-raices.py").exists())
+        self.assertIn("aviso", bufer.getvalue(), "el aviso del id sigue saliendo")
 
 
 if __name__ == "__main__":

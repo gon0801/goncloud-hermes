@@ -305,6 +305,30 @@ class ReconcileDeClaims(Escenario):
         self.assertEqual(documento["unitId"], "a")
         self.assertEqual(documento["criterionId"], "a1")
 
+    def test_un_claim_con_schema_se_siembra_y_se_consumo_igual(self):
+        # F4 (hermes#34): el modelo puede imitar el contrato y mandar "schema"
+        # en el claim. El digesto de la fila y el del consumo tienen que
+        # calcularse sobre el MISMO documento o la fila queda viva para
+        # siempre (operation-conflict en la corrección).
+        tienda = self.abrir()
+        claim = self.claim_de()
+        claim["schema"] = "sistema-agentes.evidencia.v1"
+        self.assertIsInstance(self.reconciliar(tienda, [claim]), store.Ok)
+        self.consumir_claims(tienda)
+        self.assertEqual(
+            tienda.hechos_por_raiz(),
+            {},
+            "la fila del claim con schema se consumió en aplicar",
+        )
+        # Un claim corregido para la misma clave ya no da operation-conflict.
+        corregido = self.claim_de(outcome="failed", texto="corrida roja corregida")
+        recibo = self.reconciliar(tienda, [corregido])
+        self.assertIsInstance(recibo, store.Ok, getattr(recibo, "codigo", None))
+        self.assertEqual(
+            recibo.valor.claims,
+            [{"unitId": "a", "criterionId": "a1", "replayed": False}],
+        )
+
     def test_una_raiz_desconocida_se_rechaza(self):
         tienda = self.abrir()
         recibo = tienda.reconciliar("root-nadie", [], [self.claim_de()])
