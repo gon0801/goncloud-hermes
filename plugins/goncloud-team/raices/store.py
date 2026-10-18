@@ -478,6 +478,11 @@ class Store:
         razon = negar(efecto)
         if razon is None:
             return None
+        # C1: la concesión calla lo que el dueño puede conceder (autoridad o
+        # permisos de H), nunca una razón de forma: un efecto mal formado no
+        # procede aunque el dueño lo haya autorizado.
+        if razon in autoridad.RAZONES_DE_FORMA:
+            return razon
         if effect_id in self._concesiones_de(root_id):
             return None
         return razon

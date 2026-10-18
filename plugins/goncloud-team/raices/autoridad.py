@@ -32,6 +32,11 @@ HERRAMIENTA_POR_MODO = {
 LLAVES_DE_EFECTO = ("action", "repo", "mode")
 LLAVES_DE_AUTORIDAD = ("deadline", "actions", "repos", "destinations", "mode")
 
+# C1 (r6e): las razones de FORMA dicen que los documentos no tienen lo que
+# el contrato consulta; nadie puede autorizarlas — una concesión `autorizar`
+# calla razones de autoridad o de permisos de H, nunca éstas.
+RAZONES_DE_FORMA = frozenset({"efecto-sin-forma", "autoridad-ilegible"})
+
 
 def autoridad_ilegible(autoridad_meta: object) -> str | None:
     """La razón por la que el documento de autoridad no tiene la forma que el

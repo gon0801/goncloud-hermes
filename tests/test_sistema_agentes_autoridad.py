@@ -916,6 +916,103 @@ class ModoDeLaUnidadEnElArranque(TiendaCerrada, unittest.TestCase):
         self.assertEqual(causas, [])
 
 
+class LaConcesionNoCallaLasRazonesDeForma(TiendaCerrada, unittest.TestCase):
+    """C1 (r6e): la concesión `autorizar` calla lo que el dueño puede
+    conceder (autoridad o permisos de H), nunca las razones de FORMA: un
+    efecto mal formado no llega a started aunque el dueño lo autorice, y
+    decidir sigue preguntando por él."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.instante_actual = "2026-10-17T11:00:00Z"
+        self.tienda = store.Store(
+            self.ruta,
+            reloj=lambda: self.instante_actual,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    @staticmethod
+    def hechos_nulos():
+        return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
+
+    def test_un_efecto_sin_forma_autorizado_sigue_negado(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "roto-concedido"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "roto-concedido", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        exception_id = next(
+            e["exceptionId"]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+        )
+        self.instante_actual = "2026-10-17T12:00:00Z"
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(RAIZ, exception_id, "autorizar", ["david"]),
+            store.Ok,
+        )
+        # La concesión quedó vigente pero la razón es de forma: sigue negado.
+        recibo = self.tienda.iniciar_efecto(RAIZ, "roto-concedido", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        self.assertEqual(vista["concesiones"], ["roto-concedido"])
+
+    def test_decidir_pregunta_por_un_efecto_sin_forma_aunque_este_concedido(self):
+        # Concesión ganada por accion-preguntar; el intent del efecto se
+        # corrompe después: la razón pasa a ser de FORMA y, como la causa
+        # cambia, el exceptionId es otro: decidir vuelve a preguntar aunque
+        # el efecto figure en las concesiones.
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"), store.Ok
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.detalle["reason"], "accion-preguntar")
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        exception_id = next(
+            e["exceptionId"]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+        )
+        self.instante_actual = "2026-10-17T12:00:00Z"
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(RAIZ, exception_id, "autorizar", ["david"]),
+            store.Ok,
+        )
+        self.tienda._conexion.execute(
+            'UPDATE efectos SET intent_json = \'{"effectId": "effect-push"}\''
+            " WHERE root_id = ? AND effect_id = 'effect-push'",
+            (RAIZ,),
+        )
+        self.tienda._conexion.commit()
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        self.assertEqual(vista["concesiones"], ["effect-push"])
+        propuesta = decidir.decidir(vista)
+        preguntas = [
+            b["subject"].get("effectId")
+            for b in propuesta.decision["excepciones"]
+            if b["subject"].get("kind") == "effect"
+        ]
+        self.assertEqual(preguntas, ["effect-push"])
+        causas = [
+            b["subject"].get("cause")
+            for b in propuesta.decision["excepciones"]
+            if b["subject"].get("kind") == "effect"
+        ]
+        self.assertEqual(causas, ["autoridad:efecto-sin-forma"])
+
+
 class I07Reanudacion(unittest.TestCase):
     """Punto 2: al reanudar tras pause/resume."""
 

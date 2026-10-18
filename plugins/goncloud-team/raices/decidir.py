@@ -153,6 +153,13 @@ def _causa_de(razon: str) -> str:
     return modulo.causa_de(razon)
 
 
+def _es_de_forma(razon: str) -> bool:
+    """C1: si la razón es de forma (efecto-sin-forma, autoridad-ilegible),
+    la concesión del dueño no la calla: nadie autoriza un documento roto."""
+    modulo = importlib.import_module("raices.autoridad")
+    return razon in modulo.RAZONES_DE_FORMA
+
+
 def digesto(partes: object) -> str:
     canonico = json.dumps(
         partes, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -865,10 +872,10 @@ def decidir(
                 {"kind": "effect", "effectId": efecto["effectId"]},
             )
         elif efecto["state"] == "prepared":
-            if efecto["effectId"] in concesiones:
-                continue
             razon = autoridad(efecto["intent"])
-            if razon is not None:
+            if razon is not None and (
+                efecto["effectId"] not in concesiones or _es_de_forma(razon)
+            ):
                 levantar(
                     "NECESITA_DAVID",
                     {
@@ -890,10 +897,10 @@ def decidir(
         if ya_visto:
             continue
         decision["efectos"].append(intent)
-        if intent["effectId"] in concesiones:
-            continue
         razon = autoridad(intent)
-        if razon is not None:
+        if razon is not None and (
+            intent["effectId"] not in concesiones or _es_de_forma(razon)
+        ):
             levantar(
                 "NECESITA_DAVID",
                 {
