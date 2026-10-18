@@ -733,6 +733,126 @@ class ConcesionDeEfecto(TiendaCerrada, unittest.TestCase):
         self.assertEqual(preguntas, [])
 
 
+class SujetosDeIntentoSinAutorizar(TiendaCerrada, unittest.TestCase):
+    """F15: la concesión `autorizar` solo existe para efectos (F8). Un sujeto
+    {"kind": "attempt"} — arranque negado o reanudación — ofrece SOLO
+    listo/omitir/cancelar (como R, decide.ts:550), y una respuesta
+    `autorizar` vieja a un sujeto de intento no queda aplicada: la excepción
+    sigue abierta en vez de enterrarse respondida para siempre."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(
+            self.ruta,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    @staticmethod
+    def hechos(asignaciones_para=()):
+        return {
+            "principal": ["david"],
+            "asignaciones": [
+                {"unitId": u, "assignment": asignacion(), "relay": False}
+                for u in asignaciones_para
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+
+    @staticmethod
+    def hechos_nulos():
+        return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
+
+    def opciones_del_intento(self):
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        return [
+            [o["optionId"] for o in e["options"]]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "attempt"
+        ]
+
+    def test_el_arranque_negado_ofrece_solo_listo_omitir_cancelar(self):
+        informe = ticker.vuelta(
+            self.tienda,
+            kanban_port.DobleKanban(),
+            {RAIZ: self.hechos(["a"])},
+            permisos_h=permisos(toolsets={"otro": ["read", "write"]}),
+        )
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        self.assertEqual(self.opciones_del_intento(), [["listo", "omitir", "cancelar"]])
+
+    def test_la_reanudacion_negada_ofrece_solo_listo_omitir_cancelar(self):
+        permisosa = store.Store(
+            self.ruta.parent / "permisosa.db", permisos_h=permisos()
+        )
+        self.addCleanup(permisosa.cerrar)
+        permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))
+        self.assertIsInstance(
+            permisosa.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-liga"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            permisosa.control(comando("pause", "cmd-01", 1)), store.Ok
+        )
+        permisosa.cerrar()
+
+        endurecida = store.Store(
+            self.ruta.parent / "permisosa.db",
+            permisos_h=permisos(toolsets={"otro": ["read", "write"]}),
+        )
+        self.addCleanup(endurecida.cerrar)
+        self.assertIsInstance(
+            endurecida.control(comando("resume", "cmd-02", 2)), store.Ok
+        )
+        vista = endurecida.leer_vista(RAIZ, self.hechos_nulos())
+        opciones = [
+            [o["optionId"] for o in e["options"]]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "attempt"
+        ]
+        self.assertEqual(opciones, [["listo", "omitir", "cancelar"]])
+
+    def test_un_autorizar_viejo_a_un_sujeto_de_intento_no_queda_aplicado(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {
+                "kind": "attempt",
+                "unitId": "a",
+                "attempt": 1,
+                "cause": "permiso-h:accion-preguntar",
+            },
+            # La forma VIEJA (pre-F15), que ofrecía autorizar por error.
+            ["autorizar", "listo", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-vieja"), store.Ok)
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(
+                RAIZ, borrador["exceptionId"], "autorizar", ["david"]
+            ),
+            store.Ok,
+        )
+        ticker.vuelta(self.tienda, kanban_port.DobleKanban(), {})
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        fila = next(
+            e
+            for e in vista["excepciones"]
+            if e["exceptionId"] == borrador["exceptionId"]
+        )
+        self.assertIsNone(fila["appliedBy"])
+        propuesta = decidir.decidir(self.tienda.leer_vista(RAIZ, self.hechos_nulos()))
+        self.assertNotIn(
+            borrador["exceptionId"], propuesta.decision["respuestas_aplicadas"]
+        )
+
+
 class I07Reanudacion(unittest.TestCase):
     """Punto 2: al reanudar tras pause/resume."""
 

@@ -151,6 +151,10 @@ def _negar_arranque(vista, permisos, intencion) -> str | None:
 
 
 def _levantar_arranque(tienda, vista, intencion, razon) -> None:
+    """La pregunta por un arranque negado. Un sujeto de INTENTO no ofrece
+    `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
+    igual que en R, donde permission-required sale con
+    ["listo","omitir","cancelar"] (managed-root.decide.ts:550)."""
     borrador = decidir.borrador_excepcion(
         intencion.root_id,
         "NECESITA_DAVID",
@@ -160,7 +164,7 @@ def _levantar_arranque(tienda, vista, intencion, razon) -> None:
             "attempt": intencion.attempt,
             "cause": autoridad.causa_de(razon),
         },
-        ["autorizar", "listo", "omitir", "cancelar"],
+        ["listo", "omitir", "cancelar"],
     )
     decision = decidir._decision_vacia(
         vista["meta"]["plan"]["revision"], vista["meta"]["controlEpoch"]

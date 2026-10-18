@@ -483,6 +483,10 @@ class Store:
         return razon
 
     OPCIONES_DE_AUTORIDAD = ["autorizar", "listo", "omitir", "cancelar"]
+    # F15: un sujeto de INTENTO no ofrece `autorizar`; la concesión del dueño
+    # solo existe para efectos (F8), igual que permission-required en R
+    # (managed-root.decide.ts:550).
+    OPCIONES_DE_INTENTO = ["listo", "omitir", "cancelar"]
 
     def _revisar_permisos_al_reanudar(self, root_id: str, ahora: str) -> None:
         """Punto 2 de la intersección (I07): al reanudar, lo que va a correr se
@@ -544,7 +548,7 @@ class Store:
                         "attempt": fila["attempt"],
                         "cause": autoridad.causa_de(razon),
                     },
-                    self.OPCIONES_DE_AUTORIDAD,
+                    self.OPCIONES_DE_INTENTO,
                     ahora,
                 )
 
@@ -1915,23 +1919,24 @@ class Store:
                 (root_id, revision),
             )
         ]
-        intentos = [
-            {
-                "schema": "sistema-agentes.unidad.v1",
-                "rootId": root_id,
-                "planRevision": f["plan_revision"],
-                "unitId": f["unit_id"],
-                "attempt": f["attempt"],
-                "taskId": f["card_id"],
-                "assignment": json.loads(f["assignment_json"]),
-                "state": f["state"],
-                "controlEpoch": f["control_epoch"],
-            }
-            for f in self._conexion.execute(
-                "SELECT * FROM intentos WHERE root_id = ? ORDER BY unit_id, attempt",
-                (root_id,),
+        intentos = []
+        for f in self._conexion.execute(
+            "SELECT * FROM intentos WHERE root_id = ? ORDER BY unit_id, attempt",
+            (root_id,),
+        ):
+            intentos.append(
+                {
+                    "schema": "sistema-agentes.unidad.v1",
+                    "rootId": root_id,
+                    "planRevision": f["plan_revision"],
+                    "unitId": f["unit_id"],
+                    "attempt": f["attempt"],
+                    "taskId": f["card_id"],
+                    "assignment": json.loads(f["assignment_json"]),
+                    "state": f["state"],
+                    "controlEpoch": f["control_epoch"],
+                }
             )
-        ]
         ligadas = {i["unitId"] for i in intentos}
         aceptadas = {i["unitId"] for i in intentos if i["state"] == "accepted"}
         sin_ligar = []
@@ -2004,19 +2009,20 @@ class Store:
                     "ref": referencia.get("ref"),
                 }
             )
-        incidencias = [
-            {
-                "unitId": f["unit_id"],
-                "attempt": f["attempt"],
-                "incidentKey": f["incident_key"],
-                "incident": json.loads(f["incident_json"]),
-            }
-            for f in self._conexion.execute(
-                "SELECT * FROM incidencias WHERE root_id = ?"
-                " ORDER BY created_at, unit_id, attempt, incident_key",
-                (root_id,),
+        incidencias = []
+        for f in self._conexion.execute(
+            "SELECT * FROM incidencias WHERE root_id = ?"
+            " ORDER BY created_at, unit_id, attempt, incident_key",
+            (root_id,),
+        ):
+            incidencias.append(
+                {
+                    "unitId": f["unit_id"],
+                    "attempt": f["attempt"],
+                    "incidentKey": f["incident_key"],
+                    "incident": json.loads(f["incident_json"]),
+                }
             )
-        ]
         excepciones = []
         for f in self._conexion.execute(
             "SELECT * FROM excepciones WHERE root_id = ? ORDER BY raised_at, exception_id",

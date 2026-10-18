@@ -712,6 +712,12 @@ def decidir(
                         [causa[len("claim:") :]],
                     )
                 )
+        elif opcion == "autorizar" and sujeto.get("kind") != "effect":
+            # F15: la concesión `autorizar` solo existe para efectos (F8). A
+            # cualquier otro sujeto (la forma vieja de intento la ofrecía) no
+            # se le puede aplicar nada: la respuesta NO queda aplicada y la
+            # pregunta sigue abierta en vez de enterrarse respondida.
+            aplicada = False
         if aplicada:
             decision["respuestas_aplicadas"].append(excepcion["exceptionId"])
 
