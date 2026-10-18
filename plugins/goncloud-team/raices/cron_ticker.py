@@ -211,8 +211,15 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     # la MISMA causa no volvería a avisar (avisar_capacidad_incierta ve la
     # misma causa y se calla) y Hermes sube solo a diario: el dueño se
     # perdería el aviso de la caída nueva. Best-effort: sin el archivo no
-    # hay nada que borrar y un fallo de borrado no debe tumbar la vuelta.
-    (base / "raices" / "capacidad-incierta.json").unlink(missing_ok=True)
+    # hay nada que borrar y un fallo de borrado (Windows: archivo en uso,
+    # ACL) va a stderr y no tumba la vuelta que sí puede correr.
+    try:
+        (base / "raices" / "capacidad-incierta.json").unlink(missing_ok=True)
+    except OSError as fallo:
+        print(
+            f"ticker-raices: no pude borrar el checkpoint capacidad-incierta: {fallo}",
+            file=sys.stderr,
+        )
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")
     kanban = importlib.import_module("raices.kanban")

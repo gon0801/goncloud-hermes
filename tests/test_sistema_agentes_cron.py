@@ -368,6 +368,27 @@ class Script(Base):
         )
         self.assertTrue(checkpoint.exists())
 
+    def test_un_checkpoint_irborrable_no_tumba_la_vuelta(self):
+        # F8: en Windows el unlink puede fallar (archivo en uso, ACL). Un
+        # OSError del borrado del checkpoint va a stderr y la vuelta sigue:
+        # no aborta el cron cada minuto. El directorio en el path hace que
+        # unlink levante OSError (IsADirectoryError/PermissionError).
+        cron = importlib.import_module("raices.cron_ticker")
+        checkpoint = self.home / "raices" / "capacidad-incierta.json"
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.mkdir()
+        self.addCleanup(lambda: checkpoint.is_dir() and checkpoint.rmdir())
+
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            # correr() completa la vuelta entera: sin el try/except el unlink
+            # revienta antes de abrir el store y la llamada ni siquiera
+            # devuelve (fue la roja).
+            codigo = cron.correr(enviar=lambda _texto: 42)
+        self.assertEqual(codigo, 0, "la vuelta corre pese al borrado fallido")
+        self.assertIn("capacidad-incierta", errores.getvalue())
+        self.assertEqual(salida.getvalue(), "")
+
     def test_la_ruta_cerrada_no_corre_y_no_abre_nada(self):
         cron = importlib.import_module("raices.cron_ticker")
         salida, errores = StringIO(), StringIO()
