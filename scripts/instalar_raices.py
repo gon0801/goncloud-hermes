@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,9 +69,21 @@ raise SystemExit(cron_ticker.main())
 '''
 
 
-def correr_por_subprocess(argv):
+def correr_por_subprocess(argv, resolvedor=None):
+    """El CLI por la RUTA que devuelve el resolvedor (shutil.which por
+    omision, como capacidades._correr_hermes_version): en Windows el CLI es
+    hermes.CMD y CreateProcess sin shell no resuelve el nombre pelado
+    (WinError 2). Sin ruta resoluble no se invoca nada: error claro y codigo
+    1, nunca FileNotFoundError."""
+    ejecutable = (resolvedor or shutil.which)("hermes")
+    if not ejecutable:
+        print(
+            "instalar-raices: no encontre el ejecutable de Hermes (hermes) "
+            "en el PATH; nada que hacer"
+        )
+        return 1, ""
     resultado = subprocess.run(
-        ["hermes", *argv], capture_output=True, text=True, timeout=60
+        [ejecutable, *argv], capture_output=True, text=True, timeout=60
     )
     return resultado.returncode, resultado.stdout
 
@@ -205,7 +218,13 @@ def revertir(home: Path, corredor) -> int:
         print("instalar-raices: no pude leer `hermes cron list --json`; nada que hace")
         return 1
     if NOMBRE_DEL_CRON in crons:
-        corredor(["cron", "remove", NOMBRE_DEL_CRON])
+        codigo, salida = corredor(["cron", "remove", NOMBRE_DEL_CRON])
+        if codigo != 0:
+            # El remove falló: tocar nada a medias dejaría un cron vivo sin
+            # estado que lo registre (igual que aplicar con create
+            # rechazado). No se borra nada y el error sale impreso.
+            print(f"instalar-raices: hermes rechazó el remove: {salida.strip()}")
+            return 1
     (home / ENVOLTORIO).unlink(missing_ok=True)
     estado.unlink()
     print(f"instalar-raices: {NOMBRE_DEL_CRON} retirado; datos del operador intactos")

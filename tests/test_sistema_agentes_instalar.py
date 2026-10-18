@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -273,6 +276,120 @@ class InstaladorDeRaices(unittest.TestCase):
             [],
         )
         self.assertTrue((self.home / "raices" / "permisos.json").exists())
+
+
+class ElEjecutableDelCron(unittest.TestCase):
+    """F1: en Windows el CLI es hermes.CMD y CreateProcess sin shell no
+    resuelve el nombre pelado (WinError 2). correr_por_subprocess corre la
+    RUTA que devuelve un resolvedor inyectable (shutil.which por omision,
+    como capacidades._correr_hermes_version) y sin ejecutable da error claro
+    con codigo 1, nunca FileNotFoundError."""
+
+    def test_corre_la_ruta_resuelta_no_el_nombre_pelado(self):
+        instalador = cargar_instalador()
+        llamadas = []
+
+        def falso_run(argv, **kwargs):
+            llamadas.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            codigo, salida = instalador.correr_por_subprocess(
+                ["cron", "list", "--json"],
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+            )
+        self.assertEqual((codigo, salida), (0, "[]"))
+        self.assertEqual(
+            llamadas[0][:2],
+            ["/su/camino/bin/hermes.CMD", "cron"],
+            "argv[0] es la ruta resuelta, no 'hermes'",
+        )
+
+    def test_sin_hermes_resoluble_error_claro_y_codigo_uno(self):
+        instalador = cargar_instalador()
+        llamadas = []
+
+        def falso_run(argv, **kwargs):
+            llamadas.append(list(argv))
+            raise AssertionError("sin ejecutable no se invoca subprocess")
+
+        bufer = StringIO()
+        with (
+            mock.patch.object(instalador.subprocess, "run", falso_run),
+            redirect_stdout(bufer),
+        ):
+            codigo, _salida = instalador.correr_por_subprocess(
+                ["cron", "list", "--json"], resolvedor=lambda nombre: None
+            )
+        self.assertEqual(codigo, 1)
+        self.assertEqual(llamadas, [], "sin ejecutable no se invoca subprocess")
+        self.assertIn("hermes", bufer.getvalue())
+        self.assertIn("no", bufer.getvalue().lower())
+
+
+class RevertirRespetaElRemove(unittest.TestCase):
+    """F2: si `hermes cron remove` falla, revertir NO borra envoltorio ni
+    instalacion.json (igual que aplicar con un create rechazado): el error
+    sale impreso y el código es 1."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.home = Path(self.directorio.name) / "hermes"
+        self.home.mkdir(parents=True)
+        self.modulo = cargar_instalador()
+
+    def corredor_que_falla_el_remove(self, crons):
+        class RemoveRoto(CorredorFalso):
+            def __call__(self, argv):
+                if argv[:2] == ["cron", "remove"]:
+                    return 1, "no such cron: ticker-raices"
+                return super().__call__(argv)
+
+        return RemoveRoto(self.home, crons=crons)
+
+    def test_un_remove_fallido_no_borra_nada_y_sale_uno(self):
+        corredor = CorredorFalso(self.home)
+        self.assertEqual(
+            self.modulo.main(
+                ["--aplicar", "--home", str(self.home)], corredor=corredor
+            ),
+            0,
+        )
+        roto = self.corredor_que_falla_el_remove(corredor.crons)
+        bufer = StringIO()
+        with redirect_stdout(bufer):
+            codigo = self.modulo.main(
+                ["--revertir", "--home", str(self.home)], corredor=roto
+            )
+        self.assertEqual(codigo, 1)
+        self.assertIn("no such cron", bufer.getvalue(), "el error sale impreso")
+        self.assertTrue(
+            (self.home / "scripts" / "ticker-raices.py").exists(),
+            "el envoltorio queda: el remove falló",
+        )
+        self.assertTrue(
+            (self.home / "raices" / "instalacion.json").exists(),
+            "el estado queda: el remove falló",
+        )
+
+    def test_un_remove_exitoso_si_borra_todo(self):
+        self.assertEqual(
+            self.modulo.main(
+                ["--aplicar", "--home", str(self.home)],
+                corredor=CorredorFalso(self.home),
+            ),
+            0,
+        )
+        self.assertEqual(
+            self.modulo.main(
+                ["--revertir", "--home", str(self.home)],
+                corredor=CorredorFalso(self.home),
+            ),
+            0,
+        )
+        self.assertFalse((self.home / "scripts" / "ticker-raices.py").exists())
+        self.assertFalse((self.home / "raices" / "instalacion.json").exists())
 
 
 if __name__ == "__main__":
