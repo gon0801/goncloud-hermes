@@ -9,6 +9,7 @@ con el doble de hermes_cli y HERMES_HOME temporal); los caminos inyectables
 import importlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -152,8 +153,6 @@ class Base(unittest.TestCase):
         yaml_parche.start()
         self.addCleanup(yaml_parche.stop)
 
-
-class Script(Base):
     PERMISOS = {
         "acciones": ["read", "implement", "review"],
         "toolsets": {"codex": ["read", "write"]},
@@ -189,6 +188,8 @@ class Script(Base):
             encoding="utf-8",
         )
 
+
+class Script(Base):
     def dejar_intencion_pendiente(self):
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
@@ -476,6 +477,75 @@ class Script(Base):
             self.assertEqual(
                 cron.ruta_del_kanban(self.home), Path(os.environ["HERMES_KANBAN_DB"])
             )
+
+
+class E2eDelBriefH6a(Base):
+    """El e2e del brief H6a por la capa de herramientas: goncloud_root_submit,
+    goncloud_root_instruction_put, goncloud_root_reconcile y la vuelta del cron
+    deciden y despachan solos, sin hechos inyectados a mano. La tarjeta del
+    kanban real queda con el TEXTO del brief en su cuerpo."""
+
+    def test_las_herramientas_y_el_cron_dejan_el_brief_en_la_tarjeta(self):
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        herramientas = importlib.import_module("raices.herramientas")
+
+        recibo = herramientas.enviar_raiz({"plan": META}, "claw")
+        self.assertNotIn("error", recibo)
+        self.assertEqual(recibo["rootId"], RAIZ)
+
+        brief = "brief del e2e H6a: el TEXTO del dueño llega a la tarjeta"
+        instruccion = herramientas.guardar_instruccion({"text": brief}, "claw")
+        self.assertNotIn("error", instruccion)
+
+        vinculo = {
+            "unitId": "a",
+            "assignment": {
+                "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+                "instructionRef": {
+                    "ref": instruccion["ref"],
+                    "digest": instruccion["digest"],
+                },
+                "resultContract": "review.v1",
+                "inputRevision": {
+                    "kind": "code",
+                    "repository": "owner-01/repo-a",
+                    "sha": "0" * 40,
+                },
+                "continuation": {"kind": "requester"},
+            },
+            "relay": False,
+        }
+        reconciliado = herramientas.reconciliar_raiz(
+            {"rootId": RAIZ, "asignaciones": [vinculo]}, "claw"
+        )
+        self.assertNotIn("error", reconciliado)
+
+        self.instalar_permisos()
+        cron = importlib.import_module("raices.cron_ticker")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            codigo = cron.correr(
+                ruta_abierta=lambda: (True, None), enviar=lambda _texto: 42
+            )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+
+        conexion = sqlite3.connect(self.home / "kanban.db")
+        try:
+            fila = conexion.execute(
+                "SELECT body FROM tasks WHERE idempotency_key = ?",
+                (f"sa:{RAIZ}:a:1",),
+            ).fetchone()
+        finally:
+            conexion.close()
+        self.assertIsNotNone(fila, f"la tarjeta sa:{RAIZ}:a:1 existe")
+        self.assertEqual(fila[0], brief)
+
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda.cerrar)
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "la asignación se consumió")
 
 
 class StoreCompartido(Base):

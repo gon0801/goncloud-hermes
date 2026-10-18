@@ -233,7 +233,7 @@ def correr(home=None, ruta_abierta=None, enviar=None):
         puerto = kanban.KanbanHermes(ruta_del_kanban(base))
         try:
             # H6a: los hechos de asignación salen del store (lo que reconcile
-            # dejó sin consumer); ya nadie inyecta hechos a mano.
+            # dejó sin consumir); ya nadie inyecta hechos a mano.
             ticker.vuelta(
                 tienda,
                 puerto,
