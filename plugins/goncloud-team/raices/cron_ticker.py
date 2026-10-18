@@ -51,11 +51,15 @@ def correr(home=None, ruta_abierta=None):
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")
     kanban = importlib.import_module("raices.kanban")
-    tienda = store.Store(base / "sistema-agentes.db")
+    # I07: los permisos de H viven junto al store, en la raiz (hogar.raiz_del_hogar,
+    # nunca HERMES_HOME pelado); sin archivo -> None y el gate falla cerrado. Una
+    # sola lectura alimenta el store y la vuelta: las mismas reglas para todos.
+    permisos = hogar.leer_permisos(home)
+    tienda = store.Store(base / "sistema-agentes.db", permisos_h=permisos)
     try:
         puerto = kanban.KanbanHermes(ruta_del_kanban(base))
         try:
-            ticker.vuelta(tienda, puerto)
+            ticker.vuelta(tienda, puerto, permisos_h=permisos)
         finally:
             puerto.cerrar()
     finally:

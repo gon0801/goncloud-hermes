@@ -13,6 +13,7 @@ una sola ruta para todos los perfiles.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -50,3 +51,21 @@ def raiz_del_hogar(home=None) -> Path:
     if base.parent.name == "profiles":
         return base.parent.parent
     return base
+
+
+def leer_permisos(home=None) -> dict | None:
+    """Los permisos de H para los gates de arranque y reanudacion (I07).
+
+    Viven como datos junto al store, en <raiz>/raices/permisos.json (la misma
+    raiz que resuelve raiz_del_hogar: un home de perfil sube, nunca HERMES_HOME
+    pelado). Sin archivo legible, o con uno que no sea un objeto JSON, devuelve
+    None y los gates fallan cerrado.
+    """
+    try:
+        texto = (raiz_del_hogar(home) / "raices" / "permisos.json").read_text(
+            encoding="utf-8"
+        )
+        datos = json.loads(texto)
+    except (OSError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
