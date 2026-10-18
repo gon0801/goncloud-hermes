@@ -135,9 +135,11 @@ def correr_por_subprocess(argv, home=None, resolvedor=None):
         )
     except subprocess.TimeoutExpired:
         return 1, f"timeout: hermes no contesto en 60 segundos ({' '.join(argv)})"
-    # La causa de un rechazo suele venir por stdout; si no trae nada, el
-    # stderr es lo único imprimible.
-    return resultado.returncode, resultado.stdout or resultado.stderr
+    # La causa puede venir por stdout o por stderr (a veces ruido en uno y
+    # causa en el otro): la salida es ambas, sin tapar ninguna.
+    return resultado.returncode, "\n".join(
+        p for p in (resultado.stdout, resultado.stderr) if p
+    )
 
 
 def _leer_jobs(home: Path):

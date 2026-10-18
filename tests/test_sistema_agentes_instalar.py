@@ -308,7 +308,6 @@ class Aplicar(InstaladorDeRaices):
             if llamada[:2] == ["cron", "create"]
         ]
         self.assertEqual(len(create), 1, "un solo create")
-        self.assertNotIn("-p", create[0], "el cron es del perfil default")
         self.assertEqual(
             create[0],
             [
@@ -894,6 +893,27 @@ class ElEjecutableDelCron(unittest.TestCase):
             )
         self.assertEqual(codigo, 1)
         self.assertEqual(salida, "el error del CLI")
+
+    def test_con_ruido_en_stdout_la_causa_del_stderr_tambien_sale(self):
+        # r2 (bot): un CLI que suelta ruido por stdout y la causa por stderr
+        # no puede tapar la causa: la salida que entrega el corredor trae
+        # ambas.
+        instalador = cargar_instalador()
+
+        def falso_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="aviso inofensivo", stderr="la causa real"
+            )
+
+        with mock.patch.object(instalador.subprocess, "run", falso_run):
+            codigo, salida = instalador.correr_por_subprocess(
+                ["cron", "create", "every 1m"],
+                home=Path("/su/raiz/hermes"),
+                resolvedor=lambda nombre: "/su/camino/bin/hermes.CMD",
+            )
+        self.assertEqual(codigo, 1)
+        self.assertIn("aviso inofensivo", salida)
+        self.assertIn("la causa real", salida)
 
     def test_toda_llamada_lleva_p_default_antes_de_cron(self):
         # H5: el CLI resuelve el perfil ACTIVO pegajoso por encima de

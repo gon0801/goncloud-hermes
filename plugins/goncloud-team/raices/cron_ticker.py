@@ -1,13 +1,14 @@
 """Una vuelta del ticker de raices como script de cron de Hermes (SUA-07 H2).
 
 El instalador (H4b3) deja el script en <home>/scripts/ticker-raices.py y
-registra el trabajo sin agente en el perfil default (la raiz del home, sin -p):
+registra el trabajo sin agente en el perfil default (la raiz del home; el CLI
+usa el perfil activo por encima de HERMES_HOME: toda llamada lleva -p default):
 
-  hermes cron create "every 1m" --name ticker-raices --script
+  hermes -p default cron create "every 1m" --name ticker-raices --script
       "ticker-raices.py" --no-agent --deliver local
 
-Va en default porque el scheduler le pone HERMES_HOME = home del perfil al
-script y gateway_state.json (la puerta de H4a) vive en la raiz.
+En default gateway_state.json (la puerta de H4a) vive en la raiz: el scheduler
+le pone HERMES_HOME = home del perfil al script.
 
 --script se resuelve contra <home del perfil>/scripts (hermes_cli/cron.py:604-618)
 y el argumento es el nombre pelado.
