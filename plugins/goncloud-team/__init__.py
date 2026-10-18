@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 from .muse_bridge import delegate_to_muse
@@ -15,10 +17,34 @@ from .schemas import (
     LOCAL_RUN,
     LOCAL_STATUS,
     MUSE_DELEGATE,
+    ROOT_CONTROL,
+    ROOT_READ,
+    ROOT_RESOLVE,
+    ROOT_SUBMIT,
     SUBSCRIPTION_RUN,
     SUBSCRIPTION_STATUS,
 )
 from .workflow import WorkflowService
+
+
+def _raiz_handler(ctx, funcion):
+    def handle(args: dict, **kwargs) -> str:
+        del kwargs
+        try:
+            raiz = Path(__file__).resolve().parent
+            if str(raiz) not in sys.path:
+                sys.path.insert(0, str(raiz))
+            herramientas = importlib.import_module("raices.herramientas")
+            resultado = getattr(herramientas, funcion)(
+                dict(args or {}), ctx.profile_name
+            )
+            return json.dumps(
+                resultado, ensure_ascii=False, sort_keys=True, default=str
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
+
+    return handle
 
 
 def _build_service(ctx):
@@ -164,6 +190,20 @@ def register(ctx) -> None:
         handler=local_status,
         emoji="📈",
     )
+
+    for name, schema, funcion, emoji in (
+        ("goncloud_root_submit", ROOT_SUBMIT, "enviar_raiz", "🌱"),
+        ("goncloud_root_read", ROOT_READ, "leer_raiz", "📄"),
+        ("goncloud_root_control", ROOT_CONTROL, "controlar_raiz", "🎛"),
+        ("goncloud_root_resolve", ROOT_RESOLVE, "resolver_excepcion", "🧷"),
+    ):
+        ctx.register_tool(
+            name=name,
+            toolset="goncloud_team",
+            schema=schema,
+            handler=_raiz_handler(ctx, funcion),
+            emoji=emoji,
+        )
 
     def guard_reviewer_completion(tool_name, args, task_id=None, **kwargs):
         del kwargs

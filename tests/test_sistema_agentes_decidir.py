@@ -65,7 +65,7 @@ def asignacion(etiqueta="a-1", destino=None):
     }
 
 
-def intento(unit_id, n, estado, destino=None):
+def intento(unit_id, n, estado, destino=None, assignment=None):
     return {
         "schema": "sistema-agentes.unidad.v1",
         "rootId": RAIZ,
@@ -73,7 +73,7 @@ def intento(unit_id, n, estado, destino=None):
         "unitId": unit_id,
         "attempt": n,
         "taskId": f"task-{unit_id}-{n}",
-        "assignment": asignacion(f"{unit_id}-{n}", destino),
+        "assignment": assignment or asignacion(f"{unit_id}-{n}", destino),
         "state": estado,
         "controlEpoch": 1,
     }
@@ -1048,6 +1048,384 @@ class I01Borradores(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             decidir.borrador_excepcion(RAIZ, "CI_ROJO", sujeto, opciones=["relevo"])
+
+
+def asignacion_con_repo(etiqueta="a-1", repo="owner-01/repo-a"):
+    base = asignacion(etiqueta)
+    base["inputRevision"] = {"kind": "code", "repository": repo, "sha": "0" * 40}
+    return base
+
+
+def hecho_de(unit_id, assignment, relevo=False):
+    return {"unitId": unit_id, "assignment": assignment, "relay": relevo}
+
+
+def incidencia_de_reintento(unit_id, attempt=1):
+    return {
+        "unitId": unit_id,
+        "attempt": attempt,
+        "incidentKey": f"inc-{unit_id}",
+        "incident": {
+            "kind": "transport-unavailable",
+            "episodeId": "session-closed",
+        },
+    }
+
+
+class F18EscritorTomado(unittest.TestCase):
+    """F18: ningún sitio liga sin mirar plazas y el recurso tomado por otra
+    raíz. Si no se puede ligar, la unidad queda para la siguiente vuelta, la
+    respuesta del dueño no se consume y el resto de la decisión avanza."""
+
+    def vista_con_recurso_ajeno(self, hechos=None, **cambios):
+        return vista(
+            [unidad("a"), unidad("c")],
+            escritores=[
+                {
+                    "schema": "sistema-agentes.escritor.v1",
+                    "rootId": "root-B",
+                    "resourceRef": "repo:owner-01/repo-a",
+                    "unitId": "x",
+                }
+            ],
+            hechos=hechos
+            or {
+                "principal": ["david"],
+                "asignaciones": [
+                    hecho_de("c", asignacion_con_repo("c-1", "owner-01/repo-b"))
+                ],
+                "claims": [],
+                "efectos": [],
+            },
+            **cambios,
+        )
+
+    def test_un_reintento_con_recurso_ajeno_queda_para_la_siguiente(self):
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[
+                    intento("a", 1, "running", assignment=asignacion_con_repo("a-1"))
+                ],
+                incidencias=[incidencia_de_reintento("a")],
+                contadores={"reintentos:a": 0},
+            )
+        )
+        ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+        self.assertEqual(ligadas, ["c"], "a queda para la siguiente vuelta")
+        self.assertEqual(
+            propuesta.decision["contadores"],
+            [],
+            "el tope de reintentos no se gasta mientras espera",
+        )
+
+    def test_el_seguir_del_dueno_con_recurso_ajeno_no_se_consume(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[
+                    intento("a", 1, "reported", assignment=asignacion_con_repo("a-1"))
+                ],
+                resultados=[resultado("a", 1)],
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "seguir",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+        self.assertEqual(ligadas, ["c"])
+        self.assertEqual(
+            propuesta.decision["respuestas_aplicadas"],
+            [],
+            "la respuesta queda para cuando el recurso se libere",
+        )
+
+    def test_un_relevo_con_recurso_ajeno_no_se_consume(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "relay:1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[
+                    intento("a", 1, "reported", assignment=asignacion_con_repo("a-1"))
+                ],
+                resultados=[resultado("a", 1)],
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [
+                        hecho_de(
+                            "a",
+                            asignacion_con_repo("a-relevo", "owner-01/repo-a"),
+                            relevo=True,
+                        )
+                    ],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"], [], "no liga con el recurso ajeno"
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn("relay", necesitaciones(propuesta), "sigue pidiendo el relevo")
+
+
+class F10LasPlazasDescuentanLoLiberado(unittest.TestCase):
+    """F10: las plazas descuentan lo que la propia decision libera. Cada
+    outcome sobre un intento vivo libera su plaza de raiz, una global y una
+    del perfil; y el cupo sigue mandando para lo que la decision no libera."""
+
+    def test_el_outcome_de_la_respuesta_libera_la_plaza_para_la_ligadura(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "run:x"},
+            ["cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a"), unidad("c")],
+                intentos=[intento("a", 1, "running")],
+                plazas={"raiz": 0, "global": 0, "por_perfil": {"codex": 0}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("c", asignacion("c-1"))],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "cancelar",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "cancelled"}],
+        )
+        self.assertEqual(
+            [b["unitId"] for b in propuesta.decision["bindings"]],
+            ["c"],
+            "la plaza que libera el outcome de esta decision cabe para c",
+        )
+
+    def test_el_cupo_sigue_mandando_para_lo_que_la_decision_no_libera(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a"), unidad("b")],
+                intentos=[intento("a", 1, "failed"), intento("b", 1, "running")],
+                plazas={"raiz": 0, "global": 8, "por_perfil": {"codex": 8}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("a", asignacion("a-2"))],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "la unica plaza la ocupa el intento vivo de b y nada lo libera",
+        )
+        self.assertEqual(necesitaciones(propuesta), ["correction"])
+
+
+class R9ElRelevoMideConElIntentoQueCancela(unittest.TestCase):
+    """r9: el relevo del dueno mide la plaza contando como liberado el intento
+    vivo que cancela; el assignment nuevo se mide con SU perfil (un relevo que
+    cambia de perfil necesita plaza en el nuevo; el mismo perfil netea)."""
+
+    CLAUDE = {"kind": "cli", "hostId": "host-01", "adapterId": "claude"}
+
+    def relevo_respondido(self, plazas, assignment):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "reviewer:a1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[intento("a", 1, "reported")],
+                plazas=plazas,
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("a", assignment, relevo=True)],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        return borrador["exceptionId"], propuesta
+
+    def test_a_otro_perfil_con_raiz_en_tope_por_el_vivo_liga(self):
+        _, propuesta = self.relevo_respondido(
+            {"raiz": 0, "global": 8, "por_perfil": {"codex": 8, "claude": 8}},
+            asignacion("a-relevo", destino=self.CLAUDE),
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "failed"}],
+        )
+        self.assertEqual(
+            [
+                b["assignment"]["target"]["adapterId"]
+                for b in propuesta.decision["bindings"]
+            ],
+            ["claude"],
+            "la plaza del vivo cancelado cabe para el relevo de otro perfil",
+        )
+
+    def test_a_otro_perfil_sin_cupo_en_el_nuevo_se_difiere(self):
+        id_excepcion, propuesta = self.relevo_respondido(
+            {"raiz": 8, "global": 8, "por_perfil": {"codex": 8, "claude": 0}},
+            asignacion("a-relevo", destino=self.CLAUDE),
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "el tope del perfil nuevo lo ocupa otra unidad y nada lo libera",
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn("relay", necesitaciones(propuesta))
+
+
+class F12LaLiberacionSoloCuentaSiElIntentoVive(unittest.TestCase):
+    """F12: la liberacion de se_puede_ligar_liberando solo cuenta si el
+    intento a cancelar sigue vivo; terminar no emite outcome sobre un intento
+    ya terminal (o terminado en esta decision), y descontarlo abre una plaza
+    ficticia: se liga de mas y el store rechaza la decision entera con
+    capacity."""
+
+    def seguir_sobre_un_fallado(self, plazas):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        return decidir.decidir(
+            vista(
+                [unidad("a"), unidad("b")],
+                intentos=[intento("a", 1, "failed"), intento("b", 1, "running")],
+                plazas=plazas,
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "seguir",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+
+    def test_el_seguir_tardio_no_pasa_por_una_plaza_ficticia(self):
+        propuesta = self.seguir_sobre_un_fallado(
+            {"raiz": 0, "global": 8, "por_perfil": {"codex": 8}}
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [],
+            "el intento ya es failed: terminar no emite nada",
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "la unica plaza la ocupa el vivo de b: la unidad se difiere",
+        )
+        self.assertEqual(
+            propuesta.decision["respuestas_aplicadas"],
+            [],
+            "la respuesta queda para cuando haya plaza de verdad",
+        )
+
+    def test_el_relevo_tardio_tampoco_pasa_por_una_plaza_ficticia(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "reviewer:a1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[intento("a", 1, "failed")],
+                plazas={"raiz": 0, "global": 8, "por_perfil": {"codex": 8}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [
+                        hecho_de("a", asignacion("a-relevo"), relevo=True)
+                    ],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        self.assertEqual(propuesta.decision["bindings"], [])
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn("relay", necesitaciones(propuesta))
 
 
 if __name__ == "__main__":

@@ -174,3 +174,6 @@ class DobleKanban:
     def crear_bloqueada(self, clave: str, motivo: str) -> None:
         self._bloqueos[clave] = motivo
         self._avanzar(clave, "bloqueada", None)
+
+    def crear_archivada(self, clave: str) -> None:
+        self._avanzar(clave, "archivada", None)

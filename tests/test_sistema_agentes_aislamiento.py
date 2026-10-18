@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """El espejo de G corre sin openclaw en el PATH y sin red.
 
-Cada prueba lanza un hijo con el env mínimo (`PATH=/usr/bin:/bin`) desde un directorio
-temporal, así el espejo no puede heredar nada del entorno del repo. El hijo tacha la red
-reemplazando `socket.socket` antes de cargar `compartido`, porque solo `import` después del
-bloqueo prueba el aislamiento.
+Cada prueba lanza un hijo con el PATH apuntando a un directorio temporal
+vacio y desde ese mismo directorio, asi el espejo no puede heredar nada del
+entorno del repo. El hijo tacha la red reemplazando `socket.socket` antes de
+cargar `compartido`, porque solo `import` después del bloqueo prueba el
+aislamiento.
 """
 
 import subprocess
@@ -89,7 +90,10 @@ class Aislamiento(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporal:
             proceso = subprocess.run(
                 [sys.executable, "-c", guion],
-                env={"PATH": "/usr/bin:/bin"},
+                # Un PATH a un directorio propio vacio: en Windows,
+                # "/usr/bin:/bin" no existe ni usa el separador correcto, y la
+                # prueba quedaba sin efecto real como aislamiento.
+                env={"PATH": str(temporal)},
                 cwd=temporal,
                 capture_output=True,
                 text=True,

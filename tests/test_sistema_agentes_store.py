@@ -14,6 +14,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+
+from conexiones import rastrear_conexiones  # noqa: E402
 
 store = importlib.import_module("raices.store")
 decidir = importlib.import_module("raices.decidir")
@@ -183,13 +186,20 @@ def politica_regla4(**cambios):
 
 class AlmacenDePrueba(unittest.TestCase):
     def setUp(self):
+        rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta)
+        self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(
             meta_de([unidad("a", "a1"), unidad("c", "c1", ["a"]), unidad("d", "d1")])
         )
+
+    def tienda_de(self, **kwargs):
+        tienda = store.Store(self.ruta, **kwargs)
+        self.addCleanup(tienda.cerrar)
+        return tienda
 
     def preparar_efecto(self, unit_id=None):
         self.tienda.aplicar(
@@ -300,8 +310,7 @@ class I05Control(AlmacenDePrueba):
 
 class CarrerasDeUnaTransaccion(AlmacenDePrueba):
     def test_el_cancel_de_otro_proceso_cierra_la_ventana_de_aplicar(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         original = self.tienda._begin
 
         def begin_con_cancel_intercalado():
@@ -324,8 +333,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual(escritores, 0)
 
     def test_el_replay_concurrente_da_el_recibo_original(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         original = self.tienda._begin
         visto = []
 
@@ -342,8 +350,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual(recibo.valor.state, "paused")
 
     def test_la_liquidacion_perdedora_devuelve_conflicto(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         self.preparar_efecto()
         original = self.tienda._begin
 
@@ -367,8 +374,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual([e["state"] for e in vista["efectos"]], ["confirmed"])
 
     def test_transicionar_en_carrera_con_el_cancel_no_afirma_estado(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         self.assertIsInstance(
             self.tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-0"),
             store.Ok,
@@ -388,8 +394,7 @@ class CarrerasDeUnaTransaccion(AlmacenDePrueba):
         self.assertEqual([d["state"] for d in vista["unidades"]], ["cancelled"])
 
     def test_dos_respuestas_concurrentes_la_segunda_pierde(self):
-        otro = store.Store(self.ruta)
-        self.addCleanup(otro.cerrar)
+        otro = self.tienda_de()
         borrador = decidir.borrador_excepcion(
             RAIZ,
             "NECESITA_DAVID",
@@ -451,7 +456,7 @@ class I06Efectos(AlmacenDePrueba):
 
 class I20Cupos(AlmacenDePrueba):
     def test_el_presupuesto_de_la_raiz(self):
-        tienda = store.Store(self.ruta)
+        tienda = self.tienda_de()
         tienda.abrir_raiz(
             {**meta_de([unidad("x", "x1")], max_concurrentes=1), "rootId": "root-chica"}
         )
@@ -463,30 +468,28 @@ class I20Cupos(AlmacenDePrueba):
         self.assertEqual(lleno.codigo, "capacity")
 
     def test_el_cupo_global(self):
-        tienda = store.Store(self.ruta, cupos=store.Cupos(global_max=0))
+        tienda = self.tienda_de(cupos=store.Cupos(global_max=0))
         conflicto = tienda.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1")
         self.assertEqual(conflicto.codigo, "capacity")
         self.assertEqual(tienda.ocupacion()["global"], 0)
 
     def test_el_cupo_global_y_por_perfil(self):
-        sin_cupo = store.Store(self.ruta, cupos=store.Cupos(global_max=0))
+        sin_cupo = self.tienda_de(cupos=store.Cupos(global_max=0))
         conflicto = sin_cupo.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1")
         self.assertEqual(conflicto.codigo, "capacity")
         self.assertEqual(sin_cupo.ocupacion()["global"], 0)
-        primero = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 1}))
+        primero = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 1}))
         self.assertIsInstance(
             primero.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-1"), store.Ok
         )
-        segundo = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 1}))
+        segundo = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 1}))
         negado = segundo.aplicar(RAIZ, decision(bindings=[binding("c")]), "dec-2")
         self.assertEqual(negado.codigo, "capacity")
-        holgado = store.Store(self.ruta, cupos=store.Cupos(por_perfil={"codex": 2}))
+        holgado = self.tienda_de(cupos=store.Cupos(por_perfil={"codex": 2}))
         self.assertIsInstance(
             holgado.aplicar(RAIZ, decision(bindings=[binding("c")]), "dec-3"), store.Ok
         )
-        otro_perfil = store.Store(
-            self.ruta, cupos=store.Cupos(por_perfil={"claude": 1})
-        )
+        otro_perfil = self.tienda_de(cupos=store.Cupos(por_perfil={"claude": 1}))
         self.assertIsInstance(
             otro_perfil.aplicar(
                 RAIZ,
@@ -553,7 +556,7 @@ class I20Cupos(AlmacenDePrueba):
         self.assertIsInstance(libre, store.Ok)
 
     def test_el_par_atomico_con_dos_y_tres_plazas_ocupadas(self):
-        par = store.Store(self.ruta, cupos=store.Cupos(global_max=2))
+        par = self.tienda_de(cupos=store.Cupos(global_max=2))
         self.assertIsInstance(
             par.aplicar(
                 RAIZ,
@@ -567,7 +570,7 @@ class I20Cupos(AlmacenDePrueba):
         tercera = par.aplicar("root-b", decision(bindings=[binding("b")]), "dec-2")
         self.assertEqual(tercera.codigo, "capacity")
         self.assertEqual(par.ocupacion()["global"], 2)
-        holgado = store.Store(self.ruta, cupos=store.Cupos(global_max=3))
+        holgado = self.tienda_de(cupos=store.Cupos(global_max=3))
         self.assertIsInstance(
             holgado.aplicar(
                 "root-b",
@@ -583,7 +586,7 @@ class I20Cupos(AlmacenDePrueba):
                 "rootId": "root-pq",
             }
         )
-        par_de_tres = store.Store(self.ruta, cupos=store.Cupos(global_max=3))
+        par_de_tres = self.tienda_de(cupos=store.Cupos(global_max=3))
         negado = par_de_tres.aplicar(
             "root-pq",
             decision(
@@ -631,7 +634,7 @@ class I12LinajeEnElStore(AlmacenDePrueba):
 
     def test_una_raiz_conserva_la_politica_con_la_que_abrio(self):
         tendera = politica_regla4(roundsPerImplementer=2)
-        tienda = store.Store(self.ruta)
+        tienda = self.tienda_de()
         tienda.abrir_raiz(
             {**meta_de([unidad("l", "l1")]), "rootId": "root-lenta"},
             politicas={"quality-kit.regla4": tendera},
@@ -1684,6 +1687,147 @@ class LaEvidenciaSeLeeEnOrdenDeLlegada(AlmacenDePrueba):
         self.assertIsInstance(recibo, store.Ok, getattr(recibo, "detalle", None))
         vista = self.tienda.leer_vista(RAIZ, EntradasDelMundo.hechos_nulos())
         self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
+
+
+class F18EscritorEnElStore(AlmacenDePrueba):
+    """F18 extremo a extremo: la decisión de A difiere la unidad cuyo repo
+    tiene B y el store la acepta sin writer-held; cuando B suelta el
+    escritor, la vuelta siguiente de decidir liga."""
+
+    def meta_de_raiz(self, root_id, unidades):
+        meta = meta_de(unidades)
+        meta["rootId"] = root_id
+        return meta
+
+    def decision_simple(self, unit_id, repo):
+        return decision(
+            bindings=[{"unitId": unit_id, "assignment": asignacion(repo=repo)}]
+        )
+
+    def test_la_decision_de_a_difiere_y_luego_liga(self):
+        """A: unidad a fallada y el repo lo tiene B. La respuesta del dueño
+        (seguir) difiere la ligadura en vez de writer-held, la decisión
+        avanza con la unidad independiente, y cuando B suelta la vuelta
+        siguiente liga."""
+
+        def excepcion_inesperada():
+            borrador = decidir.borrador_excepcion(
+                RAIZ,
+                "INESPERADO",
+                {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+                ["seguir", "omitir", "cancelar"],
+            )
+            return borrador
+
+        def decidir_y_aplicar(tienda, hechos, id_decision):
+            vista = tienda.leer_vista(RAIZ, hechos)
+            propuesta = decidir.decidir(vista)
+            ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+            respuesta = tienda.aplicar(RAIZ, propuesta.decision, id_decision)
+            return ligadas, respuesta, propuesta
+
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {
+                    "unitId": "d",
+                    "assignment": asignacion(repo="owner-01/repo-b"),
+                    "relay": False,
+                }
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+
+        # A liga a#1 sobre repo-a, corre, reporta y queda fallada (el dueño
+        # decide el reintento); al ser terminal, A suelta el escritor.
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, self.decision_simple("a", "owner-01/repo-a"), "dec-a1"
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "task-a-1"), store.Ok
+        )
+        self.assertIsInstance(
+            self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "task-a-1"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "review.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T12:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "task-a-1"},
+                    "payload": {"verdict": "approved", "evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(outcomes=[{"unitId": "a", "attempt": 1, "outcome": "failed"}]),
+                "dec-a1-fallida",
+            ),
+            store.Ok,
+        )
+
+        # B toma repo-a.
+        tienda_b = self.tienda_de()
+        tienda_b.abrir_raiz(self.meta_de_raiz("root-B", [unidad("x", "x1")]))
+        self.assertIsInstance(
+            tienda_b.aplicar(
+                "root-B", self.decision_simple("x", "owner-01/repo-a"), "dec-B"
+            ),
+            store.Ok,
+        )
+
+        # El dueño pide reintentar a (seguir sobre INESPERADO).
+        borrador = excepcion_inesperada()
+        decision_con_excepcion = decision()
+        decision_con_excepcion["excepciones"] = [borrador]
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision_con_excepcion,
+                "dec-exc",
+            ),
+            store.Ok,
+        )
+        exception_id = borrador["exceptionId"]
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(RAIZ, exception_id, "seguir", ["david"]),
+            store.Ok,
+        )
+
+        # La decisión de A difiere a (repo de B) y avanza con d, sin writer-held.
+        tienda_a = self.tienda_de()
+        ligadas, respuesta, _propuesta = decidir_y_aplicar(tienda_a, hechos, "dec-A-1")
+        self.assertEqual(ligadas, ["d"], "a queda para la siguiente; el resto avanza")
+        self.assertIsInstance(respuesta, store.Ok, "sin writer-held")
+
+        # B suelta el escritor y la respuesta pendiente del dueño liga a.
+        self.assertIsInstance(
+            tienda_b.aplicar(
+                "root-B",
+                decision(
+                    outcomes=[{"unitId": "x", "attempt": 1, "outcome": "cancelled"}]
+                ),
+                "dec-B-fallida",
+            ),
+            store.Ok,
+        )
+        ligadas2, respuesta2, _propuesta2 = decidir_y_aplicar(
+            tienda_a, hechos, "dec-A-2"
+        )
+        self.assertEqual(ligadas2, ["a"], "libre el recurso, a se liga")
+        self.assertIsInstance(respuesta2, store.Ok)
 
 
 if __name__ == "__main__":

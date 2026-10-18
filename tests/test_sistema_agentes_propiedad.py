@@ -186,8 +186,26 @@ def politica_de_conciliacion(fila):
     return None
 
 
+def politica_relevo(fila):
+    if fila["type"] == "SIN_REVISOR":
+        return "relevo"
+    return None
+
+
+def hechos_relevo():
+    return {
+        "principal": ["david"],
+        "asignaciones": [
+            {"unitId": "a", "assignment": asignacion(), "relay": False},
+            {"unitId": "a", "assignment": asignacion(), "relay": True},
+        ],
+        "claims": [],
+        "efectos": [],
+    }
+
+
 def registrar_incidencias(vistas, unidades=("a", "b")):
-    def prepara(tienda):
+    def prepara(tienda, kanban):
         for intento in tienda.intentos_con_tarjeta():
             llave = (intento["unitId"], intento["attempt"])
             if (
@@ -204,6 +222,22 @@ def registrar_incidencias(vistas, unidades=("a", "b")):
                 f"inc-{intento['unitId']}-{intento['attempt']}",
                 {"kind": "permission-required", "evidenceRef": "run:x"},
             )
+
+    return prepara
+
+
+def archivar_la_tarjeta(attempt=1):
+    """F10: la tarjeta del intento vive archivada con el intento aun vivo."""
+
+    def prepara(tienda, kanban):
+        for intento in tienda.intentos_con_tarjeta():
+            if intento["attempt"] != attempt:
+                continue
+            clave = kanban_port.clave_de_tarjeta(
+                intento["rootId"], intento["unitId"], intento["attempt"]
+            )
+            if kanban.por_clave(clave) is not None:
+                kanban.crear_archivada(clave)
 
     return prepara
 
@@ -228,13 +262,17 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         prepara=None,
         hasta_done=True,
         ademas=None,
+        presupuesto=None,
     ):
+        documento = meta(unidades)
+        if presupuesto is not None:
+            documento["budget"]["maxConcurrentTasks"] = presupuesto
         tienda = store.Store(
             self.directorio.name + f"/{nombre}.db",
             cupos=cupos,
         )
         self.addCleanup(tienda.cerrar)
-        self.assertIsInstance(tienda.abrir_raiz(meta(unidades)), store.Ok)
+        self.assertIsInstance(tienda.abrir_raiz(documento), store.Ok)
         kanban = kanban_port.DobleKanban()
         hechos_raiz = hechos_raiz or hechos([u["unitId"] for u in unidades])
         estados = {}
@@ -243,7 +281,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             self.cargar(tienda, kanban, carga)
             self.responder(tienda, politica)
             if prepara is not None:
-                prepara(tienda)
+                prepara(tienda, kanban)
             informe = ticker.vuelta(
                 tienda, kanban, {RAIZ: hechos_raiz}, **ARGUMENTOS_DE_VUELTA
             )
@@ -331,6 +369,140 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             politica_de_cierre,
             cupos=store.Cupos(global_max=1),
             prepara=registrar_incidencias(vistas),
+        )
+
+    def test_el_reintento_ocupa_la_plaza_del_intento_que_cancela(self):
+        """F10: maxConcurrentTasks=1 y la unica plaza la tiene el intento
+        cuya tarjeta se archivo: la decision lo cancela, re-liga la unidad y
+        el store (que aplica los outcomes antes de contar cupos) la acepta.
+        Sin el descuento, el reintento se difiere para siempre y nunca llega
+        a INESPERADO ni al dueno."""
+        self.dirigir(
+            "reintento-raiz",
+            [unidad("a")],
+            {"a": ["cancelled", "accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            presupuesto=1,
+            prepara=archivar_la_tarjeta(1),
+        )
+
+    def test_el_reintento_con_el_cupo_global_lleno_por_ese_intento(self):
+        """F10: el cupo global lleno por el propio intento a cancelar tambien
+        se descuenta: el store acepta la decision."""
+        self.dirigir(
+            "reintento-global",
+            [unidad("a")],
+            {"a": ["cancelled", "accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            cupos=store.Cupos(global_max=1),
+            prepara=archivar_la_tarjeta(1),
+        )
+
+    def test_el_relevo_al_mismo_perfil_ocupa_la_plaza_del_vivo(self):
+        """r9: maxConcurrentTasks=1 y la unica plaza la tiene el intento vivo
+        cuyo relevo pidio el dueno: la decision lo cancela, liga el relevo y
+        el store la acepta. Sin medir con el cancelado como liberado, el
+        relevo se difiere en cada vuelta y la respuesta nunca se consume."""
+        self.dirigir(
+            "relevo-raiz",
+            [unidad("a", rol="reviewer")],
+            {"a": ["failed", "admitted"]},
+            carga_aprobada,
+            politica_relevo,
+            presupuesto=1,
+            hechos_raiz=hechos_relevo(),
+            hasta_done=False,
+        )
+
+    def test_el_seguir_tardio_no_liga_de_mas_ni_recibe_capacity(self):
+        """F12: el dueno responde seguir cuando el intento de la excepcion ya
+        murio (failed) y la unica plaza la ocupa OTRA unidad viva: la unidad
+        se difiere y el store acepta la decision. Descontar la plaza del
+        intento muerto liga una de mas y store.aplicar rechaza la decision
+        ENTERA con capacity."""
+        documento = meta([unidad("a"), unidad("b")])
+        documento["budget"]["maxConcurrentTasks"] = 1
+        tienda = store.Store(self.directorio.name + "/seguir-tardio.db")
+        self.addCleanup(tienda.cerrar)
+        self.assertIsInstance(tienda.abrir_raiz(documento), store.Ok)
+
+        numero = [0]
+
+        def decidir_y_aplicar(hechos_raiz):
+            numero[0] += 1
+            propuesta = decidir.decidir(tienda.leer_vista(RAIZ, hechos_raiz))
+            resultado = tienda.aplicar(RAIZ, propuesta.decision, f"dec-{numero[0]}")
+            self.assertFalse(
+                hasattr(resultado, "codigo"),
+                f"el store rechazo la decision: {getattr(resultado, 'codigo', None)}",
+            )
+            return propuesta
+
+        # La primera decision liga a1 y despachamos su tarjeta.
+        primera = decidir_y_aplicar(hechos(("a",)))
+        self.assertEqual([b["unitId"] for b in primera.decision["bindings"]], ["a"])
+        tienda.reclamar_intencion(RAIZ, "a", 1)
+        tienda.admitir_intento(RAIZ, "a", 1, "t-a1")
+        tienda.transicionar_intento(RAIZ, "a", 1, "running", "t-a1")
+        # Una incidencia inesperada sobre a1 viva y un resultado aprobado.
+        tienda.registrar_incidencia(
+            RAIZ,
+            "a",
+            1,
+            "transporte-raro",
+            {"kind": "transport-unavailable", "episodeId": "raro"},
+        )
+        self.assertIsInstance(
+            tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "review.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T12:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "t-a1"},
+                    "payload": {"verdict": "approved", "evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        # La decision levanta NECESITA_DAVID(owner) e INESPERADO sobre a1.
+        segunda = decidir_y_aplicar(hechos(()))
+        por_tipo = {
+            e["type"]: e["exceptionId"] for e in segunda.decision["excepciones"]
+        }
+        self.assertIn("INESPERADO", por_tipo)
+        # El dueno rechaza a1 (muere) y solo entonces responde el seguir.
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, por_tipo["NECESITA_DAVID"], "rechazar", ["david"]
+            ),
+            store.Ok,
+        )
+        decidir_y_aplicar(hechos(("b",)))
+        estados = {
+            d["unitId"]: d["state"]
+            for d in tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+        }
+        self.assertEqual(estados.get("a"), "failed")
+        self.assertEqual(estados.get("b"), "ready")
+        self.assertIsInstance(
+            tienda.responder_excepcion(
+                RAIZ, por_tipo["INESPERADO"], "seguir", ["david"]
+            ),
+            store.Ok,
+        )
+        # El seguir tardio no puede abrir la plaza del intento muerto.
+        tardia = decidir_y_aplicar(hechos(()))
+        self.assertEqual(tardia.decision["bindings"], [])
+        vivos = tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+        self.assertEqual(
+            [d["attempt"] for d in vivos if d["unitId"] == "a"],
+            [1],
+            "no se liga un intento de mas para a",
         )
 
     def test_el_claim_de_otra_revision_no_bloquea_la_aceptacion(self):

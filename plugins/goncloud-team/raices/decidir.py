@@ -297,6 +297,8 @@ def decidir(
         return Propuesta(decision, [], avisados_vencidos(), "waiting")
 
     terminados: dict = {}
+    liberadas = {"raiz": 0, "global": 0}
+    liberadas_por_perfil: dict = {}
     ligadas = set()
     hechos_usados = set()
     fallo_por_resultado: dict = {}
@@ -365,6 +367,13 @@ def decidir(
         ):
             desenlace = "cancelled"
         terminados[llave] = desenlace
+        # F10: este outcome termina un intento vivo: libera su plaza de raiz,
+        # una global y una del perfil de ese intento, igual que las cuenta el
+        # store (aplica los outcomes antes que los cupos).
+        liberadas["raiz"] += 1
+        liberadas["global"] += 1
+        perfil_lib = _perfil_de(_target_de(documento.get("assignment")))
+        liberadas_por_perfil[perfil_lib] = liberadas_por_perfil.get(perfil_lib, 0) + 1
         decision["outcomes"].append(
             {
                 "unitId": documento["unitId"],
@@ -379,12 +388,44 @@ def decidir(
             {"unitId": unit_id, "assignment": assignment, "writers": []}
         )
 
-    def reintentar(unit_id):
+    def reintentar(unit_id) -> bool:
         ultimo = ultimo_de(unit_id)
         if not ultimo or unit_id in ligadas or aceptada(unit_id) or cerrada(unit_id):
-            return
+            return True
+        if not se_puede_ligar_liberando(ultimo, ultimo["assignment"]):
+            return False
         terminar(ultimo, "failed")
         ligar(unit_id, ultimo["assignment"])
+        return True
+
+    def se_puede_ligar_liberando(intento_a_cancelar, assignment) -> bool:
+        """F10/r9: la plaza se mide contando como liberado el intento vivo
+        que esta decision cancela (una de raiz, una global y una del PERFIL
+        de ese intento) y midiendo el assignment nuevo con SU perfil: un
+        relevo que cambia de perfil necesita plaza en el nuevo; el mismo
+        perfil netea. Igual que el store, que aplica los outcomes antes de
+        contar cupos. Sin intento que cancelar no hay nada que liberar.
+
+        F12: la liberacion solo cuenta si ese intento sigue vivo: terminar
+        no emite outcome sobre un intento ya terminal (o terminado mas
+        arriba en esta decision), y descontarlo abre una plaza ficticia que
+        liga una de mas y el store rechaza con capacity."""
+        if intento_a_cancelar is None:
+            return se_puede_ligar(assignment)
+        if estado_de(intento_a_cancelar) in TERMINALES:
+            return se_puede_ligar(assignment)
+        perfil_viejo = _perfil_de(_target_de(intento_a_cancelar.get("assignment")))
+        liberadas["raiz"] += 1
+        liberadas["global"] += 1
+        liberadas_por_perfil[perfil_viejo] = (
+            liberadas_por_perfil.get(perfil_viejo, 0) + 1
+        )
+        try:
+            return se_puede_ligar(assignment)
+        finally:
+            liberadas["raiz"] -= 1
+            liberadas["global"] -= 1
+            liberadas_por_perfil[perfil_viejo] -= 1
 
     def _hecho_disponible(unit_id, relevo):
         for indice, hecho in enumerate(vista["hechos"]["asignaciones"]):
@@ -448,6 +489,39 @@ def decidir(
             if documento["taskId"] == task_id:
                 return documento
         return None
+
+    def caben_en_plazas(assignment, ya_ligados):
+        plazas = vista["plazas"]
+        perfil = _perfil_de(_target_de(assignment))
+        por_perfil = plazas.get("por_perfil") or {}
+        cabe = (
+            ya_ligados + 1 <= int(plazas.get("raiz", 0)) + liberadas["raiz"]
+            and ya_ligados + 1 <= int(plazas.get("global", 0)) + liberadas["global"]
+            and (
+                perfil not in por_perfil
+                or ya_ligados + 1
+                <= int(por_perfil[perfil]) + liberadas_por_perfil.get(perfil, 0)
+            )
+        )
+        return cabe
+
+    def recurso_tomado(assignment):
+        """El repo del assignment lo tiene tomado OTRA raíz: el store lo
+        exigiría global (writer-held), así que aquí se difiere el ligado y
+        la unidad queda esperando, como una plaza ocupada (F18)."""
+        recurso = _repo_de(assignment)
+        if recurso is None:
+            return False
+        return any(
+            escritor.get("resourceRef") == recurso
+            and escritor.get("rootId") not in (None, root_id)
+            for escritor in vista["escritores"]
+        )
+
+    def se_puede_ligar(assignment):
+        return caben_en_plazas(
+            assignment, len(decision["bindings"])
+        ) and not recurso_tomado(assignment)
 
     # Los claims de los hechos entran primero: los resultados de abajo se juzgan con
     # ellos. Solo prueban verifier o ci (la guarda del store exige lo mismo) y cada
@@ -542,14 +616,14 @@ def decidir(
                 "INESPERADO",
                 "CAPACIDAD_INCIERTA",
             ):
-                reintentar(unidad_sujeta)
+                aplicada = reintentar(unidad_sujeta)
         elif opcion == "listo":
             if (
                 unidad_sujeta
                 and sujeto.get("kind") == "attempt"
                 and excepcion["type"] in ("AUTH_VENCIDA", "NECESITA_DAVID")
             ):
-                reintentar(unidad_sujeta)
+                aplicada = reintentar(unidad_sujeta)
         elif opcion == "relevo":
             if (
                 not unidad_sujeta
@@ -561,6 +635,17 @@ def decidir(
             else:
                 hecho = tomar_hecho(unidad_sujeta, True)
                 if hecho is None:
+                    necesidades.append(
+                        NecesidadAsignacion(
+                            unidad_sujeta,
+                            "relay",
+                            None,
+                            hallazgos_acumulados(unidad_sujeta),
+                        )
+                    )
+                    aplicada = False
+                elif not se_puede_ligar_liberando(vivo, hecho["assignment"]):
+                    soltar_hecho(hecho)
                     necesidades.append(
                         NecesidadAsignacion(
                             unidad_sujeta,
@@ -732,8 +817,9 @@ def decidir(
         clase = clase_de_incidencia(incidencia["incident"])
         if clase == "retry":
             if contador(f"reintentos:{incidencia['unitId']}") < REINTENTOS_AUTOMATICOS:
-                subir_contador(f"reintentos:{incidencia['unitId']}")
-                reintentar(incidencia["unitId"])
+                if reintentar(incidencia["unitId"]):
+                    subir_contador(f"reintentos:{incidencia['unitId']}")
+                # F18: diferido sin gastar tope; la incidencia sigue en la vista.
             else:
                 levantar("INESPERADO", sujeto)
         elif clase == "capacity":
@@ -779,30 +865,6 @@ def decidir(
     # cada vez que el dueño responde `seguir`.
     por_bloque = politica["roundsPerImplementer"]
 
-    def caben_en_plazas(assignment, ya_ligados):
-        plazas = vista["plazas"]
-        perfil = _perfil_de(_target_de(assignment))
-        por_perfil = plazas.get("por_perfil") or {}
-        cabe = (
-            ya_ligados + 1 <= int(plazas.get("raiz", 0))
-            and ya_ligados + 1 <= int(plazas.get("global", 0))
-            and (perfil not in por_perfil or ya_ligados + 1 <= int(por_perfil[perfil]))
-        )
-        return cabe
-
-    def recurso_tomado(assignment):
-        """El repo del assignment lo tiene tomado OTRA raíz: el store lo
-        exigiría global (writer-held), así que aquí se difiere el ligado y
-        la unidad queda esperando, como una plaza ocupada (F18)."""
-        recurso = _repo_de(assignment)
-        if recurso is None:
-            return False
-        return any(
-            escritor.get("resourceRef") == recurso
-            and escritor.get("rootId") not in (None, root_id)
-            for escritor in vista["escritores"]
-        )
-
     for unidad_plan in plan_unidades:
         unit_id = unidad_plan["unitId"]
         ultimo = ultimo_de(unit_id)
@@ -835,9 +897,7 @@ def decidir(
                 )
             )
             continue
-        if not caben_en_plazas(
-            hecho["assignment"], len(decision["bindings"])
-        ) or recurso_tomado(hecho["assignment"]):
+        if not se_puede_ligar(hecho["assignment"]):
             soltar_hecho(hecho)
             necesidades.append(
                 NecesidadAsignacion(
@@ -867,9 +927,7 @@ def decidir(
             necesidades.append(NecesidadAsignacion(unit_id, "first", None, []))
             continue
         indice, hecho = hallado
-        if not caben_en_plazas(
-            hecho["assignment"], len(decision["bindings"])
-        ) or recurso_tomado(hecho["assignment"]):
+        if not se_puede_ligar(hecho["assignment"]):
             necesidades.append(NecesidadAsignacion(unit_id, "first", None, []))
             continue
         hechos_usados.add(indice)

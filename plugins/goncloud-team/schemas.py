@@ -306,3 +306,106 @@ SUBSCRIPTION_STATUS = {
         "required": [],
     },
 }
+
+ROOT_SUBMIT = {
+    "name": "goncloud_root_submit",
+    "description": (
+        "Open a durable managed root from a sistema-agentes.meta.v1 plan "
+        "document. Only the claw profile may call this. Retries with the same "
+        "rootId and planDigest return the original receipt; a different plan "
+        "under the same rootId is refused."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "object",
+                "description": (
+                    "Complete sistema-agentes.meta.v1 document; validated "
+                    "against the fixed copy of the contract."
+                ),
+            },
+        },
+        "required": ["plan"],
+    },
+}
+
+ROOT_READ = {
+    "name": "goncloud_root_read",
+    "description": (
+        "Read the snapshot of one managed root: meta.v1, units (unidad.v1), "
+        "open exceptions and control state, with the contract field names. "
+        "Only the claw profile may call this."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"rootId": {"type": "string", "description": "Root id."}},
+        "required": ["rootId"],
+    },
+}
+
+ROOT_CONTROL = {
+    "name": "goncloud_root_control",
+    "description": (
+        "Send a sistema-agentes.control.v1 command (pause, resume, cancel) to "
+        "one managed root and get its receipt; an exact retry returns the "
+        "original receipt with replayed=true. Only the claw profile may call this."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "rootId": {"type": "string", "description": "Root id."},
+            "command": {
+                "type": "string",
+                "enum": ["pause", "resume", "cancel"],
+                "description": "Control command.",
+            },
+            "commandId": {
+                "type": "string",
+                "description": "Stable id of this command; reuse it on retries.",
+            },
+            "expectedControlEpoch": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Epoch the caller believes is current.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional owner-facing reason.",
+            },
+        },
+        "required": ["rootId", "command", "commandId", "expectedControlEpoch"],
+    },
+}
+
+ROOT_RESOLVE = {
+    "name": "goncloud_root_resolve",
+    "description": (
+        "Answer a raised excepcion.v1 with the owner's chosen optionId; the "
+        "answer is stored once and a second answer is refused. Only the claw "
+        "profile may call this."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "rootId": {
+                "type": "string",
+                "description": "Root the exception belongs to.",
+            },
+            "exceptionId": {"type": "string", "description": "Exception id."},
+            "optionId": {
+                "type": "string",
+                "description": "One of the options the exception offered.",
+            },
+            "by": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": (
+                    'Principal that answers, for example ["telegram", "owner-01"].'
+                ),
+            },
+        },
+        "required": ["rootId", "exceptionId", "optionId", "by"],
+    },
+}
