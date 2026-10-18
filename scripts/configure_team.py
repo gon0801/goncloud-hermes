@@ -226,7 +226,10 @@ def merge_profile_config(existing, desired, previous, *, fresh=False):
 def merge_owned(existing, desired, previous, fresh=False, prefix=""):
     if not isinstance(existing, dict):
         raise ValueError(f"Non-mapping configuration section: {prefix}")
-    result = copy.deepcopy(existing)
+    # The result keeps the desired key order, not the existing one: a second
+    # deploy must read back what the first one wrote and produce byte-identical
+    # output, or every redeploy would rewrite every profile's config.yaml.
+    result = {}
     for key, value in desired.items():
         location = f"{prefix}.{key}".strip(".")
         current = existing.get(key, MISSING)
@@ -250,6 +253,11 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
             raise ValueError(
                 f"Local configuration conflict: {location}; preserve and reconcile manually"
             )
+    # Keys the user owns and this script never managed keep their values,
+    # after the managed ones.
+    for key, value in existing.items():
+        if key not in result:
+            result[key] = copy.deepcopy(value)
     # A key this script owned last time and no longer ships is retired, unless
     # the user changed it, which is a conflict like any other.
     for key, before in previous.items():
@@ -265,16 +273,26 @@ def merge_owned(existing, desired, previous, fresh=False, prefix=""):
 
 
 def check_file(target, desired, previous=None):
-    if target.exists():
-        current = (
-            target.read_bytes()
-            if isinstance(desired, bytes)
-            else target.read_text(encoding="utf-8")
-        )
-        if isinstance(desired, bytes) and isinstance(previous, str):
-            previous = previous.encode("utf-8")
-        if current != desired and current != previous:
-            raise ValueError(f"Local managed-file conflict: {target}")
+    if not target.exists():
+        return
+    raw = target.read_bytes()
+    wanted = desired if isinstance(desired, bytes) else desired.encode("utf-8")
+    before = previous.encode("utf-8") if isinstance(previous, str) else previous
+    if raw == wanted or (before is not None and raw == before):
+        return
+
+    def normalized(data):
+        if data is None:
+            return None
+        return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+    # A Windows checkout can leave a managed text file in CRLF with content
+    # identical to the managed bytes: that is the same file, and the deploy
+    # rewrites it with the canonical line endings instead of blocking behind
+    # a manual reconciliation. Any other difference is still a conflict.
+    if normalized(raw) in (normalized(wanted), normalized(before)):
+        return
+    raise ValueError(f"Local managed-file conflict: {target}")
 
 
 def _prune_empty_dirs(directory, stop):
@@ -400,11 +418,8 @@ def apply_root_kanban(text, policy):
 
 
 def write_changed(path, content, *, backup=True):
-    if path.exists() and (
-        path.read_bytes() == content
-        if isinstance(content, bytes)
-        else path.read_text(encoding="utf-8") == content
-    ):
+    raw = content if isinstance(content, bytes) else content.encode("utf-8")
+    if path.exists() and path.read_bytes() == raw:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     # A recoverable copy; no credentials are included in the ownership manifest.

@@ -600,6 +600,38 @@ class DirectorNativeChainTests(unittest.TestCase):
                 module.check_file(target, "desired", "previous")
             self.assertEqual(target.read_text(encoding="utf-8"), "user edit")
 
+    def test_a_line_ending_only_difference_is_not_a_conflict(self):
+        # The move to Windows left profile copies in CRLF with content
+        # identical to the managed (LF) bytes: that is the same file, and the
+        # deploy rewrites it with the canonical line endings instead of
+        # refusing and blocking every deploy behind a manual reconciliation.
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two\r\n")
+
+            module.check_file(target, "line one\nline two\n", None)
+
+            # A previous record in LF also matches its CRLF copy.
+            module.check_file(target, "otro\n", "line one\nline two\n")
+
+    def test_a_changed_line_is_a_conflict_even_with_crlf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two EDITED\r\n")
+
+            with self.assertRaises(ValueError):
+                module.check_file(target, "line one\nline two\n", None)
+
+    def test_write_changed_rewrites_crlf_to_the_canonical_lf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "workflow.py"
+            target.write_bytes(b"line one\r\nline two\r\n")
+
+            module.check_file(target, "line one\nline two\n", None)
+            module.write_changed(target, "line one\nline two\n")
+
+            self.assertEqual(target.read_bytes(), b"line one\nline two\n")
+
     def test_check_validates_without_writing(self):
         import yaml
 
@@ -876,11 +908,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
             self.assertEqual(loader.returncode, 0, loader.stderr)
             credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")
-            # A worker's model is the user's: unmanaged, so it survives reapply.
             scout_path = runtime / "profiles/scout/config.yaml"
-            scout = yaml.safe_load(scout_path.read_text(encoding="utf-8"))
-            scout["model"] = {"provider": "test-provider", "default": "test-model"}
-            scout_path.write_text(yaml.safe_dump(scout), encoding="utf-8")
             second = subprocess.run(
                 command, capture_output=True, text=True, env=env, timeout=120
             )
@@ -888,8 +916,34 @@ class DirectorNativeChainTests(unittest.TestCase):
             # No meta-ai position anywhere: the deploy leaves the .env alone.
             self.assertEqual(credentials.read_text(), "UNUSED_TEST_KEY=sentinel\n")
             self.assertFalse(credentials.with_name(".env.goncloud-backup").exists())
+            # A worker's model is owned since the v6 table (2026-10-17): a
+            # hand edit is a conflict like any other profile's, and the
+            # refused deploy leaves the edit in place.
+            scout = yaml.safe_load(scout_path.read_text(encoding="utf-8"))
+            scout["model"] = {"provider": "test-provider", "default": "test-model"}
+            scout_path.write_text(yaml.safe_dump(scout), encoding="utf-8")
+            third = subprocess.run(
+                command, capture_output=True, text=True, env=env, timeout=120
+            )
+            self.assertNotEqual(third.returncode, 0)
+            self.assertIn("user-managed model conflict", third.stderr)
             self.assertEqual(
                 yaml.safe_load(scout_path.read_text())["model"], scout["model"]
+            )
+            adopted = subprocess.run(
+                [*command, "--adoptar-ruteo-manual"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+            )
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+            table = json.loads(
+                (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                yaml.safe_load(scout_path.read_text())["model"],
+                module.native_config(table, "scout")["model"],
             )
             # --check writes nothing, even to a stale .env: no meta-ai lane.
             credentials.write_text("UNUSED_TEST_KEY=sentinel\n", encoding="utf-8")

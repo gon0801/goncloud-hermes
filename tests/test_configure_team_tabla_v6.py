@@ -21,6 +21,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 LIVE = json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
 VIVO = json.loads(
     (ROOT / "tests/fixtures/rutas-vivas-20261017.json").read_text(encoding="utf-8")
@@ -473,6 +475,128 @@ class AdopcionEndToEndTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((runtime / "profiles/claw/config.yaml").read_bytes(), before)
+
+
+class ReaplicacionIdempotenteTests(unittest.TestCase):
+    """Deploy, deploy again: the second run changes nothing and conflicts on
+    nothing (the 8:35 watcher deploys like this every day)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cleanup_temp_directory, cls.tmp)
+        cls.runtime = Path(cls.tmp.name) / "runtime"
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        # The eleven specialists are the owner's: on the PC they already
+        # exist, so every deploy configures all 20 managed profiles.
+        for role in team["kanban"]["dispatch_profiles"]:
+            directory = cls.runtime / "profiles" / role
+            directory.mkdir(parents=True)
+            (directory / "config.yaml").write_text(
+                "platform_toolsets:\n  cli: [browser, web]\n", encoding="utf-8"
+            )
+        cls.deploy()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @classmethod
+    def deploy(cls, *extra):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(cls.runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return result
+
+    @classmethod
+    def snapshot(cls):
+        return {
+            p.relative_to(cls.runtime): p.read_bytes()
+            for p in cls.runtime.rglob("*")
+            if p.is_file()
+        }
+
+    def test_01_la_segunda_aplicacion_no_cambia_nada(self):
+        before = self.snapshot()
+
+        second = self.deploy()
+        after = self.snapshot()
+
+        self.assertEqual(second.stdout.count("Configured "), 20)
+        self.assertEqual(after, before, "la segunda aplicacion reescribio archivos")
+        third = self.deploy()
+        self.assertEqual(self.snapshot(), before, "la tercera aplicacion reescribio")
+        self.assertEqual(third.stdout.count("Configured "), 20)
+
+    def test_02_el_model_editado_a_manode_un_perfil_conflicta_sin_bandera(self):
+        config_path = self.runtime / "profiles/scout/config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config["model"] = {"provider": "test-provider", "default": "test-model"}
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        before = self.snapshot()
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(self.runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("user-managed model conflict", result.stderr)
+        # The refused deploy leaves the owner's edit in place.
+        self.assertEqual(
+            yaml.safe_load(config_path.read_text(encoding="utf-8"))["model"],
+            {"provider": "test-provider", "default": "test-model"},
+        )
+        self.assertEqual(self.snapshot(), before)
+
+    def test_03_con_bandera_el_edit_se_adopta_y_aplica_la_v6(self):
+        result = self.deploy("--adoptar-ruteo-manual")
+        self.assertEqual(result.stdout.count("Configured "), 20)
+
+        config_path = self.runtime / "profiles/scout/config.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            config["model"],
+            configure_team.native_config(LIVE, "scout")["model"],
+        )
+        state = json.loads(
+            (self.runtime / "profiles/scout/goncloud-managed.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        record = state["adopted_manual_routing"]
+        self.assertEqual(len(record), 1)
+        entry = next(iter(record.values()))
+        self.assertIn("2026-10-17", entry["reason"])
+        self.assertIn("model", entry["keys"])
+        # Idempotent again: a normal redeploy changes nothing.
+        before = self.snapshot()
+        self.deploy()
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":

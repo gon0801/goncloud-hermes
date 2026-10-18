@@ -1870,7 +1870,8 @@ while True:
             )
             self.assertEqual(json.loads(zai.requests[0]["body"])["model"], "glm-5.3")
             self.assertEqual(
-                json.loads(deepseek.requests[0]["body"])["model"], "deepseek-flash"
+                json.loads(deepseek.requests[0]["body"])["model"],
+                "deepseek-v4.1-flash",
             )
             with self.assertRaises(MigrationError):
                 probe("GLM_API_KEY", "different-fixture")
@@ -2099,12 +2100,14 @@ class DeploymentTests(unittest.TestCase):
             self.assertTrue(routing.is_file())
             self.assertEqual(
                 json.loads(routing.read_text(encoding="utf-8"))["columns"],
-                ["Primary", "Primary Go 2", "F1", "F2", "F3", "F4", "F5", "F6"],
+                ["Primary", "F1", "F2", "F3"],
             )
             claw_config = yaml.safe_load(
                 (claw / "config.yaml").read_text(encoding="utf-8")
             )
-            self.assertEqual(claw_config["model"]["provider"], "opencode-go")
+            # v6 (2026-10-17): Anthropic on the owner's Claude subscription.
+            self.assertEqual(claw_config["model"]["provider"], "anthropic")
+            self.assertEqual(claw_config["model"]["default"], "claude-opus-5-5")
 
             secrets = claw / "subscription-router.env"
             second = subprocess.run(
