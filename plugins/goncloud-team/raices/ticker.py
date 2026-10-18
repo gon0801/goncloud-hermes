@@ -104,7 +104,7 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
         if vista_de is not None:
             razon = _negar_arranque(vista_de, permisos, intencion)
             if razon is not None:
-                _levantar_arranque(tienda, vista_de, intencion, razon)
+                _levantar_arranque(tienda, vista_de, intencion, razon, conflictos)
                 continue
         reclamo = tienda.reclamar_intencion(
             intencion.root_id, intencion.unit_id, intencion.attempt
@@ -150,11 +150,12 @@ def _negar_arranque(vista, permisos, intencion) -> str | None:
     )
 
 
-def _levantar_arranque(tienda, vista, intencion, razon) -> None:
+def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
     """La pregunta por un arranque negado. Un sujeto de INTENTO no ofrece
     `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
     igual que en R, donde permission-required sale con
-    ["listo","omitir","cancelar"] (managed-root.decide.ts:550)."""
+    ["listo","omitir","cancelar"] (managed-root.decide.ts:550). Si la
+    decisión choca, el Conflicto entra al informe (F17)."""
     borrador = decidir.borrador_excepcion(
         intencion.root_id,
         "NECESITA_DAVID",
@@ -170,11 +171,13 @@ def _levantar_arranque(tienda, vista, intencion, razon) -> None:
         vista["meta"]["plan"]["revision"], vista["meta"]["controlEpoch"]
     )
     decision["excepciones"] = [borrador]
-    tienda.aplicar(
+    resultado = tienda.aplicar(
         intencion.root_id,
         decision,
         f"dec-arranque:{borrador['exceptionId']}",
     )
+    if hasattr(resultado, "codigo"):
+        conflictos.append((intencion.root_id, resultado.codigo))
 
 
 def _hechos_vacios() -> dict:

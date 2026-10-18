@@ -752,6 +752,51 @@ class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
         self.assertIn(borrador["exceptionId"], informe_aviso["avisadas"])
 
 
+def decision_con_binding(unit_id):
+    return {
+        "expected_plan_revision": 1,
+        "expected_control_epoch": 1,
+        "consumidos": [],
+        "claims": [],
+        "outcomes": [],
+        "bindings": [{"unitId": unit_id, "assignment": asignacion(), "writers": []}],
+        "efectos": [],
+        "contadores": [],
+        "excepciones": [],
+        "respuestas_aplicadas": [],
+    }
+
+
+class ElConflictoDelArranqueNoSePierde(Escenario):
+    """F17: si la decisión del arranque negado choca (p. ej. root-not-active),
+    el Conflicto entra al informe de la vuelta en vez de descartarse."""
+
+    def test_un_conflicto_al_levantar_el_arranque_queda_en_el_informe(self):
+        tienda, _kanban = self.frescar()
+        # Una intención pendiente con el arranque negado (permisos sin el
+        # perfil codex): la vuelta levanta la excepción de arranque...
+        permisos_duros = {
+            "acciones": ["read", "implement", "review"],
+            "toolsets": {"otro": ["read", "write"]},
+            "comandos": ["git", "python3"],
+        }
+        self.assertIsInstance(
+            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+        )
+        # ...y su aplicar se hace conflictivo, como el F13 de r6.
+        original = tienda.aplicar
+
+        def aplicar_en_conflicto(root_id, decision, decision_id):
+            tienda.aplicar = original
+            return store.Conflicto("root-not-active", {"state": "cancelled"})
+
+        tienda.aplicar = aplicar_en_conflicto
+        informe = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=permisos_duros
+        )
+        self.assertIn((RAIZ, "root-not-active"), informe.conflictos)
+
+
 class I12PoliticaDelTicker(unittest.TestCase):
     def test_la_politica_sale_de_la_copia_fijada_con_la_decision_de_david(self):
         politicas = ticker.cargar_politicas()
