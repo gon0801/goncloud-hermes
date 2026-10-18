@@ -322,6 +322,52 @@ class Script(Base):
         self.assertEqual(codigo, 1)
         self.assertIn("ERROR ticker raices:", salida.getvalue())
 
+    def test_la_puerta_abierta_borra_el_checkpoint_de_capacidad_incierta(self):
+        # CR1: Hermes sube solo a diario. Si al abrir no se borra el
+        # checkpoint, un cierre posterior con la MISMA causa no volveria a
+        # avisar (avisar_capacidad_incierta ve la misma causa y se calla).
+        cron = importlib.import_module("raices.cron_ticker")
+        checkpoint = self.home / "raices" / "capacidad-incierta.json"
+        checkpoint.parent.mkdir(exist_ok=True)
+
+        # 1) Cerrada: avisa y deja el checkpoint.
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(
+                cron.correr(ruta_abierta=lambda: (False, "version-no-certificada")), 0
+            )
+        self.assertIn("CAPACIDAD_INCIERTA (version-no-certificada)", errores.getvalue())
+        self.assertTrue(checkpoint.exists())
+        self.assertEqual(
+            json.loads(checkpoint.read_text(encoding="utf-8"))["causa"],
+            "version-no-certificada",
+        )
+
+        # 2) Abierta: el checkpoint se borra.
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        self.instalar_permisos()
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(cron.correr(enviar=lambda _texto: 42), 0)
+        self.assertFalse(
+            checkpoint.exists(),
+            "con la puerta abierta el checkpoint de la puerta cerrada se borra",
+        )
+
+        # 3) Cerrada con la MISMA causa: avisa OTRA vez.
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(
+                cron.correr(ruta_abierta=lambda: (False, "version-no-certificada")), 0
+            )
+        self.assertIn(
+            "CAPACIDAD_INCIERTA (version-no-certificada)",
+            errores.getvalue(),
+            "el mismo causa vuelve a avisar tras un ciclo abierto",
+        )
+        self.assertTrue(checkpoint.exists())
+
     def test_la_ruta_cerrada_no_corre_y_no_abre_nada(self):
         cron = importlib.import_module("raices.cron_ticker")
         salida, errores = StringIO(), StringIO()

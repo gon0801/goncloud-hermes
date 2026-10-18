@@ -207,6 +207,12 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     abierta, causa = puerta()
     if not abierta:
         return _vuelta_cerrada(base, causa)
+    # CR1: la ruta volvió. Sin borrar el checkpoint, un cierre posterior con
+    # la MISMA causa no volvería a avisar (avisar_capacidad_incierta ve la
+    # misma causa y se calla) y Hermes sube solo a diario: el dueño se
+    # perdería el aviso de la caída nueva. Best-effort: sin el archivo no
+    # hay nada que borrar y un fallo de borrado no debe tumbar la vuelta.
+    (base / "raices" / "capacidad-incierta.json").unlink(missing_ok=True)
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")
     kanban = importlib.import_module("raices.kanban")
