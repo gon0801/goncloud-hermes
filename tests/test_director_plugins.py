@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -143,17 +144,25 @@ def _sha256(datos):
 
 
 def _git_en(ruta, *args):
+    # Los fixtures se crean sin conversion de fin de linea, cueste lo que
+    # cueste el autocrlf del sistema o del GIT_CONFIG_GLOBAL del entorno: el
+    # -c gana sobre cualquier config global.
     return subprocess.run(
-        ["git", "-C", str(ruta), *args], capture_output=True, text=True, check=True
+        ["git", "-C", str(ruta), "-c", "core.autocrlf=false", *args],
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
 
 def _repo(ruta, archivos):
+    # Los archivos del fixture van en bytes: un write_text en Windows
+    # traduce \n a CRLF y el sha256 ya no es el que fija la prueba.
     ruta.mkdir(parents=True)
     for nombre, texto in archivos.items():
         destino = ruta / nombre
         destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_text(texto, encoding="utf-8")
+        destino.write_bytes(texto.encode("utf-8"))
     _git_en(ruta, "init", "-q")
     _git_en(ruta, "add", "-A")
     _git_en(
@@ -167,6 +176,16 @@ class ConciliacionTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, tmp)
         base = Path(tmp.name)
+        # La PC clona con core.autocrlf=true de sistema (Git for Windows): el
+        # mismo config hostil, simulado con GIT_CONFIG_GLOBAL, reproduce aqui
+        # lo que el checkout CRLF le hizo a los fixtures (encargo H-jev r2).
+        # El patcher se registra despues de la limpieza: con LIFO el entorno
+        # se restaura antes de borrar el directorio.
+        hostil = base / "gitconfig-autocrlf-true"
+        hostil.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        activo = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(hostil)})
+        activo.start()
+        self.addCleanup(activo.stop)
         self.jev_sha = _repo(base / "jev", {"plugin.yaml": "name: jev\n"})
         repo_jsr = base / "jsr"
         self.jsr_sha = _repo(repo_jsr, {MCP_SERVIDOR: PRISTINA})
@@ -180,7 +199,7 @@ class ConciliacionTests(unittest.TestCase):
             "--",
             MCP_SERVIDOR,
         ).stdout
-        (base / "0001-sintetico.patch").write_text(diff, encoding="utf-8")
+        (base / "0001-sintetico.patch").write_bytes(diff.encode("utf-8"))
         self.sha256_parchado = _sha256(PATCHADA.encode())
         _git_en(repo_jsr, "checkout", "--", MCP_SERVIDOR)
         self.plugins = [
@@ -212,7 +231,7 @@ class ConciliacionTests(unittest.TestCase):
         self.servidor = self.perfil / "plugins" / "jev-skill-router-mcp" / MCP_SERVIDOR
 
     def test_parchado_esta_verde_y_apply_no_hace_nada(self):
-        self.servidor.write_text(PATCHADA, encoding="utf-8")
+        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
         self.assertEqual(
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
             [],
@@ -246,6 +265,33 @@ class ConciliacionTests(unittest.TestCase):
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
         self.assertEqual(self.servidor.read_text(), "otro\n")
 
+    def test_prisitino_con_crlf_aplica_y_queda_en_lf(self):
+        # Lo que ve la PC: `hermes plugins` clono con autocrlf=true y el
+        # archivo prístino esta en CRLF. El contenido es prístino, el check
+        # lo reporta y el apply canóniza y deja los bytes LF del sha.
+        self.servidor.write_bytes(PRISTINA.replace("\n", "\r\n").encode("utf-8"))
+        notas = module.conciliar_plugins_director(
+            self.perfil, self.plugins, aplicar=False
+        )
+        self.assertEqual(
+            notas, [f"Parche por aplicar: jev-skill-router-mcp: {MCP_SERVIDOR}"]
+        )
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_bytes(), PATCHADA.encode("utf-8"))
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True),
+            [],
+        )
+
+    def test_el_parchado_en_crlf_canoniza_a_lf(self):
+        self.servidor.write_bytes(PATCHADA.replace("\n", "\r\n").encode("utf-8"))
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
+            [],
+        )
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_bytes(), PATCHADA.encode("utf-8"))
+
     def test_otro_sha_es_rojo_con_instruccion(self):
         self.plugins[1]["sha"] = "0" * 40
         with self.assertRaises(ValueError) as contexto:
@@ -272,7 +318,7 @@ class ConciliacionTests(unittest.TestCase):
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
 
     def test_lo_untracked_se_tolera(self):
-        self.servidor.write_text(PATCHADA, encoding="utf-8")
+        self.servidor.write_bytes(PATCHADA.encode("utf-8"))
         (self.perfil / "plugins" / "jev" / ".hermes-catalog.json").write_text(
             "{}", encoding="utf-8"
         )

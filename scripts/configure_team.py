@@ -631,6 +631,11 @@ def director_plugins_manifest():
     return json.loads(ruta.read_text(encoding="utf-8"))["plugins"]
 
 
+def con_fines_lf(bruto):
+    """The bytes as git leaves them: line endings normalized to LF."""
+    return bruto.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def conciliar_plugins_director(perfil, plugins, *, aplicar):
     """Estado de los plugins externos del director; con ``aplicar``, parchea.
 
@@ -680,17 +685,32 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
             )
         for patch in plugin["patches"]:
             target = plugin_dir / patch["file"]
-            digest = (
-                hashlib.sha256(target.read_bytes()).hexdigest()
-                if target.is_file()
-                else None
-            )
-            if digest == patch["sha256_patched"]:
+            if target.is_file():
+                bruto = target.read_bytes()
+                # Un clon con core.autocrlf=true deja el archivo con CRLF: el
+                # contenido es el mismo y su version con LF es la que fijan
+                # los sha256 del manifiesto (calculados como los deja git).
+                exacto = hashlib.sha256(bruto).hexdigest()
+                con_lf = hashlib.sha256(con_fines_lf(bruto)).hexdigest()
+            else:
+                exacto = con_lf = None
+
+            if patch["sha256_patched"] in (exacto, con_lf):
+                if aplicar and exacto != patch["sha256_patched"]:
+                    target.write_bytes(con_fines_lf(bruto))
+                    if (
+                        hashlib.sha256(target.read_bytes()).hexdigest()
+                        != patch["sha256_patched"]
+                    ):
+                        raise ValueError(
+                            f"Plugin del director {name}: {patch['file']} quedó sin "
+                            "el sha256 esperado tras canonizar los fines de linea"
+                        )
                 continue
-            if digest != patch["sha256_pristine"]:
+            if patch["sha256_pristine"] not in (exacto, con_lf):
                 motivo = (
                     "falta"
-                    if digest is None
+                    if exacto is None
                     else "no coincide ni con el contenido prístino del sha "
                     "fijado ni con el parche Goncloud"
                 )
@@ -701,7 +721,17 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
                 )
             notas.append(f"Parche por aplicar: {name}: {patch['file']}")
             if aplicar:
-                applied = _git(plugin_dir, "apply", str(ROOT / patch["patch"]))
+                if exacto != patch["sha256_pristine"]:
+                    target.write_bytes(con_fines_lf(bruto))
+                # El apply no depende del autocrlf del sistema: con el -c el
+                # parche escribe los mismos bytes LF en cualquier arbol.
+                applied = _git(
+                    plugin_dir,
+                    "-c",
+                    "core.autocrlf=false",
+                    "apply",
+                    str(ROOT / patch["patch"]),
+                )
                 if applied is None or applied.returncode != 0:
                     raise ValueError(
                         f"Plugin del director {name}: git apply falló sobre "
