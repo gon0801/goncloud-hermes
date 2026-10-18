@@ -8,6 +8,7 @@ que cada cláusula tenga su prueba antes de cerrar su rebanada.
 import functools
 import importlib.util
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -90,6 +91,16 @@ def _ids_de_pruebas():
     return frozenset(prueba.id() for prueba in _aplanar(suite))
 
 
+# F7: un `no-aplica` de rebanada cerrada solo cubre su cláusula si la razón
+# nombra dónde queda cubierta: una rebanada (H4, H0b), un bloque+ensayo
+# (SUA-09H) o un ensayo del bloque (I20). Una razón de relleno no cubre nada.
+DESTINO_DE_COBERTURA = re.compile(r"\b(?:H\d+[a-z]?|SUA-\d+[A-Z]?|I\d+)\b")
+
+
+def razon_nombra_destino(razon):
+    return bool(DESTINO_DE_COBERTURA.search(razon or ""))
+
+
 class Bloque(unittest.TestCase):
     maxDiff = None
 
@@ -131,16 +142,37 @@ class Recorrido(unittest.TestCase):
 
     def test_una_rebanada_cerrada_no_deja_clausulas_sin_prueba(self):
         """El diseño (§4) admite `no-aplica` con su razón como fila de una
-        rebanada cerrada: la cláusula queda cubierta por la razón."""
+        rebanada cerrada: la cláusula queda cubierta por la razón SOLO si la
+        razón nombra la rebanada o el ensayo donde se cubre (F7)."""
         cerradas = set(DOCUMENTO["rebanadasCerradas"])
         for fila in DOCUMENTO["filas"]:
             if fila["rebanada"] not in cerradas:
                 continue
             with self.subTest(clausula=fila["clausula"]):
                 if fila["prueba"] == "no-aplica":
-                    self.assertTrue((fila.get("razon") or "").strip())
+                    razon = fila.get("razon") or ""
+                    self.assertTrue(razon.strip())
+                    self.assertTrue(
+                        razon_nombra_destino(razon),
+                        f"{fila['clausula']}: la razón debe nombrar la rebanada"
+                        " o el ensayo donde se cubre (p. ej. H4/H5/SUA-09H/I20)",
+                    )
                 else:
                     self.assertIsNotNone(fila["prueba"])
+
+    def test_una_razon_de_relleno_no_cubre_una_clausula_cerrada(self):
+        for razon in (
+            "pendiente",
+            "luego lo vemos",
+            "no aplica por ahora",
+            "  ",
+            "la cubre otra cosa",
+        ):
+            with self.subTest(razon=razon):
+                self.assertFalse(razon_nombra_destino(razon))
+        for razon in ("se cubre en H4", "llega en SUA-09H", "ya probada en I20"):
+            with self.subTest(razon=razon):
+                self.assertTrue(razon_nombra_destino(razon))
 
 
 if __name__ == "__main__":
