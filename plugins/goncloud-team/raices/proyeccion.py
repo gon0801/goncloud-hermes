@@ -226,9 +226,13 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     por_raiz: dict = {}
     for excepcion in debidas:
         por_raiz.setdefault(excepcion["rootId"], []).append(excepcion["exceptionId"])
-    # F6: un checkpoint en conflicto no es un aviso dado. Si alguna raíz no
-    # dejó avanzar su noticed_at, no se informa avisadas ni messageId: lo que
-    # no quedó anotado se reavisa en la pasada siguiente.
+    # F6 (r5): el checkpoint de una raíz en conflicto NO descarta a las demás:
+    # su aviso ya salió en el mismo mensaje. Se recorren todas; las que
+    # fallan van a errores, `avisadas` lista sólo las excepciones de raíces
+    # cuyo checkpoint avanzó (el resto se reavisa en la pasada siguiente) y
+    # messageId se informa si al menos una avanzó.
+    avisadas: list = []
+    avanzaron = 0
     for root_id, ids in por_raiz.items():
         respuesta = tienda.notificar(root_id, ids)
         if hasattr(respuesta, "codigo"):
@@ -236,11 +240,13 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
                 f"checkpoint {root_id}: {respuesta.codigo}"
                 f" ({respuesta.detalle.get('exceptionId')})"
             )
-            informe["errores"] = errores
-            return informe
-    informe["avisadas"] = [e["exceptionId"] for e in debidas]
-    informe["messageId"] = message_id
+            continue
+        avanzaron += 1
+        avisadas.extend(ids)
     informe["errores"] = errores
+    if avanzaron:
+        informe["avisadas"] = avisadas
+        informe["messageId"] = message_id
     return informe
 
 

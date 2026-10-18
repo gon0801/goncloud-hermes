@@ -170,12 +170,55 @@ class Emisor(unittest.TestCase):
             (self.exception_id,),
         )
         self.assertIsNone(fila["noticed_at"])
-        self.assertIsNone(informe["messageId"])
-        fila = self.tienda._una_fila(
+
+    def test_el_conflicto_de_una_raiz_no_descarta_a_las_demas(self):
+        # F6 (r5): el checkpoint en conflicto de una raíz no deja sin anotar a
+        # las demás, cuyo aviso ya salió en el mismo mensaje.
+        otra = meta_de()
+        otra["rootId"] = "root-otra"
+        self.assertIsInstance(self.tienda.abrir_raiz(otra), store.Ok)
+        borrador = decidir.borrador_excepcion(
+            "root-otra",
+            "NECESITA_DAVID",
+            {"kind": "rounds", "unitId": "a", "block": 0},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(
+            self.tienda.aplicar("root-otra", dec, "dec-exc-otra"), store.Ok
+        )
+
+        class TiendaQueConflictaUnaRaiz:
+            def __init__(self, tienda, raiz_mala):
+                self.envuelta = tienda
+                self._conexion = tienda._conexion
+                self.raiz_mala = raiz_mala
+
+            def notificar(self, root_id, exception_ids):
+                if root_id == self.raiz_mala:
+                    return store.Conflicto(
+                        "exception-unknown", {"exceptionId": exception_ids[0]}
+                    )
+                return self.envuelta.notificar(root_id, exception_ids)
+
+        informe, mensajes = self.avisar(
+            tienda=TiendaQueConflictaUnaRaiz(self.tienda, RAIZ)
+        )
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn(f"checkpoint {RAIZ}: exception-unknown", informe["errores"][0])
+        self.assertEqual(informe["avisadas"], [borrador["exceptionId"]])
+        self.assertEqual(informe["messageId"], 42)
+        mala = self.tienda._una_fila(
             "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
             (self.exception_id,),
         )
-        self.assertIsNone(fila["noticed_at"])
+        sana = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertIsNone(mala["noticed_at"])
+        self.assertEqual(sana["noticed_at"], "2026-10-17T12:00:00Z")
         informe, _ = self.avisar(mensaje_id=7)
         self.assertEqual(informe["avisadas"], [self.exception_id])
 
