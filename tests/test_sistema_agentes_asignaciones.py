@@ -386,6 +386,17 @@ class Reconcile(Escenario):
         self.assertEqual(recibo.detalle, {"state": "paused"})
         self.assertEqual(tienda.hechos_por_raiz(), {}, "cero filas")
 
+    def test_una_fila_de_una_revision_anterior_no_aparece_en_hechos(self):
+        tienda = self.abrir()
+        self.assertIsInstance(self.reconciliar(tienda, self.asignacion_de()), store.Ok)
+        # Una revisión nueva insertada a mano deja la fila de la revisión 1
+        # fuera de la vigente: hechos_por_raiz solo entrega la vigente.
+        tienda._conexion.execute(
+            "INSERT INTO revisiones VALUES (?,?,?,?,?)",
+            (RAIZ, 2, "sha256:" + "b" * 64, "sha256:" + "b" * 64, "[]"),
+        )
+        self.assertEqual(tienda.hechos_por_raiz(), {})
+
     def test_las_necesidades_de_la_decision_quedan_en_el_recibo_y_la_tabla(self):
         tienda = self.abrir(unidades=("a", "b"))
         recibo = self.reconciliar(tienda, self.asignacion_de(unit_id="a"))

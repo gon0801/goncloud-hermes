@@ -1353,9 +1353,9 @@ class Store:
         agrupadas: dict = {}
         for fila in self._conexion.execute(
             "SELECT a.root_id, a.unit_id, a.relay, a.assignment_json"
-            " FROM asignaciones a JOIN revisiones r ON r.root_id = a.root_id"
-            " AND r.revision = a.plan_revision"
+            " FROM asignaciones a"
             " WHERE a.consumed_at IS NULL"
+            " AND a.plan_revision = (SELECT MAX(revision) FROM revisiones WHERE root_id = a.root_id)"
             " ORDER BY a.created_at, a.root_id, a.unit_id, a.relay"
         ):
             hechos = agrupadas.setdefault(
