@@ -55,5 +55,7 @@ El cron te avisa en el chat qué raíz necesita qué. Léela con
 - Inventar SHAs ni digestos: si no puedes ver el head real, no lo escribas.
 - Marcar `passed` sin evidencia subida y comprobada.
 - Reabrir una raíz cancelada.
-- Contestar excepciones por David: las excepciones (`excepcion.v1`) son del
-  dueño; tú solo las lees con `goncloud_root_read` y esperas su respuesta.
+- DECIDIR una excepción por su cuenta: las excepciones (`excepcion.v1`) son
+  del dueño. Cuando David conteste en tu chat, pasa SU respuesta tal cual con
+  `goncloud_root_resolve` (`{rootId, exceptionId, optionId, by: ["david"]}`),
+  con la opción que David eligió — nunca la que te parezca mejor.

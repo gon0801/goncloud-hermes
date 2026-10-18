@@ -1508,9 +1508,8 @@ class Store:
             )
         for fila in self._conexion.execute(
             "SELECT c.root_id, c.claim_json FROM claims c"
-            " JOIN revisiones r ON r.root_id = c.root_id"
-            " AND r.revision = c.plan_revision"
             " WHERE c.consumed_at IS NULL"
+            " AND c.plan_revision = (SELECT MAX(revision) FROM revisiones WHERE root_id = c.root_id)"
             " ORDER BY c.created_at, c.root_id, c.unit_id, c.attempt,"
             " c.criterion_id"
         ):
@@ -1614,6 +1613,18 @@ class Store:
                     "documento-invalido",
                     {"hallazgos": _a_json([{"seccion": "claims"}])},
                 )
+            # La misma vara que las asignaciones desde H6a r3: un claim de
+            # una unidad fuera del plan vigente jamás sería consumido por
+            # decidir; se rechaza antes de escribir, cero filas.
+            if (
+                self._una_fila(
+                    "SELECT 1 FROM unidades_de_plan"
+                    " WHERE root_id = ? AND revision = ? AND unit_id = ?",
+                    (root_id, revision, sembrado["unitId"]),
+                )
+                is None
+            ):
+                return Conflicto("unidad-desconocida", {"unitId": sembrado["unitId"]})
             referencia = sembrado["artifactRef"]
             _texto, motivo = instrucciones.resolver(
                 self.dir_de_instrucciones,

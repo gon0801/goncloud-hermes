@@ -1,6 +1,6 @@
 """El despertar del dueño: el cron despertar-raices (SUA-07 H6b).
 
-El instalador deja el script en <home>/scripts/desperar-raices.py y registra
+El instalador deja el script en <home>/scripts/despertar-raices.py y registra
 el trabajo sin agente en el perfil default con entrega al chat del director:
 
   hermes -p default cron create "every 1m" --name despertar-raices --script
@@ -11,7 +11,7 @@ el chat "Bot Chat" de claw y stdout vacío es corrida silenciosa
 (scheduler_delivery._deliver_to_bot_chat de Hermes 0.21.5). En cada vuelta:
 para cada raíz viva (control active, no terminal) con necesidades no vacías,
 imprime un bloque corto si el needs_digest cambió desde el último aviso o si
-pasó RENOTICE_MS desde él; el asiento (avisos_de_necesisidades) ocurre en la
+pasó RENOTICE_MS desde él; el asiento (avisos_de_necesidades) ocurre en la
 misma transacción del store que decide imprimir. El texto lleva el rootId,
 las necesidades (kind, unitId, reason/criteria, attempt) y la línea que le
 dice a claw qué hacer: nada de briefs ni secretos. Cero conexiones abiertas

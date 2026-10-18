@@ -310,6 +310,46 @@ class ReconcileDeClaims(Escenario):
         recibo = tienda.reconciliar("root-nadie", [], [self.claim_de()])
         self.assertEqual(recibo.codigo, "raiz-desconocida")
 
+    def test_un_claim_de_una_unidad_fuera_del_plan_se_rechaza_sin_filas(self):
+        tienda = self.abrir(unidades=("a",))
+        recibo = self.reconciliar(tienda, [self.claim_de(unit_id="nadie")])
+        self.assertEqual(recibo.codigo, "unidad-desconocida")
+        self.assertEqual(recibo.detalle, {"unitId": "nadie"})
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "cero filas")
+
+    def test_un_claim_de_una_raiz_no_activa_se_rechaza_sin_filas(self):
+        tienda = self.abrir()
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": "prueba",
+                    "issuedAt": "2026-10-18T12:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        recibo = self.reconciliar(tienda, [self.claim_de()])
+        self.assertEqual(recibo.codigo, "raiz-no-activa")
+        self.assertEqual(recibo.detalle, {"state": "paused"})
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "cero filas")
+
+    def test_un_claim_de_una_revision_anterior_no_aparece_en_hechos(self):
+        tienda = self.abrir()
+        self.assertIsInstance(self.reconciliar(tienda, [self.claim_de()]), store.Ok)
+        # Una revisión nueva insertada a mano deja la fila del claim en la
+        # revisión 1, fuera de la vigente: hechos_por_raiz solo entrega la
+        # vigente (igual que las asignaciones desde H6a r3).
+        tienda._conexion.execute(
+            "INSERT INTO revisiones VALUES (?,?,?,?,?)",
+            (RAIZ, 2, "sha256:" + "b" * 64, "sha256:" + "b" * 64, "[]"),
+        )
+        self.assertEqual(tienda.hechos_por_raiz(), {})
+
 
 class AceptacionPorClaim(Escenario):
     """claim passed + resultado review.v1 => la unidad queda aceptada y la
