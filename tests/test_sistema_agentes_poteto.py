@@ -127,6 +127,20 @@ class CopiaFijada(unittest.TestCase):
         propias = poteto.skills_a_publicar("reviewer")
         self.assertTrue(any(r.startswith("skills/blast-radius/") for r in propias))
 
+    def test_todos_los_perfiles_de_team_json_estan_en_especialidades(self):
+        # F10: un perfil de team.json ausente de ESPECIALIDADES publica
+        # poteto-mode y principle-* pero ninguna skill de especialidad, sin
+        # que quede dicho si es a propósito. G no trae perfiles.v1.json en el
+        # espejo, así que la decisión es explícita: () cuenta como decisión.
+        team = json.loads((REPO / "team.json").read_text(encoding="utf-8"))
+        faltan = set(team["profiles"]) - set(poteto.ESPECIALIDADES)
+        self.assertEqual(
+            faltan,
+            set(),
+            "todo perfil de team.json necesita una entrada explícita en "
+            "ESPECIALIDADES (aunque sea ())",
+        )
+
 
 def hashlib_de(datos: bytes) -> str:
     import hashlib

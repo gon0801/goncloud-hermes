@@ -33,6 +33,10 @@ ESPECIALIDADES = {
     "operaciones": (),
     "scout": (),
     "claw": (),
+    # F10: G no dice nada de implementer (ni poteto.v1.json ni hermes.json
+    # lo citan); va () explicito como entrega/operaciones para que quede
+    # dicho que la decision existe.
+    "implementer": (),
 }
 
 
