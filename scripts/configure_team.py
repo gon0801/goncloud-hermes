@@ -887,6 +887,14 @@ def configure(
             "plugins/goncloud-team/model-routing.source.json": (
                 ROOT / "model-routing.source.json"
             ).read_bytes(),
+            # F7: la puerta de capacidades lee certificadas.json junto al
+            # módulo cargado (RUTA_CERTIFICADAS = Path(__file__).with_name);
+            # el filtro de plugin_files solo copia .py/.yaml/.md, así que el
+            # json no viajaba y en el gateway leer_certificadas daba () (el
+            # submit respondía siempre version-no-certificada).
+            "plugins/goncloud-team/raices/certificadas.json": (
+                plugin_root / "raices/certificadas.json"
+            ).read_bytes(),
         }
         if is_team:
             # La copia de poteto se verifica antes de preparar el paquete:

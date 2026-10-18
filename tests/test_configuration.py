@@ -1343,6 +1343,52 @@ class PruneEmptyDirsTests(unittest.TestCase):
         self.assertTrue(outside_empty.is_dir())
 
 
+class LaCopiaDelPerfilTraeCertificadasTests(unittest.TestCase):
+    """F7: la puerta de capacidades lee certificadas.json junto al módulo
+    cargado (capacidades.py: RUTA_CERTIFICADAS = Path(__file__).with_name).
+    El filtro de plugin_files solo copia .py/.yaml/.md, así que el json no
+    viajaba a la copia del perfil: en el gateway leer_certificadas daba () y
+    goncloud_root_submit respondía siempre ruta-cerrada/
+    version-no-certificada. Viaja como entrada explícita (bytes), como su
+    vecino model-routing.source.json."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.temporary = Path(self.tmp.name)
+
+    def deploy(self, runtime):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "HOME": str(self.temporary / "home"),
+                "LOCALAPPDATA": str(self.temporary / "local-app-data"),
+                "PYTHONUTF8": "1",
+            },
+        )
+
+    def test_la_copia_del_plugin_trae_certificadas_json_byte_a_byte(self):
+        runtime = self.temporary / "runtime"
+        resultado = self.deploy(runtime)
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+
+        origen = ROOT / "plugins/goncloud-team/raices/certificadas.json"
+        copia = runtime / "profiles/claw/plugins/goncloud-team/raices/certificadas.json"
+        self.assertTrue(copia.exists(), "la copia del perfil trae certificadas.json")
+        self.assertEqual(copia.read_bytes(), origen.read_bytes())
+
+
 class NoTextBridgeTests(unittest.TestCase):
     def test_no_text_tool_call_bridge_remains(self):
         self.assertFalse((ROOT / "plugins/model-providers").exists())
