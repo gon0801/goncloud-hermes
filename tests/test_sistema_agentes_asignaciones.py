@@ -179,6 +179,30 @@ class Instrucciones(unittest.TestCase):
         modo = (self.dir / ref[len("artifact:") :]).stat().st_mode & 0o777
         self.assertEqual(oct(modo), oct(0o444))
 
+    def test_el_pending_se_borra_antes_de_la_solo_lectura(self):
+        """El orden que Windows exige: pendiente y final son el mismo archivo
+        por el enlace duro, y borrar un read-only da PermissionError. Cuando
+        el final pasa a 0o444, el .pending ya no existe."""
+        observado = {}
+        chmod_real = os.chmod
+
+        def chmod_espia(ruta, modo):
+            if modo == 0o444:
+                observado["pendientes"] = [
+                    p.name for p in self.dir.iterdir() if p.name.startswith(".pending-")
+                ]
+            return chmod_real(ruta, modo)
+
+        os.chmod = chmod_espia
+        try:
+            ref, _digest = instrucciones.guardar(self.dir, "brief orden")
+        finally:
+            os.chmod = chmod_real
+        self.assertEqual(observado.get("pendientes"), [])
+        self.assertEqual(
+            [p.name for p in self.dir.iterdir() if p.name.startswith(".pending-")], []
+        )
+
     def test_resolver_distingue_ref_invalida_ausente_y_digest_distinto(self):
         ref, digest = instrucciones.guardar(self.dir, "brief")
         self.assertEqual(
@@ -252,10 +276,14 @@ class Reconcile(Escenario):
     def test_un_ref_ausente_rechaza_sin_filas(self):
         tienda = self.abrir()
         hecho = self.asignacion_de()
-        os.unlink(
+        ruta = (
             self.dir_de_instrucciones
             / hecho["assignment"]["instructionRef"]["ref"][len("artifact:") :]
         )
+        # El artefacto queda 0o444; Windows no borra un read-only: quitar el
+        # modo antes, como en las pruebas que lo adulteran.
+        ruta.chmod(0o644)
+        ruta.unlink()
         recibo = self.reconciliar(tienda, hecho)
         self.assertEqual(recibo.codigo, "instruccion-invalida")
         self.assertEqual(recibo.detalle["motivo"], "instruccion-ausente")

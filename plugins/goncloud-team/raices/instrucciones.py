@@ -34,9 +34,13 @@ def guardar(dir_instrucciones: Path, texto: str) -> tuple[str, str]:
             os.link(pendiente, final)
         except FileExistsError:
             pass
-        os.chmod(final, 0o444)
     finally:
+        # El .pending se quita ANTES de la solo lectura: con el enlace duro es
+        # el mismo archivo, y en Windows borrar un read-only da PermissionError
+        # [WinError 5]. Si open/link falla, la limpieza sigue aqui.
         pendiente.unlink(missing_ok=True)
+    if final.exists():
+        os.chmod(final, 0o444)
     return f"artifact:{hex64}", f"sha256:{hex64}"
 
 
