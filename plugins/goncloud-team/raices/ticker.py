@@ -144,15 +144,9 @@ def vuelta(
             referencia = intencion.assignment.get("instructionRef") or {}
             ref = str(referencia.get("ref", ""))
             texto = tienda.texto_de_instruccion(ref, str(referencia.get("digest", "")))
-            if hasattr(texto, "codigo"):
-                # H6a: la tarjeta lleva el TEXTO del brief, no la cadena del
-                # ref; sin un texto verificable no se despacha. Con vista va
-                # la pregunta al dueño; sin vista (raíz cerrada a medias) la
-                # intención queda pendiente para la vuelta siguiente.
-                if vista_de is not None:
-                    _levantar_arranque(
-                        tienda, vista_de, intencion, f"instruccion:{ref}", conflictos
-                    )
+            if _sin_instruccion_verificable(
+                tienda, vista_de, intencion, ref, conflictos, texto
+            ):
                 continue
             reclamo = tienda.reclamar_intencion(
                 intencion.root_id, intencion.unit_id, intencion.attempt
@@ -246,6 +240,18 @@ def _levantar_arranque(tienda, vista, intencion, causa, conflictos) -> None:
     )
     if hasattr(resultado, "codigo"):
         conflictos.append((intencion.root_id, resultado.codigo))
+
+
+def _sin_instruccion_verificable(
+    tienda, vista_de, intencion, ref, conflictos, texto
+) -> bool:
+    if not hasattr(texto, "codigo"):
+        return False
+    if vista_de is not None:
+        _levantar_arranque(
+            tienda, vista_de, intencion, f"instruccion:{ref}", conflictos
+        )
+    return True
 
 
 def _hechos_vacios() -> dict:

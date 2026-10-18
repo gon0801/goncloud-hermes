@@ -1199,15 +1199,8 @@ class Store:
                         "INSERT OR IGNORE INTO escritores VALUES (?,?,?)",
                         (root_id, recurso, unit_id),
                     )
-                # H6a: el intento que liga esta asignación la consume en la
-                # MISMA transacción; la fuente única del digest es digesto
-                # (la del insert de reconcile). Hechos inyectados a mano (sin
-                # fila) no tocan nada: cero filas es no-op.
-                self._conexion.execute(
-                    "UPDATE asignaciones SET consumed_at = ?, consumed_attempt = ?"
-                    " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
-                    " AND assignment_digest = ? AND consumed_at IS NULL",
-                    (ahora, attempt, root_id, revision, unit_id, digesto(assignment)),
+                self._consumir_asignacion(
+                    root_id, revision, unit_id, attempt, assignment, ahora
                 )
                 intentos_nuevos.append(
                     {"unitId": unit_id, "attempt": attempt, "clave": clave}
@@ -1315,6 +1308,16 @@ class Store:
             self._rollback()
             raise
         return Ok(recibo)
+
+    def _consumir_asignacion(
+        self, root_id, revision, unit_id, attempt, assignment, ahora
+    ):
+        self._conexion.execute(
+            "UPDATE asignaciones SET consumed_at = ?, consumed_attempt = ?"
+            " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+            " AND assignment_digest = ? AND consumed_at IS NULL",
+            (ahora, attempt, root_id, revision, unit_id, digesto(assignment)),
+        )
 
     # -- efectos ----------------------------------------------------------
 
