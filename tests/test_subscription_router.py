@@ -147,12 +147,12 @@ class RouterTestCase(unittest.TestCase):
             check=True,
         )
 
-    def router(self):
+    def router(self, routing_source=SOURCE):
         self.sleeps = []
         router = SubscriptionRouter(
             adapters=self.fake_adapters,
             db_path=self.db_path,
-            routing_source=SOURCE,
+            routing_source=routing_source,
             sleep=self.sleeps.append,
         )
         router.calls = []
@@ -693,6 +693,47 @@ class FailoverTests(RouterTestCase):
             result.skipped_routes,
             (SkippedRoute(0, "opencode_go", FailureKind.TASK_FAILURE),),
         )
+
+    def test_task_failure_keeps_a_shared_adapter_ready_for_the_next_position(self):
+        # The v6 lanes repeat a family across positions (dirigir/dirigir-claw
+        # has claude at 0 and 1), so the advance is only real if the health
+        # bench does not skip the position that shares the adapter.
+        lane = {
+            **SOURCE,
+            "chains": {
+                "main": [
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-opus-5",
+                    "meta/muse-spark-1.3 (max)",
+                    "xai/grok-4.6",
+                ]
+            },
+        }
+        router = self.router(routing_source=lane)
+
+        def fail_first_then_succeed(request, route):
+            if route.slot == 0:
+                return failed(FailureKind.TASK_FAILURE, route.adapter)
+            return completed("same adapter ok", route.adapter)
+
+        self.fake_adapters["claude"].result = fail_first_then_succeed
+
+        result = router.run(
+            request(self.workspace), compile_profile_routes("claw", lane)
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "same adapter ok")
+        self.assertEqual(result.slot, 1)
+        self.assertEqual(router.calls, ["claude", "claude"])
+        self.assertEqual(
+            [
+                row.get("disposition")
+                for row in router.store.stage_attempts("wf-6", "st-6")
+            ],
+            ["executed", "executed"],
+        )
+        self.assertTrue(router.store.health("claude")["ready"])
 
     def test_task_failure_on_every_slot_exhausts_the_lane_with_evidence(self):
         router = self.router()
