@@ -392,26 +392,33 @@ def decidir(
         ultimo = ultimo_de(unit_id)
         if not ultimo or unit_id in ligadas or aceptada(unit_id) or cerrada(unit_id):
             return True
-        if not se_puede_ligar_liberando(ultimo):
+        if not se_puede_ligar_liberando(ultimo, ultimo["assignment"]):
             return False
         terminar(ultimo, "failed")
         ligar(unit_id, ultimo["assignment"])
         return True
 
-    def se_puede_ligar_liberando(documento) -> bool:
-        """F10: el reintento re-liga el mismo assignment del intento que va a
-        cancelar (misma raiz, mismo perfil): la plaza se mide contando ese
-        intento como ya liberado, como lo contara el store al aplicar."""
-        perfil = _perfil_de(_target_de(documento.get("assignment")))
+    def se_puede_ligar_liberando(intento_a_cancelar, assignment) -> bool:
+        """F10/r9: la plaza se mide contando como liberado el intento vivo
+        que esta decision cancela (una de raiz, una global y una del PERFIL
+        de ese intento) y midiendo el assignment nuevo con SU perfil: un
+        relevo que cambia de perfil necesita plaza en el nuevo; el mismo
+        perfil netea. Igual que el store, que aplica los outcomes antes de
+        contar cupos. Sin intento que cancelar no hay nada que liberar."""
+        if intento_a_cancelar is None:
+            return se_puede_ligar(assignment)
+        perfil_viejo = _perfil_de(_target_de(intento_a_cancelar.get("assignment")))
         liberadas["raiz"] += 1
         liberadas["global"] += 1
-        liberadas_por_perfil[perfil] = liberadas_por_perfil.get(perfil, 0) + 1
+        liberadas_por_perfil[perfil_viejo] = (
+            liberadas_por_perfil.get(perfil_viejo, 0) + 1
+        )
         try:
-            return se_puede_ligar(documento["assignment"])
+            return se_puede_ligar(assignment)
         finally:
             liberadas["raiz"] -= 1
             liberadas["global"] -= 1
-            liberadas_por_perfil[perfil] -= 1
+            liberadas_por_perfil[perfil_viejo] -= 1
 
     def _hecho_disponible(unit_id, relevo):
         for indice, hecho in enumerate(vista["hechos"]["asignaciones"]):
@@ -630,7 +637,7 @@ def decidir(
                         )
                     )
                     aplicada = False
-                elif not se_puede_ligar(hecho["assignment"]):
+                elif not se_puede_ligar_liberando(vivo, hecho["assignment"]):
                     soltar_hecho(hecho)
                     necesidades.append(
                         NecesidadAsignacion(
