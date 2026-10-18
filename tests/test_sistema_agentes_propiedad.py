@@ -186,6 +186,24 @@ def politica_de_conciliacion(fila):
     return None
 
 
+def politica_relevo(fila):
+    if fila["type"] == "SIN_REVISOR":
+        return "relevo"
+    return None
+
+
+def hechos_relevo():
+    return {
+        "principal": ["david"],
+        "asignaciones": [
+            {"unitId": "a", "assignment": asignacion(), "relay": False},
+            {"unitId": "a", "assignment": asignacion(), "relay": True},
+        ],
+        "claims": [],
+        "efectos": [],
+    }
+
+
 def registrar_incidencias(vistas, unidades=("a", "b")):
     def prepara(tienda, kanban):
         for intento in tienda.intentos_con_tarjeta():
@@ -380,6 +398,22 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             politica_dueno,
             cupos=store.Cupos(global_max=1),
             prepara=archivar_la_tarjeta(1),
+        )
+
+    def test_el_relevo_al_mismo_perfil_ocupa_la_plaza_del_vivo(self):
+        """r9: maxConcurrentTasks=1 y la unica plaza la tiene el intento vivo
+        cuyo relevo pidio el dueno: la decision lo cancela, liga el relevo y
+        el store la acepta. Sin medir con el cancelado como liberado, el
+        relevo se difiere en cada vuelta y la respuesta nunca se consume."""
+        self.dirigir(
+            "relevo-raiz",
+            [unidad("a", rol="reviewer")],
+            {"a": ["failed", "admitted"]},
+            carga_aprobada,
+            politica_relevo,
+            presupuesto=1,
+            hechos_raiz=hechos_relevo(),
+            hasta_done=False,
         )
 
     def test_el_claim_de_otra_revision_no_bloquea_la_aceptacion(self):

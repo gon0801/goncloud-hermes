@@ -1262,5 +1262,76 @@ class F10LasPlazasDescuentanLoLiberado(unittest.TestCase):
         self.assertEqual(necesitaciones(propuesta), ["correction"])
 
 
+class R9ElRelevoMideConElIntentoQueCancela(unittest.TestCase):
+    """r9: el relevo del dueno mide la plaza contando como liberado el intento
+    vivo que cancela; el assignment nuevo se mide con SU perfil (un relevo que
+    cambia de perfil necesita plaza en el nuevo; el mismo perfil netea)."""
+
+    CLAUDE = {"kind": "cli", "hostId": "host-01", "adapterId": "claude"}
+
+    def relevo_respondido(self, plazas, assignment):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "reviewer:a1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a", roles=("reviewer",))],
+                intentos=[intento("a", 1, "reported")],
+                plazas=plazas,
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("a", assignment, relevo=True)],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        return borrador["exceptionId"], propuesta
+
+    def test_a_otro_perfil_con_raiz_en_tope_por_el_vivo_liga(self):
+        _, propuesta = self.relevo_respondido(
+            {"raiz": 0, "global": 8, "por_perfil": {"codex": 8, "claude": 8}},
+            asignacion("a-relevo", destino=self.CLAUDE),
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "failed"}],
+        )
+        self.assertEqual(
+            [
+                b["assignment"]["target"]["adapterId"]
+                for b in propuesta.decision["bindings"]
+            ],
+            ["claude"],
+            "la plaza del vivo cancelado cabe para el relevo de otro perfil",
+        )
+
+    def test_a_otro_perfil_sin_cupo_en_el_nuevo_se_difiere(self):
+        id_excepcion, propuesta = self.relevo_respondido(
+            {"raiz": 8, "global": 8, "por_perfil": {"codex": 8, "claude": 0}},
+            asignacion("a-relevo", destino=self.CLAUDE),
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "el tope del perfil nuevo lo ocupa otra unidad y nada lo libera",
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn("relay", necesitaciones(propuesta))
+
+
 if __name__ == "__main__":
     unittest.main()
