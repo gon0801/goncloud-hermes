@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import site
+import stat
 import subprocess
 import sys
 import tempfile
@@ -155,6 +156,28 @@ def _git_en(ruta, *args):
     )
 
 
+def _con_chmod(func, ruta, _exc):
+    # Los objetos de .git quedan de solo lectura y el borrador los rechaza
+    # (WinError 5 en la PC): permiso al que fallo y a su padre — en POSIX el
+    # permiso de borrar vive en el directorio — y reintento.
+    os.chmod(ruta, stat.S_IRWXU)
+    padre = os.path.dirname(ruta)
+    if padre:
+        try:
+            os.chmod(padre, stat.S_IRWXU)
+        except OSError:
+            pass
+    func(ruta)
+
+
+def _limpiar(tmp):
+    """TemporaryDirectory cleanup that survives git's read-only files."""
+    try:
+        tmp.cleanup()
+    except OSError:
+        shutil.rmtree(tmp.name, onexc=_con_chmod)
+
+
 def _repo(ruta, archivos):
     # Los archivos del fixture van en bytes: un write_text en Windows
     # traduce \n a CRLF y el sha256 ya no es el que fija la prueba.
@@ -174,7 +197,7 @@ def _repo(ruta, archivos):
 class ConciliacionTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, tmp)
+        self.addCleanup(_limpiar, tmp)
         base = Path(tmp.name)
         # La PC clona con core.autocrlf=true de sistema (Git for Windows): el
         # mismo config hostil, simulado con GIT_CONFIG_GLOBAL, reproduce aqui
@@ -336,6 +359,25 @@ class ConciliacionTests(unittest.TestCase):
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
             [],
         )
+
+    def test_la_limpieza_gana_a_los_objetos_de_solo_lectura(self):
+        # Simulacion del WinError 5 de la PC: git deja .git/objects de solo
+        # lectura. En POSIX el 0o444 del archivo no basta para reproducirlo,
+        # asi que los directorios de .git van en 0o555 y el borrador corre
+        # directo con el handler: sin el chmod, falla en las dos plataformas.
+        tmp = tempfile.TemporaryDirectory()
+        base = Path(tmp.name)
+        objetos = base / "repo" / ".git" / "objects" / "pack"
+        objetos.mkdir(parents=True)
+        (objetos / "pack-abc.pack").write_bytes(b"x")
+        for elemento in sorted(objetos.rglob("*")):
+            elemento.chmod(0o444 if elemento.is_file() else 0o555)
+        directorio = objetos
+        while directorio != base:
+            directorio.chmod(0o555)
+            directorio = directorio.parent
+        shutil.rmtree(base, onexc=_con_chmod)
+        self.assertFalse(base.exists())
 
 
 class DespliegueFrescoTests(unittest.TestCase):
