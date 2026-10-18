@@ -729,6 +729,37 @@ class EmisorDeTelegram(unittest.TestCase):
                 )
                 self.assertIsNone(enviar("hola"))
 
+    def test_el_subprocess_va_con_encoding_utf8_y_errors_replace(self):
+        # F16: text=True sin encoding en Windows con code page no UTF-8
+        # revienta encodeando el cuerpo ("⚠️ ...") con UnicodeEncodeError
+        # (ValueError), que nadie atrapaba.
+        cron = importlib.import_module("raices.cron_ticker")
+        grabados = {}
+
+        def corredor(*args, **kwargs):
+            grabados.update(kwargs)
+            return self.Corrida(stdout=PAYLOAD_REAL)
+
+        enviar = cron.emisor_de_telegram(
+            Path("/base"), resolvedor=lambda _nombre: "/bin/hermes", corredor=corredor
+        )
+        self.assertEqual(enviar("⚠️ hola"), 8123)
+        self.assertEqual(grabados["encoding"], "utf-8")
+        self.assertEqual(grabados["errors"], "replace")
+
+    def test_un_unicodeencodeerror_del_corredor_devuelve_none(self):
+        cron = importlib.import_module("raices.cron_ticker")
+
+        def corredor(*_args, **_kwargs):
+            raise UnicodeEncodeError("cp1252", "⚠️", 0, 1, "invalid character")
+
+        enviar = cron.emisor_de_telegram(
+            Path("/base"),
+            resolvedor=lambda _nombre: "/bin/hermes",
+            corredor=corredor,
+        )
+        self.assertIsNone(enviar("⚠️ hola"))
+
 
 if __name__ == "__main__":
     unittest.main()

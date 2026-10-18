@@ -91,10 +91,15 @@ def emisor_de_telegram(base, resolvedor=None, corredor=None):
                 input=texto,
                 capture_output=True,
                 text=True,
+                # F16: text=True sin encoding usa la code page local; en un
+                # Windows no UTF-8 el cuerpo ("⚠️ ...") revienta encodeando
+                # con UnicodeEncodeError (un ValueError que nadie atrapaba).
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 env=entorno,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, ValueError):
             return None
         if terminado.returncode != 0:
             return None
