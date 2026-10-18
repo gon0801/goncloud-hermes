@@ -59,7 +59,9 @@ def _correr_pruebas(home_temporal, repo, python=sys.executable) -> str:
         {
             "HERMES_HOME": str(home_temporal),
             "HERMES_KANBAN_DB": str(Path(home_temporal) / "kanban.db"),
-            "PYTHONPATH": f"{repo}/plugins/goncloud-team:{repo}/tests",
+            "PYTHONPATH": os.pathsep.join(
+                [f"{repo}/plugins/goncloud-team", f"{repo}/tests"]
+            ),
         }
     )
     terminado = subprocess.run(
@@ -93,6 +95,27 @@ def _escribir(ruta: Path, lista: list) -> None:
         json.dumps(lista, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
     os.replace(temporal, ruta)
+
+
+def _previas(ruta: Path) -> list | None:
+    """Los pares ya certificados: [] sin archivo o con uno vacío, None si el
+    archivo existe y no se puede leer como lista (ilegible). Escribir sobre
+    un ilegible descartaría pares acreditados por un error de sintaxis, así
+    que None aborta."""
+    if not ruta.exists() or ruta.read_text(encoding="utf-8").strip() == "":
+        return []
+    datos = capacidades.leer_certificadas(ruta)
+    if not datos and not _es_lista_json(ruta):
+        return None
+    return list(datos)
+
+
+def _es_lista_json(ruta: Path) -> bool:
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except ValueError:
+        return False
+    return isinstance(datos, list)
 
 
 def main(
@@ -154,7 +177,11 @@ def main(
         if ruta_certificados
         else (capacidades.RUTA_CERTIFICADAS)
     )
-    nuevas = list(capacidades.leer_certificadas(ruta)) + [candidata]
+    previas = _previas(ruta)
+    if previas is None:
+        print(f"error: {ruta} existe y es ilegible; no se escribe encima")
+        return 1
+    nuevas = previas + [candidata]
     errores = capacidades.validar_certificadas(nuevas)
     if errores:
         for error in errores:

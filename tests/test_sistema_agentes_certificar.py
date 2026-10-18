@@ -151,6 +151,32 @@ class Certificar(unittest.TestCase):
         self.assertIn("Ran 3 tests", salida)
         self.assertTrue(salida.endswith("OK\n"))
 
+    def test_el_pythonpath_del_hijo_usa_el_separador_de_la_plataforma(self):
+        # F3: el ":" fijo no separa en Windows (ahí es ";"). El centinela
+        # fuerza un separador que no es ":" para que la prueba discrimine
+        # tambien en la Mac: el hijo se monta con os.pathsep, como todo el
+        # resto del repo.
+        captura = {}
+
+        def run_que_graba(argv, env=None, **kwargs):
+            captura["PYTHONPATH"] = env["PYTHONPATH"]
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=SALIDA_VERDE
+            )
+
+        with (
+            tempfile.TemporaryDirectory() as temporal,
+            mock.patch("raices.certificar.subprocess.run", run_que_graba),
+            mock.patch.object(certificar.os, "pathsep", ";"),
+        ):
+            certificar._correr_pruebas(Path(temporal), REPO)
+        esperado = ";".join([f"{REPO}/plugins/goncloud-team", f"{REPO}/tests"])
+        self.assertEqual(
+            captura["PYTHONPATH"],
+            esperado,
+            "el PYTHONPATH del hijo se une con os.pathsep, no con ':' fijo",
+        )
+
     def test_el_par_ya_certificado_sale_cero_sin_copiar_nada(self):
         codigo, salida = self.certificar(
             self.argv(), leer_par=lambda: (True, None, PAR)
@@ -193,6 +219,32 @@ class Certificar(unittest.TestCase):
         codigo, _ = self.certificar(self.argv())
         self.assertEqual(codigo, 0)
         self.assertEqual(self.ruta.read_text(encoding="utf-8"), "[]")
+
+    def test_escribir_con_certificadas_ilegible_aborta_sin_descartar_nada(self):
+        # F4: ilegible no es vacío. Sobrescribir descartaría pares acreditados
+        # por un error de sintaxis: abortar con código 1 y dejar el archivo
+        # EXACTO como estaba.
+        for contenido in ("{ no soy json", '{"version": "0.21.5"}', "nada"):
+            with self.subTest(contenido=contenido):
+                self.ruta.write_text(contenido, encoding="utf-8")
+                antes = self.ruta.read_text(encoding="utf-8")
+                codigo, salida = self.certificar(self.argv("--escribir"))
+                self.assertEqual(codigo, 1)
+                self.assertIn("ilegible", salida)
+                self.assertEqual(
+                    self.ruta.read_text(encoding="utf-8"),
+                    antes,
+                    "un archivo ilegible jamás se sobrescribe",
+                )
+
+    def test_escribir_sin_archivo_o_vacio_empieza_de_cero(self):
+        codigo, _ = self.certificar(self.argv("--escribir"))
+        self.assertEqual(codigo, 0)
+        self.assertEqual(len(json.loads(self.ruta.read_text(encoding="utf-8"))), 1)
+        self.ruta.write_text("", encoding="utf-8")
+        codigo, _ = self.certificar(self.argv("--escribir"))
+        self.assertEqual(codigo, 0)
+        self.assertEqual(len(json.loads(self.ruta.read_text(encoding="utf-8"))), 1)
 
     def test_la_causa_que_no_es_version_no_certifica_nada(self):
         codigo, salida = self.certificar(
