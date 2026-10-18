@@ -59,6 +59,72 @@ def fenced(value):
     return "```json\n" + json.dumps(value) + "\n```"
 
 
+# The test's own routing table: every position of every orchestrator stage
+# lane rides the one adapter the fake registry serves, so a slot/position
+# assertion keeps meaning "this position ran". Against the live table the
+# fake registry holds none of the bound adapters and every position is
+# skipped, which is why 26 tests failed after the v6 table landed (#24).
+SOURCE = {
+    "profile_names": {"dirigir-claw": "claw"},
+    "profile_inheritance": {
+        "claw": "dirigir-claw",
+        "entrega": "dirigir",
+        "ingenieria": "planear",
+        "reviewer": "planear",
+        "implementer": "codigo",
+        "verifier": "verificar",
+        "scout": "investigar",
+        "adversary": "adversary",
+    },
+    # The v6 lane shape per stage (efforts included), rebound to the one
+    # adapter under test: the deepseek family rides opencode_go.
+    "chains": {
+        "dirigir": [
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+        ],
+        "dirigir-claw": [
+            "opencode-go/deepseek-v4.1-flash (medium)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+        ],
+        "planear": [
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+        ],
+        "codigo": [
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (medium)",
+        ],
+        "verificar": [
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+        ],
+        "investigar": [
+            "opencode-go/deepseek-v4.1-flash (medium)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (medium)",
+        ],
+        "adversary": [
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+            "opencode-go/deepseek-v4.1-flash (high)",
+        ],
+    },
+}
+
+
 class StageInstructionTests(unittest.TestCase):
     def test_each_stage_is_told_the_instruction_is_the_chain_goal(self):
         # Live 2026-09-28 (t_1dbd51ce): scout read "create hola.txt and commit",
@@ -536,6 +602,7 @@ class LocalOrchestratorTests(unittest.TestCase):
         self.router = SubscriptionRouter(
             adapters={"opencode_go": self},
             db_path=self.root / "routes.db",
+            routing_source=SOURCE,
             git=self.git,
         )
         self.addCleanup(patch.stopall)
@@ -878,12 +945,15 @@ class LocalOrchestratorTests(unittest.TestCase):
         request = self.requests[0]
         result = self.orchestrator.resume(request.workflow_id)
         self.assertEqual(result["outcome"], "blocked")
-        self.assertEqual(len(self.requests), 1)
+        # Every position of the test lane is tried exactly once before the
+        # stage turns terminal; the resume must recover the recorded evidence
+        # and re-invoke none of them.
+        self.assertEqual(len(self.requests), 4)
         self.assertEqual(
             len(
                 self.router.store.stage_attempts(request.workflow_id, request.stage_id)
             ),
-            1,
+            4,
         )
 
     def test_exhausted_advancing_failure_survives_crash_without_reinvocation(self):
@@ -914,22 +984,24 @@ class LocalOrchestratorTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
 
     def test_crash_between_advancing_slots_resumes_at_next_slot(self):
-        # Scout F1 is the Z.AI Coding Plan served through the OpenCode CLI.
-        self.router.adapters["opencode_zai"] = self
+        # Slot 0 fails with a non-benched advancing failure (a timeout would
+        # bench the one adapter all four positions share and skip slot 1
+        # before its probe); the crash lands in slot 1's probe, and the
+        # resume must continue at slot 1, never replay slot 0.
         original, availability = self.invoke, self.router._availability
         called = []
 
         def invoke(request, route):
-            called.append(route.adapter)
+            called.append(route.slot)
             result = original(request, route)
             return (
-                replace(result, success=False, failure=FailureKind.TIMEOUT)
-                if route.adapter == "opencode_go"
+                replace(result, success=False, failure=FailureKind.TRANSPORT)
+                if route.slot == 0
                 else result
             )
 
         def interrupt(route):
-            if route.adapter == "opencode_zai":
+            if route.slot == 1:
                 raise KeyboardInterrupt
             return availability(route)
 
@@ -944,7 +1016,7 @@ class LocalOrchestratorTests(unittest.TestCase):
                 self.requests[0].workflow_id, stop_after="scout"
             )
         self.assertEqual(result["outcome"], "paused")
-        self.assertEqual(called, ["opencode_go", "opencode_zai"])
+        self.assertEqual(called, [0, 1])
 
     def test_interrupted_attempt_can_resume_with_a_new_attempt(self):
         original = self.invoke
