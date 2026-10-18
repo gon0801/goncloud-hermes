@@ -357,6 +357,35 @@ class Reconcile(Escenario):
         recibo = tienda.reconciliar_asignaciones("root-nadie", [self.asignacion_de()])
         self.assertEqual(recibo.codigo, "raiz-desconocida")
 
+    def test_una_unidad_fuera_del_plan_vigente_se_rechaza_sin_filas(self):
+        tienda = self.abrir(unidades=("a",))
+        hecho = self.asignacion_de(unit_id="nadie")
+        recibo = self.reconciliar(tienda, hecho)
+        self.assertEqual(recibo.codigo, "unidad-desconocida")
+        self.assertEqual(recibo.detalle, {"unitId": "nadie"})
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "cero filas")
+
+    def test_una_raiz_no_activa_se_rechaza_sin_filas(self):
+        tienda = self.abrir()
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": "prueba",
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        recibo = self.reconciliar(tienda, self.asignacion_de())
+        self.assertEqual(recibo.codigo, "raiz-no-activa")
+        self.assertEqual(recibo.detalle, {"state": "paused"})
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "cero filas")
+
     def test_las_necesidades_de_la_decision_quedan_en_el_recibo_y_la_tabla(self):
         tienda = self.abrir(unidades=("a", "b"))
         recibo = self.reconciliar(tienda, self.asignacion_de(unit_id="a"))

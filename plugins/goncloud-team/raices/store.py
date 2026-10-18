@@ -1387,11 +1387,25 @@ class Store:
         if revision_fila is None or revision_fila["revision"] is None:
             return Conflicto("raiz-desconocida")
         revision = revision_fila["revision"]
-        epoch = self._una_fila(
-            "SELECT epoch FROM controles WHERE root_id = ? ORDER BY epoch DESC LIMIT 1",
+        control = self._una_fila(
+            "SELECT epoch, state FROM controles WHERE root_id = ? ORDER BY epoch DESC LIMIT 1",
             (root_id,),
-        )["epoch"]
+        )
+        if control["state"] != "active":
+            # El ticker nunca tomaría estas filas: sin rechazo quedarían
+            # pendientes para siempre.
+            return Conflicto("raiz-no-activa", {"state": control["state"]})
+        epoch = control["epoch"]
         for item in asignaciones:
+            if (
+                self._una_fila(
+                    "SELECT 1 FROM unidades_de_plan"
+                    " WHERE root_id = ? AND revision = ? AND unit_id = ?",
+                    (root_id, revision, item.get("unitId")),
+                )
+                is None
+            ):
+                return Conflicto("unidad-desconocida", {"unitId": item.get("unitId")})
             assignment = item.get("assignment")
             documento = {
                 "schema": contrato.UNIDAD,
