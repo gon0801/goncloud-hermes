@@ -18,18 +18,34 @@ ruta de raices cerrada no corre y sale 0: no es un fallo, la puerta de
 capacidades (H4) aun no abre. El store vive en la RAIZ del home de Hermes
 (raices/hogar.py la resuelve: el home de un perfil sube a su raiz) y el
 kanban, HERMES_KANBAN_DB o <raiz>/kanban.db.
+
+Tras las vueltas del ticker va la pasada del emisor (SUA-07 H3, §3.5/§3.6):
+proyecta cada raiz en <raiz>/raices/proyecciones y avisa las excepciones por
+el Telegram del perfil claw, desde el MISMO estado. Sus errores van a stderr
+y no tumban las vueltas ni la salida del cron.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[1]
 if str(PLUGIN) not in sys.path:
     sys.path.insert(0, str(PLUGIN))
+
+# Los mismos parametros de la proyeccion que usan las pruebas de proyeccion
+# y avisos (5 minutos): freshness.staleAfterMs y el nextCheckAt de cada fila
+# caminan con el intervalo del cron, no con su cadencia de un minuto.
+STALE_DESPUES_MS = 300_000
+INTERVALO_MS = 300_000
 
 
 def ruta_de_raices_abierta():
@@ -41,7 +57,78 @@ def ruta_del_kanban(home):
     return Path(elegida) if elegida else Path(home) / "kanban.db"
 
 
-def correr(home=None, ruta_abierta=None):
+def emisor_de_telegram(base, resolvedor=None, corredor=None):
+    """El emisor de produccion del aviso de excepciones (§3.5): `hermes send
+    --to telegram --json` con el cuerpo por stdin y el HERMES_HOME del perfil
+    claw (el home con el Telegram del dueno, home_channel). Devuelve el
+    message_id entero de la salida JSON, o None si falla: el checkpoint del
+    aviso (noticed_at) solo avanza con un id confirmado, asi que None se
+    traduce en "no se confirmo" y la pasada siguiente reintenta. El
+    ejecutable se resuelve con shutil.which: en Windows el CLI es hermes.CMD
+    y CreateProcess sin shell no resuelve el nombre pelado (como
+    capacidades._correr_hermes_version, H4a)."""
+    resolvedor = resolvedor or shutil.which
+    corredor = corredor or subprocess.run
+    perfil_claw = Path(base) / "profiles" / "claw"
+
+    def enviar(texto):
+        ejecutable = resolvedor("hermes")
+        if not ejecutable:
+            return None
+        entorno = dict(os.environ)
+        entorno["HERMES_HOME"] = str(perfil_claw)
+        try:
+            terminado = corredor(
+                [ejecutable, "send", "--to", "telegram", "--json"],
+                input=texto,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=entorno,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if terminado.returncode != 0:
+            return None
+        try:
+            datos = json.loads(terminado.stdout or "")
+        except ValueError:
+            return None
+        if not isinstance(datos, dict):
+            return None
+        for clave in ("message_id", "messageId", "id"):
+            valor = datos.get(clave)
+            if isinstance(valor, int) and not isinstance(valor, bool):
+                return valor
+        return None
+
+    return enviar
+
+
+def _pasada_del_emisor(tienda, base, enviar):
+    """La pasada tras las vueltas (§3.6): proyecta cada raiz (derivar de la
+    copia fijada, I14) en <raiz>/raices/proyecciones y avisa las excepciones
+    (§3.5) desde el MISMO estado. Los errores van a stderr; un fallo del
+    envio o de la proyeccion no tumba las vueltas, que ya corrieron."""
+    proyeccion = importlib.import_module("raices.proyeccion")
+    try:
+        informe = proyeccion.pasada(
+            tienda,
+            ahora=datetime.now(timezone.utc),
+            dir_destino=base / "raices",
+            enviar=enviar,
+            stale_after_ms=STALE_DESPUES_MS,
+            intervalo_ms=INTERVALO_MS,
+            host_gateway=socket.gethostname(),
+        )
+    except Exception as fallo:  # noqa: BLE001 - la vuelta ya corrio; solo reportar
+        print(f"ticker-raices: proyeccion/aviso fallo: {fallo}", file=sys.stderr)
+        return
+    for error in informe["errores"]:
+        print(f"ticker-raices: {error}", file=sys.stderr)
+
+
+def correr(home=None, ruta_abierta=None, enviar=None):
     hogar = importlib.import_module("raices.hogar")
     base = hogar.raiz_del_hogar(home)
     abierta, causa = (ruta_abierta or ruta_de_raices_abierta)()
@@ -62,6 +149,7 @@ def correr(home=None, ruta_abierta=None):
             ticker.vuelta(tienda, puerto, permisos_h=permisos)
         finally:
             puerto.cerrar()
+        _pasada_del_emisor(tienda, base, enviar or emisor_de_telegram(base))
     finally:
         tienda.cerrar()
     return 0

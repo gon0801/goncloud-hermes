@@ -83,7 +83,6 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
         vistas[root_id] = vista
         propuesta = decidir.decidir(vista)
         decision = propuesta.decision
-        resultado = None
         if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
             resultado = tienda.aplicar(
                 root_id, decision, _decision_id(vista, propuesta)
@@ -92,15 +91,11 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
                 conflictos.append((root_id, resultado.codigo))
             else:
                 aplicadas += 1
-        # Con aplicar en conflicto, las excepciones nuevas no están en la base (F13).
-        avisar = propuesta.avisar
-        if hasattr(resultado, "codigo"):
-            nuevas = {e["exceptionId"] for e in decision["excepciones"]}
-            avisar = [x for x in avisar if x not in nuevas]
-        if avisar:
-            aviso = tienda.notificar(root_id, avisar)
-            if hasattr(aviso, "codigo"):
-                conflictos.append((root_id, aviso.codigo))
+        # El aviso de las excepciones no pasa por aquí: el checkpoint
+        # (noticed_at) solo avanza cuando el emisor de la pasada del cron
+        # (proyeccion.avisar_excepciones) confirmó un messageId. Si la vuelta
+        # marcara sin enviar, la pasada no encontraría nada debido y el aviso
+        # nunca saldría (F9).
         if propuesta.estado == "done":
             estado = "done"
 

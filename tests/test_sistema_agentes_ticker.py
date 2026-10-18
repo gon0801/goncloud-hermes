@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -692,8 +693,11 @@ class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
 
 
 class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
-    """F13: si aplicar devuelve conflicto, los avisos de excepciones ya
-    guardadas igual salen y el conflicto queda registrado en el informe."""
+    """F13: si aplicar devuelve conflicto, la vuelta sigue y los avisos de
+    excepciones YA guardadas igual salen: la vuelta ya no marca noticed_at
+    (F9: el checkpoint solo avanza cuando el emisor de la pasada del cron
+    confirmó un messageId), así que la excepción sigue debiéndose y
+    avisar_excepciones la manda pese al conflicto de aplicar."""
 
     def test_un_conflicto_de_aplicar_no_bloquea_el_renotice(self):
         tienda, kanban = self.frescar()
@@ -735,7 +739,17 @@ class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
             "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
             (borrador["exceptionId"],),
         )
-        self.assertEqual(fila["noticed_at"], "2026-10-18T00:00:00Z")
+        self.assertEqual(
+            fila["noticed_at"],
+            "2026-10-17T10:00:00Z",
+            "la vuelta ya no avisa: el checkpoint es de la pasada del cron",
+        )
+        proyeccion = importlib.import_module("raices.proyeccion")
+        desde = datetime(2026, 10, 18, 0, 0, 0, tzinfo=timezone.utc)
+        informe_aviso = proyeccion.avisar_excepciones(
+            tienda, ahora=desde, enviar=lambda _texto: 1
+        )
+        self.assertIn(borrador["exceptionId"], informe_aviso["avisadas"])
 
 
 class I12PoliticaDelTicker(unittest.TestCase):

@@ -86,7 +86,7 @@ META = {
 VINCULO = {
     "unitId": "a",
     "assignment": {
-        "target": {"kind": "cli", "adapterId": "codex"},
+        "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
         "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
         "resultContract": "review.v1",
         "inputRevision": {
@@ -182,7 +182,8 @@ class Script(Base):
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
         with redirect_stdout(salida):
-            codigo = cron.correr()
+            # Emisor inyectado: la excepción del arranque no sale por Telegram.
+            codigo = cron.correr(enviar=lambda _texto: 42)
         self.assertEqual(codigo, 0)
         self.assertEqual(salida.getvalue(), "")
 
@@ -220,7 +221,7 @@ class Script(Base):
             cron = importlib.import_module("raices.cron_ticker")
             salida = StringIO()
             with redirect_stdout(salida):
-                codigo = cron.correr()
+                codigo = cron.correr(enviar=lambda _texto: 42)
         self.assertEqual(codigo, 0)
         self.assertIsNone(self.tarjeta_en_el_kanban())
         store = importlib.import_module("raices.store")
@@ -250,7 +251,7 @@ class Script(Base):
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
         with redirect_stdout(salida):
-            codigo = cron.correr()
+            codigo = cron.correr(enviar=lambda _texto: 42)
         self.assertEqual(codigo, 0)
         self.assertEqual(salida.getvalue(), "")
         self.assertIsNone(self.tarjeta_en_el_kanban())
@@ -511,6 +512,188 @@ class Arranque(Base):
         proceso = self.probar_subprocess({"HERMES_HOME": ""})
         self.assertEqual(proceso.returncode, 1, proceso.stderr)
         self.assertIn("ERROR ticker raices:", proceso.stdout)
+
+
+class ProyeccionYAviso(Script):
+    """F9: tras las vueltas del ticker, el cron corre la pasada del emisor
+    (§3.5/§3.6): proyecta cada raíz en <raíz>/raices/proyecciones y avisa las
+    excepciones desde el MISMO estado. El emisor va inyectado: nunca un
+    mensaje real. Un fallo del envío o de la proyección deja errores y no
+    tumba las vueltas."""
+
+    def abrir_tienda(self):
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda.cerrar)
+        return tienda
+
+    def test_el_cron_escribe_la_proyeccion_y_llama_al_emisor(self):
+        tienda = self.dejar_intencion_pendiente()
+        tienda.cerrar()
+
+        cron = importlib.import_module("raices.cron_ticker")
+        mensajes = []
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            codigo = cron.correr(enviar=lambda texto: mensajes.append(texto) or 42)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        self.assertEqual(errores.getvalue(), "")
+        ruta = self.home / "raices" / "proyecciones" / f"{RAIZ}.json"
+        self.assertTrue(ruta.exists())
+        documento = json.loads(ruta.read_text(encoding="utf-8"))
+        self.assertEqual(documento["schema"], "sistema-agentes.proyeccion.v1")
+        # Sin permisos.json el arranque se negó: esa excepción salió por el
+        # emisor y el checkpoint avanzó con el messageId.
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn("NECESITA_DAVID", mensajes[0])
+        tienda = self.abrir_tienda()
+        fila = tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE root_id = ?", (RAIZ,)
+        )
+        self.assertIsNotNone(fila["noticed_at"])
+
+    def test_un_emisor_que_falla_deja_errores_y_el_cron_sigue(self):
+        tienda = self.dejar_intencion_pendiente()
+        self.instalar_permisos()
+        decidir = importlib.import_module("raices.decidir")
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        store = importlib.import_module("raices.store")
+        self.assertIsInstance(tienda.aplicar(RAIZ, dec, "dec-exc"), store.Ok)
+        tienda.cerrar()
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            codigo = cron.correr(enviar=lambda _texto: None)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        # La vuelta corrió igual: la tarjeta se despachó y la proyección se
+        # escribió; solo el aviso quedó debiéndose.
+        tarjeta = self.tarjeta_en_el_kanban()
+        self.assertIsNotNone(tarjeta)
+        self.assertEqual(tarjeta.estado, "pendiente")
+        ruta = self.home / "raices" / "proyecciones" / f"{RAIZ}.json"
+        self.assertTrue(ruta.exists())
+        self.assertIn("el aviso no se confirmó", errores.getvalue())
+        tienda = self.abrir_tienda()
+        fila = tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertIsNone(fila["noticed_at"])
+
+    def test_una_proyeccion_que_falla_no_tumba_las_vueltas(self):
+        tienda = self.dejar_intencion_pendiente()
+        self.instalar_permisos()
+        tienda.cerrar()
+        # <raíz>/raices/proyecciones como archivo: el mkdir de la escritura
+        # atómica revienta para cada raíz.
+        raices = self.home / "raices"
+        raices.mkdir(parents=True, exist_ok=True)
+        (raices / "proyecciones").write_text("no soy un directorio")
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            codigo = cron.correr(enviar=lambda _texto: 42)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        self.assertIsNotNone(self.tarjeta_en_el_kanban())
+        self.assertTrue(
+            any(
+                "proyeccion" in e.lower() or "proyección" in e
+                for e in errores.getvalue().splitlines()
+            ),
+            errores.getvalue(),
+        )
+
+
+class EmisorDeTelegram(unittest.TestCase):
+    """El emisor de producción (§3.5): `hermes send --to telegram --json` por
+    stdin con el HERMES_HOME del perfil claw. Todo por inyección: nunca un
+    subprocess real, nunca un mensaje real."""
+
+    class Corrida:
+        def __init__(self, returncode=0, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def test_manda_por_stdin_con_el_hermes_home_del_perfil_claw(self):
+        cron = importlib.import_module("raices.cron_ticker")
+        with tempfile.TemporaryDirectory() as temporal:
+            base = Path(temporal)
+            llamadas = []
+
+            def corredor(*args, **kwargs):
+                llamadas.append((args, kwargs))
+                return self.Corrida(stdout='{"message_id": 77}')
+
+            enviar = cron.emisor_de_telegram(
+                base, resolvedor=lambda _nombre: "/bin/hermes", corredor=corredor
+            )
+            self.assertEqual(enviar("⚠️ hola"), 77)
+        comando, kwargs = llamadas[0]
+        self.assertEqual(
+            comando[0], ["/bin/hermes", "send", "--to", "telegram", "--json"]
+        )
+        self.assertEqual(kwargs["input"], "⚠️ hola")
+        self.assertEqual(kwargs["env"]["HERMES_HOME"], str(base / "profiles" / "claw"))
+
+    def test_sin_hermes_resoluble_no_invoca_nada_y_devuelve_none(self):
+        cron = importlib.import_module("raices.cron_ticker")
+
+        def corredor(*_args, **_kwargs):
+            raise AssertionError("sin ejecutable no se invoca nada")
+
+        enviar = cron.emisor_de_telegram(
+            Path("/base"), resolvedor=lambda _nombre: None, corredor=corredor
+        )
+        self.assertIsNone(enviar("hola"))
+
+    def test_un_fallo_del_subprocess_devuelve_none(self):
+        cron = importlib.import_module("raices.cron_ticker")
+
+        def revienta(*_args, **_kwargs):
+            raise OSError("sin gateway")
+
+        enviar = cron.emisor_de_telegram(
+            Path("/base"),
+            resolvedor=lambda _nombre: "/bin/hermes",
+            corredor=revienta,
+        )
+        self.assertIsNone(enviar("hola"))
+
+        enviar_salida_mala = cron.emisor_de_telegram(
+            Path("/base"),
+            resolvedor=lambda _nombre: "/bin/hermes",
+            corredor=lambda *_a, **_k: self.Corrida(returncode=1),
+        )
+        self.assertIsNone(enviar_salida_mala("hola"))
+
+    def test_una_salida_sin_message_id_entero_devuelve_none(self):
+        cron = importlib.import_module("raices.cron_ticker")
+        por_stdout = (
+            "no soy json",
+            '{"message_id": "77"}',
+            '{"otra": 1}',
+            "[]",
+        )
+        for stdout in por_stdout:
+            with self.subTest(stdout=stdout):
+                enviar = cron.emisor_de_telegram(
+                    Path("/base"),
+                    resolvedor=lambda _nombre: "/bin/hermes",
+                    corredor=lambda *_a, **_k: self.Corrida(stdout=stdout),
+                )
+                self.assertIsNone(enviar("hola"))
 
 
 if __name__ == "__main__":
