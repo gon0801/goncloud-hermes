@@ -124,23 +124,49 @@ def proyectar(
     return documento, errores
 
 
-def _recortar(lineas: list, tope: int = 3500) -> str:
-    texto = "\n".join(lineas)
-    if len(texto) <= tope:
-        return texto
-    resultado = [lineas[0]]
-    largo = len(lineas[0])
-    colocadas = 0
-    for linea in lineas[1:]:
-        if largo + len(linea) + len("… y 999 más") + 2 > tope:
+# Los DOS recortes del mensaje de excepciones: hasta este número de
+# excepciones detalladas (CodeRabbit r6d) y nada más que este largo total.
+# El checkpoint del aviso cubre EXACTAMENTE las excepciones cuyo detalle
+# completo quedó en el mensaje final, contando los dos recortes: lo que el
+# dueño no vio no se marca como avisado.
+DETALLE_DEL_MENSAJE = 8
+TOPE_DE_TEXTO = 3500
+_RESERVA_DEL_SUFIJO = len("… y 999 más") + 2
+
+
+def _mensaje_excepciones(debidas: list) -> tuple:
+    """El texto del aviso y los exceptionId cuyo detalle completo quedó en
+    él. Un bloque (su línea en blanco, su título y cómo responderle) entra
+    entero o no entra: una excepción con el texto cortado a mitad no cuenta
+    como mostrada — el dueño no habría sabido responderle."""
+    lineas = [f"⚠️ *Excepciones sin respuesta* ({len(debidas)})"]
+    llevamos = len(lineas[0])
+    mostradas: list = []
+    for excepcion in debidas[:DETALLE_DEL_MENSAJE]:
+        unidad = excepcion.get("unitId") or "(raíz)"
+        desde = instante(excepcion["raisedAt"]).strftime("%H:%MZ")
+        titulo = (
+            f"*{excepcion['rootId']}/{unidad} · {excepcion['type']}"
+            f" ({excepcion['exceptionId']}) · desde {desde}"
+        )
+        opciones = " | ".join(
+            f"{opcion['optionId']}={opcion['text']}"
+            for opcion in excepcion.get("options") or []
+        )
+        bloque = ["", titulo]
+        if opciones:
+            bloque.append(f"responder: {opciones}.")
+        costo = sum(len(linea) + 1 for linea in bloque)
+        if llevamos + costo + _RESERVA_DEL_SUFIJO > TOPE_DE_TEXTO:
             break
-        resultado.append(linea)
-        largo += len(linea) + 1
-        colocadas += 1
-    omitidas = len(lineas) - 1 - colocadas
+        lineas.extend(bloque)
+        llevamos += costo
+        mostradas.append(excepcion["exceptionId"])
+    omitidas = len(debidas) - len(mostradas)
     if omitidas:
-        resultado.append(f"… y {omitidas} más")
-    return "\n".join(resultado)
+        lineas.append("")
+        lineas.append(f"… y {omitidas} más")
+    return "\n".join(lineas), mostradas
 
 
 def _excepcion_avisable(excepcion: dict) -> str | None:
@@ -167,28 +193,6 @@ def _excepcion_avisable(excepcion: dict) -> str | None:
         ):
             return "una opción no trae optionId y text de texto"
     return None
-
-
-def _mensaje_excepciones(debidas: list) -> str:
-    lineas = [f"⚠️ *Excepciones sin respuesta* ({len(debidas)})"]
-    for excepcion in debidas[:8]:
-        unidad = excepcion.get("unitId") or "(raíz)"
-        desde = instante(excepcion["raisedAt"]).strftime("%H:%MZ")
-        lineas.append("")
-        lineas.append(
-            f"*{excepcion['rootId']}/{unidad} · {excepcion['type']}"
-            f" ({excepcion['exceptionId']}) · desde {desde}"
-        )
-        opciones = " | ".join(
-            f"{opcion['optionId']}={opcion['text']}"
-            for opcion in excepcion.get("options") or []
-        )
-        if opciones:
-            lineas.append(f"responder: {opciones}.")
-    if len(debidas) > 8:
-        lineas.append("")
-        lineas.append(f"… y {len(debidas) - 8} más")
-    return _recortar(lineas)
 
 
 def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
@@ -238,7 +242,8 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     informe: dict = {"avisadas": [], "messageId": None, "errores": errores}
     if not debidas:
         return informe
-    message_id = enviar(_mensaje_excepciones(debidas))
+    texto, mostradas = _mensaje_excepciones(debidas)
+    message_id = enviar(texto)
     if (
         not isinstance(message_id, int)
         or isinstance(message_id, bool)
@@ -247,9 +252,13 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
         errores.append("el aviso no se confirmó")
         informe["errores"] = errores
         return informe
+    # El checkpoint cubre SOLO las mostradas (CodeRabbit r6d): las que el
+    # mensaje recortó — por cantidad o por largo — quedan sin noticed_at y
+    # salen en la pasada siguiente. El dueño no pudo responder lo que no vio.
+    raiz_de = {e["exceptionId"]: e["rootId"] for e in debidas}
     por_raiz: dict = {}
-    for excepcion in debidas:
-        por_raiz.setdefault(excepcion["rootId"], []).append(excepcion["exceptionId"])
+    for exception_id in mostradas:
+        por_raiz.setdefault(raiz_de[exception_id], []).append(exception_id)
     # F6 (r5): el checkpoint de una raíz en conflicto NO descarta a las demás:
     # su aviso ya salió en el mismo mensaje. Se recorren todas; las que
     # fallan van a errores, `avisadas` lista sólo las excepciones de raíces

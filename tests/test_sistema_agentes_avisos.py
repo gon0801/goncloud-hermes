@@ -4,6 +4,7 @@ proyección (I14): texto armado como en G, reaviso por renoticeAfterMs y
 checkpoint que solo avanza con messageId positivo."""
 
 import importlib
+import json
 import sys
 import tempfile
 import unittest
@@ -274,6 +275,151 @@ class Emisor(unittest.TestCase):
         fila = segunda["proyecciones"][RAIZ]["units"][0]
         self.assertEqual(fila["nextCheckAt"], "2026-10-17T13:00:00Z")
         self.assertEqual(len(mensajes), 1)
+
+
+class TopeDeDetalle(unittest.TestCase):
+    """CodeRabbit (r6d): cuando hay más excepciones debidas que las que el
+    mensaje detalla, el checkpoint (noticed_at / avisadas) cubre SOLO las
+    mostradas; las demás quedan sin checkpoint y salen en la pasada
+    siguiente. El dueño no puede haber visto lo que no se le mostró."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.tienda = store.Store(
+            Path(self.directorio.name) / "db.sqlite",
+            reloj=lambda: "2026-10-17T12:00:00Z",
+        )
+        self.addCleanup(self.tienda.cerrar)
+        # 5 excepciones por raíz, en dos raíces: 10 debidas.
+        for raiz in ("root-a", "root-b"):
+            meta = meta_de()
+            meta["rootId"] = raiz
+            self.assertIsInstance(self.tienda.abrir_raiz(meta), store.Ok)
+            dec = decidir._decision_vacia(1, 1)
+            dec["excepciones"] = [
+                decidir.borrador_excepcion(
+                    raiz,
+                    "NECESITA_DAVID",
+                    {"kind": "rounds", "unitId": "a", "block": bloque},
+                    ["seguir", "omitir", "cancelar"],
+                )
+                for bloque in range(5)
+            ]
+            self.assertIsInstance(
+                self.tienda.aplicar(raiz, dec, f"dec-{raiz}"), store.Ok
+            )
+
+    def avisar(self, mensaje_id=42):
+        mensajes = []
+
+        def enviar(texto):
+            mensajes.append(texto)
+            return mensaje_id
+
+        informe = proyeccion.avisar_excepciones(self.tienda, ahora=AHORA, enviar=enviar)
+        return informe, mensajes
+
+    def todas(self):
+        return {
+            f["exception_id"]: f["noticed_at"]
+            for f in self.tienda._conexion.execute(
+                "SELECT exception_id, noticed_at FROM excepciones"
+            ).fetchall()
+        }
+
+    def test_el_checkpoint_cubre_solo_las_mostradas(self):
+        self.assertEqual(len(self.todas()), 10)
+        informe, mensajes = self.avisar()
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn("(10)", mensajes[0])
+        self.assertIn("… y 2 más", mensajes[0])
+        self.assertEqual(len(informe["avisadas"]), 8)
+        con_checkpoint = {
+            eid for eid, notado in self.todas().items() if notado is not None
+        }
+        self.assertEqual(con_checkpoint, set(informe["avisadas"]))
+
+        segunda, mensajes2 = self.avisar()
+        self.assertEqual(len(mensajes2), 1, "las 2 no mostradas salen solas")
+        self.assertIn("(2)", mensajes2[0])
+        self.assertEqual(len(segunda["avisadas"]), 2)
+        self.assertEqual(
+            set(segunda["avisadas"]) | set(informe["avisadas"]),
+            set(self.todas()),
+        )
+        tercera, mensajes3 = self.avisar()
+        self.assertEqual(mensajes3, [])
+        self.assertEqual(tercera["avisadas"], [])
+
+
+class RecortePorLargo(unittest.TestCase):
+    """El SEGUNDO recorte (el tope de texto del mensaje): cuando un bloque
+    completo no cabe, la excepción no cuenta como mostrada — el checkpoint
+    cubre exactamente lo que quedó en el mensaje final, contando los dos
+    recortes (cantidad y largo)."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.tienda = store.Store(
+            Path(self.directorio.name) / "db.sqlite",
+            reloj=lambda: "2026-10-17T12:00:00Z",
+        )
+        self.addCleanup(self.tienda.cerrar)
+        # Tres excepciones con opciones larguísimas: caben dos bloques
+        # completos bajo el tope de texto, el tercero no.
+        for letra in "abc":
+            self.tienda._conexion.execute(
+                "INSERT INTO excepciones (exception_id, root_id, unit_id, type,"
+                " subject_json, options_json, recipient_json, raised_at,"
+                " renotice_after_ms)"
+                " VALUES (?,?,NULL,'INESPERADO','{}',?,"
+                ' \'{"channel": "telegram", "principal": ["david"]}\','
+                " '2026-10-17T12:00:00Z', 3600000)",
+                (
+                    f"exc-larga-{letra}",
+                    "root-largo",
+                    json.dumps([{"optionId": "seguir", "text": "x" * 1600}]),
+                ),
+            )
+        self.tienda._conexion.commit()
+
+    def avisar(self):
+        mensajes = []
+
+        def enviar(texto):
+            mensajes.append(texto)
+            return 42
+
+        informe = proyeccion.avisar_excepciones(self.tienda, ahora=AHORA, enviar=enviar)
+        return informe, mensajes
+
+    def notadas(self):
+        return {
+            eid
+            for eid, notado in {
+                f["exception_id"]: f["noticed_at"]
+                for f in self.tienda._conexion.execute(
+                    "SELECT exception_id, noticed_at FROM excepciones"
+                ).fetchall()
+            }.items()
+            if notado is not None
+        }
+
+    def test_el_bloque_que_no_cabe_no_recibe_checkpoint(self):
+        informe, mensajes = self.avisar()
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn("(3)", mensajes[0])
+        self.assertIn("… y 1 más", mensajes[0])
+        self.assertEqual(informe["avisadas"], ["exc-larga-a", "exc-larga-b"])
+        self.assertEqual(self.notadas(), {"exc-larga-a", "exc-larga-b"})
+        self.assertLessEqual(len(mensajes[0]), 3500)
+
+        segunda, mensajes2 = self.avisar()
+        self.assertEqual(len(mensajes2), 1)
+        self.assertEqual(segunda["avisadas"], ["exc-larga-c"])
+        self.assertEqual(self.notadas(), {"exc-larga-a", "exc-larga-b", "exc-larga-c"})
 
 
 if __name__ == "__main__":
