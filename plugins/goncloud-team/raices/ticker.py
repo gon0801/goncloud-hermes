@@ -94,6 +94,7 @@ def vuelta(
                 continue
             vistas[root_id] = vista
             propuesta = decidir.decidir(vista)
+            tienda.asentar_necesidades(root_id, propuesta.necesidades)
             decision = propuesta.decision
             if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
                 resultado = tienda.aplicar(
@@ -140,6 +141,13 @@ def vuelta(
                         tienda, vista_de, intencion, f"poteto:{specialist}", conflictos
                     )
                     continue
+            referencia = intencion.assignment.get("instructionRef") or {}
+            ref = str(referencia.get("ref", ""))
+            texto = tienda.texto_de_instruccion(ref, str(referencia.get("digest", "")))
+            if _sin_instruccion_verificable(
+                tienda, vista_de, intencion, ref, conflictos, texto
+            ):
+                continue
             reclamo = tienda.reclamar_intencion(
                 intencion.root_id, intencion.unit_id, intencion.attempt
             )
@@ -147,7 +155,7 @@ def vuelta(
                 continue
             spec = SpecDeTarjeta(
                 f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
-                str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
+                texto.valor,
                 specialist,
             )
             tarjeta = kanban_port.asegurar_tarjeta(
@@ -232,6 +240,18 @@ def _levantar_arranque(tienda, vista, intencion, causa, conflictos) -> None:
     )
     if hasattr(resultado, "codigo"):
         conflictos.append((intencion.root_id, resultado.codigo))
+
+
+def _sin_instruccion_verificable(
+    tienda, vista_de, intencion, ref, conflictos, texto
+) -> bool:
+    if not hasattr(texto, "codigo"):
+        return False
+    if vista_de is not None:
+        _levantar_arranque(
+            tienda, vista_de, intencion, f"instruccion:{ref}", conflictos
+        )
+    return True
 
 
 def _hechos_vacios() -> dict:

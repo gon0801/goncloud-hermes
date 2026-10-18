@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
+instrucciones = importlib.import_module("raices.instrucciones")
 kanban_port = importlib.import_module("raices.kanban_port")
 decidir = importlib.import_module("raices.decidir")
 autoridad = importlib.import_module("raices.autoridad")
@@ -56,10 +57,13 @@ class PermisosDePrueba(autoridad.PermisosH):
         return None
 
 
-def asignacion(adapter="codex", repo="owner-01/repo-a"):
+def asignacion(tienda, adapter="codex", repo="owner-01/repo-a"):
+    ref, digest = instrucciones.guardar(
+        tienda.dir_de_instrucciones, f"brief de {adapter}"
+    )
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
-        "instructionRef": {"ref": f"artifact:inst-{adapter}", "digest": DIGEST},
+        "instructionRef": {"ref": ref, "digest": digest},
         "resultContract": "review.v1",
         "inputRevision": {"kind": "code", "repository": repo, "sha": "0" * 40},
         "continuation": {"kind": "requester"},
@@ -129,8 +133,8 @@ def unidad(unit_id, criterio, modo="implement"):
     }
 
 
-def binding(unit_id):
-    return {"unitId": unit_id, "assignment": asignacion(), "writers": []}
+def binding(tienda, unit_id):
+    return {"unitId": unit_id, "assignment": asignacion(tienda), "writers": []}
 
 
 def decision(bindings=(), efectos=()):
@@ -239,7 +243,7 @@ class I07SinPermisos(TiendaCerrada, unittest.TestCase):
         hechos = {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": "a", "assignment": asignacion(), "relay": False}
+                {"unitId": "a", "assignment": asignacion(self.tienda), "relay": False}
             ],
             "claims": [],
             "efectos": [],
@@ -531,7 +535,7 @@ class EfectoMalFormado(TiendaCerrada, unittest.TestCase):
         hechos_b = {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": "b", "assignment": asignacion(), "relay": False}
+                {"unitId": "b", "assignment": asignacion(self.tienda), "relay": False}
             ],
             "claims": [],
             "efectos": [],
@@ -561,8 +565,8 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         self.hechos = {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": "a", "assignment": asignacion(), "relay": False},
-                {"unitId": "b", "assignment": asignacion(), "relay": False},
+                {"unitId": "a", "assignment": asignacion(self.tienda), "relay": False},
+                {"unitId": "b", "assignment": asignacion(self.tienda), "relay": False},
             ],
             "claims": [],
             "efectos": [],
@@ -609,7 +613,7 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         hechos = {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": "p", "assignment": asignacion(), "relay": False}
+                {"unitId": "p", "assignment": asignacion(tienda), "relay": False}
             ],
             "claims": [],
             "efectos": [],
@@ -778,12 +782,11 @@ class SujetosDeIntentoSinAutorizar(TiendaCerrada, unittest.TestCase):
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
-    @staticmethod
-    def hechos(asignaciones_para=()):
+    def hechos(self, asignaciones_para=()):
         return {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": u, "assignment": asignacion(), "relay": False}
+                {"unitId": u, "assignment": asignacion(self.tienda), "relay": False}
                 for u in asignaciones_para
             ],
             "claims": [],
@@ -819,7 +822,9 @@ class SujetosDeIntentoSinAutorizar(TiendaCerrada, unittest.TestCase):
         self.addCleanup(permisosa.cerrar)
         permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))
         self.assertIsInstance(
-            permisosa.aplicar(RAIZ, decision(bindings=[binding("a")]), "dec-liga"),
+            permisosa.aplicar(
+                RAIZ, decision(bindings=[binding(permisosa, "a")]), "dec-liga"
+            ),
             store.Ok,
         )
         self.assertIsInstance(
@@ -899,7 +904,7 @@ class ModoDeLaUnidadEnElArranque(TiendaCerrada, unittest.TestCase):
         hechos = {
             "principal": ["david"],
             "asignaciones": [
-                {"unitId": "r", "assignment": asignacion(), "relay": False}
+                {"unitId": "r", "assignment": asignacion(self.tienda), "relay": False}
             ],
             "claims": [],
             "efectos": [],

@@ -9,6 +9,7 @@ con el doble de hermes_cli y HERMES_HOME temporal); los caminos inyectables
 import importlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,8 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
+
+instrucciones = importlib.import_module("raices.instrucciones")
 from yaml_doble import YamlDoble, yaml_real  # noqa: E402
 
 
@@ -96,26 +99,33 @@ META = {
     "createdAt": "2026-10-17T00:00:00Z",
 }
 
-VINCULO = {
-    "unitId": "a",
-    "assignment": {
-        "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
-        "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
-        "resultContract": "review.v1",
-        "inputRevision": {
-            "kind": "code",
-            "repository": "owner-01/repo-a",
-            "sha": "0" * 40,
+
+def vinculo_de(tienda):
+    """El hecho de asignación con una instrucción REAL del store (H6a)."""
+    ref, digest = instrucciones.guardar(tienda.dir_de_instrucciones, "brief del cron")
+    return {
+        "unitId": "a",
+        "assignment": {
+            "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+            "instructionRef": {"ref": ref, "digest": digest},
+            "resultContract": "review.v1",
+            "inputRevision": {
+                "kind": "code",
+                "repository": "owner-01/repo-a",
+                "sha": "0" * 40,
+            },
+            "continuation": {"kind": "requester"},
         },
-        "continuation": {"kind": "requester"},
-    },
-    "writers": [],
-}
+        "relay": False,
+    }
 
 
-def decidir_dictamen(tienda, root_id, hecho):
+def decidir_dictamen(tienda, root_id):
+    """La decisión con los hechos del store (H6a), no inyectados a mano."""
+    respuesta = tienda.reconciliar_asignaciones(root_id, [vinculo_de(tienda)])
+    assert not hasattr(respuesta, "codigo"), respuesta
     decidir = importlib.import_module("raices.decidir")
-    vista = tienda.leer_vista(root_id, hecho)
+    vista = tienda.leer_vista(root_id, tienda.hechos_por_raiz()[root_id])
     propuesta = decidir.decidir(vista)
     return tienda.aplicar(root_id, propuesta.decision, "dec-prueba")
 
@@ -143,8 +153,6 @@ class Base(unittest.TestCase):
         yaml_parche.start()
         self.addCleanup(yaml_parche.stop)
 
-
-class Script(Base):
     PERMISOS = {
         "acciones": ["read", "implement", "review"],
         "toolsets": {"codex": ["read", "write"]},
@@ -180,21 +188,15 @@ class Script(Base):
             encoding="utf-8",
         )
 
+
+class Script(Base):
     def dejar_intencion_pendiente(self):
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.home / "sistema-agentes.db")
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -414,15 +416,7 @@ class Script(Base):
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.home / "sistema-agentes.db")
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -485,6 +479,75 @@ class Script(Base):
             )
 
 
+class E2eDelBriefH6a(Base):
+    """El e2e del brief H6a por la capa de herramientas: goncloud_root_submit,
+    goncloud_root_instruction_put, goncloud_root_reconcile y la vuelta del cron
+    deciden y despachan solos, sin hechos inyectados a mano. La tarjeta del
+    kanban real queda con el TEXTO del brief en su cuerpo."""
+
+    def test_las_herramientas_y_el_cron_dejan_el_brief_en_la_tarjeta(self):
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        herramientas = importlib.import_module("raices.herramientas")
+
+        recibo = herramientas.enviar_raiz({"plan": META}, "claw")
+        self.assertNotIn("error", recibo)
+        self.assertEqual(recibo["rootId"], RAIZ)
+
+        brief = "brief del e2e H6a: el TEXTO del dueño llega a la tarjeta"
+        instruccion = herramientas.guardar_instruccion({"text": brief}, "claw")
+        self.assertNotIn("error", instruccion)
+
+        vinculo = {
+            "unitId": "a",
+            "assignment": {
+                "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+                "instructionRef": {
+                    "ref": instruccion["ref"],
+                    "digest": instruccion["digest"],
+                },
+                "resultContract": "review.v1",
+                "inputRevision": {
+                    "kind": "code",
+                    "repository": "owner-01/repo-a",
+                    "sha": "0" * 40,
+                },
+                "continuation": {"kind": "requester"},
+            },
+            "relay": False,
+        }
+        reconciliado = herramientas.reconciliar_raiz(
+            {"rootId": RAIZ, "asignaciones": [vinculo]}, "claw"
+        )
+        self.assertNotIn("error", reconciliado)
+
+        self.instalar_permisos()
+        cron = importlib.import_module("raices.cron_ticker")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            codigo = cron.correr(
+                ruta_abierta=lambda: (True, None), enviar=lambda _texto: 42
+            )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+
+        conexion = sqlite3.connect(self.home / "kanban.db")
+        try:
+            fila = conexion.execute(
+                "SELECT body FROM tasks WHERE idempotency_key = ?",
+                (f"sa:{RAIZ}:a:1",),
+            ).fetchone()
+        finally:
+            conexion.close()
+        self.assertIsNotNone(fila, f"la tarjeta sa:{RAIZ}:a:1 existe")
+        self.assertEqual(fila[0], brief)
+
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda.cerrar)
+        self.assertEqual(tienda.hechos_por_raiz(), {}, "la asignación se consumió")
+
+
 class StoreCompartido(Base):
     """F6: el store vive en la RAIZ del home de Hermes, una sola ruta para el
     perfil claw (el gateway, que no define HERMES_HOME: resuelve el home con
@@ -543,15 +606,7 @@ class StoreCompartido(Base):
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.raiz / "sistema-agentes.db")
         self.addCleanup(tienda.cerrar)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -560,7 +615,7 @@ class StoreCompartido(Base):
         #    Los permisos de H (I07) viven en <raiz>/raices/permisos.json.
         constants.set_override(None)
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {
@@ -616,20 +671,12 @@ class StoreCompartido(Base):
         tienda = store.Store(self.raiz / "sistema-agentes.db")
         self.addCleanup(tienda.cerrar)
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         tienda.cerrar()
 
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {
@@ -685,7 +732,7 @@ class StoreCompartido(Base):
         hogar = importlib.import_module("raices.hogar")
         capacidades = importlib.import_module("raices.capacidades")
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {

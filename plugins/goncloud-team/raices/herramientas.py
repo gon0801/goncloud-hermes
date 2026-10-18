@@ -18,8 +18,10 @@ if str(_PLUGIN) not in sys.path:
 
 store = importlib.import_module("raices.store")
 hogar = importlib.import_module("raices.hogar")
+instrucciones = importlib.import_module("raices.instrucciones")
 
 PERFIL_AUTORIZADO = "claw"
+TOPE_DE_INSTRUCCION = 32768
 
 
 def _exigir_claw(perfil):
@@ -89,6 +91,8 @@ def leer_raiz(argumentos, perfil, home=None):
     tienda = abrir_tienda(home)
     try:
         snapshot = tienda.leer_vista(root_id, {})
+        if snapshot is not None:
+            snapshot["necesidades"] = tienda.necesidades_de(root_id)
     finally:
         tienda.cerrar()
     if snapshot is None:
@@ -154,3 +158,62 @@ def resolver_excepcion(argumentos, perfil, home=None):
     finally:
         tienda.cerrar()
     return _de_ok(respuesta, lambda _valor: {"exceptionId": exception_id})
+
+
+def guardar_instruccion(argumentos, perfil, home=None):
+    """El texto del brief entra al store content-addressed; nunca viaja
+    dentro de la asignación (fixture G)."""
+    _exigir_claw(perfil)
+    texto = (argumentos or {}).get("text")
+    if not isinstance(texto, str) or not texto or len(texto) > TOPE_DE_INSTRUCCION:
+        return {
+            "error": "documento-invalido",
+            "detalle": {"regla": "text: texto de 1 a 32768 caracteres"},
+        }
+    ref, digest = instrucciones.guardar(
+        hogar.raiz_del_hogar(home) / "raices" / "instrucciones", texto
+    )
+    return {"ref": ref, "digest": digest}
+
+
+def _asignacion_cruda(item):
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("unitId"), str)
+        and item["unitId"] != ""
+        and isinstance(item.get("assignment"), dict)
+        and isinstance(item.get("relay"), bool)
+    )
+
+
+def reconciliar_raiz(argumentos, perfil, home=None):
+    _exigir_claw(perfil)
+    datos = argumentos or {}
+    root_id = datos.get("rootId")
+    crudos = datos.get("asignaciones")
+    if (
+        not isinstance(root_id, str)
+        or not root_id
+        or not isinstance(crudos, list)
+        or not all(_asignacion_cruda(item) for item in crudos)
+    ):
+        return {
+            "error": "documento-invalido",
+            "detalle": {"regla": "asignaciones: lista de {unitId, assignment, relay}"},
+        }
+    tienda = abrir_tienda(home)
+    try:
+        respuesta = tienda.reconciliar_asignaciones(root_id, crudos)
+    finally:
+        tienda.cerrar()
+    if hasattr(respuesta, "codigo"):
+        return {"error": respuesta.codigo, "detalle": respuesta.detalle or {}}
+    recibo = respuesta.valor
+    return {
+        "rootId": recibo.root_id,
+        "planRevision": recibo.plan_revision,
+        "asignaciones": recibo.asignaciones,
+        "replayed": bool(recibo.asignaciones)
+        and all(item["replayed"] for item in recibo.asignaciones),
+        "necesidades": recibo.necesidades,
+    }

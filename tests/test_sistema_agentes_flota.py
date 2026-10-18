@@ -25,6 +25,7 @@ except ImportError:  # en la Mac de pruebas no hay PyYAML; en la Gon-pc sí
 compartido = importlib.import_module("raices.compartido")
 contrato = compartido.contrato
 flota = importlib.import_module("raices.flota")
+instrucciones = importlib.import_module("raices.instrucciones")
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
 kanban_port = importlib.import_module("raices.kanban_port")
@@ -165,10 +166,13 @@ def meta_de():
     }
 
 
-def asignacion(adapter="codex", contract="review.v1"):
+def asignacion(tienda, adapter="codex", contract="review.v1"):
+    ref, digest = instrucciones.guardar(
+        tienda.dir_de_instrucciones, f"brief de {adapter}"
+    )
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
-        "instructionRef": {"ref": f"artifact:inst-{adapter}", "digest": DIGEST},
+        "instructionRef": {"ref": ref, "digest": digest},
         "resultContract": contract,
         "inputRevision": {
             "kind": "code",
@@ -261,7 +265,14 @@ class EscenarioBase(unittest.TestCase):
     def ligar_a(self, adapter="codex", contract="review.v1"):
         resultado = self.tienda.aplicar(
             RAIZ,
-            decision([{"unitId": "a", "assignment": asignacion(adapter, contract)}]),
+            decision(
+                [
+                    {
+                        "unitId": "a",
+                        "assignment": asignacion(self.tienda, adapter, contract),
+                    }
+                ]
+            ),
             "dec-1",
         )
         self.assertIsInstance(resultado, store.Ok)
