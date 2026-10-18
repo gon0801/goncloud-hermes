@@ -87,6 +87,24 @@ class ManifiestoTests(unittest.TestCase):
         self.assertIn(f"--- a/{MCP_SERVER}", lineas)
         self.assertIn(f"+++ b/{MCP_SERVER}", lineas)
 
+    def test_los_parches_quedan_fuera_de_la_conversion_de_fin_de_linea(self):
+        # Con autocrlf el .patch baja con CRLF y su sha256 cambia; peor: el
+        # git apply del despliegue leeria un parche CRLF. La regla vive en
+        # .gitattributes y esta prueba la lee con git check-attr para que
+        # valga en cualquier arbol que corra la bateria.
+        try:
+            resultado = subprocess.run(
+                ["git", "check-attr", "text", "--", PATCH.relative_to(ROOT).as_posix()],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except OSError:
+            self.skipTest("git no esta disponible")
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn("text: unset", resultado.stdout)
+
 
 class ConfiguracionDelDirectorTests(unittest.TestCase):
     def test_solo_el_director_declara_los_plugins_y_su_toolset(self):

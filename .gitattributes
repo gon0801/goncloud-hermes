@@ -2,3 +2,6 @@
 # ninguna conversion de fin de linea, en ninguna plataforma.
 shared/sistema-agentes/** -text
 tests/fixtures/sistema-agentes-g/** -text
+# El parche de los plugins del directorio se aplica byte a byte con git
+# apply y su sha256 lo fija una prueba (encargo H-jev r2).
+patches/** -text
