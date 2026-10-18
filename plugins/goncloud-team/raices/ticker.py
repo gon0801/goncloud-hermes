@@ -155,7 +155,11 @@ def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
     `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
     igual que en R, donde permission-required sale con
     ["listo","omitir","cancelar"] (managed-root.decide.ts:550). Si la
-    decisión choca, el Conflicto entra al informe (F17)."""
+    decisión choca, el Conflicto entra al informe (F17). La decisión NO se
+    reaplica (C2): con la id fija `dec-arranque:<exceptionId>` y una época
+    que cambió sería un operation-conflict en cada vuelta, y con la raíz en
+    pausa un root-not-active; si la pregunta ya está en la base, no hace
+    falta, y si la raíz no está active la pregunta sale al reanudar."""
     borrador = decidir.borrador_excepcion(
         intencion.root_id,
         "NECESITA_DAVID",
@@ -167,6 +171,12 @@ def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
         },
         ["listo", "omitir", "cancelar"],
     )
+    conocidas = {e["exceptionId"] for e in vista.get("excepciones") or ()}
+    if (
+        borrador["exceptionId"] in conocidas
+        or vista["meta"]["control"]["state"] != "active"
+    ):
+        return
     decision = decidir._decision_vacia(
         vista["meta"]["plan"]["revision"], vista["meta"]["controlEpoch"]
     )

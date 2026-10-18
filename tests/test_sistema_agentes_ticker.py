@@ -883,6 +883,86 @@ class FilasCorruptasEnLaVista(Escenario):
                 self.assertEqual(informe.tarjetas_creadas, 1)
 
 
+class ElArranqueNoReaplica(Escenario):
+    """C2 (r6e): la decisión de arranque no se reaplica. Con la misma id
+    `dec-arranque:<exceptionId>` y una época que cambió (pausa/reanudación)
+    era un operation-conflict en cada vuelta, y con la raíz en pausa un
+    root-not-active en cada vuelta: conflictos falsos en el informe."""
+
+    PERMISOS_DUROS = {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"otro": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+    def montar(self):
+        tienda, _kanban = self.frescar()
+        self.assertIsInstance(
+            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+        )
+        return tienda
+
+    def test_una_raiz_en_pausa_no_genera_conflicto_falso(self):
+        tienda = self.montar()
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        informe = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(informe.conflictos, ())
+
+    def test_tras_reanudar_no_reaplica_la_misma_pregunta(self):
+        tienda = self.montar()
+        primera = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(primera.conflictos, ())
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "resume",
+                    "commandId": "cmd-resume",
+                    "expectedControlEpoch": 2,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:01:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        segunda = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(segunda.conflictos, ())
+
+
 class I12PoliticaDelTicker(unittest.TestCase):
     def test_la_politica_sale_de_la_copia_fijada_con_la_decision_de_david(self):
         politicas = ticker.cargar_politicas()
