@@ -23,6 +23,7 @@ contrato = compartido.contrato
 kanban_port = importlib.import_module("raices.kanban_port")
 decidir = importlib.import_module("raices.decidir")
 autoridad = importlib.import_module("raices.autoridad")
+instrucciones = importlib.import_module("raices.instrucciones")
 
 RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
@@ -196,6 +197,25 @@ CREATE TABLE IF NOT EXISTS flotas (
   FOREIGN KEY (root_id, unit_id, attempt)
     REFERENCES intentos(root_id, unit_id, attempt)
 );
+CREATE TABLE IF NOT EXISTS asignaciones (
+  root_id          TEXT NOT NULL REFERENCES raices(root_id),
+  plan_revision    INTEGER NOT NULL CHECK (plan_revision >= 1),
+  unit_id          TEXT NOT NULL,
+  relay            INTEGER NOT NULL CHECK (relay IN (0, 1)),
+  assignment_digest TEXT NOT NULL,
+  assignment_json  TEXT NOT NULL,
+  consumed_at      TEXT,
+  consumed_attempt INTEGER,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (root_id, plan_revision, unit_id, relay)
+);
+CREATE TABLE IF NOT EXISTS necesidades (
+  root_id      TEXT NOT NULL REFERENCES raices(root_id),
+  needs_digest TEXT NOT NULL,
+  needs_json   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (root_id)
+);
 """
 
 
@@ -238,6 +258,13 @@ class ReciboEfecto(NamedTuple):
     started_epoch: int | None
 
 
+class ReciboReconcile(NamedTuple):
+    root_id: str
+    plan_revision: int
+    asignaciones: list
+    necesidades: list
+
+
 class Intencion(NamedTuple):
     root_id: str
     unit_id: str
@@ -262,6 +289,33 @@ def leer_politicas() -> dict:
 
 def _a_json(partes: object) -> str:
     return json.dumps(partes, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def serializar_necesidades(necesidades) -> list:
+    """El espejo de ControllerNeed de R: las necesidades de decidir en la
+    forma que el recibo de reconcile y goncloud_root_read exponen."""
+    serializadas = []
+    for necesidad in necesidades:
+        if isinstance(necesidad, decidir.NecesidadVerificacion):
+            serializadas.append(
+                {
+                    "kind": "verify",
+                    "unitId": necesidad.unit_id,
+                    "attempt": necesidad.attempt,
+                    "criteria": list(necesidad.criterios),
+                }
+            )
+        else:
+            serializadas.append(
+                {
+                    "kind": "assignment",
+                    "unitId": necesidad.unit_id,
+                    "reason": necesidad.razon,
+                    "findingsRef": necesidad.findings_ref,
+                    "findingsRefs": list(necesidad.findings_refs),
+                }
+            )
+    return serializadas
 
 
 def _perfil_de(assignment: dict) -> str:
@@ -1145,6 +1199,16 @@ class Store:
                         "INSERT OR IGNORE INTO escritores VALUES (?,?,?)",
                         (root_id, recurso, unit_id),
                     )
+                # H6a: el intento que liga esta asignación la consume en la
+                # MISMA transacción; la fuente única del digest es digesto
+                # (la del insert de reconcile). Hechos inyectados a mano (sin
+                # fila) no tocan nada: cero filas es no-op.
+                self._conexion.execute(
+                    "UPDATE asignaciones SET consumed_at = ?, consumed_attempt = ?"
+                    " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+                    " AND assignment_digest = ? AND consumed_at IS NULL",
+                    (ahora, attempt, root_id, revision, unit_id, digesto(assignment)),
+                )
                 intentos_nuevos.append(
                     {"unitId": unit_id, "attempt": attempt, "clave": clave}
                 )
@@ -1253,6 +1317,217 @@ class Store:
         return Ok(recibo)
 
     # -- efectos ----------------------------------------------------------
+
+    @property
+    def dir_de_instrucciones(self) -> Path:
+        return Path(self.ruta).parent / "raices" / "instrucciones"
+
+    def _hechos_de(self, root_id: str, revision: int) -> dict:
+        filas = self._conexion.execute(
+            "SELECT unit_id, relay, assignment_json FROM asignaciones"
+            " WHERE root_id = ? AND plan_revision = ? AND consumed_at IS NULL"
+            " ORDER BY created_at, unit_id, relay",
+            (root_id, revision),
+        ).fetchall()
+        return {
+            "principal": [],
+            "asignaciones": [
+                {
+                    "unitId": f["unit_id"],
+                    "assignment": json.loads(f["assignment_json"]),
+                    "relay": bool(f["relay"]),
+                }
+                for f in filas
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+
+    def hechos_por_raiz(self) -> dict:
+        """Las asignaciones no consumidas de la revisión vigente de cada raíz:
+        lo que el ticker inyecta como hechos cuando decide. Solo las raíces
+        con algo pendiente aparecen; drenadas, fuera."""
+        agrupadas: dict = {}
+        for fila in self._conexion.execute(
+            "SELECT a.root_id, a.unit_id, a.relay, a.assignment_json"
+            " FROM asignaciones a JOIN revisiones r ON r.root_id = a.root_id"
+            " AND r.revision = a.plan_revision"
+            " WHERE a.consumed_at IS NULL"
+            " ORDER BY a.created_at, a.root_id, a.unit_id, a.relay"
+        ):
+            hechos = agrupadas.setdefault(
+                fila["root_id"],
+                {"principal": [], "asignaciones": [], "claims": [], "efectos": []},
+            )
+            hechos["asignaciones"].append(
+                {
+                    "unitId": fila["unit_id"],
+                    "assignment": json.loads(fila["assignment_json"]),
+                    "relay": bool(fila["relay"]),
+                }
+            )
+        return agrupadas
+
+    def reconciliar_asignaciones(self, root_id: str, asignaciones) -> object:
+        """El espejo de managedRootsReconcileInput de R: valida cada assignment
+        contra el contrato (envuelto en unidad.v1), exige que su instructionRef
+        resuelva en el store de instrucciones y persiste por clave estable
+        (root, revisión, unit, relay). La fila ES el recibo (content-addressed
+        por assignment_digest): el reintento exacto es replay y otra
+        asignación con la fila viva es operation-conflict. En la MISMA
+        transacción re-decide la raíz con los hechos vigentes y asienta sus
+        necesidades."""
+        revision_fila = self._una_fila(
+            "SELECT MAX(revision) AS revision FROM revisiones WHERE root_id = ?",
+            (root_id,),
+        )
+        if revision_fila is None or revision_fila["revision"] is None:
+            return Conflicto("raiz-desconocida")
+        revision = revision_fila["revision"]
+        epoch = self._una_fila(
+            "SELECT epoch FROM controles WHERE root_id = ? ORDER BY epoch DESC LIMIT 1",
+            (root_id,),
+        )["epoch"]
+        for item in asignaciones:
+            assignment = item.get("assignment")
+            documento = {
+                "schema": contrato.UNIDAD,
+                "rootId": root_id,
+                "planRevision": revision,
+                "unitId": item.get("unitId"),
+                "attempt": 1,
+                "taskId": None,
+                "assignment": assignment,
+                "state": "ready",
+                "controlEpoch": epoch,
+            }
+            hallazgos = contrato.validar(documento)
+            if not hallazgos and assignment.get("resultContract") not in (
+                "review.v1",
+                "ready.v1",
+            ):
+                hallazgos = [
+                    {
+                        "regla": "schema",
+                        "ruta": "assignment.resultContract",
+                        "detalle": "fuera del contrato",
+                    }
+                ]
+            if hallazgos:
+                return Conflicto(
+                    "documento-invalido", {"hallazgos": _a_json(hallazgos)}
+                )
+            referencia = assignment.get("instructionRef") or {}
+            _texto, motivo = instrucciones.resolver(
+                self.dir_de_instrucciones,
+                referencia.get("ref", ""),
+                referencia.get("digest", ""),
+            )
+            if motivo is not None:
+                return Conflicto(
+                    "instruccion-invalida",
+                    {
+                        "unitId": item.get("unitId"),
+                        "ref": referencia.get("ref"),
+                        "motivo": motivo,
+                    },
+                )
+        ahora = self.reloj()
+        self._begin()
+        try:
+            recibos = []
+            for item in asignaciones:
+                assignment = item["assignment"]
+                unit_id = item["unitId"]
+                relay = 1 if item["relay"] else 0
+                digest = digesto(assignment)
+                fila = self._una_fila(
+                    "SELECT assignment_digest, consumed_at FROM asignaciones"
+                    " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+                    " AND relay = ?",
+                    (root_id, revision, unit_id, relay),
+                )
+                if fila is None:
+                    self._conexion.execute(
+                        "INSERT INTO asignaciones VALUES (?,?,?,?,?,?,NULL,NULL,?)",
+                        (
+                            root_id,
+                            revision,
+                            unit_id,
+                            relay,
+                            digest,
+                            _a_json(assignment),
+                            ahora,
+                        ),
+                    )
+                    recibos.append(
+                        {"unitId": unit_id, "relay": bool(relay), "replayed": False}
+                    )
+                elif fila["assignment_digest"] == digest:
+                    recibos.append(
+                        {"unitId": unit_id, "relay": bool(relay), "replayed": True}
+                    )
+                elif fila["consumed_at"] is None:
+                    self._rollback()
+                    return Conflicto(
+                        "operation-conflict", {"unitId": unit_id, "relay": bool(relay)}
+                    )
+                else:
+                    self._conexion.execute(
+                        "UPDATE asignaciones SET assignment_digest = ?,"
+                        " assignment_json = ?, consumed_at = NULL,"
+                        " consumed_attempt = NULL, created_at = ?"
+                        " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+                        " AND relay = ?",
+                        (
+                            digest,
+                            _a_json(assignment),
+                            ahora,
+                            root_id,
+                            revision,
+                            unit_id,
+                            relay,
+                        ),
+                    )
+                    recibos.append(
+                        {"unitId": unit_id, "relay": bool(relay), "replayed": False}
+                    )
+            vista = self.leer_vista(root_id, self._hechos_de(root_id, revision))
+            necesidades = serializar_necesidades(decidir.decidir(vista).necesidades)
+            self.asentar_necesidades(root_id, necesidades)
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(ReciboReconcile(root_id, revision, recibos, necesidades))
+
+    def asentar_necesidades(self, root_id: str, necesidades) -> None:
+        """Sin transacción propia: dentro de la de reconcile va como execute
+        directo; sola, autocommit. Acepta las NamedTuple de decidir o la
+        forma ya serializada."""
+        if necesidades and not isinstance(necesidades[0], dict):
+            necesidades = serializar_necesidades(necesidades)
+        self._conexion.execute(
+            "INSERT OR REPLACE INTO necesidades VALUES (?,?,?,?)",
+            (root_id, digesto(necesidades), _a_json(necesidades), self.reloj()),
+        )
+
+    def necesidades_de(self, root_id: str) -> dict | None:
+        fila = self._una_fila(
+            "SELECT needs_digest, needs_json FROM necesidades WHERE root_id = ?",
+            (root_id,),
+        )
+        if fila is None:
+            return None
+        return {"digest": fila["needs_digest"], "items": json.loads(fila["needs_json"])}
+
+    def texto_de_instruccion(self, ref: str, digest: str) -> object:
+        """La única vía del ticker al disco de instrucciones: verifica el
+        digest contra el contenido antes de entregar el texto del brief."""
+        texto, motivo = instrucciones.resolver(self.dir_de_instrucciones, ref, digest)
+        if motivo is not None:
+            return Conflicto("instruccion-invalida", {"motivo": motivo})
+        return Ok(texto)
 
     def iniciar_efecto(
         self, root_id: str, effect_id: str, start_id: str, expected_epoch: int
