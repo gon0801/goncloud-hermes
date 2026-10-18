@@ -1050,5 +1050,146 @@ class I01Borradores(unittest.TestCase):
             decidir.borrador_excepcion(RAIZ, "CI_ROJO", sujeto, opciones=["relevo"])
 
 
+def asignacion_con_repo(etiqueta="a-1", repo="owner-01/repo-a"):
+    base = asignacion(etiqueta)
+    base["inputRevision"] = {"kind": "code", "repository": repo, "sha": "0" * 40}
+    return base
+
+
+def hecho_de(unit_id, assignment, relevo=False):
+    return {"unitId": unit_id, "assignment": assignment, "relay": relevo}
+
+
+def incidencia_de_reintento(unit_id, attempt=1):
+    return {
+        "unitId": unit_id,
+        "attempt": attempt,
+        "incidentKey": f"inc-{unit_id}",
+        "incident": {
+            "kind": "transport-unavailable",
+            "episodeId": "session-closed",
+        },
+    }
+
+
+class F18EscritorTomado(unittest.TestCase):
+    """F18: ningún sitio liga sin mirar plazas y el recurso tomado por otra
+    raíz. Si no se puede ligar, la unidad queda para la siguiente vuelta, la
+    respuesta del dueño no se consume y el resto de la decisión avanza."""
+
+    def vista_con_recurso_ajeno(self, hechos=None, **cambios):
+        return vista(
+            [unidad("a"), unidad("c")],
+            escritores=[
+                {
+                    "schema": "sistema-agentes.escritor.v1",
+                    "rootId": "root-B",
+                    "resourceRef": "repo:owner-01/repo-a",
+                    "unitId": "x",
+                }
+            ],
+            hechos=hechos
+            or {
+                "principal": ["david"],
+                "asignaciones": [
+                    hecho_de("c", asignacion_con_repo("c-1", "owner-01/repo-b"))
+                ],
+                "claims": [],
+                "efectos": [],
+            },
+            **cambios,
+        )
+
+    def test_un_reintento_con_recurso_ajeno_queda_para_la_siguiente(self):
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[intento("a", 1, "running", destino=asignacion_con_repo())],
+                incidencias=[incidencia_de_reintento("a")],
+                contadores={"reintentos:a": 0},
+            )
+        )
+        ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+        self.assertEqual(ligadas, ["c"], "a queda para la siguiente vuelta")
+        self.assertEqual(
+            propuesta.decision["contadores"],
+            [],
+            "el tope de reintentos no se gasta mientras espera",
+        )
+
+    def test_el_seguir_del_dueno_con_recurso_ajeno_no_se_consume(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "INESPERADO",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+            ["seguir", "omitir", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[intento("a", 1, "reported", destino=asignacion_con_repo())],
+                resultados=[resultado("a", 1)],
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "seguir",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+        self.assertEqual(ligadas, ["c"])
+        self.assertEqual(
+            propuesta.decision["respuestas_aplicadas"],
+            [],
+            "la respuesta queda para cuando el recurso se libere",
+        )
+
+    def test_un_relevo_con_recurso_ajeno_no_se_consume(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "SIN_REVISOR",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "relay:1"},
+            ["relevo", "cancelar"],
+        )
+        propuesta = decidir.decidir(
+            self.vista_con_recurso_ajeno(
+                intentos=[intento("a", 1, "reported", destino=asignacion_con_repo())],
+                resultados=[resultado("a", 1)],
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "relevo",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [
+                        hecho_de(
+                            "a",
+                            asignacion_con_repo("a-relevo", "owner-01/repo-a"),
+                            relevo=True,
+                        )
+                    ],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"], [], "no liga con el recurso ajeno"
+        )
+        self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
+        self.assertIn(
+            ("relay", ()), necesitaciones(propuesta), "sigue pidiendo el relevo"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

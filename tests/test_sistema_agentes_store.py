@@ -1689,5 +1689,142 @@ class LaEvidenciaSeLeeEnOrdenDeLlegada(AlmacenDePrueba):
         self.assertEqual([d["state"] for d in vista["unidades"]], ["accepted"])
 
 
+class F18EscritorEnElStore(AlmacenDePrueba):
+    """F18 extremo a extremo: la decisión de A difiere la unidad cuyo repo
+    tiene B y el store la acepta sin writer-held; cuando B suelta el
+    escritor, la vuelta siguiente de decidir liga."""
+
+    def meta_de_raiz(self, root_id, unidades):
+        meta = meta_de(unidades)
+        meta["rootId"] = root_id
+        return meta
+
+    def decision_simple(self, unit_id, repo):
+        return decision(
+            bindings=[{"unitId": unit_id, "assignment": asignacion(repo=repo)}]
+        )
+
+    def test_la_decision_de_a_difiere_y_luego_liga(self):
+        """A: unidad a fallada y el repo lo tiene B. La respuesta del dueño
+        (seguir) difiere la ligadura en vez de writer-held, la decisión
+        avanza con la unidad independiente, y cuando B suelta la vuelta
+        siguiente liga."""
+
+        def excepcion_inesperada():
+            borrador = decidir.borrador_excepcion(
+                RAIZ,
+                "INESPERADO",
+                {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "incident:x"},
+                ["seguir", "omitir", "cancelar"],
+            )
+            return borrador
+
+        def decidir_y_aplicar(tienda, hechos):
+            vista = tienda.leer_vista(RAIZ, hechos)
+            propuesta = decidir.decidir(vista)
+            ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
+            respuesta = tienda.aplicar(RAIZ, propuesta.decision, "dec-A")
+            return ligadas, respuesta, propuesta
+
+        hechos = {
+            "principal": ["david"],
+            "asignaciones": [
+                {
+                    "unitId": "d",
+                    "assignment": asignacion(repo="owner-01/repo-b"),
+                    "relay": False,
+                }
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+
+        # A liga a#1 sobre repo-a, corre, reporta y queda fallada (el dueño
+        # decide el reintento); al ser terminal, A suelta el escritor.
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, self.decision_simple("a", "owner-01/repo-a"), "dec-a1"
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.admitir_intento(RAIZ, "a", 1, "task-a-1"), store.Ok
+        )
+        self.assertIsInstance(
+            self.tienda.transicionar_intento(RAIZ, "a", 1, "running", "task-a-1"),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.reportar_resultado(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "resultContract": "review.v1",
+                    "resultDigest": DIGEST,
+                    "reportedAt": "2026-10-17T12:00:00Z",
+                    "reportedBy": {"kind": "native", "taskId": "task-a-1"},
+                    "payload": {"verdict": "approved", "evidenceRef": REF},
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision(outcomes=[{"unitId": "a", "attempt": 1, "outcome": "failed"}]),
+                "dec-a1-fallida",
+            ),
+            store.Ok,
+        )
+
+        # B toma repo-a.
+        tienda_b = self.tienda_de()
+        tienda_b.abrir_raiz(self.meta_de_raiz("root-B", [unidad("x", "x1")]))
+        self.assertIsInstance(
+            tienda_b.aplicar(
+                "root-B", self.decision_simple("x", "owner-01/repo-a"), "dec-B"
+            ),
+            store.Ok,
+        )
+
+        # El dueño pide reintentar a (seguir sobre INESPERADO).
+        borrador = excepcion_inesperada()
+        decision_con_excepcion = decision()
+        decision_con_excepcion["excepciones"] = [borrador]
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ,
+                decision_con_excepcion,
+                "dec-exc",
+            ),
+            store.Ok,
+        )
+        exception_id = borrador["exceptionId"]
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(RAIZ, exception_id, "seguir", ["david"]),
+            store.Ok,
+        )
+
+        # La decisión de A difiere a (repo de B) y avanza con d, sin writer-held.
+        tienda_a = self.tienda_de()
+        ligadas, respuesta, _propuesta = decidir_y_aplicar(tienda_a, hechos)
+        self.assertEqual(ligadas, ["d"], "a queda para la siguiente; el resto avanza")
+        self.assertIsInstance(respuesta, store.Ok, "sin writer-held")
+
+        # B suelta el escritor y la respuesta pendiente del dueño liga a.
+        self.assertIsInstance(
+            tienda_b.aplicar(
+                "root-B",
+                decision(outcomes=[{"unitId": "x", "attempt": 1, "outcome": "failed"}]),
+                "dec-B-fallida",
+            ),
+            store.Ok,
+        )
+        ligadas2, respuesta2, _propuesta2 = decidir_y_aplicar(tienda_a, hechos)
+        self.assertEqual(ligadas2, ["a"], "libre el recurso, a se liga")
+        self.assertIsInstance(respuesta2, store.Ok)
+
+
 if __name__ == "__main__":
     unittest.main()
