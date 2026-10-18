@@ -122,7 +122,7 @@ def vinculo_de(tienda):
 
 def decidir_dictamen(tienda, root_id):
     """La decisión con los hechos del store (H6a), no inyectados a mano."""
-    respuesta = tienda.reconciliar_asignaciones(root_id, [vinculo_de(tienda)])
+    respuesta = tienda.reconciliar(root_id, [vinculo_de(tienda)])
     assert not hasattr(respuesta, "codigo"), respuesta
     decidir = importlib.import_module("raices.decidir")
     vista = tienda.leer_vista(root_id, tienda.hechos_por_raiz()[root_id])

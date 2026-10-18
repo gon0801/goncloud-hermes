@@ -413,17 +413,18 @@ ROOT_RESOLVE = {
 ROOT_INSTRUCTION_PUT = {
     "name": "goncloud_root_instruction_put",
     "description": (
-        "Store the text of a managed-root brief in the content-addressed "
-        "instruction store and return its {ref, digest}. The same text always "
-        "returns the same ref. Text is limited to 32,768 characters and never "
-        "travels inside an assignment. Only the claw profile may call this."
+        "Store the text of a managed-root brief or verification evidence in "
+        "the content-addressed instruction store and return its "
+        "{ref, digest}. The same text always returns the same ref. Text is "
+        "limited to 32,768 characters and never travels inside an assignment "
+        "or a claim. Only the claw profile may call this."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "text": {
                 "type": "string",
-                "description": "Brief text, 1 to 32,768 characters.",
+                "description": "Brief or evidence text, 1 to 32,768 characters.",
             },
         },
         "required": ["text"],
@@ -433,13 +434,17 @@ ROOT_INSTRUCTION_PUT = {
 ROOT_RECONCILE = {
     "name": "goncloud_root_reconcile",
     "description": (
-        "Deliver assignment facts to one managed root, mirroring "
-        "managedRootsReconcileInput: each assignment is validated against the "
-        "fixed contract copy and its instructionRef must resolve in the "
-        "instruction store with a matching digest. An exact retry returns the "
-        "original receipt with replayed=true; a different assignment for the "
-        "same live key is refused with operation-conflict. The receipt also "
-        "carries the root's current needs. Only the claw profile may call this."
+        "Deliver assignment and verifier-claim facts to one managed root, "
+        "mirroring managedRootsReconcileInput: each assignment is validated "
+        "against the fixed contract copy and its instructionRef must resolve "
+        "in the instruction store with a matching digest; each claim "
+        "(evidenceClaim without verifier or evidenceId, plus role "
+        "verifier|ci) is validated against evidencia.v1 with rootId and "
+        "planRevision set by the store, and its artifactRef must resolve in "
+        "the same store. An exact retry returns the original receipt with "
+        "replayed=true; different content for the same live key is refused "
+        "with operation-conflict. The receipt also carries the root's "
+        "current needs. Only the claw profile may call this."
     ),
     "parameters": {
         "type": "object",
@@ -466,6 +471,73 @@ ROOT_RECONCILE = {
                     "required": ["unitId", "assignment", "relay"],
                 },
                 "description": "Assignment facts to persist.",
+            },
+            "claims": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "unitId": {
+                            "type": "string",
+                            "description": "Plan unit the claim covers.",
+                        },
+                        "attempt": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Attempt the claim verifies.",
+                        },
+                        "criterionId": {
+                            "type": "string",
+                            "description": "Criterion the claim proves.",
+                        },
+                        "artifactRef": {
+                            "type": "object",
+                            "description": (
+                                "{ref, digest} of the evidence, previously "
+                                "stored with goncloud_root_instruction_put."
+                            ),
+                        },
+                        "environment": {
+                            "type": "object",
+                            "description": ("{host, versions} where it was verified."),
+                        },
+                        "procedure": {
+                            "type": "string",
+                            "description": "How the criterion was checked.",
+                        },
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["passed", "failed", "unknown"],
+                            "description": "Outcome of the check.",
+                        },
+                        "at": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC instant with Z.",
+                        },
+                        "expiresAt": {
+                            "type": ["string", "null"],
+                            "description": "Expiry instant, or null.",
+                        },
+                        "role": {
+                            "type": "string",
+                            "enum": ["verifier", "ci"],
+                            "description": "Who verified: verifier or ci.",
+                        },
+                    },
+                    "required": [
+                        "unitId",
+                        "attempt",
+                        "criterionId",
+                        "artifactRef",
+                        "environment",
+                        "procedure",
+                        "outcome",
+                        "at",
+                        "expiresAt",
+                        "role",
+                    ],
+                },
+                "description": "Verifier or CI claims to persist.",
             },
         },
         "required": ["rootId", "asignaciones"],
