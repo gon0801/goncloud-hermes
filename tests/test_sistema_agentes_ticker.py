@@ -797,6 +797,92 @@ class ElConflictoDelArranqueNoSePierde(Escenario):
         self.assertIn((RAIZ, "root-not-active"), informe.conflictos)
 
 
+class FilasCorruptasEnLaVista(Escenario):
+    """F13: una fila corrupta (JSON que no parsea) en UNA raíz no tumba la
+    vuelta: se salta y las demás raíces siguen decidiendo y despachando."""
+
+    def frescar_dos_raices(self):
+        self.escenarios += 1
+        tienda = store.Store(self.directorio.name + f"/{self.escenarios}.db")
+        self.addCleanup(tienda.cerrar)
+        tienda.abrir_raiz(meta_de())
+        otra = meta_de()
+        otra["rootId"] = "root-sana"
+        otra["plan"]["planDigest"] = "sha256:" + "b" * 64
+        tienda.abrir_raiz(otra)
+        return tienda
+
+    @staticmethod
+    def hechos_de(raiz):
+        return {
+            raiz: {
+                "principal": ["david"],
+                "asignaciones": [
+                    {"unitId": "a", "assignment": asignacion(), "relay": False}
+                ],
+                "claims": [],
+                "efectos": [],
+            }
+        }
+
+    def corromper(self, tienda, que):
+        if que == "intento":
+            # Un intento terminal (cancelado) de la raíz rota: sigue en la
+            # vista pero no en las intenciones pendientes del despacho.
+            self.assertIsInstance(
+                tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+            )
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "cancel",
+                    "commandId": "cmd-corromper",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            )
+            tienda._conexion.execute(
+                "UPDATE intentos SET assignment_json = '{roto' WHERE root_id = ?",
+                (RAIZ,),
+            )
+        elif que == "resultado":
+            tienda._conexion.execute(
+                "INSERT INTO resultados VALUES (?,?,?,?,?,?,?)",
+                (
+                    RAIZ,
+                    "a",
+                    1,
+                    "sha256:" + "c" * 64,
+                    "{roto",
+                    None,
+                    "2026-10-17T11:00:00Z",
+                ),
+            )
+        else:
+            tienda.registrar_incidencia(RAIZ, "a", 1, "corrupta:x", {"kind": "x"})
+            tienda._conexion.execute(
+                "UPDATE incidencias SET incident_json = '{roto'"
+                " WHERE root_id = ? AND incident_key = 'corrupta:x'",
+                (RAIZ,),
+            )
+        tienda._conexion.commit()
+
+    def test_la_vuelta_sigue_con_las_demas_raices(self):
+        for que in ("intento", "resultado", "incidencia"):
+            with self.subTest(que=que):
+                tienda = self.frescar_dos_raices()
+                self.corromper(tienda, que)
+                informe = ticker.vuelta(
+                    tienda,
+                    DobleKanban(),
+                    self.hechos_de("root-sana"),
+                    permisos_h=permisos_de_prueba(),
+                )
+                self.assertEqual(informe.tarjetas_creadas, 1)
+
+
 class I12PoliticaDelTicker(unittest.TestCase):
     def test_la_politica_sale_de_la_copia_fijada_con_la_decision_de_david(self):
         politicas = ticker.cargar_politicas()

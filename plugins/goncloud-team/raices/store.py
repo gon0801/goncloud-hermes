@@ -1924,6 +1924,14 @@ class Store:
             "SELECT * FROM intentos WHERE root_id = ? ORDER BY unit_id, attempt",
             (root_id,),
         ):
+            # F13: la fila corrupta (JSON que no parsea o no es objeto) se
+            # salta, como hace snapshot_raiz: no tumba la vista ni la vuelta.
+            try:
+                assignment = json.loads(f["assignment_json"])
+                if not isinstance(assignment, dict):
+                    raise ValueError
+            except ValueError:
+                continue
             intentos.append(
                 {
                     "schema": "sistema-agentes.unidad.v1",
@@ -1932,7 +1940,7 @@ class Store:
                     "unitId": f["unit_id"],
                     "attempt": f["attempt"],
                     "taskId": f["card_id"],
-                    "assignment": json.loads(f["assignment_json"]),
+                    "assignment": assignment,
                     "state": f["state"],
                     "controlEpoch": f["control_epoch"],
                 }
@@ -1977,7 +1985,11 @@ class Store:
             " AND consumed_at IS NULL ORDER BY created_at",
             (root_id,),
         ):
-            documento = json.loads(f["result_json"])
+            # F13: fila corrupta se salta, como en snapshot_raiz.
+            try:
+                documento = json.loads(f["result_json"])
+            except ValueError:
+                continue
             if not isinstance(documento, dict):
                 continue
             payload = documento.get("payload")
@@ -2015,12 +2027,19 @@ class Store:
             " ORDER BY created_at, unit_id, attempt, incident_key",
             (root_id,),
         ):
+            # F13: fila corrupta se salta, como en snapshot_raiz.
+            try:
+                incidente = json.loads(f["incident_json"])
+                if not isinstance(incidente, dict):
+                    raise ValueError
+            except ValueError:
+                continue
             incidencias.append(
                 {
                     "unitId": f["unit_id"],
                     "attempt": f["attempt"],
                     "incidentKey": f["incident_key"],
-                    "incident": json.loads(f["incident_json"]),
+                    "incident": incidente,
                 }
             )
         excepciones = []
