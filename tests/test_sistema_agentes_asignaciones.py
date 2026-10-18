@@ -244,7 +244,7 @@ class Instrucciones(unittest.TestCase):
 
 class Reconcile(Escenario):
     def reconciliar(self, tienda, *items):
-        return tienda.reconciliar_asignaciones(RAIZ, list(items))
+        return tienda.reconciliar(RAIZ, list(items))
 
     def test_persiste_el_hecho_y_devuelve_el_recibo(self):
         tienda = self.abrir()
@@ -354,7 +354,7 @@ class Reconcile(Escenario):
 
     def test_una_raiz_desconocida_se_rechaza(self):
         tienda = self.abrir()
-        recibo = tienda.reconciliar_asignaciones("root-nadie", [self.asignacion_de()])
+        recibo = tienda.reconciliar("root-nadie", [self.asignacion_de()])
         self.assertEqual(recibo.codigo, "raiz-desconocida")
 
     def test_una_unidad_fuera_del_plan_vigente_se_rechaza_sin_filas(self):
@@ -510,7 +510,7 @@ class DespacheConTexto(Escenario):
         tienda = self.abrir()
         hecho = self.asignacion_de()
         referencia = hecho["assignment"]["instructionRef"]
-        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        self.assertIsInstance(tienda.reconciliar(RAIZ, [hecho]), store.Ok)
         ruta = self.dir_de_instrucciones / referencia["ref"][len("artifact:") :]
         ruta.chmod(0o644)
         ruta.write_text("texto adulterado tras el reconcile", encoding="utf-8")
@@ -534,7 +534,7 @@ class DespacheConTexto(Escenario):
         tienda = self.abrir()
         hecho = self.asignacion_de(texto="brief reparado")
         referencia = hecho["assignment"]["instructionRef"]
-        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        self.assertIsInstance(tienda.reconciliar(RAIZ, [hecho]), store.Ok)
         ruta = self.dir_de_instrucciones / referencia["ref"][len("artifact:") :]
         ruta.chmod(0o644)
         ruta.write_text("adulterado", encoding="utf-8")
@@ -601,7 +601,7 @@ class Consumo(Escenario):
     def test_el_e2e_desde_submit_hasta_intento_admitido(self):
         tienda = self.abrir()
         hecho = self.asignacion_de(texto="brief con el TEXTO del dueno")
-        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        self.assertIsInstance(tienda.reconciliar(RAIZ, [hecho]), store.Ok)
         kanban = DobleConSpecs()
         informe = self.vuelta(tienda, kanban)
         self.assertEqual(informe.aplicadas, 1)
@@ -621,7 +621,7 @@ class Consumo(Escenario):
     def test_la_caida_tras_el_commit_no_duplica_nada(self):
         tienda = self.abrir()
         hecho = self.asignacion_de()
-        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        self.assertIsInstance(tienda.reconciliar(RAIZ, [hecho]), store.Ok)
         kanban = DobleKanban()
         kanban.caer_en(PuntoDeCaida.DESPUES_DE_TXN)
         with self.assertRaises(kanban_port.CaidaInyectada):

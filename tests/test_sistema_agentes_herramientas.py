@@ -510,6 +510,82 @@ class ReconcileHerramienta(Base):
         self.assertEqual(sin_raiz["error"], "documento-invalido")
 
 
+class ReconcileConClaims(Base):
+    """H6b: los claims de verificación entran por la misma herramienta, con
+    la evidencia subida antes con goncloud_root_instruction_put."""
+
+    def claim_con_evidencia(self, **sobre):
+        evidencia = self.llamar(
+            "goncloud_root_instruction_put", {"text": "salida de la corrida"}
+        )
+        self.assertNotIn("error", evidencia)
+        claim = {
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "artifactRef": {
+                "ref": evidencia["ref"],
+                "digest": evidencia["digest"],
+            },
+            "environment": {"host": "mac-local", "versions": {}},
+            "procedure": "python3 -m unittest",
+            "outcome": "passed",
+            "at": "2026-10-18T11:00:00Z",
+            "expiresAt": None,
+            "role": "verifier",
+        }
+        return {**claim, **sobre}
+
+    def reconciliar(self, claims, asignaciones=None):
+        return self.llamar(
+            "goncloud_root_reconcile",
+            {"rootId": RAIZ, "asignaciones": asignaciones or [], "claims": claims},
+        )
+
+    def test_persiste_el_claim_y_el_replay_lo_marca(self):
+        self.abrir_raiz()
+        recibo = self.reconciliar([self.claim_con_evidencia()])
+        self.assertNotIn("error", recibo)
+        self.assertEqual(
+            recibo["claims"], [{"unitId": "a", "criterionId": "a1", "replayed": False}]
+        )
+        self.assertIs(recibo["replayed"], False)
+        repetido = self.reconciliar([self.claim_con_evidencia()])
+        self.assertEqual(
+            repetido["claims"], [{"unitId": "a", "criterionId": "a1", "replayed": True}]
+        )
+        self.assertIs(repetido["replayed"], True)
+
+    def test_el_claim_con_role_reviewer_se_rechaza(self):
+        self.abrir_raiz()
+        respuesta = self.reconciliar([self.claim_con_evidencia(role="reviewer")])
+        self.assertEqual(respuesta["error"], "documento-invalido")
+
+    def test_el_artifactref_irresoluble_es_instruccion_invalida(self):
+        self.abrir_raiz()
+        claim = self.claim_con_evidencia()
+        claim["artifactRef"] = {
+            "ref": claim["artifactRef"]["ref"],
+            "digest": "sha256:" + "c" * 64,
+        }
+        respuesta = self.reconciliar([claim])
+        self.assertEqual(respuesta["error"], "instruccion-invalida")
+        self.assertEqual(respuesta["detalle"]["motivo"], "digest-distinto")
+
+    def test_la_forma_cruda_del_claim_es_documento_invalido(self):
+        self.abrir_raiz()
+        for claims in (
+            [{"unitId": "a"}],
+            [{**self.claim_con_evidencia(), "outcome": "tal-vez"}],
+            [{**self.claim_con_evidencia(), "attempt": "1"}],
+            [{**self.claim_con_evidencia(), "expiresAt": 0}],
+            "no soy una lista",
+        ):
+            with self.subTest(claims=claims):
+                respuesta = self.reconciliar(claims)
+                self.assertEqual(respuesta["error"], "documento-invalido")
+
+
 class Resolucion(Base):
     def preparar_excepcion(self):
         ticker = importlib.import_module("raices.ticker")

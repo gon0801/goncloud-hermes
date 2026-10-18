@@ -943,6 +943,12 @@ def configure(
             files["scripts/pinned-models.json"] = (
                 ROOT / "scripts/pinned-models.json"
             ).read_text(encoding="utf-8")
+            # H6b: la skill de raíces del director. SOLO claw la recibe: es
+            # quien responde a despertar-raices con las herramientas
+            # goncloud_root_*; ningún especialista las tiene.
+            files["skills/raices/SKILL.md"] = (
+                ROOT / "skills" / "raices" / "SKILL.md"
+            ).read_text(encoding="utf-8")
         shipped = set(files)
         if preserve_local_soul and (profile / "SOUL.md").exists():
             files.pop("SOUL.md")

@@ -14,7 +14,7 @@ import importlib
 import json
 import sqlite3
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -216,6 +216,24 @@ CREATE TABLE IF NOT EXISTS necesidades (
   updated_at   TEXT NOT NULL,
   PRIMARY KEY (root_id)
 );
+CREATE TABLE IF NOT EXISTS claims (
+  root_id       TEXT NOT NULL REFERENCES raices(root_id),
+  plan_revision INTEGER NOT NULL CHECK (plan_revision >= 1),
+  unit_id       TEXT NOT NULL,
+  attempt       INTEGER NOT NULL CHECK (attempt >= 1),
+  criterion_id  TEXT NOT NULL,
+  claim_digest  TEXT NOT NULL,
+  claim_json    TEXT NOT NULL,
+  consumed_at   TEXT,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (root_id, plan_revision, unit_id, attempt, criterion_id)
+);
+CREATE TABLE IF NOT EXISTS avisos_de_necesidades (
+  root_id      TEXT NOT NULL REFERENCES raices(root_id),
+  needs_digest TEXT NOT NULL,
+  avisado_at   TEXT NOT NULL,
+  PRIMARY KEY (root_id)
+);
 """
 
 
@@ -262,6 +280,7 @@ class ReciboReconcile(NamedTuple):
     root_id: str
     plan_revision: int
     asignaciones: list
+    claims: list
     necesidades: list
 
 
@@ -323,6 +342,73 @@ def _perfil_de(assignment: dict) -> str:
     return str(target.get("agentId") or target.get("adapterId") or "sin-perfil")
 
 
+# Quién trae los hechos por reconcile: el único perfil que llama a la
+# herramienta es claw, así que el principal del verifier sembrado es ["claw"]
+# (en R es el principal del turno que llamó a managed_roots_reconcile; aquí el
+# turno siempre nace del chat del director). revisorExcluyeAutores solo excluye
+# claims de rol reviewer, así que este principal no sesga la aceptación.
+PRINCIPAL_DE_HECHOS = ["claw"]
+
+ROLES_DE_CLAIM = ("verifier", "ci")
+
+
+def sembrar_claim_de_hecho(
+    root_id: str, revision: int, claim_hecho: dict
+) -> dict | None:
+    """El documento evidencia.v1 de un claim de reconcile, con la misma vara
+    con la que decidir siembra los de los hechos (decidir.py:557-600): el
+    store pone rootId y planRevision, arma verifier {principal, role} y
+    deriva evidenceId del contenido. None si decidir lo descartaría (forma o
+    rol): el llamador lo traduce en rechazo tipado, porque por la herramienta
+    no hay claim que callar."""
+    if not isinstance(claim_hecho, dict):
+        return None
+    if claim_hecho.get("role") not in ROLES_DE_CLAIM:
+        return None
+    if any(
+        clave not in claim_hecho
+        for clave in ("unitId", "attempt", "criterionId", "outcome")
+    ):
+        return None
+    artifact_ref = claim_hecho.get("artifactRef")
+    if (
+        not isinstance(artifact_ref, dict)
+        or not isinstance(artifact_ref.get("ref"), str)
+        or not isinstance(artifact_ref.get("digest"), str)
+    ):
+        return None
+    resto = {k: v for k, v in claim_hecho.items() if k not in ("role", "schema")}
+    # F4 (hermes#34): "schema" se normaliza FUERA del sembrado. El digesto de
+    # la fila y el del consumo tienen que salir del MISMO documento, y aplicar
+    # le suma `schema` al documento de la decisión para validarlo; si el
+    # sembrado lo conservara, la fila nacería con un digesto que el consumo
+    # jamás recomputa y quedaría viva (operation-conflict) para siempre. El
+    # schema es etiqueta de transporte, no contenido del claim; el resto de
+    # campos viaja igual en los dos lados.
+    sembrado = {
+        **resto,
+        "rootId": root_id,
+        "planRevision": revision,
+        "evidenceId": decidir.digesto(
+            [
+                root_id,
+                resto["unitId"],
+                resto["attempt"],
+                resto["criterionId"],
+                resto["artifactRef"]["digest"],
+                resto["outcome"],
+            ]
+        ),
+        "verifier": {
+            "principal": list(PRINCIPAL_DE_HECHOS),
+            "role": claim_hecho["role"],
+        },
+    }
+    if contrato.validar({"schema": contrato.EVIDENCIA, **sembrado}):
+        return None
+    return sembrado
+
+
 def _repo_de(assignment: dict) -> str | None:
     revision = assignment.get("inputRevision") or {}
     repo = revision.get("repository")
@@ -371,7 +457,15 @@ class Store:
         self._conexion.execute("ROLLBACK")
 
     def _criterio_cubierto(
-        self, root_id, claims, unit_id, attempt, criterion_id, revision, ahora
+        self,
+        root_id,
+        claims,
+        unit_id,
+        attempt,
+        criterion_id,
+        revision,
+        ahora,
+        verifier_requerido=None,
     ) -> bool:
         excluye = None
         autores: set = set()
@@ -391,7 +485,15 @@ class Store:
                     autores.add(_perfil_de(documento))
             excluye = autores
         vigente = decidir.claim_vigente(
-            claims, root_id, revision, unit_id, attempt, criterion_id, ahora, excluye
+            claims,
+            root_id,
+            revision,
+            unit_id,
+            attempt,
+            criterion_id,
+            ahora,
+            excluye,
+            verifier_requerido=verifier_requerido,
         )
         if vigente is None or vigente["outcome"] != "passed":
             return False
@@ -860,7 +962,10 @@ class Store:
         llave, es documento-invalido y no una excepción en la transacción."""
         hallazgos = []
         for seccion, llaves in (
-            ("claims", ()),
+            # F6 (hermes#34): un claim sin forma es documento-invalido
+            # tipado antes de tocar la base, nunca un claim-ajeno ni un
+            # KeyError dentro de la transacción.
+            ("claims", ("unitId", "attempt", "criterionId")),
             ("bindings", ("unitId",)),
             ("outcomes", ("unitId", "attempt", "outcome")),
         ):
@@ -1001,6 +1106,7 @@ class Store:
                         criterio["criterionId"],
                         revision,
                         ahora,
+                        verifier_requerido=criterio.get("verifier"),
                     )
                     if not cubierto:
                         self._rollback()
@@ -1210,6 +1316,7 @@ class Store:
                     "INSERT OR IGNORE INTO evidencia VALUES (?,?,?,?)",
                     (root_id, documento["evidenceId"], _a_json(documento), ahora),
                 )
+                self._consumir_claim(root_id, revision, documento, ahora)
             for intent in decision["efectos"]:
                 self._conexion.execute(
                     "INSERT INTO efectos VALUES (?,?,?,?,?,?,?,?,?)",
@@ -1319,11 +1426,51 @@ class Store:
             (ahora, attempt, root_id, revision, unit_id, digesto(assignment)),
         )
 
+    def _consumir_claim(self, root_id, revision, documento, ahora):
+        """El consumo del claim en la MISMA transacción que persiste su
+        evidencia: la decisión de decidir trae el documento tal como se
+        sembró (aplicar le suma `schema` para validar; el digesto de la fila
+        es del documento pelado, sin esa llave)."""
+        pelado = {k: v for k, v in documento.items() if k != "schema"}
+        self._conexion.execute(
+            "UPDATE claims SET consumed_at = ?"
+            " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+            " AND attempt = ? AND criterion_id = ? AND claim_digest = ?"
+            " AND consumed_at IS NULL",
+            (
+                ahora,
+                root_id,
+                revision,
+                documento["unitId"],
+                documento["attempt"],
+                documento["criterionId"],
+                digesto(pelado),
+            ),
+        )
+
     # -- efectos ----------------------------------------------------------
 
     @property
     def dir_de_instrucciones(self) -> Path:
         return Path(self.ruta).parent / "raices" / "instrucciones"
+
+    @staticmethod
+    def _hecho_de_claim(claim_json: str) -> dict | None:
+        """El claim como hecho para decidir: el documento guardado sin
+        evidenceId ni verifier (los siembra decidir), con rootId, planRevision
+        y role — la forma de managedRootFactsSchema de R."""
+        try:
+            documento = json.loads(claim_json)
+        except ValueError:
+            return None
+        if not isinstance(documento, dict):
+            return None
+        verifier = documento.get("verifier")
+        if not isinstance(verifier, dict) or "role" not in verifier:
+            return None
+        return {
+            k: v for k, v in documento.items() if k not in ("evidenceId", "verifier")
+        } | {"role": verifier["role"]}
 
     def _hechos_de(self, root_id: str, revision: int) -> dict:
         filas = self._conexion.execute(
@@ -1332,8 +1479,18 @@ class Store:
             " ORDER BY created_at, unit_id, relay",
             (root_id, revision),
         ).fetchall()
+        hechos_de_claims = []
+        for f in self._conexion.execute(
+            "SELECT claim_json FROM claims"
+            " WHERE root_id = ? AND plan_revision = ? AND consumed_at IS NULL"
+            " ORDER BY created_at, unit_id, attempt, criterion_id",
+            (root_id, revision),
+        ):
+            hecho = self._hecho_de_claim(f["claim_json"])
+            if hecho is not None:
+                hechos_de_claims.append(hecho)
         return {
-            "principal": [],
+            "principal": list(PRINCIPAL_DE_HECHOS),
             "asignaciones": [
                 {
                     "unitId": f["unit_id"],
@@ -1342,14 +1499,16 @@ class Store:
                 }
                 for f in filas
             ],
-            "claims": [],
+            "claims": hechos_de_claims,
             "efectos": [],
         }
 
     def hechos_por_raiz(self) -> dict:
-        """Las asignaciones no consumidas de la revisión vigente de cada raíz:
+        """Los hechos no consumidos de la revisión vigente de cada raíz:
         lo que el ticker inyecta como hechos cuando decide. Solo las raíces
-        con algo pendiente aparecen; drenadas, fuera."""
+        con algo pendiente aparecen; drenadas, fuera. Los claims llegan en la
+        forma de managedRootFactsSchema de R y `principal` dice quién los
+        trajo (claw, el único perfil que llama a reconcile)."""
         agrupadas: dict = {}
         for fila in self._conexion.execute(
             "SELECT a.root_id, a.unit_id, a.relay, a.assignment_json"
@@ -1360,7 +1519,12 @@ class Store:
         ):
             hechos = agrupadas.setdefault(
                 fila["root_id"],
-                {"principal": [], "asignaciones": [], "claims": [], "efectos": []},
+                {
+                    "principal": list(PRINCIPAL_DE_HECHOS),
+                    "asignaciones": [],
+                    "claims": [],
+                    "efectos": [],
+                },
             )
             hechos["asignaciones"].append(
                 {
@@ -1369,17 +1533,36 @@ class Store:
                     "relay": bool(fila["relay"]),
                 }
             )
+        for fila in self._conexion.execute(
+            "SELECT c.root_id, c.claim_json FROM claims c"
+            " WHERE c.consumed_at IS NULL"
+            " AND c.plan_revision = (SELECT MAX(revision) FROM revisiones WHERE root_id = c.root_id)"
+            " ORDER BY c.created_at, c.root_id, c.unit_id, c.attempt,"
+            " c.criterion_id"
+        ):
+            hecho = self._hecho_de_claim(fila["claim_json"])
+            if hecho is None:
+                continue
+            agrupadas.setdefault(
+                fila["root_id"],
+                {
+                    "principal": list(PRINCIPAL_DE_HECHOS),
+                    "asignaciones": [],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )["claims"].append(hecho)
         return agrupadas
 
-    def reconciliar_asignaciones(self, root_id: str, asignaciones) -> object:
+    def reconciliar(self, root_id: str, asignaciones, claims=()) -> object:
         """El espejo de managedRootsReconcileInput de R: valida cada assignment
-        contra el contrato (envuelto en unidad.v1), exige que su instructionRef
-        resuelva en el store de instrucciones y persiste por clave estable
-        (root, revisión, unit, relay). La fila ES el recibo (content-addressed
-        por assignment_digest): el reintento exacto es replay y otra
-        asignación con la fila viva es operation-conflict. En la MISMA
-        transacción re-decide la raíz con los hechos vigentes y asienta sus
-        necesidades."""
+        (envuelto en unidad.v1) y cada claim (evidencia.v1 sembrado con la
+        misma vara de decidir) contra el contrato, exige que su instructionRef
+        y su artifactRef resuelvan en el store de instrucciones y persiste por
+        clave estable. La fila ES el recibo (content-addressed por digesto):
+        el reintento exacto es replay y otro contenido con la fila viva es
+        operation-conflict. En la MISMA transacción re-decide la raíz con los
+        hechos vigentes y asienta sus necesidades."""
         revision_fila = self._una_fila(
             "SELECT MAX(revision) AS revision FROM revisiones WHERE root_id = ?",
             (root_id,),
@@ -1449,6 +1632,43 @@ class Store:
                         "motivo": motivo,
                     },
                 )
+        sembrados = []
+        for crudo in claims:
+            sembrado = sembrar_claim_de_hecho(root_id, revision, crudo)
+            if sembrado is None:
+                return Conflicto(
+                    "documento-invalido",
+                    {"hallazgos": _a_json([{"seccion": "claims"}])},
+                )
+            # La misma vara que las asignaciones desde H6a r3: un claim de
+            # una unidad fuera del plan vigente jamás sería consumido por
+            # decidir; se rechaza antes de escribir, cero filas.
+            if (
+                self._una_fila(
+                    "SELECT 1 FROM unidades_de_plan"
+                    " WHERE root_id = ? AND revision = ? AND unit_id = ?",
+                    (root_id, revision, sembrado["unitId"]),
+                )
+                is None
+            ):
+                return Conflicto("unidad-desconocida", {"unitId": sembrado["unitId"]})
+            referencia = sembrado["artifactRef"]
+            _texto, motivo = instrucciones.resolver(
+                self.dir_de_instrucciones,
+                referencia.get("ref", ""),
+                referencia.get("digest", ""),
+            )
+            if motivo is not None:
+                return Conflicto(
+                    "instruccion-invalida",
+                    {
+                        "unitId": sembrado["unitId"],
+                        "criterionId": sembrado["criterionId"],
+                        "ref": referencia.get("ref"),
+                        "motivo": motivo,
+                    },
+                )
+            sembrados.append(sembrado)
         ahora = self.reloj()
         self._begin()
         try:
@@ -1509,6 +1729,63 @@ class Store:
                     recibos.append(
                         {"unitId": unit_id, "relay": bool(relay), "replayed": False}
                     )
+            recibos_de_claims = []
+            for sembrado in sembrados:
+                digest = digesto(sembrado)
+                fila = self._una_fila(
+                    "SELECT claim_digest, consumed_at FROM claims"
+                    " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+                    " AND attempt = ? AND criterion_id = ?",
+                    (
+                        root_id,
+                        revision,
+                        sembrado["unitId"],
+                        sembrado["attempt"],
+                        sembrado["criterionId"],
+                    ),
+                )
+                entrada = {
+                    "unitId": sembrado["unitId"],
+                    "criterionId": sembrado["criterionId"],
+                }
+                if fila is None:
+                    self._conexion.execute(
+                        "INSERT INTO claims VALUES (?,?,?,?,?,?,?,NULL,?)",
+                        (
+                            root_id,
+                            revision,
+                            sembrado["unitId"],
+                            sembrado["attempt"],
+                            sembrado["criterionId"],
+                            digest,
+                            _a_json(sembrado),
+                            ahora,
+                        ),
+                    )
+                    recibos_de_claims.append({**entrada, "replayed": False})
+                elif fila["claim_digest"] == digest:
+                    recibos_de_claims.append({**entrada, "replayed": True})
+                elif fila["consumed_at"] is None:
+                    self._rollback()
+                    return Conflicto("operation-conflict", entrada)
+                else:
+                    self._conexion.execute(
+                        "UPDATE claims SET claim_digest = ?, claim_json = ?,"
+                        " consumed_at = NULL, created_at = ?"
+                        " WHERE root_id = ? AND plan_revision = ? AND unit_id = ?"
+                        " AND attempt = ? AND criterion_id = ?",
+                        (
+                            digest,
+                            _a_json(sembrado),
+                            ahora,
+                            root_id,
+                            revision,
+                            sembrado["unitId"],
+                            sembrado["attempt"],
+                            sembrado["criterionId"],
+                        ),
+                    )
+                    recibos_de_claims.append({**entrada, "replayed": False})
             vista = self.leer_vista(root_id, self._hechos_de(root_id, revision))
             necesidades = serializar_necesidades(decidir.decidir(vista).necesidades)
             self.asentar_necesidades(root_id, necesidades)
@@ -1516,7 +1793,9 @@ class Store:
         except Exception:
             self._rollback()
             raise
-        return Ok(ReciboReconcile(root_id, revision, recibos, necesidades))
+        return Ok(
+            ReciboReconcile(root_id, revision, recibos, recibos_de_claims, necesidades)
+        )
 
     def asentar_necesidades(self, root_id: str, necesidades) -> None:
         """Sin transacción propia: dentro de la de reconcile va como execute
@@ -1537,6 +1816,47 @@ class Store:
         if fila is None:
             return None
         return {"digest": fila["needs_digest"], "items": json.loads(fila["needs_json"])}
+
+    def avisos_de_necesidades(self, renotice_ms: int = RENOTICE_MS) -> list:
+        """Las necesidades que toca avisar: las de cada raíz viva (control
+        active, no terminal) con necesidades no vacías cuyo needs_digest
+        cambió desde el último aviso o cuyo RENOTICE_MS venció. El asiento
+        (avisos_de_necesidades) ocurre en la MISMA transacción que la
+        decisión: quien llama solo imprime lo que aquí sale."""
+        ahora = self.reloj()
+        self._begin()
+        try:
+            pendientes = []
+            for raiz in self.raices():
+                if raiz["state"] != "active":
+                    continue
+                necesidades = self.necesidades_de(raiz["rootId"])
+                if necesidades is None or not necesidades["items"]:
+                    continue
+                digest = necesidades["digest"]
+                fila = self._una_fila(
+                    "SELECT needs_digest, avisado_at FROM avisos_de_necesidades"
+                    " WHERE root_id = ?",
+                    (raiz["rootId"],),
+                )
+                if fila is not None:
+                    if fila["needs_digest"] == digest:
+                        vencido = (
+                            decidir.instante(ahora)
+                            - decidir.instante(fila["avisado_at"])
+                        ) >= timedelta(milliseconds=renotice_ms)
+                        if not vencido:
+                            continue
+                self._conexion.execute(
+                    "INSERT OR REPLACE INTO avisos_de_necesidades VALUES (?,?,?)",
+                    (raiz["rootId"], digest, ahora),
+                )
+                pendientes.append((raiz["rootId"], necesidades["items"]))
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return pendientes
 
     def texto_de_instruccion(self, ref: str, digest: str) -> object:
         """La única vía del ticker al disco de instrucciones: verifica el

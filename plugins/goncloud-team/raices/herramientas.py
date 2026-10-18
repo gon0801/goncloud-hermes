@@ -186,24 +186,64 @@ def _asignacion_cruda(item):
     )
 
 
+def _claim_crudo(item):
+    """La forma de managedRootFactsSchema de R: evidenceClaim sin verifier ni
+    evidenceId, más role. El store siembra y valida el documento entero."""
+    if not isinstance(item, dict):
+        return False
+    artifact_ref = item.get("artifactRef")
+    environment = item.get("environment")
+    expires = item.get("expiresAt")
+    return (
+        isinstance(item.get("unitId"), str)
+        and item["unitId"] != ""
+        and isinstance(item.get("attempt"), int)
+        and not isinstance(item["attempt"], bool)
+        and item["attempt"] >= 1
+        and isinstance(item.get("criterionId"), str)
+        and item["criterionId"] != ""
+        and isinstance(artifact_ref, dict)
+        and isinstance(artifact_ref.get("ref"), str)
+        and isinstance(artifact_ref.get("digest"), str)
+        and isinstance(environment, dict)
+        and isinstance(environment.get("host"), str)
+        and isinstance(environment.get("versions"), dict)
+        and isinstance(item.get("procedure"), str)
+        and item.get("outcome") in ("passed", "failed", "unknown")
+        and isinstance(item.get("at"), str)
+        and (expires is None or isinstance(expires, str))
+        and item.get("role") in ("verifier", "ci")
+    )
+
+
 def reconciliar_raiz(argumentos, perfil, home=None):
     _exigir_claw(perfil)
     datos = argumentos or {}
     root_id = datos.get("rootId")
-    crudos = datos.get("asignaciones")
+    crudos = datos.get("asignaciones", [])
+    claims = datos.get("claims", [])
     if (
         not isinstance(root_id, str)
         or not root_id
         or not isinstance(crudos, list)
         or not all(_asignacion_cruda(item) for item in crudos)
+        or not isinstance(claims, list)
+        or not all(_claim_crudo(item) for item in claims)
     ):
         return {
             "error": "documento-invalido",
-            "detalle": {"regla": "asignaciones: lista de {unitId, assignment, relay}"},
+            "detalle": {
+                "regla": (
+                    "asignaciones: lista de {unitId, assignment, relay};"
+                    " claims: lista de {unitId, attempt, criterionId,"
+                    " artifactRef, environment, procedure, outcome, at,"
+                    " expiresAt, role}"
+                )
+            },
         }
     tienda = abrir_tienda(home)
     try:
-        respuesta = tienda.reconciliar_asignaciones(root_id, crudos)
+        respuesta = tienda.reconciliar(root_id, crudos, claims)
     finally:
         tienda.cerrar()
     if hasattr(respuesta, "codigo"):
@@ -213,7 +253,9 @@ def reconciliar_raiz(argumentos, perfil, home=None):
         "rootId": recibo.root_id,
         "planRevision": recibo.plan_revision,
         "asignaciones": recibo.asignaciones,
-        "replayed": bool(recibo.asignaciones)
-        and all(item["replayed"] for item in recibo.asignaciones),
+        "claims": recibo.claims,
+        "replayed": (bool(recibo.asignaciones) or bool(recibo.claims))
+        and all(item["replayed"] for item in recibo.asignaciones)
+        and all(item["replayed"] for item in recibo.claims),
         "necesidades": recibo.necesidades,
     }

@@ -184,13 +184,42 @@ def instante(texto: str) -> datetime:
     return datetime(*(int(parte) for parte in enteros), micros, tzinfo=timezone.utc)
 
 
+def rol_compatible(role_del_claim: str, verifier_requerido: str | None) -> bool:
+    """F2 (hermes#34): el claim solo cuenta si su rol es compatible con el
+    verifier declarado del criterio — verifier/ci con claim verifier o ci,
+    reviewer con claim reviewer o verifier, owner solo con claim owner. La
+    MISMA regla para decidir y para la guarda de aceptación del store, via
+    claim_vigente (que es la función compartida)."""
+    # F5 (hermes#34), decisión de diseño del coordinador: reviewer acepta
+    # claim reviewer o verifier (el revisor de H es un perfil que corre y
+    # claw verifica su resultado); owner es autoridad y no se relaja.
+    if verifier_requerido is None:
+        return True
+    if verifier_requerido in ("verifier", "ci"):
+        return role_del_claim in ("verifier", "ci")
+    if verifier_requerido == "reviewer":
+        return role_del_claim in ("reviewer", "verifier")
+    if verifier_requerido == "owner":
+        return role_del_claim == "owner"
+    return True
+
+
 def claim_vigente(
-    claims, root_id, revision, unit_id, attempt, criterion_id, ahora, excluir=None
+    claims,
+    root_id,
+    revision,
+    unit_id,
+    attempt,
+    criterion_id,
+    ahora,
+    excluir=None,
+    verifier_requerido=None,
 ):
     """El claim más nuevo por orden de llegada que sigue en pie para esta raíz
-    y esta revisión del plan: suyo, vigente, sin vencer y, si toca, fuera del
-    conjunto de autores. La usa decidir y la guarda de aceptación del store
-    con la misma función, para que no vuelvan a divergir (F10, F14)."""
+    y esta revisión del plan: suyo, vigente, sin vencer, del rol que el
+    criterio declara y, si toca, fuera del conjunto de autores. La usa decidir
+    y la guarda de aceptación del store con la misma función, para que no
+    vuelvan a divergir (F10, F14, F2 del bot)."""
     momento = instante(ahora)
     for fila in reversed(claims):
         if (
@@ -208,6 +237,8 @@ def claim_vigente(
             and fila["verifier"]["role"] == "reviewer"
             and excluir.intersection(fila["verifier"]["principal"])
         ):
+            continue
+        if not rol_compatible(fila["verifier"]["role"], verifier_requerido):
             continue
         return fila
     return None
@@ -495,7 +526,7 @@ def decidir(
         decision["claims"].append(claim_nuevo)
         claims.append(claim_nuevo)
 
-    def ultimo_claim(unit_id, attempt, criterion_id, excluir=None):
+    def ultimo_claim(unit_id, attempt, criterion_id, excluir=None, verifier=None):
         return claim_vigente(
             claims,
             root_id,
@@ -505,6 +536,7 @@ def decidir(
             criterion_id,
             vista["ahora"],
             excluir,
+            verifier_requerido=verifier,
         )
 
     def falla_el_resultado(pendiente):
@@ -767,6 +799,7 @@ def decidir(
                 documento["attempt"],
                 criterio["criterionId"],
                 excluir,
+                verifier=criterio["verifier"],
             )
             if prueba is not None and prueba["outcome"] == "failed":
                 terminar(documento, "failed")
