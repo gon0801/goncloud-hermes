@@ -837,17 +837,16 @@ def decidir(
             levantar("INESPERADO", sujeto)
 
     # Efectos: los nuevos siempre se preparan, así una pregunta nombra un efecto real.
+    # Quien pregunta por un efecto denegado es el gate del store (I07, iniciar_efecto
+    # y la reanudación): es el punto donde la negación de verdad ocurre, con la causa
+    # vigente y un sujeto con `cause`. Aquí no se repite la pregunta: con la excepción
+    # del store y la de decidir conviviendo, los sujetos no coincidían y la pregunta
+    # quedaba doble (una abierta para siempre).
     for efecto in vista["efectos"]:
         if efecto["state"] == "uncertain":
             levantar(
                 "EVIDENCIA_INCIERTA",
                 {"kind": "effect", "effectId": efecto["effectId"]},
-            )
-        elif efecto["state"] == "prepared" and autoridad(efecto["intent"]) is not None:
-            levantar(
-                "NECESITA_DAVID",
-                {"kind": "effect", "effectId": efecto["effectId"]},
-                ["autorizar", "listo", "omitir", "cancelar"],
             )
     for intent in vista["hechos"]["efectos"]:
         if not isinstance(intent, Mapping) or not isinstance(
@@ -861,12 +860,6 @@ def decidir(
         if ya_visto:
             continue
         decision["efectos"].append(intent)
-        if autoridad(intent) is not None:
-            levantar(
-                "NECESITA_DAVID",
-                {"kind": "effect", "effectId": intent["effectId"]},
-                ["autorizar", "listo", "omitir", "cancelar"],
-            )
 
     # Correcciones: `rondas` cuenta por la vida de la unidad; el tope crece un bloque
     # cada vez que el dueño responde `seguir`.
