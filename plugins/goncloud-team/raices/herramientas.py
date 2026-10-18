@@ -37,8 +37,9 @@ def ruta_del_store(home=None):
 
 def abrir_tienda(home=None):
     """El store con los permisos de H de la misma fuente que el cron
-    (<raiz>/raices/permisos.json via hogar; I07): el resume recontrasta lo
-    que va a correr con esos permisos, no con un None que niega todo."""
+    (<raiz>/raices/permisos.json via hogar, con los toolsets intersectados
+    contra el config real; I07/H4b3): el resume recontrasta lo que va a correr
+    con esos permisos, no con un None que niega todo."""
     return store.Store(ruta_del_store(home), permisos_h=hogar.leer_permisos(home))
 
 
@@ -48,7 +49,7 @@ def _de_ok(respuesta, documento):
     return {**documento(respuesta.valor), "replayed": bool(respuesta.replayed)}
 
 
-def enviar_raiz(argumentos, perfil, home=None):
+def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
     _exigir_claw(perfil)
     plan = (argumentos or {}).get("plan")
     if not isinstance(plan, dict):
@@ -56,6 +57,17 @@ def enviar_raiz(argumentos, perfil, home=None):
             "error": "documento-invalido",
             "detalle": {"regla": "el cuerpo trae el documento meta.v1 en plan"},
         }
+    # submit crea trabajo nuevo y la puerta de capacidades (H4a) lo niega con
+    # la ruta cerrada, sin abrir la tienda; el dueño sigue leyendo y frenando
+    # con read, control y resolve. La puerta mira el gateway_state.json de la
+    # RAIZ (hogar.raiz_del_hogar: el home de un perfil sube, nunca HERMES_HOME
+    # pelado; cierra el F8 del bot).
+    capacidades = importlib.import_module("raices.capacidades")
+    raiz = hogar.raiz_del_hogar(home)
+    puerta = ruta_abierta or (lambda: capacidades.abrir_ruta(home=raiz))
+    abierta, causa = puerta()
+    if not abierta:
+        return {"error": "ruta-cerrada", "detalle": {"causa": causa}}
     tienda = abrir_tienda(home)
     try:
         respuesta = tienda.abrir_raiz(plan)
@@ -81,6 +93,19 @@ def leer_raiz(argumentos, perfil, home=None):
         tienda.cerrar()
     if snapshot is None:
         return {"error": "raiz-desconocida", "detalle": {"rootId": root_id}}
+    permisos = hogar.leer_permisos(home) or {}
+    cobertura = permisos.get("cobertura")
+    if not isinstance(cobertura, dict):
+        cobertura = {}
+    for unidad in snapshot["unidades"]:
+        assignment = unidad.get("assignment") or {}
+        if assignment.get("resultContract") != "review.v1":
+            continue
+        target = assignment.get("target") or {}
+        specialist = str(
+            target.get("agentId") or target.get("adapterId") or "sin-perfil"
+        )
+        unidad["cobertura"] = cobertura.get(specialist, "unknown")
     return snapshot
 
 

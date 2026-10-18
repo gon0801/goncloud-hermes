@@ -74,11 +74,16 @@ hermes cron create "every 1m" --name ticker-raices --script "ticker-raices.py" -
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
-raices cerrada (el par de Hermes sin certificar, H4) no corre y sale 0. El
-store vive en la raíz del home de Hermes (`raices/hogar.py` la resuelve con
-`hermes_constants`: el home de perfil del gateway y el del cron suben a la
-misma raíz); el kanban, `HERMES_KANBAN_DB` o `<raíz>\kanban.db`, y solo se
-abre si hay algo que despachar. La
+raices cerrada (H4a: capacidad faltante, par incierto o par sin certificar en
+`raices/certificadas.json`) el cron avisa `CAPACIDAD_INCIERTA` una vez por
+cambio de causa y sale 0; la vuelta sigue corriendo cerrada, con bloqueos y
+conciliacion pero sin decidir ni despachar ni correr la pasada del emisor, y si
+falta una capacidad ni siquiera abre el store. `goncloud_root_submit` responde
+`ruta-cerrada` con la causa; el par nuevo se acredita con `raices/certificar.py`
+en la PC y entra por PR. El store vive en la raíz del home de Hermes
+(`raices/hogar.py` la resuelve con `hermes_constants`: el home de perfil del
+gateway y el del cron suben a la misma raíz); el kanban, `HERMES_KANBAN_DB` o
+`<raíz>\kanban.db`, y solo se abre si hay algo que despachar. La
 expresion `* * * * *` es el cada minuto estandar de cron; la referencia 0.21.5
 copiada fuera del repo solo trae `kanban_db*`, no el planificador del cron, asi
 que en H5 el coordinador confirma en la PC que el cron acepta cada minuto (si

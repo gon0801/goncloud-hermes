@@ -6,7 +6,9 @@ Cada paso es idempotente por filas: una vuelta interrumpida en cualquier punto l
 completa la siguiente (I04). El despacho pasa por la bandeja de salida: la intención
 en sistema-agentes.db, buscar-o-crear la tarjeta en UN write_txn del kanban y, recién
 entonces, marcar la intención cumplida (I03). Las raíces con control != active no
-despachan: sus intenciones quedan cercadas.
+despachan: sus intenciones quedan cercadas. Con home y sin datos de permisos
+de H, el despacho exige el paquete poteto del perfil (H4b2): sin él se levanta
+NECESITA_DAVID con causa poteto:<perfil> y no se despacha.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ decidir = importlib.import_module("raices.decidir")
 kanban_port = importlib.import_module("raices.kanban_port")
 store_module = importlib.import_module("raices.store")
 autoridad = importlib.import_module("raices.autoridad")
+flota = importlib.import_module("raices.flota")
+poteto = importlib.import_module("raices.poteto")
 
 CaidaInyectada = kanban_port.CaidaInyectada
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -51,10 +55,17 @@ def cargar_politicas() -> dict:
     return store_module.leer_politicas()
 
 
-def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
+def vuelta(
+    tienda, puerto, hechos_por_raiz=None, permisos_h=None, ruta_abierta=True, home=None
+) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
     muerte del proceso, y la vuelta siguiente recupera desde las filas.
-    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo."""
+    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo.
+    `home` es el %HERMES_HOME% de los perfiles: con él el despacho congela el
+    documento flota.v1 del intento que admite (I09).
+    Con `ruta_abierta=False` (H4a) la puerta de capacidades está cerrada: bloquea
+    y concilia igual (un intento abierto conserva su snapshot), pero no decide, no
+    despacha ni levanta el gate de arranque."""
     hechos_por_raiz = hechos_por_raiz or {}
     permisos = autoridad.PermisosH(permisos_h)
     conciliadas = 0
@@ -62,7 +73,6 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
     conflictos: list = []
     creadas_antes = len(puerto.creaciones)
     estado: str | None = None
-    vistas: dict = {}
 
     for bloqueo in tienda.bloqueos_pendientes():
         with puerto.write_txn() as escritura:
@@ -73,57 +83,91 @@ def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
         if _conciliar_uno(tienda, puerto, intento):
             conciliadas += 1
 
-    for raiz in tienda.raices():
-        root_id = raiz["rootId"]
-        vista = tienda.leer_vista(
-            root_id, hechos_por_raiz.get(root_id) or _hechos_vacios()
-        )
-        if vista is None:
-            continue
-        vistas[root_id] = vista
-        propuesta = decidir.decidir(vista)
-        decision = propuesta.decision
-        if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
-            resultado = tienda.aplicar(
-                root_id, decision, _decision_id(vista, propuesta)
+    if ruta_abierta:
+        vistas: dict = {}
+        for raiz in tienda.raices():
+            root_id = raiz["rootId"]
+            vista = tienda.leer_vista(
+                root_id, hechos_por_raiz.get(root_id) or _hechos_vacios()
             )
-            if hasattr(resultado, "codigo"):
-                conflictos.append((root_id, resultado.codigo))
-            else:
-                aplicadas += 1
-        # El aviso de las excepciones no pasa por aquí: el checkpoint
-        # (noticed_at) solo avanza cuando el emisor de la pasada del cron
-        # (proyeccion.avisar_excepciones) confirmó un messageId. Si la vuelta
-        # marcara sin enviar, la pasada no encontraría nada debido y el aviso
-        # nunca saldría (F9).
-        if propuesta.estado == "done":
-            estado = "done"
-
-    for intencion in tienda.intenciones_pendientes():
-        vista_de = vistas.get(intencion.root_id)
-        if vista_de is not None:
-            razon = _negar_arranque(vista_de, permisos, intencion)
-            if razon is not None:
-                _levantar_arranque(tienda, vista_de, intencion, razon, conflictos)
+            if vista is None:
                 continue
-        reclamo = tienda.reclamar_intencion(
-            intencion.root_id, intencion.unit_id, intencion.attempt
-        )
-        if hasattr(reclamo, "codigo"):
-            continue
-        target = intencion.assignment.get("target") or {}
-        spec = SpecDeTarjeta(
-            f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
-            str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
-            str(target.get("agentId") or target.get("adapterId") or "sin-perfil"),
-        )
-        tarjeta = kanban_port.asegurar_tarjeta(puerto, intencion.idempotency_key, spec)
-        tienda.admitir_intento(
-            intencion.root_id,
-            intencion.unit_id,
-            intencion.attempt,
-            tarjeta.id,
-        )
+            vistas[root_id] = vista
+            propuesta = decidir.decidir(vista)
+            decision = propuesta.decision
+            if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
+                resultado = tienda.aplicar(
+                    root_id, decision, _decision_id(vista, propuesta)
+                )
+                if hasattr(resultado, "codigo"):
+                    conflictos.append((root_id, resultado.codigo))
+                else:
+                    aplicadas += 1
+            # El aviso de las excepciones no pasa por aquí: el checkpoint
+            # (noticed_at) solo avanza cuando el emisor de la pasada del cron
+            # (proyeccion.avisar_excepciones) confirmó un messageId. Si la vuelta
+            # marcara sin enviar, la pasada no encontraría nada debido y el aviso
+            # nunca saldría (F9).
+            if propuesta.estado == "done":
+                estado = "done"
+
+        for intencion in tienda.intenciones_pendientes():
+            target = intencion.assignment.get("target") or {}
+            specialist = str(
+                target.get("agentId") or target.get("adapterId") or "sin-perfil"
+            )
+            vista_de = vistas.get(intencion.root_id)
+            if vista_de is not None:
+                razon = _negar_arranque(vista_de, permisos, intencion)
+                if razon is not None:
+                    _levantar_arranque(
+                        tienda,
+                        vista_de,
+                        intencion,
+                        autoridad.causa_de(razon),
+                        conflictos,
+                    )
+                    continue
+                if (
+                    home is not None
+                    and poteto.paquete_del_perfil(home, specialist) is None
+                ):
+                    # H4b2 (I08): sin el paquete poteto del perfil la ruta no
+                    # se admite; la causa queda visible en read. El gate de
+                    # I07 ya pasó: poteto no concede permisos, exigir el
+                    # paquete no los cercena.
+                    _levantar_arranque(
+                        tienda, vista_de, intencion, f"poteto:{specialist}", conflictos
+                    )
+                    continue
+            reclamo = tienda.reclamar_intencion(
+                intencion.root_id, intencion.unit_id, intencion.attempt
+            )
+            if hasattr(reclamo, "codigo"):
+                continue
+            spec = SpecDeTarjeta(
+                f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
+                str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
+                specialist,
+            )
+            tarjeta = kanban_port.asegurar_tarjeta(
+                puerto, intencion.idempotency_key, spec
+            )
+            documento = flota.construir(
+                intencion.root_id,
+                intencion.unit_id,
+                intencion.attempt,
+                specialist,
+                home,
+                permisos_h,
+            )
+            tienda.admitir_intento(
+                intencion.root_id,
+                intencion.unit_id,
+                intencion.attempt,
+                tarjeta.id,
+                flota=documento,
+            )
 
     return Informe(
         conciliadas,
@@ -150,7 +194,7 @@ def _negar_arranque(vista, permisos, intencion) -> str | None:
     )
 
 
-def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
+def _levantar_arranque(tienda, vista, intencion, causa, conflictos) -> None:
     """La pregunta por un arranque negado. Un sujeto de INTENTO no ofrece
     `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
     igual que en R, donde permission-required sale con
@@ -167,7 +211,7 @@ def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
             "kind": "attempt",
             "unitId": intencion.unit_id,
             "attempt": intencion.attempt,
-            "cause": autoridad.causa_de(razon),
+            "cause": causa,
         },
         ["listo", "omitir", "cancelar"],
     )
@@ -309,23 +353,32 @@ def _documento_de_resultado(carga, intento, tarjeta, ahora):
 
 def _incidencia_invalida(tienda, intento, tarjeta, carga=None) -> None:
     """El episodeId es el canónico de R (managed-task.worker.ts): el digest del
-    resultado si lo trajo, o el de schema-invalid sobre lo que llegó."""
-    identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
-    if not isinstance(identidad, str) or not identidad:
-        identidad = digesto(
-            [
-                "schema-invalid",
-                carga if isinstance(carga, str) else "structured-result",
-            ]
-        )
+    resultado si lo trajo, o el de schema-invalid sobre lo que llegó. Una
+    tarjeta completada sin resultado alguno es un hijo que murió sin decir
+    nada: reintenta con el mismo tope que invalid-result y el kind distingue
+    la muerte en la evidencia (I18 sigue: sin resultado válido no hay
+    veredicto, aceptación ni despacho de dependientes)."""
+    if not carga:
+        kind = "result-missing"
+        identidad = digesto(["schema-invalid", "sin-resultado"])
+    else:
+        kind = "invalid-result"
+        identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
+        if not isinstance(identidad, str) or not identidad:
+            identidad = digesto(
+                [
+                    "schema-invalid",
+                    carga if isinstance(carga, str) else "structured-result",
+                ]
+            )
     tienda.registrar_incidencia(
         intento["rootId"],
         intento["unitId"],
         intento["attempt"],
-        f"invalid-result:{tarjeta.id}",
+        f"{kind}:{tarjeta.id}",
         {
-            "kind": "invalid-result",
-            "episodeId": f"invalid-result:{digesto([tarjeta.id, identidad])}",
+            "kind": kind,
+            "episodeId": f"{kind}:{digesto([tarjeta.id, identidad])}",
             "evidenceRef": tarjeta.id,
         },
     )

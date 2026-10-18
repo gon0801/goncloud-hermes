@@ -185,6 +185,17 @@ CREATE TABLE IF NOT EXISTS restricciones (
   created_at TEXT NOT NULL,
   PRIMARY KEY (root_id, revision)
 );
+
+CREATE TABLE IF NOT EXISTS flotas (
+  root_id    TEXT NOT NULL,
+  unit_id    TEXT NOT NULL,
+  attempt    INTEGER NOT NULL,
+  flota_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (root_id, unit_id, attempt),
+  FOREIGN KEY (root_id, unit_id, attempt)
+    REFERENCES intentos(root_id, unit_id, attempt)
+);
 """
 
 
@@ -1541,7 +1552,7 @@ class Store:
             raise
         return Ok(True)
 
-    def admitir_intento(self, root_id, unit_id, attempt, card_id) -> object:
+    def admitir_intento(self, root_id, unit_id, attempt, card_id, flota=None) -> object:
         self._begin()
         try:
             fila = self._una_fila(
@@ -1584,6 +1595,11 @@ class Store:
                 " WHERE root_id = ? AND unit_id = ? AND attempt = ? AND state = 'ready'",
                 (ahora, root_id, unit_id, attempt),
             )
+            if flota is not None:
+                self._conexion.execute(
+                    "INSERT OR IGNORE INTO flotas VALUES (?,?,?,?,?)",
+                    (root_id, unit_id, attempt, _a_json(flota), ahora),
+                )
             self._commit()
         except Exception:
             self._rollback()
@@ -1926,6 +1942,13 @@ class Store:
                 (root_id, revision),
             )
         ]
+        flotas = {
+            (f["unit_id"], f["attempt"]): json.loads(f["flota_json"])
+            for f in self._conexion.execute(
+                "SELECT unit_id, attempt, flota_json FROM flotas WHERE root_id = ?",
+                (root_id,),
+            )
+        }
         intentos = []
         for f in self._conexion.execute(
             "SELECT * FROM intentos WHERE root_id = ? ORDER BY unit_id, attempt",
@@ -1950,6 +1973,7 @@ class Store:
                     "assignment": assignment,
                     "state": f["state"],
                     "controlEpoch": f["control_epoch"],
+                    "flota": flotas.get((f["unit_id"], f["attempt"])),
                 }
             )
         ligadas = {i["unitId"] for i in intentos}

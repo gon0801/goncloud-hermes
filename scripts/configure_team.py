@@ -813,6 +813,10 @@ def configure(
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
     plugin_root = ROOT / "plugins" / "goncloud-team"
+    if str(plugin_root) not in sys.path:
+        sys.path.insert(0, str(plugin_root))
+    from raices import poteto
+
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
             "Workflow plugin is missing; finish the build before applying profiles"
@@ -883,16 +887,41 @@ def configure(
             "plugins/goncloud-team/model-routing.source.json": (
                 ROOT / "model-routing.source.json"
             ).read_bytes(),
+            # F7: la puerta de capacidades lee certificadas.json junto al
+            # módulo cargado (RUTA_CERTIFICADAS = Path(__file__).with_name);
+            # el filtro de plugin_files solo copia .py/.yaml/.md, así que el
+            # json no viajaba y en el gateway leer_certificadas daba () (el
+            # submit respondía siempre version-no-certificada).
+            "plugins/goncloud-team/raices/certificadas.json": (
+                plugin_root / "raices/certificadas.json"
+            ).read_bytes(),
         }
         if is_team:
-            files["SOUL.md"] = "\n\n".join(
-                (ROOT / name).read_text(encoding="utf-8")
-                for name in (
-                    "shared/CONTRACT.md",
-                    "shared/BUSINESS.md",
-                    f"roles/{role}.md",
+            # La copia de poteto se verifica antes de preparar el paquete:
+            # una CopiaRota propaga y no se escribe nada (falla cerrada, sin
+            # despliegue parcial).
+            poteto.comprobar_copia()
+            files["SOUL.md"] = (
+                "\n\n".join(
+                    (ROOT / name).read_text(encoding="utf-8")
+                    for name in (
+                        "shared/CONTRACT.md",
+                        "shared/BUSINESS.md",
+                        f"roles/{role}.md",
+                    )
                 )
+                + "\n\n"
+                + poteto.bloque()
             )
+            origen_poteto = ROOT / "shared" / "sistema-agentes" / "poteto"
+            # Las rutas del manifiesto ya traen el prefijo skills/: la clave
+            # es la ruta tal cual, para que la skill caiga en
+            # skills/<skill>/SKILL.md y no en skills/skills/...
+            for ruta in poteto.skills_a_publicar(role):
+                files[ruta] = (origen_poteto / ruta).read_text(encoding="utf-8")
+            files["skills/poteto-hermes/SKILL.md"] = (
+                origen_poteto / "adaptacion-hermes.md"
+            ).read_text(encoding="utf-8")
         for source in plugin_files:
             files[
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
@@ -945,6 +974,9 @@ def configure(
                 state,
                 retired_targets,
                 shipped,
+                # CR2 (I08): si este perfil recibió el paquete de Poteto
+                # (SOUL + skills); solo él registra el digest.
+                is_team,
             )
         )
     root_config = contained(runtime_home / "config.yaml", runtime_home)
@@ -1049,6 +1081,7 @@ def configure(
         state,
         retired_targets,
         shipped,
+        recibio_poteto,
     ) in prepared:
         recorded_files = {
             **{
@@ -1075,8 +1108,16 @@ def configure(
         recorded = {
             "config": desired,
             "source_revision": revision,
+            "generation": poteto.siguiente_generation(state, recorded_files),
             "files": recorded_files,
         }
+        if recibio_poteto:
+            # CR2 (I08): solo los perfiles que de verdad recibieron Poteto
+            # (el bloque de SOUL.md y las skills) registran el digest. Un
+            # dispatch_profile sin paquete no debe quedar con digest:
+            # poteto.paquete_del_perfil leeria un paquete inexistente y la
+            # puerta de despacho lo dejaria pasar.
+            recorded["poteto"] = {"digest": poteto.digest_de_manifiesto()}
         adopted = adoptions.get(profile.name)
         if adopted:
             recorded["adopted_manual_routing"] = {

@@ -1,0 +1,12 @@
+[
+ {
+  "version": "0.21.5",
+  "code_sha": "266f11c5c5d6b40794c2d416e7be2f14e9cc7caf",
+  "certificadoEn": "2026-10-17T21:41:46Z",
+  "evidencia": {
+   "pruebas": "tests.test_sistema_agentes_kanban_real",
+   "resumen": "OK",
+   "corridoEn": "2026-10-17T21:41:46Z"
+  }
+ }
+]

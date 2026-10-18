@@ -22,7 +22,10 @@
  "rebanadasCerradas": [
   "H0b",
   "H1",
-  "H3"
+  "H3",
+  "H4b1",
+  "H4b2",
+  "H4b3"
  ],
  "filas": [
   {
@@ -190,43 +193,43 @@
    "ensayo": "I08",
    "clausula": "I08.1",
    "texto": "poteto completo llega al turno de claw",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.CopiaFijada.test_el_bloque_cita_generacion_y_digest_y_cabe",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I08",
    "clausula": "I08.2",
    "texto": "poteto completo llega al hijo CLI por tarjeta",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.PuertaDePoteto.test_con_poteto_despacha_y_la_flota_trae_la_atestacion",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I08",
    "clausula": "I08.3",
    "texto": "sin poteto, la ruta no se admite",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_poteto.PuertaDePoteto.test_sin_poteto_el_ticker_no_despacha_y_la_causa_sale_en_read",
+   "rebanada": "H4b2"
   },
   {
    "ensayo": "I09",
    "clausula": "I09.1",
    "texto": "el modelo efectivo es el pedido (perfil y router contra el modelo que corrió)",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.ModeloDelPerfil.test_modelo_exacto_y_documento_valido",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I09",
    "clausula": "I09.2",
    "texto": "un intento nuevo conserva su snapshot",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.ModeloDelPerfil.test_snapshot_congelado_tras_cambiar_config",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I09",
    "clausula": "I09.3",
    "texto": "permisos efectivos medidos (toolsets del hijo)",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_permisos.ToolsetsEfectivos.test_el_write_declarado_sin_coding_real_queda_sin_write",
+   "rebanada": "H4b3"
   },
   {
    "ensayo": "I09",
@@ -247,21 +250,21 @@
    "ensayo": "I10",
    "clausula": "I10.1",
    "texto": "un par certificado nuevo entra solo por certificar.py más PR",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_certificar.Certificar.test_sin_escribir_jamas_escribe",
    "rebanada": "H4"
   },
   {
    "ensayo": "I10",
    "clausula": "I10.2",
    "texto": "un par sin certificar cierra la ruta",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_capacidades.Decidir.test_capacidades_presentas_con_par_sin_certificar_no_abre",
    "rebanada": "H4"
   },
   {
    "ensayo": "I10",
    "clausula": "I10.3",
    "texto": "un intento abierto conserva su snapshot tras la subida",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_ticker.RutaCerrada.test_cerrada_concilia_la_tarjeta_corriendo_sin_aceptar",
    "rebanada": "H4"
   },
   {
@@ -275,7 +278,7 @@
    "ensayo": "I11",
    "clausula": "I11.2",
    "texto": "un perfil incompleto se ve",
-   "prueba": null,
+   "prueba": "test_sistema_agentes_permisos.ToolsetsEfectivos.test_un_perfil_sin_config_queda_sin_toolsets",
    "rebanada": "H4"
   },
   {
@@ -423,15 +426,15 @@
    "ensayo": "I18",
    "clausula": "I18.1",
    "texto": "un perfil sin eventos declara cobertura unknown",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.Advisor.test_perfil_sin_eventos_declara_cobertura_y_read_la_muestra",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I18",
    "clausula": "I18.2",
    "texto": "su caída no aprueba ni despacha",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_flota.Advisor.test_revision_muerta_no_aprueba_ni_despacha",
+   "rebanada": "H4b1"
   },
   {
    "ensayo": "I20",

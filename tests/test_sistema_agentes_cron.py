@@ -24,6 +24,13 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
+from yaml_doble import YamlDoble, yaml_real  # noqa: E402
+
+
+def yaml_de_prueba():
+    """El PyYAML real donde esté; si no, el doble del subset."""
+    return yaml_real or YamlDoble
+
 
 SCRIPT = REPO / "plugins/goncloud-team/raices/cron_ticker.py"
 PLUGIN = REPO / "plugins/goncloud-team"
@@ -123,6 +130,18 @@ class Base(unittest.TestCase):
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": str(self.home)})
         parche.start()
         self.addCleanup(parche.stop)
+        # La puerta real de H4a cierra en la Mac (no hay gateway vivo): el
+        # comportamiento general se prueba con la puerta inyectada abierta y
+        # las clases de la puerta la cierran a propósito.
+        puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
+        puerta.start()
+        self.addCleanup(puerta.stop)
+        # La interseccion de toolsets (H4b3) lee el config.yaml con el PyYAML
+        # real donde este; en la Mac de pruebas, el doble del subset.
+        permisos = importlib.import_module("raices.permisos")
+        yaml_parche = mock.patch.object(permisos, "yaml", yaml_de_prueba())
+        yaml_parche.start()
+        self.addCleanup(yaml_parche.stop)
 
 
 class Script(Base):
@@ -137,6 +156,28 @@ class Script(Base):
         raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(self.PERMISOS if datos is None else datos), encoding="utf-8"
+        )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08).
+        perfil = self.home / "profiles" / "codex"
+        perfil.mkdir(parents=True, exist_ok=True)
+        (perfil / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Los toolsets efectivos son la intersección con el config real del
+        # perfil (H4b3): sin config, codex queda sin toolsets y el gate niega
+        # el despacho.
+        perfil = self.home / "profiles" / "codex"
+        perfil.mkdir(parents=True, exist_ok=True)
+        (perfil / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
+            encoding="utf-8",
         )
 
     def dejar_intencion_pendiente(self):
@@ -172,8 +213,12 @@ class Script(Base):
 
         cron = importlib.import_module("raices.cron_ticker")
         salida = StringIO()
+        permisos = importlib.import_module("raices.permisos")
         with redirect_stdout(salida):
-            codigo = cron.correr()
+            with mock.patch.object(permisos, "yaml", yaml_de_prueba()):
+                # La puerta real cierra en la Mac (no hay gateway vivo): la
+                # inyección deja la vuelta como era antes de H4a.
+                codigo = cron.correr(ruta_abierta=lambda: (True, None))
         self.assertEqual(codigo, 0)
         self.assertEqual(salida.getvalue(), "")
 
@@ -277,7 +322,112 @@ class Script(Base):
         self.assertEqual(codigo, 1)
         self.assertIn("ERROR ticker raices:", salida.getvalue())
 
+    def test_la_puerta_abierta_borra_el_checkpoint_de_capacidad_incierta(self):
+        # CR1: Hermes sube solo a diario. Si al abrir no se borra el
+        # checkpoint, un cierre posterior con la MISMA causa no volveria a
+        # avisar (avisar_capacidad_incierta ve la misma causa y se calla).
+        cron = importlib.import_module("raices.cron_ticker")
+        checkpoint = self.home / "raices" / "capacidad-incierta.json"
+        checkpoint.parent.mkdir(exist_ok=True)
+
+        # 1) Cerrada: avisa y deja el checkpoint.
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(
+                cron.correr(ruta_abierta=lambda: (False, "version-no-certificada")), 0
+            )
+        self.assertIn("CAPACIDAD_INCIERTA (version-no-certificada)", errores.getvalue())
+        self.assertTrue(checkpoint.exists())
+        self.assertEqual(
+            json.loads(checkpoint.read_text(encoding="utf-8"))["causa"],
+            "version-no-certificada",
+        )
+
+        # 2) Abierta: el checkpoint se borra.
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        self.instalar_permisos()
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(cron.correr(enviar=lambda _texto: 42), 0)
+        self.assertFalse(
+            checkpoint.exists(),
+            "con la puerta abierta el checkpoint de la puerta cerrada se borra",
+        )
+
+        # 3) Cerrada con la MISMA causa: avisa OTRA vez.
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            self.assertEqual(
+                cron.correr(ruta_abierta=lambda: (False, "version-no-certificada")), 0
+            )
+        self.assertIn(
+            "CAPACIDAD_INCIERTA (version-no-certificada)",
+            errores.getvalue(),
+            "el mismo causa vuelve a avisar tras un ciclo abierto",
+        )
+        self.assertTrue(checkpoint.exists())
+
+    def test_un_checkpoint_irborrable_no_tumba_la_vuelta(self):
+        # F8: en Windows el unlink puede fallar (archivo en uso, ACL). Un
+        # OSError del borrado del checkpoint va a stderr y la vuelta sigue:
+        # no aborta el cron cada minuto. El directorio en el path hace que
+        # unlink levante OSError (IsADirectoryError/PermissionError).
+        cron = importlib.import_module("raices.cron_ticker")
+        checkpoint = self.home / "raices" / "capacidad-incierta.json"
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.mkdir()
+        self.addCleanup(lambda: checkpoint.is_dir() and checkpoint.rmdir())
+
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            # correr() completa la vuelta entera: sin el try/except el unlink
+            # revienta antes de abrir el store y la llamada ni siquiera
+            # devuelve (fue la roja).
+            codigo = cron.correr(enviar=lambda _texto: 42)
+        self.assertEqual(codigo, 0, "la vuelta corre pese al borrado fallido")
+        self.assertIn("capacidad-incierta", errores.getvalue())
+        self.assertEqual(salida.getvalue(), "")
+
     def test_la_ruta_cerrada_no_corre_y_no_abre_nada(self):
+        cron = importlib.import_module("raices.cron_ticker")
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            codigo = cron.correr(
+                ruta_abierta=lambda: (False, "capacidad-faltante:write_txn")
+            )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(
+            salida.getvalue(),
+            "",
+            "el stdout del no_agent se entrega: la ruta cerrada no es ruido",
+        )
+        texto = errores.getvalue()
+        self.assertIn("ruta de raices cerrada (capacidad-faltante:write_txn)", texto)
+        self.assertIn("CAPACIDAD_INCIERTA (capacidad-faltante:write_txn)", texto)
+        self.assertFalse((self.home / "sistema-agentes.db").exists())
+
+    def test_la_ruta_cerrada_por_version_concilia_sin_despachar(self):
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        self.instalar_permisos()
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        tienda.abrir_raiz(META)
+        hecho = {
+            "principal": [],
+            "asignaciones": [
+                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        self.assertFalse(hasattr(dictamen, "codigo"))
+        intenciones = tienda.intenciones_pendientes()
+        self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
+        tienda.cerrar()
+
         cron = importlib.import_module("raices.cron_ticker")
         salida, errores = StringIO(), StringIO()
         with redirect_stdout(salida), redirect_stderr(errores):
@@ -288,17 +438,38 @@ class Script(Base):
             "",
             "el stdout del no_agent se entrega: la ruta cerrada no es ruido",
         )
-        self.assertIn(
-            "ruta de raices cerrada (version-no-certificada)", errores.getvalue()
+        texto = errores.getvalue()
+        self.assertIn("CAPACIDAD_INCIERTA (version-no-certificada)", texto)
+        self.assertIn("ruta de raices cerrada (version-no-certificada)", texto)
+        self.assertTrue((self.home / "sistema-agentes.db").exists())
+        # Con la puerta cerrada la pasada del emisor no corre: ni
+        # proyeccion ni aviso, el CAPACIDAD_INCIERTA es el unico mensaje.
+        self.assertFalse(
+            (self.home / "raices" / "proyecciones" / f"{RAIZ}.json").exists()
         )
-        self.assertFalse((self.home / "sistema-agentes.db").exists())
+
+        kanban = importlib.import_module("raices.kanban")
+        puerto = kanban.KanbanHermes(self.home / "kanban.db")
+        self.addCleanup(puerto.cerrar)
+        self.assertIsNone(puerto.leer_estado(f"sa:{RAIZ}:a:1"))
+        tienda2 = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda2.cerrar)
+        self.assertEqual(
+            [(i.unit_id, i.attempt) for i in tienda2.intenciones_pendientes()],
+            [("a", 1)],
+        )
 
     def test_un_fallo_de_la_vuelta_sale_en_error(self):
         cron = importlib.import_module("raices.cron_ticker")
         (self.home / "sistema-agentes.db").mkdir()
-        salida = StringIO()
-        with redirect_stdout(salida):
-            codigo = cron.main()
+        # La puerta real cerraría antes de tocar el store: con la puerta
+        # abierta la vuelta llega al store roto y main lo reporta.
+        with mock.patch.object(
+            cron, "ruta_de_raices_abierta", return_value=(True, None)
+        ):
+            salida = StringIO()
+            with redirect_stdout(salida):
+                codigo = cron.main()
         self.assertEqual(codigo, 1)
         self.assertIn("ERROR ticker raices:", salida.getvalue())
 
@@ -400,6 +571,25 @@ class StoreCompartido(Base):
             ),
             encoding="utf-8",
         )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08) y los
+        # toolsets efectivos la interseccion con el config real (H4b3); el
+        # managed.json y el config viven en profiles bajo la raiz.
+        perfil = self.raiz / "profiles" / "codex"
+        perfil.mkdir(parents=True)
+        (perfil / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (perfil / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
+            encoding="utf-8",
+        )
         with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.raiz)}):
             cron = importlib.import_module("raices.cron_ticker")
             salida = StringIO()
@@ -450,6 +640,25 @@ class StoreCompartido(Base):
             ),
             encoding="utf-8",
         )
+        # El despacho exige el paquete poteto del perfil (H4b2, I08) y los
+        # toolsets efectivos la interseccion con el config real (H4b3); el
+        # managed.json y el config viven en profiles bajo la raiz.
+        perfil_codex = self.raiz / "profiles" / "codex"
+        perfil_codex.mkdir(parents=True)
+        (perfil_codex / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (perfil_codex / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
+            encoding="utf-8",
+        )
 
         constants.set_override(None)
         with mock.patch.dict("os.environ", {"HERMES_HOME": str(self.perfil_claw)}):
@@ -466,6 +675,88 @@ class StoreCompartido(Base):
         tarjeta = puerto.leer_estado(f"sa:{RAIZ}:a:1")
         self.assertIsNotNone(tarjeta)
         self.assertEqual(tarjeta.estado, "pendiente")
+
+    def test_cron_de_perfil_y_de_raiz_llegan_a_la_misma_puerta_y_permisos(self):
+        # La puerta (H4a) y los permisos (I07/H4b3) se resuelven sobre la
+        # RAIZ: correr el cron con el home del perfil claw y con la raiz
+        # consulta el MISMO gateway_state.json y el MISMO permisos.json. Si
+        # alguien leyera el home pelado, perfiles/claw no tiene raices/ y la
+        # puerta cerraria y los permisos serian None.
+        hogar = importlib.import_module("raices.hogar")
+        capacidades = importlib.import_module("raices.capacidades")
+        raices = self.raiz / "raices"
+        raices.mkdir()
+        (raices / "permisos.json").write_text(
+            json.dumps(
+                {
+                    "acciones": ["read", "implement"],
+                    "toolsets": {"codex": ["write"]},
+                    "comandos": ["git"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        perfil_codex = self.raiz / "profiles" / "codex"
+        perfil_codex.mkdir(parents=True)
+        (perfil_codex / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n",
+            encoding="utf-8",
+        )
+        # gateway_state.json vive en la raiz, nunca en el home del perfil.
+        (self.raiz / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "kind": "hermes-gateway",
+                    "gateway_state": "running",
+                    "code_version": "0.21.5",
+                    "code_sha": "b" * 40,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        puertas, consultadas, permisos = [], [], []
+
+        def capturar(home=None, **kwargs):
+            # La puerta REAL por dentro: hechos_vivos + decidir, sin pasar
+            # por el parche del Base. El importador inyectado falla: ninguna
+            # prueba unitaria importa el hermes_cli real en el proceso (en la
+            # PC dejaria el venv cargado y romperia el resto de la suite).
+            def sin_hermes_cli(_nombre):
+                raise ImportError("sondeo inyectado: sin hermes_cli")
+
+            consultadas.append(Path(home))
+            resultado = capacidades.decidir(
+                capacidades.hechos_vivos(home=home, importador=sin_hermes_cli)
+            )
+            puertas.append(resultado)
+            return resultado
+
+        for hermes_home in (str(self.perfil_claw), str(self.raiz)):
+            with mock.patch.object(capacidades, "abrir_ruta", capturar):
+                cron = importlib.import_module("raices.cron_ticker")
+                abierta, _causa = cron.ruta_de_raices_abierta(
+                    hogar.raiz_del_hogar(hermes_home)
+                )
+                self.assertIsInstance(abierta, bool)
+            permisos.append(hogar.leer_permisos(hermes_home))
+
+        # La MISMA puerta: ambas corridas consultaron la raiz y la puerta
+        # real decidio lo MISMO y cerrada (el gateway_state.json de la raiz
+        # es el leido en ambos casos). Con el sondeo inyectado sin
+        # hermes_cli la causa es determinista: capacidad-faltante:create_task.
+        self.assertEqual(consultadas, [self.raiz, self.raiz])
+        self.assertEqual(puertas[0], puertas[1])
+        self.assertEqual(puertas[0], (False, "capacidad-faltante:create_task"))
+        # Los MISMOS permisos: toolsets efectivos (write declarado y coding
+        # real) leidos del permisos.json de la raiz en ambos casos.
+        esperados = {
+            "acciones": ["read", "implement"],
+            "toolsets": {"codex": ["write"]},
+            "comandos": ["git"],
+        }
+        self.assertEqual(permisos[0], esperados)
+        self.assertEqual(permisos[0], permisos[1])
 
 
 class Arranque(Base):
@@ -491,9 +782,15 @@ class Arranque(Base):
         )
 
     def test_el_script_arranca_solo_con_el_doble_en_el_pythonpath(self):
+        # Sin gateway vivo la puerta real cierra por par-incierto: el script
+        # igual recorre todo (capacidades del doble, aviso, store, vuelta
+        # cerrada) y sale 0 sin crear tarjetas. El aviso va a stderr: el
+        # stdout del no_agent se entrega como salida del agente.
         proceso = self.probar_subprocess()
         self.assertEqual(proceso.returncode, 0, proceso.stderr)
         self.assertEqual(proceso.stdout, "")
+        self.assertIn("CAPACIDAD_INCIERTA (par-incierto)", proceso.stderr)
+        self.assertIn("ruta de raices cerrada (par-incierto)", proceso.stderr)
         self.assertTrue((self.home / "sistema-agentes.db").exists())
 
     def test_el_doble_de_hermes_cli_importa_con_ese_pythonpath(self):

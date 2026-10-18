@@ -21,6 +21,9 @@ sys.path.insert(0, str(REPO / "tests"))
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
 
+herramientas = importlib.import_module("raices.herramientas")
+store = importlib.import_module("raices.store")
+
 PLUGIN = REPO / "plugins/goncloud-team"
 
 RAIZ = "root-tool"
@@ -118,6 +121,12 @@ class Base(unittest.TestCase):
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": self.temporal.name})
         parche.start()
         self.addCleanup(parche.stop)
+        # La puerta real de H4a cierra en la Mac (no hay gateway vivo): las
+        # pruebas de comportamiento la inyectan abierta y la clase de la
+        # puerta la cierra a propósito.
+        puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
+        puerta.start()
+        self.addCleanup(puerta.stop)
         self.ctx = CtxFalso()
         self.plugin.register(self.ctx)
 
@@ -554,6 +563,179 @@ class CargaComoPaquete(unittest.TestCase):
                 (Path(temporal.name) / "sistema-agentes.db").exists(),
                 "el store se abre en el temporal, no en el home vivo",
             )
+
+
+class PuertaDeCapacidades(Base):
+    def test_cerrada_rechaza_el_submit_con_la_causa_y_sin_abrir_tienda(self):
+        with mock.patch(
+            "raices.capacidades.abrir_ruta",
+            return_value=(False, "version-no-certificada"),
+        ):
+            respuesta = self.llamar("goncloud_root_submit", {"plan": meta_de()})
+        self.assertEqual(
+            respuesta,
+            {"error": "ruta-cerrada", "detalle": {"causa": "version-no-certificada"}},
+        )
+        self.assertFalse((Path(self.temporal.name) / "sistema-agentes.db").exists())
+
+    def test_abierta_inyectada_el_submit_fluye_normal(self):
+        herramientas = importlib.import_module("raices.herramientas")
+        respuesta = herramientas.enviar_raiz(
+            {"plan": meta_de()},
+            "claw",
+            home=self.temporal.name,
+            ruta_abierta=lambda: (True, None),
+        )
+        self.assertEqual(respuesta["rootId"], RAIZ)
+        self.assertFalse(respuesta["replayed"])
+
+    def test_la_lectura_no_consulta_la_puerta(self):
+        puerta = mock.MagicMock(return_value=(False, "version-no-certificada"))
+        with mock.patch("raices.capacidades.abrir_ruta", puerta):
+            respuesta = self.llamar("goncloud_root_read", {"rootId": "root-nadie"})
+        self.assertEqual(respuesta["error"], "raiz-desconocida")
+        puerta.assert_not_called()
+
+    def test_la_puerta_del_submit_recibe_la_raiz_de_hogar(self):
+        # F8: el gateway_state.json vive en la RAIZ. El submit con el home de
+        # un perfil le pasa a la puerta la raiz resuelta por hogar, nunca el
+        # home pelado (perfiles/claw no tiene gateway_state.json).
+        raiz = Path(self.temporal.name) / "hermes-raiz"
+        (raiz / "profiles" / "claw").mkdir(parents=True)
+        consultada = []
+        puerta = mock.MagicMock(return_value=(True, None))
+
+        def capturar(home=None, **kwargs):
+            consultada.append(Path(home) if home is not None else None)
+            return puerta(home=home, **kwargs)
+
+        herramientas = importlib.import_module("raices.herramientas")
+        with mock.patch("raices.capacidades.abrir_ruta", capturar):
+            herramientas.enviar_raiz(
+                {"plan": meta_de()},
+                "claw",
+                home=str(raiz / "profiles" / "claw"),
+            )
+        self.assertEqual(consultada, [raiz])
+
+
+class Permisos(Base):
+    """La tienda de las herramientas abre con los mismos permisos del ticker
+    (cron_ticker.leer_permisos sobre %HERMES_HOME%/raices/permisos.json):
+    una sola fuente. Sin archivo, falla cerrada."""
+
+    def preparar_efecto(self):
+        tienda = herramientas.abrir_tienda(self.temporal.name)
+        self.addCleanup(tienda.cerrar)
+        decision = {
+            "expected_plan_revision": 1,
+            "expected_control_epoch": 1,
+            "consumidos": [],
+            "claims": [],
+            "outcomes": [],
+            "bindings": [],
+            "efectos": [
+                {
+                    "effectId": "effect-push",
+                    "action": "push",
+                    "repo": "owner-01/repo-a",
+                    "destination": "github.com/owner-01/repo-a",
+                    "mode": "implement",
+                    "cancellable": False,
+                    "unitId": None,
+                    "resourceRef": None,
+                }
+            ],
+            "contadores": [],
+            "excepciones": [],
+            "respuestas_aplicadas": [],
+        }
+        self.assertIsInstance(tienda.aplicar(RAIZ, decision, "dec-ef"), store.Ok)
+
+    def escribir_permisos(self, acciones):
+        raices = Path(self.temporal.name) / "raices"
+        raices.mkdir(parents=True, exist_ok=True)
+        (raices / "permisos.json").write_text(
+            json.dumps(
+                {
+                    "acciones": acciones,
+                    "toolsets": {"codex": ["read", "write"]},
+                    "comandos": ["git", "python3"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def causa_de_efecto_en_read(self):
+        respuesta = self.llamar("goncloud_root_read", {"rootId": RAIZ})
+        causas = [
+            e["subject"].get("cause", "")
+            for e in respuesta["excepciones"]
+            if isinstance(e.get("subject"), dict)
+        ]
+        return [c for c in causas if c.startswith("permiso-h:")]
+
+    def test_la_tienda_de_las_herramientas_lee_la_misma_fuente(self):
+        self.escribir_permisos(["push"])
+        tienda = herramientas.abrir_tienda(self.temporal.name)
+        self.addCleanup(tienda.cerrar)
+        self.assertEqual(tienda.permisos_h_datos["acciones"], ["push"])
+
+    def test_sin_archivo_la_tienda_abre_sin_permisos(self):
+        tienda = herramientas.abrir_tienda(self.temporal.name)
+        self.addCleanup(tienda.cerrar)
+        self.assertIsNone(tienda.permisos_h_datos)
+
+    def test_con_permisos_json_que_admite_el_resume_no_niega_por_sin_permisos(self):
+        self.abrir_raiz()
+        self.escribir_permisos(["push"])
+        self.preparar_efecto()
+        pausa = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "pause",
+                "commandId": "cmd-01",
+                "expectedControlEpoch": 1,
+            },
+        )
+        self.assertIn("state", pausa)
+        reanuda = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "resume",
+                "commandId": "cmd-02",
+                "expectedControlEpoch": 2,
+            },
+        )
+        self.assertIn("state", reanuda)
+        self.assertEqual(self.causa_de_efecto_en_read(), [])
+
+    def test_sin_archivo_sigue_fallando_cerrado(self):
+        self.abrir_raiz()
+        self.preparar_efecto()
+        pausa = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "pause",
+                "commandId": "cmd-01",
+                "expectedControlEpoch": 1,
+            },
+        )
+        self.assertIn("state", pausa)
+        reanuda = self.llamar(
+            "goncloud_root_control",
+            {
+                "rootId": RAIZ,
+                "command": "resume",
+                "commandId": "cmd-02",
+                "expectedControlEpoch": 2,
+            },
+        )
+        self.assertIn("state", reanuda)
+        self.assertIn("permiso-h:sin-permisos", self.causa_de_efecto_en_read())
 
 
 if __name__ == "__main__":

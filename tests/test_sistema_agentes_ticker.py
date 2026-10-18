@@ -190,12 +190,13 @@ class Escenario(unittest.TestCase):
         kanban = DobleKanban()
         return tienda, kanban
 
-    def vuelta(self, tienda, kanban, hechos=None):
+    def vuelta(self, tienda, kanban, hechos=None, ruta_abierta=True):
         return ticker.vuelta(
             tienda,
             kanban,
             {RAIZ: hechos or hechos_de_raiz()},
             permisos_h=permisos_de_prueba(),
+            ruta_abierta=ruta_abierta,
         )
 
     def terminar_a_y_b(self, tienda, kanban, hechos=None):
@@ -973,6 +974,58 @@ class I12PoliticaDelTicker(unittest.TestCase):
         self.assertTrue(regla4["revisorExcluyeAutores"])
         self.assertFalse(regla4["segundoModelo"])
         self.assertEqual(regla4["decision"]["by"], "David")
+
+
+class RutaCerrada(Escenario):
+    """Con la puerta de capacidades cerrada (H4a) la vuelta bloquea y
+    concilia igual, pero no decide, no despacha ni levanta el gate de
+    arranque: una intención pendiente no se consume y un intento abierto
+    conserva su snapshot."""
+
+    def test_cerrada_no_despacha_y_las_intenciones_siguen_pendientes(self):
+        tienda, kanban = self.frescar()
+        kanban.caer_en(PuntoDeCaida.ANTES_DE_BUSCAR)
+        with self.assertRaises(kanban_port.CaidaInyectada):
+            self.vuelta(tienda, kanban)
+        self.assertEqual(
+            [(i.unit_id, i.attempt) for i in tienda.intenciones_pendientes()],
+            [("a", 1), ("b", 1)],
+        )
+        kanban.quitar_caida(PuntoDeCaida.ANTES_DE_BUSCAR)
+
+        informe = self.vuelta(tienda, kanban, ruta_abierta=False)
+        self.assertEqual(informe, ticker.Informe(0, 0, (), 0, None))
+        self.assertEqual(
+            [(i.unit_id, i.attempt) for i in tienda.intenciones_pendientes()],
+            [("a", 1), ("b", 1)],
+        )
+        for unit_id in ("a", "b"):
+            self.assertIsNone(kanban.por_clave(clave_de_tarjeta(RAIZ, unit_id, 1)))
+
+        self.vuelta(tienda, kanban)
+        for unit_id in ("a", "b"):
+            self.assertIsNotNone(kanban.por_clave(clave_de_tarjeta(RAIZ, unit_id, 1)))
+
+    def test_cerrada_concilia_la_tarjeta_corriendo_sin_aceptar(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        kanban.crear_corriendo(clave_de_tarjeta(RAIZ, "a", 1))
+        kanban.crear_hecha(clave_de_tarjeta(RAIZ, "b", 1), resultado_aprobado())
+
+        informe = self.vuelta(tienda, kanban, ruta_abierta=False)
+        self.assertEqual(informe, ticker.Informe(2, 0, (), 0, None))
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        estados = {u["unitId"]: u["state"] for u in vista["unidades"]}
+        self.assertEqual(estados, {"a": "running", "b": "reported"})
+        self.assertEqual(len(vista["resultados"]), 1)
+
+        kanban.crear_hecha(clave_de_tarjeta(RAIZ, "a", 1), resultado_aprobado())
+        informe = self.vuelta(tienda, kanban, ruta_abierta=False)
+        self.assertEqual(informe, ticker.Informe(1, 0, (), 0, None))
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        estados = {u["unitId"]: u["state"] for u in vista["unidades"]}
+        self.assertEqual(estados, {"a": "reported", "b": "reported"})
+        self.assertEqual(len(vista["resultados"]), 2)
 
 
 if __name__ == "__main__":

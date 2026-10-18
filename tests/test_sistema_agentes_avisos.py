@@ -559,5 +559,75 @@ class CheckpointQueLanza(Emisor):
         self.assertIsNotNone(sana["noticed_at"])
 
 
+class CapacidadIncierta(unittest.TestCase):
+    """El aviso de ruta cerrada (H4a): una vez por cambio de causa, con el
+    checkpoint en disco y sin confirmación no avanza."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directorio.cleanup)
+        self.ruta = Path(self.directorio.name) / "capacidad-incierta.json"
+        self.textos: list = []
+
+    def enviar(self, mensaje_id=7):
+        def enviar(texto):
+            self.textos.append(texto)
+            return mensaje_id
+
+        return enviar
+
+    def avisar(self, causa="version-no-certificada", mensaje_id=7, ruta=None):
+        return proyeccion.avisar_capacidad_incierta(
+            ruta or self.ruta, causa, AHORA, self.enviar(mensaje_id)
+        )
+
+    def test_la_primera_vez_avisa_y_deja_estado(self):
+        informe = self.avisar()
+        self.assertEqual(informe, {"avisada": True, "messageId": 7})
+        self.assertEqual(len(self.textos), 1)
+        self.assertIn("CAPACIDAD_INCIERTA", self.textos[0])
+        self.assertIn("version-no-certificada", self.textos[0])
+        estado = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.assertEqual(estado["causa"], "version-no-certificada")
+        self.assertEqual(estado["messageId"], 7)
+        self.assertEqual(estado["avisadaEn"], "2026-10-17T12:00:00Z")
+
+    def test_la_misma_causa_no_vuelve_a_avisar(self):
+        self.avisar(causa="par-incierto")
+        informe = self.avisar(causa="par-incierto")
+        self.assertEqual(informe, {"avisada": False})
+        self.assertEqual(len(self.textos), 1)
+
+    def test_una_causa_distinta_avisa_otra_vez(self):
+        self.avisar(causa="par-incierto")
+        informe = self.avisar(causa="capacidad-faltante:write_txn")
+        self.assertEqual(informe, {"avisada": True, "messageId": 7})
+        estado = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.assertEqual(estado["causa"], "capacidad-faltante:write_txn")
+
+    def test_sin_confirmacion_no_avanza_el_estado(self):
+        for mensaje_id in (None, 0, "x"):
+            with self.subTest(mensaje_id=mensaje_id):
+                informe = self.avisar(mensaje_id=mensaje_id)
+                self.assertEqual(informe, {"avisada": False})
+                self.assertFalse(self.ruta.exists())
+
+    def test_el_estado_ilegible_reintenta_el_aviso(self):
+        self.ruta.write_text("{ roto", encoding="utf-8")
+        informe = self.avisar()
+        self.assertEqual(informe, {"avisada": True, "messageId": 7})
+
+    def test_crea_el_directorio_del_checkpoint_y_avisa_una_sola_vez(self):
+        ruta = Path(self.directorio.name) / "no-existe" / "capacidad-incierta.json"
+        informe = self.avisar(ruta=ruta)
+        self.assertEqual(informe, {"avisada": True, "messageId": 7})
+        self.assertTrue(ruta.parent.is_dir())
+        estado = json.loads(ruta.read_text(encoding="utf-8"))
+        self.assertEqual(estado["causa"], "version-no-certificada")
+        informe = self.avisar(ruta=ruta)
+        self.assertEqual(informe, {"avisada": False})
+        self.assertEqual(len(self.textos), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

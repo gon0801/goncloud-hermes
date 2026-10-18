@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""El doble convive con el hermes_constants real de la PC (SUA-07 H2, r7).
+"""El doble convive con el hermes_constants y el hermes_cli reales de la PC
+(SUA-07 H2, r7; defensa r2).
 
 raices.hogar resuelve hermes_constants en cada llamada: en la PC el real
-llega a sys.modules antes de que la prueba instale el doble. La guarda no
-puede fallar solo porque el real existe; durante la prueba el resolvedor
-debe ver el doble y al terminar el real queda restaurado. Mezclar el
-hermes_cli real con el doble a medias sigue siendo error.
+llega a sys.modules antes de que la prueba instale el doble. Y el hermes_cli
+real del venv puede quedar cargado por un residuo de otra prueba. instalar
+GUARDA lo que haya de ambos, monta el doble, y desinstalar RESTAURA el
+modulo exacto de antes: el orden de las pruebas no rompe la suite ni deja
+mezclas a medias.
 """
 
 import importlib
@@ -60,11 +62,53 @@ class ConviveConElReal(unittest.TestCase):
                 finally:
                     hermes_falso.desinstalar()
 
-    def test_un_hermes_cli_real_presente_sigue_siendo_conflicto(self):
-        real = types.ModuleType("hermes_cli")
-        with mock.patch.dict(sys.modules, {"hermes_cli": real}):
-            with self.assertRaises(RuntimeError):
-                hermes_falso.instalar()
+    def test_un_hermes_cli_real_presente_se_guarda_y_se_restaura(self):
+        # Defensa (r2): el hermes_cli real del venv cargado por un residuo de
+        # otra prueba ya no revienta instalar. Durante la prueba el modulo es
+        # el doble y al desinstalar el real queda EXACTO como estaba (el
+        # mismo objeto, con sus submodulos), igual que hermes_constants.
+        real_cli = types.ModuleType("hermes_cli")
+        real_db = types.ModuleType("hermes_cli.kanban_db")
+        real_connect = types.ModuleType("hermes_cli.kanban_db_connect")
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "hermes_cli": real_cli,
+                "hermes_cli.kanban_db": real_db,
+                "hermes_cli.kanban_db_connect": real_connect,
+            },
+        ):
+            hermes_falso.instalar()
+            try:
+                self.assertIsNot(
+                    sys.modules["hermes_cli"],
+                    real_cli,
+                    "durante la prueba el hermes_cli es el doble",
+                )
+            finally:
+                hermes_falso.desinstalar()
+            self.assertIs(sys.modules["hermes_cli"], real_cli)
+            self.assertIs(sys.modules["hermes_cli.kanban_db"], real_db)
+            self.assertIs(sys.modules["hermes_cli.kanban_db_connect"], real_connect)
+
+    def test_instalar_sin_nada_previo_no_deja_residuos(self):
+        # F5: "sin residuos" compara contra el estado capturado ANTES de
+        # instalar: desinstalar restaura lo previo, así que si un módulo
+        # existía antes (el real de la PC, un residuo de otra prueba) debe
+        # seguir estando tras desinstalar, y si no estaba, no aparece.
+        antes = {nombre: sys.modules.get(nombre) for nombre in hermes_falso.MODULOS}
+        hermes_falso.instalar()
+        try:
+            self.assertIn("hermes_cli", sys.modules)
+        finally:
+            hermes_falso.desinstalar()
+        for nombre, modulo in antes.items():
+            if modulo is None:
+                self.assertNotIn(nombre, sys.modules, f"{nombre} es residuo")
+            else:
+                self.assertIs(
+                    sys.modules.get(nombre), modulo, f"{nombre} no quedó restaurado"
+                )
 
 
 if __name__ == "__main__":
