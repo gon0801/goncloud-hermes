@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import hermes_autoupdate  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 import model_watch  # noqa: E402
+import promote_model  # noqa: E402
 from model_lines import Promotion, Ran  # noqa: E402
 
 FIXTURE = ROOT / "tests/fixtures/model-routing.source.json"
@@ -24,6 +25,40 @@ PONG_TURN = "PONG\n\nsession_id: 20261015_113404_1e7391\n"
 GROK_ONLY = {"xai": {"grok-4.7": {}, "grok-4.8": {}}}
 #: One effort on every cell, so the promotion is one route and one probe.
 K_ONLY = {"kimi-code-plan-global": {"k3": {}, "k4": {}}}
+
+
+class BudgetTests(unittest.TestCase):
+    def test_cada_modelo_de_la_v6_cabe_en_el_presupuesto_del_cron(self):
+        # Owner call, 2026-10-18: with one probe per effort grok-4.7 needed
+        # 3330 s against a 3300 s budget and never moved. One probe per model
+        # must leave every model of the real v6 table inside the budget.
+        source = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+        cells_by_ref = {}
+        for row, labels in source["chains"].items():
+            for position, label in enumerate(labels):
+                ref, _ = promote_model.split_label(label)
+                cells_by_ref.setdefault(ref, []).append(f"{row}:{position}")
+        self.assertIn("xai/grok-4.7", cells_by_ref)
+        for ref, cells in cells_by_ref.items():
+            with self.subTest(ref=ref):
+                routes, unprobed = promote_model.probe_plan(source, cells)
+                worst = (
+                    len(routes) * hermes_autoupdate.PROBE_TIMEOUT
+                    + 3 * hermes_autoupdate.DEPLOY_TIMEOUT
+                    + 2 * hermes_autoupdate.TURN_TIMEOUT
+                    + hermes_autoupdate._GIT_STEPS * hermes_autoupdate.GIT_TIMEOUT
+                )
+                self.assertLessEqual(
+                    worst,
+                    hermes_autoupdate.SCRIPT_LIMIT - hermes_autoupdate.SAFETY,
+                    f"{ref} no cabe ({worst} s)",
+                )
+        grok = cells_by_ref["xai/grok-4.7"]
+        routes, unprobed = promote_model.probe_plan(source, grok)
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(unprobed, {"xai/grok-4.7": ["medium", "low"]})
 
 
 class PlanTableTests(unittest.TestCase):
@@ -207,9 +242,39 @@ class RunnerTests(unittest.TestCase):
             (self.checkout / "model-routing.source.json").read_text(encoding="utf-8")
         )
 
-    def go(self, run, budget=10_000):
+    def go(self, run, budget=10_000, promotion=None):
         return hermes_autoupdate.autoupdate(
-            self.setup, self.k3, run=run, clock=lambda: 0, deadline=budget
+            self.setup,
+            self.k3 if promotion is None else promotion,
+            run=run,
+            clock=lambda: 0,
+            deadline=budget,
+        )
+
+    def test_una_promocion_de_grok_sondea_una_vez_y_nombra_lo_sin_sondar(self):
+        grok = hermes_autoupdate.plan_table(self.table(), GROK_ONLY)[0]
+        run = FakeRun()
+
+        outcomes = self.go(run, promotion=grok)
+
+        self.assertEqual(
+            run.calls,
+            [
+                "git status",
+                "probe 3",
+                "turn",
+                "git commit",
+                "configure",
+                "configure --check",
+                "turn",
+                "git pull",
+                "git push",
+            ],
+        )
+        self.assertEqual(run.argv[1][-2:], ["3", "xai/grok-4.8 (high)"])
+        self.assertEqual(
+            [(o.status, o.detail) for o in outcomes],
+            [("cambiado", "sin sondar: (medium), (low)")],
         )
 
     def test_a_failed_probe_writes_nothing(self):

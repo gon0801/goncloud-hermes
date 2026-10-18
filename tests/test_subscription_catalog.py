@@ -443,28 +443,6 @@ class SlotSemanticsTests(unittest.TestCase):
                 },
             )
 
-    def test_the_family_table_covers_every_family_the_watcher_follows(self):
-        # model_lines.FAMILIES keeps its prefixes equal to these by an AST test;
-        # every family here must also have a native provider binding.
-        import sys as _sys
-
-        _sys.path.insert(0, str(ROOT / "scripts"))
-        import model_lines
-
-        self.assertEqual(
-            {prefix for prefix, _ in ()} | set(model_lines.FAMILIES),
-            {
-                "muse-",
-                "claude-",
-                "gpt-",
-                r"k\d",
-                "kimi-",
-                "glm-",
-                "grok-",
-                "deepseek-",
-            },
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

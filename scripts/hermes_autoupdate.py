@@ -28,7 +28,7 @@ from model_lines import (
     run as real_run,
     split_held,
 )
-from promote_model import probe_routes, replace_label, split_label
+from promote_model import probe_plan, replace_label, split_label
 
 TABLE = "model-routing.source.json"
 #: Written by configure_team.py next to the installed watcher.
@@ -164,7 +164,7 @@ def promote(setup, promotion, run, budget):
         cells = replace_label(changed, old, new)
     except ValueError as error:
         return failed(str(error))
-    routes = probe_routes(changed, cells)
+    routes, unprobed = probe_plan(changed, cells)
     worst = (
         len(routes) * PROBE_TIMEOUT
         + 3 * DEPLOY_TIMEOUT
@@ -227,14 +227,22 @@ def promote(setup, promotion, run, budget):
 
     # A merge, not a rebase: rebasing would rewrite the commit just deployed,
     # and configure_team.py then refuses every later deploy as a regression.
+    notes = []
+    if unprobed:
+        efforts = ", ".join(
+            f"({effort})" for efforts in unprobed.values() for effort in efforts
+        )
+        notes.append(f"sin sondar: {efforts}")
     pull = run([*git, "pull", "--no-rebase", "--no-edit"], GIT_TIMEOUT)
     if not pull.ok:
         run([*git, "merge", "--abort"], GIT_TIMEOUT)
-        return Outcome(promotion, "cambiado", f"sin push (pull: {pull.why()})")
+        notes.append(f"sin push (pull: {pull.why()})")
+        return Outcome(promotion, "cambiado", "; ".join(notes))
     push = run([*git, "push"], GIT_TIMEOUT)
     if not push.ok:
-        return Outcome(promotion, "cambiado", f"sin push ({push.why()})")
-    return Outcome(promotion, "cambiado")
+        notes.append(f"sin push ({push.why()})")
+        return Outcome(promotion, "cambiado", "; ".join(notes))
+    return Outcome(promotion, "cambiado", "; ".join(notes))
 
 
 def autoupdate(setup, promotions, *, run=real_run, clock=time.monotonic, deadline):

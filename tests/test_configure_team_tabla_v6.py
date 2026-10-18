@@ -326,6 +326,33 @@ class AdopcionTests(unittest.TestCase):
         previous = data["gestionado_previo"]
         self.assertEqual(live_adoptions(dict(previous), previous), {})
 
+    def test_with_adopted_routing_anida_los_overrides_del_vivo(self):
+        previous = {
+            "model": {"provider": "opencode-go", "default": "muse"},
+            "agent": {"keep": 1},
+        }
+        vivo_model = {"provider": "anthropic", "default": "claude-opus-5-5"}
+        adopted = {
+            "model": vivo_model,
+            "agent.reasoning_overrides": {"claude-opus-5-5": "high"},
+        }
+
+        effective = configure_team.with_adopted_routing(previous, adopted)
+
+        self.assertEqual(
+            effective,
+            {
+                "model": vivo_model,
+                "agent": {
+                    "keep": 1,
+                    "reasoning_overrides": {"claude-opus-5-5": "high"},
+                },
+            },
+        )
+        # No mutation of the inputs.
+        self.assertEqual(previous["agent"], {"keep": 1})
+        self.assertNotIn("reasoning_overrides", previous.get("agent", {}))
+
 
 class AdopcionEndToEndTests(unittest.TestCase):
     """configure() against a stub Hermes runtime, with the live PC state."""
@@ -436,9 +463,12 @@ class AdopcionEndToEndTests(unittest.TestCase):
                 self.assertEqual(len(record), 1, profile)
                 entry = next(iter(record.values()))
                 self.assertIn("2026-10-17", entry["reason"], profile)
-                self.assertIn("Anthropic", entry["reason"], profile)
                 self.assertIn("model", entry["keys"], profile)
                 self.assertIn("fallback_providers", entry["keys"], profile)
+                # The hand-written reasoning overrides are part of the same
+                # manual rerouting: adopted as previous, then replaced by the
+                # v6 lane's.
+                self.assertIn("agent.reasoning_overrides", entry["keys"], profile)
 
     def test_sin_bandera_el_rechazo_nombra_el_conflicto(self):
         runtime = self.runtime_rechazo

@@ -22,9 +22,11 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-opus-5-5": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -51,11 +53,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "medium",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -116,11 +120,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "medium",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -183,11 +189,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-sol": "xhigh",
-    "claude-opus-5-5": "xhigh",
-    "muse-wonder-1.0": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-sol": "xhigh",
+     "claude-opus-5-5": "xhigh",
+     "muse-wonder-1.0": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -248,12 +256,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -316,8 +326,10 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -344,12 +356,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -412,9 +426,11 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-sonnet-5-5": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -443,9 +459,11 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-opus-5-5": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -472,12 +490,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -538,12 +558,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -604,11 +626,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "medium",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -669,11 +693,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "medium",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -734,8 +760,10 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-sonnet-5-5": "medium"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "medium"
+    }
    }
   },
   "gestionado_previo": {},
@@ -762,11 +790,13 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "medium",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "medium",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high"
+    }
    }
   },
   "gestionado_previo": {
@@ -829,9 +859,11 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-opus-5-5": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-opus-5-5": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -860,9 +892,11 @@
      "model": "glm-5.3"
     }
    ],
-   "reasoning_overrides": {
-    "claude-sonnet-5-5": "medium",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "medium",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},
@@ -889,12 +923,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -955,12 +991,14 @@
      "model": "glm-5.3-flash"
     }
    ],
-   "reasoning_overrides": {
-    "gpt-5.6-terra": "xhigh",
-    "claude-sonnet-5-5": "xhigh",
-    "kimi-for-coding": "high",
-    "muse-wonder-1.0": "high",
-    "claude-haiku-5-5": "low"
+   "agent": {
+    "reasoning_overrides": {
+     "gpt-5.6-terra": "xhigh",
+     "claude-sonnet-5-5": "xhigh",
+     "kimi-for-coding": "high",
+     "muse-wonder-1.0": "high",
+     "claude-haiku-5-5": "low"
+    }
    }
   },
   "gestionado_previo": {
@@ -1023,9 +1061,11 @@
      "base_url": "https://api.z.ai/api/coding/paas/v4"
     }
    ],
-   "reasoning_overrides": {
-    "claude-sonnet-5-5": "high",
-    "k3": "high"
+   "agent": {
+    "reasoning_overrides": {
+     "claude-sonnet-5-5": "high",
+     "k3": "high"
+    }
    }
   },
   "gestionado_previo": {},

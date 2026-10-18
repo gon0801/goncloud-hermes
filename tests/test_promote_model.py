@@ -149,21 +149,21 @@ class ProbeListTests(unittest.TestCase):
             ['python scripts/probe_route.py --position 3 "meta/muse-wonder-1.0 (max)"'],
         )
 
-    def test_one_probe_per_label_wherever_it_sits(self):
-        # No position carries its own account since the v6 table: the same
-        # label at two positions is probed once, at its first position. A
-        # different effort is a different real call and gets its own probe.
+    def test_one_probe_per_model_at_the_highest_effort_the_table_uses(self):
+        # Owner call, 2026-10-18: probing grok-4.7's three efforts blew the
+        # watcher's cron budget (3330 s > 3300 s) and the model never moved.
+        # One probe per model, at its highest effort; the rest go unprobed.
         source = {
             "chains": {
                 "a": [
-                    "xai/grok-4.7 (low)",
+                    "xai/grok-4.7 (high)",
                     "anthropic/claude-sonnet-5",
                     "zai/glm-5.3",
-                    "xai/grok-4.7 (high)",
+                    "xai/grok-4.7 (medium)",
                 ],
                 "b": [
-                    "anthropic/claude-sonnet-5",
                     "xai/grok-4.7 (low)",
+                    "anthropic/claude-sonnet-5",
                     "zai/glm-5.3",
                     "kimi/k3",
                 ],
@@ -173,10 +173,10 @@ class ProbeListTests(unittest.TestCase):
 
         self.assertEqual(
             module.probes(source, cells),
-            [
-                'python scripts/probe_route.py --position 0 "xai/grok-4.8 (low)"',
-                'python scripts/probe_route.py --position 3 "xai/grok-4.8 (high)"',
-            ],
+            ['python scripts/probe_route.py --position 0 "xai/grok-4.8 (high)"'],
+        )
+        self.assertEqual(
+            module.unprobed_efforts(source, cells), {"xai/grok-4.8": ["medium", "low"]}
         )
 
 

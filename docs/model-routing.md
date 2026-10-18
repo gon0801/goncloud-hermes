@@ -61,11 +61,14 @@ parser exige para aceptar el terminal) y reporto `cost: 0`, o sea lo sirve la
 suscripcion y no una API medida. La tabla del propietario no cambio: `glm-5.3` y
 `glm-5.3-flash` siguen en los slots donde estan, solo que ahora llegan con manos.
 
-`deepseek` se dejo como esta a proposito. Ese modelo ya tiene camino con
-herramientas y el slot 0 lo usa (`opencode-go/deepseek-v4.1-flash`, suscripcion),
-mientras que el adaptador HTTP homonimo es la unica ruta que factura como API,
-declarada asi para verifier F6 y scout F4. Migrarlo al CLI cambiaria esa
-decision de facturacion, asi que queda pendiente de una orden explicita.
+`deepseek` se dejo como esta a proposito (2026-09-26, historico): entonces el
+adaptador HTTP homonimo era la unica ruta que facturaba como API, declarada
+para verifier F6 y scout F4. Con la tabla v6 (2026-10-17) no queda ninguna
+ruta facturada por API: DeepSeek Flash corre solo por la suscripcion de
+OpenCode Go (`opencode-go/deepseek-v4.1-flash (off)` en operativo y simples)
+y el adaptador HTTP `deepseek` queda deliberadamente sin binding; la matriz
+de probes lo conserva solo como gemelo HTTP para verificar la llave
+guardada (`DEEPSEEK_API_KEY`), con `billing_mode=api` en esa sonda.
 
 ## Cadena nativa por perfil (2026-10-17; el director desde 2026-09-28)
 
