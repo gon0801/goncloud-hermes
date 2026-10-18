@@ -23,6 +23,7 @@ from conexiones import rastrear_conexiones  # noqa: E402
 
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
+instrucciones = importlib.import_module("raices.instrucciones")
 kanban_port = importlib.import_module("raices.kanban_port")
 decidir = importlib.import_module("raices.decidir")
 
@@ -45,10 +46,15 @@ def permisos_de_prueba():
     }
 
 
-def asignacion(adapter="codex", repo="owner-01/repo-a"):
+def asignacion(tienda, adapter="codex", repo="owner-01/repo-a"):
+    """El instructionRef apunta a una instrucción REAL del escenario (H6a):
+    el ticker despacha con el texto verificado, no con la cadena del ref."""
+    ref, digest = instrucciones.guardar(
+        tienda.dir_de_instrucciones, f"brief de {adapter}"
+    )
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": adapter},
-        "instructionRef": {"ref": f"artifact:inst-{adapter}", "digest": DIGEST},
+        "instructionRef": {"ref": ref, "digest": digest},
         "resultContract": "review.v1",
         "inputRevision": {"kind": "code", "repository": repo, "sha": "0" * 40},
         "continuation": {"kind": "requester"},
@@ -126,7 +132,7 @@ def meta_de():
     }
 
 
-def hechos_de_raiz():
+def hechos_de_raiz(tienda):
     claims = []
     for unit_id, criterio in (("a", "a1"), ("b", "b1"), ("c", "c1")):
         claims.append(
@@ -148,9 +154,9 @@ def hechos_de_raiz():
     return {
         "principal": ["david"],
         "asignaciones": [
-            {"unitId": "a", "assignment": asignacion(), "relay": False},
-            {"unitId": "b", "assignment": asignacion(), "relay": False},
-            {"unitId": "c", "assignment": asignacion(), "relay": False},
+            {"unitId": "a", "assignment": asignacion(tienda), "relay": False},
+            {"unitId": "b", "assignment": asignacion(tienda), "relay": False},
+            {"unitId": "c", "assignment": asignacion(tienda), "relay": False},
         ],
         "claims": claims,
         "efectos": [],
@@ -194,7 +200,7 @@ class Escenario(unittest.TestCase):
         return ticker.vuelta(
             tienda,
             kanban,
-            {RAIZ: hechos or hechos_de_raiz()},
+            {RAIZ: hechos or hechos_de_raiz(tienda)},
             permisos_h=permisos_de_prueba(),
             ruta_abierta=ruta_abierta,
         )
@@ -225,7 +231,7 @@ class I03Ticker(Escenario):
         self.assertEqual(len(kanban.creaciones_llamadas), 3)
         self.assertEqual(kanban.creaciones.count(clave_c), 1)
         self.assertEqual(tienda.intenciones_pendientes(), [])
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estado_c = [d["state"] for d in vista["unidades"] if d["unitId"] == "c"]
         self.assertEqual(estado_c, ["admitted"])
 
@@ -250,7 +256,7 @@ class I03Ticker(Escenario):
         for unit_id in ("a", "b"):
             clave = clave_de_tarjeta(RAIZ, unit_id, 1)
             self.assertEqual(kanban.creaciones.count(clave), 1)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         ligadas = sorted(d["unitId"] for d in vista["unidades"])
         self.assertEqual(ligadas, ["a", "b"])
         self.assertEqual(tienda.intenciones_pendientes(), [])
@@ -293,7 +299,7 @@ class I04Ticker(Escenario):
         self.assertIsNone(kanban.por_clave(clave_c))
         self.vuelta(tienda, kanban)
         self.assertIsNotNone(kanban.por_clave(clave_c))
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estado_c = [d["state"] for d in vista["unidades"] if d["unitId"] == "c"]
         self.assertEqual(estado_c, ["admitted"])
 
@@ -313,20 +319,20 @@ class I04Ticker(Escenario):
             self.vuelta(tienda, kanban)
         estado_tras_caida = [
             d["state"]
-            for d in tienda.leer_vista(RAIZ, hechos_de_raiz())["unidades"]
+            for d in tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))["unidades"]
             if d["unitId"] == "c"
         ]
         self.assertEqual(estado_tras_caida, ["running"])
         tienda.reportar_resultado = original
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(
             [d["state"] for d in vista["unidades"] if d["unitId"] == "c"],
             ["accepted"],
         )
         self.assertEqual(vista["resultados"], [])
         informe_de_mas = self.vuelta(tienda, kanban)
-        vista_de_mas = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista_de_mas = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(
             [d["state"] for d in vista_de_mas["unidades"] if d["unitId"] == "c"],
             ["accepted"],
@@ -341,7 +347,7 @@ class I04Ticker(Escenario):
             tarjeta.clave, {"resultContract": "review.v1", "verdict": "changes"}
         )
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estados = [d["state"] for d in vista["unidades"] if d["unitId"] == "a"]
         self.assertEqual(estados[0], "failed")
         self.assertEqual(
@@ -363,7 +369,7 @@ class I04Ticker(Escenario):
         tarjeta = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
         kanban.crear_archivada(tarjeta.clave)
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         unidad = [d for d in vista["unidades"] if d["unitId"] == "a"][0]
         self.assertEqual(unidad["state"], "cancelled")
         self.assertEqual(
@@ -400,7 +406,7 @@ class I04Ticker(Escenario):
             },
         )
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         episodios = {
             i["unitId"]: i["incident"]["episodeId"] for i in vista["incidencias"]
         }
@@ -423,7 +429,7 @@ class I04Ticker(Escenario):
         kanban.crear_hecha(clave_c, resultado_aprobado())
         informe = self.vuelta(tienda, kanban)
         self.assertEqual(informe.estado, "done")
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(
             sorted(d["state"] for d in vista["unidades"]),
             ["accepted", "accepted", "accepted"],
@@ -443,10 +449,10 @@ class I04Ticker(Escenario):
             },
         )
         informe = self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(vista["plazas"]["por_perfil"], {})
         self.assertEqual(informe.tarjetas_creadas, 1)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estados = [d["state"] for d in vista["unidades"] if d["unitId"] == "a"]
         self.assertEqual(estados, ["failed", "admitted"])
 
@@ -515,7 +521,7 @@ class ElCancelYLaBandeja(Escenario):
         finally:
             kanban_port.asegurar_tarjeta = original
         self.assertEqual(tienda.estado_de_control(RAIZ), "cancelled")
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(
             sorted(d["state"] for d in vista["unidades"]),
             ["cancelled", "cancelled"],
@@ -623,7 +629,7 @@ class ElCierreRojoYElCancelDelDueno(Escenario):
             store.Ok,
         )
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         cierre = [
             e
             for e in vista["excepciones"]
@@ -638,7 +644,7 @@ class ElCierreRojoYElCancelDelDueno(Escenario):
             store.Ok,
         )
         self.vuelta(tienda, kanban)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         cierre = [
             e
             for e in vista["excepciones"]
@@ -649,7 +655,7 @@ class ElCierreRojoYElCancelDelDueno(Escenario):
         tranquilidad = self.vuelta(tienda, kanban)
         self.assertEqual(tranquilidad.aplicadas, 0)
         self.assertEqual(tranquilidad.tarjetas_creadas, 0)
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         self.assertEqual(
             [e["type"] for e in vista["excepciones"]].count("CIERRE_ROJO"), 1
         )
@@ -661,7 +667,7 @@ class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
 
     def test_la_vuelta_sobrevive_a_un_hecho_mal_formado(self):
         tienda, kanban = self.frescar()
-        hechos = hechos_de_raiz()
+        hechos = hechos_de_raiz(tienda)
         hechos["claims"].append(
             {
                 "rootId": RAIZ,
@@ -688,7 +694,7 @@ class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
         )
         vista = tienda.leer_vista(RAIZ, hechos)
         ligada_a = [d["assignment"] for d in vista["unidades"] if d["unitId"] == "a"]
-        self.assertEqual(ligada_a, [asignacion()])
+        self.assertEqual(ligada_a, [asignacion(tienda)])
         otra = self.vuelta(tienda, kanban, hechos)
         self.assertEqual(otra.tarjetas_creadas, 0)
 
@@ -753,14 +759,16 @@ class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
         self.assertIn(borrador["exceptionId"], informe_aviso["avisadas"])
 
 
-def decision_con_binding(unit_id):
+def decision_con_binding(tienda, unit_id):
     return {
         "expected_plan_revision": 1,
         "expected_control_epoch": 1,
         "consumidos": [],
         "claims": [],
         "outcomes": [],
-        "bindings": [{"unitId": unit_id, "assignment": asignacion(), "writers": []}],
+        "bindings": [
+            {"unitId": unit_id, "assignment": asignacion(tienda), "writers": []}
+        ],
         "efectos": [],
         "contadores": [],
         "excepciones": [],
@@ -782,7 +790,8 @@ class ElConflictoDelArranqueNoSePierde(Escenario):
             "comandos": ["git", "python3"],
         }
         self.assertIsInstance(
-            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+            tienda.aplicar(RAIZ, decision_con_binding(tienda, "a"), "dec-liga"),
+            store.Ok,
         )
         # ...y su aplicar se hace conflictivo, como el F13 de r6.
         original = tienda.aplicar
@@ -814,12 +823,12 @@ class FilasCorruptasEnLaVista(Escenario):
         return tienda
 
     @staticmethod
-    def hechos_de(raiz):
+    def hechos_de(raiz, tienda):
         return {
             raiz: {
                 "principal": ["david"],
                 "asignaciones": [
-                    {"unitId": "a", "assignment": asignacion(), "relay": False}
+                    {"unitId": "a", "assignment": asignacion(tienda), "relay": False}
                 ],
                 "claims": [],
                 "efectos": [],
@@ -831,7 +840,8 @@ class FilasCorruptasEnLaVista(Escenario):
             # Un intento terminal (cancelado) de la raíz rota: sigue en la
             # vista pero no en las intenciones pendientes del despacho.
             self.assertIsInstance(
-                tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+                tienda.aplicar(RAIZ, decision_con_binding(tienda, "a"), "dec-liga"),
+                store.Ok,
             )
             tienda.control(
                 {
@@ -878,7 +888,7 @@ class FilasCorruptasEnLaVista(Escenario):
                 informe = ticker.vuelta(
                     tienda,
                     DobleKanban(),
-                    self.hechos_de("root-sana"),
+                    self.hechos_de("root-sana", tienda),
                     permisos_h=permisos_de_prueba(),
                 )
                 self.assertEqual(informe.tarjetas_creadas, 1)
@@ -899,7 +909,8 @@ class ElArranqueNoReaplica(Escenario):
     def montar(self):
         tienda, _kanban = self.frescar()
         self.assertIsInstance(
-            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+            tienda.aplicar(RAIZ, decision_con_binding(tienda, "a"), "dec-liga"),
+            store.Ok,
         )
         return tienda
 
@@ -1014,7 +1025,7 @@ class RutaCerrada(Escenario):
 
         informe = self.vuelta(tienda, kanban, ruta_abierta=False)
         self.assertEqual(informe, ticker.Informe(2, 0, (), 0, None))
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estados = {u["unitId"]: u["state"] for u in vista["unidades"]}
         self.assertEqual(estados, {"a": "running", "b": "reported"})
         self.assertEqual(len(vista["resultados"]), 1)
@@ -1022,7 +1033,7 @@ class RutaCerrada(Escenario):
         kanban.crear_hecha(clave_de_tarjeta(RAIZ, "a", 1), resultado_aprobado())
         informe = self.vuelta(tienda, kanban, ruta_abierta=False)
         self.assertEqual(informe, ticker.Informe(1, 0, (), 0, None))
-        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz(tienda))
         estados = {u["unitId"]: u["state"] for u in vista["unidades"]}
         self.assertEqual(estados, {"a": "reported", "b": "reported"})
         self.assertEqual(len(vista["resultados"]), 2)

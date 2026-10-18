@@ -232,7 +232,15 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     try:
         puerto = kanban.KanbanHermes(ruta_del_kanban(base))
         try:
-            ticker.vuelta(tienda, puerto, permisos_h=permisos, home=base)
+            # H6a: los hechos de asignación salen del store (lo que reconcile
+            # dejó sin consumer); ya nadie inyecta hechos a mano.
+            ticker.vuelta(
+                tienda,
+                puerto,
+                hechos_por_raiz=tienda.hechos_por_raiz(),
+                permisos_h=permisos,
+                home=base,
+            )
         finally:
             puerto.cerrar()
         _pasada_del_emisor(tienda, base, enviar or emisor_de_telegram(base))

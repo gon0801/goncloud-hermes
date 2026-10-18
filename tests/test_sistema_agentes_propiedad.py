@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 
 store = importlib.import_module("raices.store")
 decidir = importlib.import_module("raices.decidir")
+instrucciones = importlib.import_module("raices.instrucciones")
 ticker = importlib.import_module("raices.ticker")
 kanban_port = importlib.import_module("raices.kanban_port")
 
@@ -44,10 +45,13 @@ ARGUMENTOS_DE_VUELTA = (
 )
 
 
-def asignacion():
+def asignacion(dir_instrucciones):
+    """El instructionRef apunta a una instrucción REAL del escenario (H6a):
+    el ticker despacha con el texto verificado, no con la cadena del ref."""
+    ref, digest = instrucciones.guardar(dir_instrucciones, "brief de codex")
     return {
         "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
-        "instructionRef": {"ref": "artifact:inst-codex", "digest": DIGEST},
+        "instructionRef": {"ref": ref, "digest": digest},
         "resultContract": "review.v1",
         "inputRevision": {
             "kind": "code",
@@ -117,11 +121,16 @@ def meta(unidades):
     }
 
 
-def hechos(perfiles=("a", "b", "c"), claims=()):
+def hechos(dir_instrucciones, perfiles=("a", "b", "c"), claims=()):
     return {
         "principal": ["david"],
         "asignaciones": [
-            {"unitId": u, "assignment": asignacion(), "relay": False} for u in perfiles
+            {
+                "unitId": u,
+                "assignment": asignacion(dir_instrucciones),
+                "relay": False,
+            }
+            for u in perfiles
         ],
         "claims": list(claims),
         "efectos": [],
@@ -192,12 +201,16 @@ def politica_relevo(fila):
     return None
 
 
-def hechos_relevo():
+def hechos_relevo(dir_instrucciones):
     return {
         "principal": ["david"],
         "asignaciones": [
-            {"unitId": "a", "assignment": asignacion(), "relay": False},
-            {"unitId": "a", "assignment": asignacion(), "relay": True},
+            {
+                "unitId": "a",
+                "assignment": asignacion(dir_instrucciones),
+                "relay": False,
+            },
+            {"unitId": "a", "assignment": asignacion(dir_instrucciones), "relay": True},
         ],
         "claims": [],
         "efectos": [],
@@ -250,6 +263,10 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         self.directorio = tempfile.TemporaryDirectory()
         self.addCleanup(self.directorio.cleanup)
 
+    @property
+    def dir_de_instrucciones(self):
+        return Path(self.directorio.name) / "raices" / "instrucciones"
+
     def dirigir(
         self,
         nombre,
@@ -274,7 +291,9 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         self.addCleanup(tienda.cerrar)
         self.assertIsInstance(tienda.abrir_raiz(documento), store.Ok)
         kanban = kanban_port.DobleKanban()
-        hechos_raiz = hechos_raiz or hechos([u["unitId"] for u in unidades])
+        hechos_raiz = hechos_raiz or hechos(
+            self.dir_de_instrucciones, [u["unitId"] for u in unidades]
+        )
         estados = {}
         informe = None
         for _ in range(self.TOPE):
@@ -311,7 +330,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
                 kanban.crear_hecha(clave, carga(intento["unitId"], intento["attempt"]))
 
     def responder(self, tienda, politica):
-        vista = tienda.leer_vista(RAIZ, hechos(()))
+        vista = tienda.leer_vista(RAIZ, hechos(self.dir_de_instrucciones, ()))
         for fila in vista["excepciones"]:
             if fila["response"] is not None:
                 continue
@@ -352,7 +371,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             {"a": ["failed", "accepted"]},
             carga,
             politica_dueno,
-            hechos_raiz=hechos(("a",), claims=claims),
+            hechos_raiz=hechos(self.dir_de_instrucciones, ("a",), claims=claims),
         )
 
     def test_el_seguir_sobre_cierre_rojo_reabre_en_una_plaza_sin_conflictos(self):
@@ -412,7 +431,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             carga_aprobada,
             politica_relevo,
             presupuesto=1,
-            hechos_raiz=hechos_relevo(),
+            hechos_raiz=hechos_relevo(self.dir_de_instrucciones),
             hasta_done=False,
         )
 
@@ -441,7 +460,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             return propuesta
 
         # La primera decision liga a1 y despachamos su tarjeta.
-        primera = decidir_y_aplicar(hechos(("a",)))
+        primera = decidir_y_aplicar(hechos(self.dir_de_instrucciones, ("a",)))
         self.assertEqual([b["unitId"] for b in primera.decision["bindings"]], ["a"])
         tienda.reclamar_intencion(RAIZ, "a", 1)
         tienda.admitir_intento(RAIZ, "a", 1, "t-a1")
@@ -470,7 +489,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             store.Ok,
         )
         # La decision levanta NECESITA_DAVID(owner) e INESPERADO sobre a1.
-        segunda = decidir_y_aplicar(hechos(()))
+        segunda = decidir_y_aplicar(hechos(self.dir_de_instrucciones, ()))
         por_tipo = {
             e["type"]: e["exceptionId"] for e in segunda.decision["excepciones"]
         }
@@ -482,10 +501,12 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             ),
             store.Ok,
         )
-        decidir_y_aplicar(hechos(("b",)))
+        decidir_y_aplicar(hechos(self.dir_de_instrucciones, ("b",)))
         estados = {
             d["unitId"]: d["state"]
-            for d in tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+            for d in tienda.leer_vista(RAIZ, hechos(self.dir_de_instrucciones, ()))[
+                "unidades"
+            ]
         }
         self.assertEqual(estados.get("a"), "failed")
         self.assertEqual(estados.get("b"), "ready")
@@ -496,9 +517,11 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             store.Ok,
         )
         # El seguir tardio no puede abrir la plaza del intento muerto.
-        tardia = decidir_y_aplicar(hechos(()))
+        tardia = decidir_y_aplicar(hechos(self.dir_de_instrucciones, ()))
         self.assertEqual(tardia.decision["bindings"], [])
-        vivos = tienda.leer_vista(RAIZ, hechos(()))["unidades"]
+        vivos = tienda.leer_vista(RAIZ, hechos(self.dir_de_instrucciones, ()))[
+            "unidades"
+        ]
         self.assertEqual(
             [d["attempt"] for d in vivos if d["unitId"] == "a"],
             [1],
@@ -516,7 +539,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             {"a": ["accepted"]},
             carga_aprobada,
             politica_dueno,
-            hechos_raiz=hechos(("a",), claims=claims),
+            hechos_raiz=hechos(self.dir_de_instrucciones, ("a",), claims=claims),
         )
 
     def test_el_claim_de_otra_raiz_no_fabrica_cobertura(self):
@@ -532,21 +555,27 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             {"a": ["reported"]},
             carga_aprobada,
             politica_dueno,
-            hechos_raiz=hechos(("a",), claims=claims),
+            hechos_raiz=hechos(self.dir_de_instrucciones, ("a",), claims=claims),
             hasta_done=False,
             ademas=lambda tienda: all(
                 c["rootId"] == RAIZ
-                for c in tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))[
-                    "evidencia"
-                ]
+                for c in tienda.leer_vista(
+                    RAIZ, hechos(self.dir_de_instrucciones, ("a",), claims=claims)
+                )["evidencia"]
             ),
         )
         self.assertEqual(informe.conflictos, ())
-        vista = tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))
+        vista = tienda.leer_vista(
+            RAIZ, hechos(self.dir_de_instrucciones, ("a",), claims=claims)
+        )
         self.assertEqual(vista["evidencia"], [])
 
     def test_el_efecto_mal_formado_no_tumba_la_aceptacion(self):
-        hechos_raiz = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_raiz = hechos(
+            self.dir_de_instrucciones,
+            ("a",),
+            claims=[claim_de_hecho("a", 1, "a1", "passed")],
+        )
         hechos_raiz["efectos"] = [
             {"action": "push", "destination": "dest-a"},
             "efecto que no es mapa",
@@ -561,7 +590,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         )
 
     def test_la_asignacion_sin_target_no_se_liga_y_el_valido_sigue(self):
-        hechos_raiz = hechos(("a",))
+        hechos_raiz = hechos(self.dir_de_instrucciones, ("a",))
         hechos_raiz["asignaciones"].insert(
             0,
             {
@@ -587,16 +616,18 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             {"a": ["reported"]},
             carga_aprobada,
             politica_de_conciliacion,
-            hechos_raiz=hechos(("a",), claims=claims),
+            hechos_raiz=hechos(self.dir_de_instrucciones, ("a",), claims=claims),
             hasta_done=False,
             ademas=lambda tienda: any(
                 e["appliedBy"]
-                for e in tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))[
-                    "excepciones"
-                ]
+                for e in tienda.leer_vista(
+                    RAIZ, hechos(self.dir_de_instrucciones, ("a",), claims=claims)
+                )["excepciones"]
             ),
         )
-        vista = tienda.leer_vista(RAIZ, hechos(("a",), claims=claims))
+        vista = tienda.leer_vista(
+            RAIZ, hechos(self.dir_de_instrucciones, ("a",), claims=claims)
+        )
         tipos = [e["type"] for e in vista["excepciones"]]
         self.assertIn("EVIDENCIA_INCIERTA", tipos)
         conciliada = [
@@ -605,10 +636,22 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         self.assertIsNotNone(conciliada["appliedBy"])
 
     def _unidad_aceptada_con_hecho_relay(self, nombre):
-        hechos_raiz = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_raiz = hechos(
+            self.dir_de_instrucciones,
+            ("a",),
+            claims=[claim_de_hecho("a", 1, "a1", "passed")],
+        )
         hechos_raiz["asignaciones"] = [
-            {"unitId": "a", "assignment": asignacion(), "relay": True},
-            {"unitId": "a", "assignment": asignacion(), "relay": False},
+            {
+                "unitId": "a",
+                "assignment": asignacion(self.dir_de_instrucciones),
+                "relay": True,
+            },
+            {
+                "unitId": "a",
+                "assignment": asignacion(self.dir_de_instrucciones),
+                "relay": False,
+            },
         ]
         informe, tienda = self.dirigir(
             nombre,
@@ -685,8 +728,13 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         )
         meta_b = {**meta([unidad("b", rol="verifier")]), "rootId": RAIZ_B}
         self.assertIsInstance(tienda.abrir_raiz(meta_b), store.Ok)
-        hechos_a = hechos(("a",), claims=[claim_de_hecho("a", 1, "a1", "passed")])
+        hechos_a = hechos(
+            self.dir_de_instrucciones,
+            ("a",),
+            claims=[claim_de_hecho("a", 1, "a1", "passed")],
+        )
         hechos_b = hechos(
+            self.dir_de_instrucciones,
             ("b",),
             claims=[{**claim_de_hecho("b", 1, "b1", "passed"), "rootId": RAIZ_B}],
         )

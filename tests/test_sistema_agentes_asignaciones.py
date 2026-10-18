@@ -30,6 +30,20 @@ DobleKanban = kanban_port.DobleKanban
 PuntoDeCaida = kanban_port.PuntoDeCaida
 clave_de_tarjeta = kanban_port.clave_de_tarjeta
 
+
+class DobleConSpecs(DobleKanban):
+    """El doble no guarda el spec de la tarjeta; este lo registra para
+    asertar el cuerpo (el texto del brief) con el que se despachó."""
+
+    def __init__(self):
+        super().__init__()
+        self.specs: dict = {}
+
+    def _crear(self, clave, spec):
+        self.specs[clave] = spec
+        return super()._crear(clave, spec)
+
+
 RAIZ = "root-h6a"
 
 
@@ -385,6 +399,99 @@ class TextoDeInstruccion(Escenario):
         self.assertEqual(respuesta.detalle, {"motivo": "digest-distinto"})
 
 
+class DespacheConTexto(Escenario):
+    """La tarjeta lleva el TEXTO del brief leído del store y verificado contra
+    el digest; un digest que no coincide no despacha y levanta la pregunta."""
+
+    @staticmethod
+    def vuelta(tienda, kanban):
+        return ticker.vuelta(
+            tienda,
+            kanban,
+            hechos_por_raiz=tienda.hechos_por_raiz(),
+            permisos_h=permisos_de_prueba(),
+        )
+
+    def hechos_vacios(self):
+        return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
+
+    def test_digest_alterado_en_disco_no_despacha_y_pregunta_al_dueno(self):
+        tienda = self.abrir()
+        hecho = self.asignacion_de()
+        referencia = hecho["assignment"]["instructionRef"]
+        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        ruta = self.dir_de_instrucciones / referencia["ref"][len("artifact:") :]
+        ruta.chmod(0o644)
+        ruta.write_text("texto adulterado tras el reconcile", encoding="utf-8")
+        kanban = DobleKanban()
+        informe = self.vuelta(tienda, kanban)
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        self.assertEqual(
+            [(i.unit_id, i.attempt) for i in tienda.intenciones_pendientes()],
+            [("a", 1)],
+            "la intención sigue pendiente, sin tarjeta",
+        )
+        vista = tienda.leer_vista(RAIZ, self.hechos_vacios())
+        causas = [
+            e["subject"].get("cause")
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "attempt"
+        ]
+        self.assertEqual(causas, [f"instruccion:{referencia['ref']}"])
+
+    def test_el_archivo_reparado_vuelve_a_despachar(self):
+        tienda = self.abrir()
+        hecho = self.asignacion_de(texto="brief reparado")
+        referencia = hecho["assignment"]["instructionRef"]
+        self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
+        ruta = self.dir_de_instrucciones / referencia["ref"][len("artifact:") :]
+        ruta.chmod(0o644)
+        ruta.write_text("adulterado", encoding="utf-8")
+        kanban = DobleKanban()
+        self.assertEqual(self.vuelta(tienda, kanban).tarjetas_creadas, 0)
+        # El store es content-addressed: guardar no sobreescribe el archivo
+        # corrupto (el link EEXIST se tolera); repararlo es borrarlo y
+        # reescribir el texto original.
+        ruta.unlink()
+        instrucciones.guardar(self.dir_de_instrucciones, "brief reparado")
+        self.assertEqual(self.vuelta(tienda, kanban).tarjetas_creadas, 1)
+        self.assertEqual(tienda.intenciones_pendientes(), [])
+
+
+class NecesidadesDeLaVuelta(Escenario):
+    def test_sin_reconcile_la_vuelta_asienta_la_necesidad_first(self):
+        tienda = self.abrir(unidades=("a", "b"))
+        kanban = DobleKanban()
+        informe = ticker.vuelta(
+            tienda,
+            kanban,
+            hechos_por_raiz=tienda.hechos_por_raiz(),
+            permisos_h=permisos_de_prueba(),
+        )
+        self.assertEqual(informe.tarjetas_creadas, 0)
+        necesidades = tienda.necesidades_de(RAIZ)
+        self.assertEqual(
+            necesidades["items"],
+            [
+                {
+                    "kind": "assignment",
+                    "unitId": "a",
+                    "reason": "first",
+                    "findingsRef": None,
+                    "findingsRefs": [],
+                },
+                {
+                    "kind": "assignment",
+                    "unitId": "b",
+                    "reason": "first",
+                    "findingsRef": None,
+                    "findingsRefs": [],
+                },
+            ],
+        )
+        self.assertEqual(necesidades["digest"], decidir.digesto(necesidades["items"]))
+
+
 class Consumo(Escenario):
     """El e2e sin inyectar hechos a mano: submit, guardar la instrucción,
     reconcile y una vuelta del ticker con los hechos del store. El intento
@@ -402,9 +509,9 @@ class Consumo(Escenario):
 
     def test_el_e2e_desde_submit_hasta_intento_admitido(self):
         tienda = self.abrir()
-        hecho = self.asignacion_de()
+        hecho = self.asignacion_de(texto="brief con el TEXTO del dueno")
         self.assertIsInstance(tienda.reconciliar_asignaciones(RAIZ, [hecho]), store.Ok)
-        kanban = DobleKanban()
+        kanban = DobleConSpecs()
         informe = self.vuelta(tienda, kanban)
         self.assertEqual(informe.aplicadas, 1)
         self.assertEqual(informe.tarjetas_creadas, 1)
@@ -416,6 +523,9 @@ class Consumo(Escenario):
         self.assertEqual(unidad["state"], "admitted")
         self.assertEqual(unidad["assignment"], hecho["assignment"])
         self.assertEqual(tienda.hechos_por_raiz(), {}, "la asignación se consumió")
+        spec = kanban.specs[clave_de_tarjeta(RAIZ, "a", 1)]
+        self.assertEqual(spec.cuerpo, "brief con el TEXTO del dueno")
+        self.assertEqual(spec.asignado_a, "codex")
 
     def test_la_caida_tras_el_commit_no_duplica_nada(self):
         tienda = self.abrir()

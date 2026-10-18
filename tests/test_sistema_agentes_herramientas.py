@@ -514,6 +514,7 @@ class Resolucion(Base):
     def preparar_excepcion(self):
         ticker = importlib.import_module("raices.ticker")
         kanban = importlib.import_module("raices.kanban")
+        instrucciones = importlib.import_module("raices.instrucciones")
         store = importlib.import_module("raices.store")
         tienda = store.Store(Path(self.temporal.name) / "sistema-agentes.db")
         self.addCleanup(tienda.cerrar)
@@ -523,6 +524,9 @@ class Resolucion(Base):
         )
         puerto = kanban.KanbanHermes(Path(self.temporal.name) / "kanban.db")
         self.addCleanup(puerto.cerrar)
+        ref, digest = instrucciones.guardar(
+            tienda.dir_de_instrucciones, "brief de la excepcion"
+        )
         hechos = {
             "principal": [],
             "asignaciones": [
@@ -530,7 +534,7 @@ class Resolucion(Base):
                     "unitId": "a",
                     "assignment": {
                         "target": {"kind": "cli", "adapterId": "codex"},
-                        "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
+                        "instructionRef": {"ref": ref, "digest": digest},
                         "resultContract": "review.v1",
                         "inputRevision": {
                             "kind": "code",

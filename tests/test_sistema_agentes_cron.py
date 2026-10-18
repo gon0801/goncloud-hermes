@@ -24,6 +24,8 @@ sys.path.insert(0, str(REPO / "tests"))
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
+
+instrucciones = importlib.import_module("raices.instrucciones")
 from yaml_doble import YamlDoble, yaml_real  # noqa: E402
 
 
@@ -96,26 +98,33 @@ META = {
     "createdAt": "2026-10-17T00:00:00Z",
 }
 
-VINCULO = {
-    "unitId": "a",
-    "assignment": {
-        "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
-        "instructionRef": {"ref": "artifact:inst", "digest": DIGEST},
-        "resultContract": "review.v1",
-        "inputRevision": {
-            "kind": "code",
-            "repository": "owner-01/repo-a",
-            "sha": "0" * 40,
+
+def vinculo_de(tienda):
+    """El hecho de asignación con una instrucción REAL del store (H6a)."""
+    ref, digest = instrucciones.guardar(tienda.dir_de_instrucciones, "brief del cron")
+    return {
+        "unitId": "a",
+        "assignment": {
+            "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+            "instructionRef": {"ref": ref, "digest": digest},
+            "resultContract": "review.v1",
+            "inputRevision": {
+                "kind": "code",
+                "repository": "owner-01/repo-a",
+                "sha": "0" * 40,
+            },
+            "continuation": {"kind": "requester"},
         },
-        "continuation": {"kind": "requester"},
-    },
-    "writers": [],
-}
+        "relay": False,
+    }
 
 
-def decidir_dictamen(tienda, root_id, hecho):
+def decidir_dictamen(tienda, root_id):
+    """La decisión con los hechos del store (H6a), no inyectados a mano."""
+    respuesta = tienda.reconciliar_asignaciones(root_id, [vinculo_de(tienda)])
+    assert not hasattr(respuesta, "codigo"), respuesta
     decidir = importlib.import_module("raices.decidir")
-    vista = tienda.leer_vista(root_id, hecho)
+    vista = tienda.leer_vista(root_id, tienda.hechos_por_raiz()[root_id])
     propuesta = decidir.decidir(vista)
     return tienda.aplicar(root_id, propuesta.decision, "dec-prueba")
 
@@ -186,15 +195,7 @@ class Script(Base):
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.home / "sistema-agentes.db")
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -414,15 +415,7 @@ class Script(Base):
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.home / "sistema-agentes.db")
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -543,15 +536,7 @@ class StoreCompartido(Base):
         store = importlib.import_module("raices.store")
         tienda = store.Store(self.raiz / "sistema-agentes.db")
         self.addCleanup(tienda.cerrar)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         intenciones = tienda.intenciones_pendientes()
         self.assertEqual([(i.unit_id, i.attempt) for i in intenciones], [("a", 1)])
@@ -560,7 +545,7 @@ class StoreCompartido(Base):
         #    Los permisos de H (I07) viven en <raiz>/raices/permisos.json.
         constants.set_override(None)
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {
@@ -616,20 +601,12 @@ class StoreCompartido(Base):
         tienda = store.Store(self.raiz / "sistema-agentes.db")
         self.addCleanup(tienda.cerrar)
         tienda.abrir_raiz(META)
-        hecho = {
-            "principal": [],
-            "asignaciones": [
-                {"unitId": "a", "assignment": VINCULO["assignment"], "relay": False}
-            ],
-            "claims": [],
-            "efectos": [],
-        }
-        dictamen = decidir_dictamen(tienda, RAIZ, hecho)
+        dictamen = decidir_dictamen(tienda, RAIZ)
         self.assertFalse(hasattr(dictamen, "codigo"))
         tienda.cerrar()
 
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {
@@ -685,7 +662,7 @@ class StoreCompartido(Base):
         hogar = importlib.import_module("raices.hogar")
         capacidades = importlib.import_module("raices.capacidades")
         raices = self.raiz / "raices"
-        raices.mkdir()
+        raices.mkdir(parents=True, exist_ok=True)
         (raices / "permisos.json").write_text(
             json.dumps(
                 {

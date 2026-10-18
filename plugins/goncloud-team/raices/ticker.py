@@ -94,6 +94,7 @@ def vuelta(
                 continue
             vistas[root_id] = vista
             propuesta = decidir.decidir(vista)
+            tienda.asentar_necesidades(root_id, propuesta.necesidades)
             decision = propuesta.decision
             if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
                 resultado = tienda.aplicar(
@@ -140,6 +141,19 @@ def vuelta(
                         tienda, vista_de, intencion, f"poteto:{specialist}", conflictos
                     )
                     continue
+            referencia = intencion.assignment.get("instructionRef") or {}
+            ref = str(referencia.get("ref", ""))
+            texto = tienda.texto_de_instruccion(ref, str(referencia.get("digest", "")))
+            if hasattr(texto, "codigo"):
+                # H6a: la tarjeta lleva el TEXTO del brief, no la cadena del
+                # ref; sin un texto verificable no se despacha. Con vista va
+                # la pregunta al dueño; sin vista (raíz cerrada a medias) la
+                # intención queda pendiente para la vuelta siguiente.
+                if vista_de is not None:
+                    _levantar_arranque(
+                        tienda, vista_de, intencion, f"instruccion:{ref}", conflictos
+                    )
+                continue
             reclamo = tienda.reclamar_intencion(
                 intencion.root_id, intencion.unit_id, intencion.attempt
             )
@@ -147,7 +161,7 @@ def vuelta(
                 continue
             spec = SpecDeTarjeta(
                 f"{intencion.root_id}/{intencion.unit_id}#{intencion.attempt}",
-                str(intencion.assignment.get("instructionRef", {}).get("ref", "")),
+                texto.valor,
                 specialist,
             )
             tarjeta = kanban_port.asegurar_tarjeta(

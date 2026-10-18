@@ -226,6 +226,10 @@ class PuertaDePoteto(unittest.TestCase):
         self.kanban = modulo_kanban.DobleKanban()
 
     def ligar(self):
+        instrucciones = importlib.import_module("raices.instrucciones")
+        ref, digest = instrucciones.guardar(
+            self.tienda.dir_de_instrucciones, "brief de poteto"
+        )
         decision = {
             "expected_plan_revision": 1,
             "expected_control_epoch": 1,
@@ -241,10 +245,7 @@ class PuertaDePoteto(unittest.TestCase):
                             "hostId": "host-01",
                             "adapterId": "codex",
                         },
-                        "instructionRef": {
-                            "ref": "artifact:inst",
-                            "digest": "sha256:" + "a" * 64,
-                        },
+                        "instructionRef": {"ref": ref, "digest": digest},
                         "resultContract": "review.v1",
                         "inputRevision": {
                             "kind": "code",
