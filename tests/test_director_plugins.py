@@ -647,3 +647,31 @@ class DespliegueFrescoTests(unittest.TestCase):
         self.assertNotEqual(resultado.returncode, 0)
         self.assertIn("no está instalado", resultado.stderr)
         self.assertIn("hermes plugins", resultado.stderr)
+
+    def test_la_seccion_jev_va_en_el_soul_de_claw_y_de_nadie_mas(self):
+        # La regla de David (2026-10-18) vive en roles/claw.md, en la posicion
+        # exacta que claw dejo a mano en su SOUL de la PC: antes de
+        # Especialistas. El SOUL del director la lleva; ningun otro perfil la
+        # recibe porque el generador solo une roles/<rol>.md de cada perfil.
+        resultado = self.run_configure()
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        perfiles = self.runtime / "profiles"
+        claw = (perfiles / "claw" / "SOUL.md").read_text(encoding="utf-8")
+        self.assertIn("# JEV (decisiones rapidas)", claw)
+        self.assertIn("Prohibido parchar a mano", claw)
+        self.assertLess(
+            claw.index("# JEV (decisiones rapidas)"),
+            claw.index("# Especialistas"),
+        )
+        otros = sorted(
+            p.name for p in perfiles.iterdir() if p.is_dir() and p.name != "claw"
+        )
+        self.assertTrue(otros)
+        for perfil in otros:
+            with self.subTest(perfil=perfil):
+                soul = perfiles / perfil / "SOUL.md"
+                self.assertTrue(soul.is_file())
+                self.assertNotIn(
+                    "# JEV (decisiones rapidas)",
+                    soul.read_text(encoding="utf-8"),
+                )
