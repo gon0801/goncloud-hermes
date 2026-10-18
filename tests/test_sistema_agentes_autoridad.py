@@ -334,6 +334,172 @@ class I07Efecto(TiendaCerrada, unittest.TestCase):
         return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
 
 
+class I07UnAvisoPorEfecto(TiendaCerrada, unittest.TestCase):
+    """F1: un efecto preparado que H niega deja UNA excepción NECESITA_DAVID
+    abierta, con la causa permiso-h:* — no dos con sujetos distintos."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(
+            self.ruta,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    def abiertas(self, vista):
+        return [
+            e
+            for e in vista["excepciones"]
+            if e["type"] == "NECESITA_DAVID" and e["response"] is None
+        ]
+
+    def test_un_efecto_negado_pregunta_una_sola_vez_con_la_causa(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
+            store.Ok,
+        )
+        ticker.vuelta(self.tienda, kanban_port.DobleKanban(), {})
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        abiertas = self.abiertas(vista)
+        self.assertEqual(len(abiertas), 1)
+        self.assertEqual(
+            abiertas[0]["subject"].get("cause"), "permiso-h:accion-preguntar"
+        )
+
+    def test_y_sigue_preguntando_una_sola_vez_en_cada_vuelta(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"),
+            store.Ok,
+        )
+        for _ in range(3):
+            ticker.vuelta(self.tienda, kanban_port.DobleKanban(), {})
+            self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        self.assertEqual(len(self.abiertas(vista)), 1)
+
+
+class EfectoMalFormado(TiendaCerrada, unittest.TestCase):
+    """F3: un intento de efecto sin action/repo/mode (el front door solo
+    exige effectId) se niega con razón propia en vez de reventar con KeyError
+    el arranque, la reanudación o la vuelta del ticker."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(
+            self.ruta,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    def test_un_efecto_sin_forma_se_niega_con_razon_propia(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "effect-roto"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-roto", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.codigo, "authority")
+        self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
+        vista = self.tienda.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        causas = [
+            e["subject"].get("cause")
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+        ]
+        self.assertEqual(causas, ["autoridad:efecto-sin-forma"])
+
+    def test_interseccion_niega_formas_rotas_sin_keyerror(self):
+        negar = autoridad.interseccion(
+            {}, autoridad.PermisosH(permisos()), "2026-10-17T11:00:00Z"
+        )
+        self.assertEqual(negar(efecto()), "autoridad-ilegible")
+        valida = meta_de([unidad("a", "a1")])["authority"]
+        sin_datos = autoridad.interseccion(valida, None, "2026-10-17T11:00:00Z")
+        self.assertEqual(sin_datos({"effectId": "effect-roto"}), "efecto-sin-forma")
+        self.assertEqual(sin_datos(efecto()), "sin-permisos")
+
+    def test_la_reanudacion_sobrevive_a_un_efecto_sin_forma(self):
+        permisosa = store.Store(
+            self.ruta.parent / "permisosa.db", permisos_h=permisos()
+        )
+        self.addCleanup(permisosa.cerrar)
+        permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))
+        self.assertIsInstance(
+            permisosa.aplicar(
+                RAIZ,
+                decision(efectos=[efecto(), {"effectId": "effect-roto"}]),
+                "dec-mixta",
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            permisosa.control(comando("pause", "cmd-01", 1)), store.Ok
+        )
+        permisosa.cerrar()
+
+        endurecida = store.Store(
+            self.ruta.parent / "permisosa.db",
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(endurecida.cerrar)
+        recibo = endurecida.control(comando("resume", "cmd-02", 2))
+        self.assertIsInstance(recibo, store.Ok)
+        vista = endurecida.leer_vista(RAIZ, I07Efecto.hechos_nulos())
+        causas = {
+            e["subject"].get("effectId"): e["subject"].get("cause")
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+        }
+        self.assertEqual(
+            causas,
+            {
+                "effect-push": "permiso-h:accion-preguntar",
+                "effect-roto": "autoridad:efecto-sin-forma",
+            },
+        )
+
+    def test_el_tick_sigue_con_las_demas_raices(self):
+        raiz_b = meta_de([unidad("b", "b1")])
+        raiz_b["rootId"] = "root-b"
+        raiz_b["plan"]["planDigest"] = "sha256:" + "b" * 64
+        self.assertIsInstance(self.tienda.abrir_raiz(raiz_b), store.Ok)
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "effect-roto"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        hechos_b = {
+            "principal": ["david"],
+            "asignaciones": [
+                {"unitId": "b", "assignment": asignacion(), "relay": False}
+            ],
+            "claims": [],
+            "efectos": [],
+        }
+        informe = ticker.vuelta(
+            self.tienda,
+            kanban_port.DobleKanban(),
+            {RAIZ: {}, "root-b": hechos_b},
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.assertEqual(informe.tarjetas_creadas, 1)
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-roto", "start-1", 1)
+        self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
+
+
 class I07Arranque(TiendaCerrada, unittest.TestCase):
     """Punto 1: al arrancar una unidad, en el despacho del ticker."""
 

@@ -29,6 +29,35 @@ HERRAMIENTA_POR_MODO = {
     "publish": "write",
 }
 
+LLAVES_DE_EFECTO = ("action", "repo", "mode")
+LLAVES_DE_AUTORIDAD = ("deadline", "actions", "repos", "destinations", "mode")
+
+
+def autoridad_ilegible(autoridad_meta: object) -> str | None:
+    """La razón por la que el documento de autoridad no tiene la forma que el
+    contrato consulta (F3). Se niega con razón propia: {} o None no llegan a
+    contrato.efecto_admisible (falla cerrado, no KeyError de deadline)."""
+    if not isinstance(autoridad_meta, Mapping):
+        return "autoridad-ilegible"
+    if any(llave not in autoridad_meta for llave in LLAVES_DE_AUTORIDAD):
+        return "autoridad-ilegible"
+    return None
+
+
+def efecto_ilegible(efecto: object) -> str | None:
+    """La razón por la que el intento de efecto no tiene la forma que el
+    contrato consulta (F3). La validación del front door solo exige effectId
+    (store.aplicar), así que un intento sin action/repo/mode se niega aquí
+    con razón propia en vez de reventar la vuelta o la reanudación."""
+    if not isinstance(efecto, Mapping):
+        return "efecto-sin-forma"
+    if any(
+        not isinstance(efecto.get(llave), str) or not efecto[llave]
+        for llave in LLAVES_DE_EFECTO
+    ):
+        return "efecto-sin-forma"
+    return None
+
 
 class PermisosH:
     """Los permisos de H como datos. Ninguna entrada amplía la autoridad.
@@ -73,9 +102,18 @@ class PermisosH:
 def interseccion(
     autoridad_meta: Mapping, permisos: PermisosH | None, ahora: str
 ) -> Callable[[Mapping], str | None]:
-    """El callable que decidir espera: razón del contrato, o de H, o None."""
+    """El callable que decidir espera: razón del contrato, o de H, o None.
+    La forma del documento de autoridad y del efecto se contrasta antes de
+    preguntarle al contrato (F3): lo mal formado se niega, no revienta."""
+
+    ilegible = autoridad_ilegible(autoridad_meta)
 
     def negar(efecto: Mapping) -> str | None:
+        if ilegible is not None:
+            return ilegible
+        razon = efecto_ilegible(efecto)
+        if razon is not None:
+            return razon
         razon = contrato.efecto_admisible(autoridad_meta, efecto, ahora)
         if razon is not None:
             return razon
@@ -109,6 +147,9 @@ def negar_arranque(
     unidad_plan: Mapping | None,
 ) -> str | None:
     """La razón por la que H no arranca la unidad, o None si procede."""
+    ilegible = autoridad_ilegible(autoridad_meta)
+    if ilegible is not None:
+        return ilegible
     efecto = efecto_de_arranque(assignment, unidad_plan)
     razon = contrato.efecto_admisible(autoridad_meta, efecto, ahora)
     if razon is not None:

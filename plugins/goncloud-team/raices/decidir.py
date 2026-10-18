@@ -142,9 +142,9 @@ class Propuesta(NamedTuple):
 def _autoridad_de_vista(vista: Vista) -> Callable[[Mapping], str | None]:
     modulo = importlib.import_module("raices.autoridad")
     permisos = modulo.PermisosH(vista.get("permisos_h"))
-    return modulo.interseccion(
-        vista["meta"].get("authority") or {}, permisos, vista["ahora"]
-    )
+    # Una autoridad ausente entra tal cual y la intersección la niega con
+    # razón propia (F3): nunca un {} que el contrato convierta en KeyError.
+    return modulo.interseccion(vista["meta"].get("authority"), permisos, vista["ahora"])
 
 
 def digesto(partes: object) -> str:

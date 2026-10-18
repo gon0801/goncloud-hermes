@@ -404,16 +404,14 @@ class Store:
         return borrador["exceptionId"]
 
     def _razon_de_autoridad(self, root_id: str, efecto: dict, ahora: str) -> str | None:
-        """Primera razón por la que el efecto no procede: contrato o H."""
+        """Primera razón por la que el efecto no procede: forma, contrato o H."""
         autoridad_meta = json.loads(
             self._una_fila(
                 "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
             )["authority_json"]
         )
-        razon = contrato.efecto_admisible(autoridad_meta, efecto, ahora)
-        if razon is None:
-            razon = self.permisos_h.niega_accion(efecto.get("action"))
-        return razon
+        negar = autoridad.interseccion(autoridad_meta, self.permisos_h, ahora)
+        return negar(efecto)
 
     OPCIONES_DE_AUTORIDAD = ["autorizar", "listo", "omitir", "cancelar"]
 
@@ -426,15 +424,14 @@ class Store:
                 "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
             )["authority_json"]
         )
+        negar = autoridad.interseccion(autoridad_meta, self.permisos_h, ahora)
         for fila in self._conexion.execute(
             "SELECT effect_id, intent_json FROM efectos"
             " WHERE root_id = ? AND state = 'prepared'",
             (root_id,),
         ):
             intent = json.loads(fila["intent_json"])
-            razon = contrato.efecto_admisible(autoridad_meta, intent, ahora)
-            if razon is None:
-                razon = self.permisos_h.niega_accion(intent.get("action"))
+            razon = negar(intent)
             if razon is not None:
                 self._levantar_excepcion(
                     root_id,
