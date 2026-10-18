@@ -237,6 +237,25 @@ class Certificar(unittest.TestCase):
                     "un archivo ilegible jamás se sobrescribe",
                 )
 
+    @unittest.skipUnless(os.name == "posix", "chmod 0 es de POSIX")
+    def test_escribir_con_certificadas_sin_permiso_aborta_limpio(self):
+        # F9: presente pero ILEGIBLE (chmod 000) es el caso de _previas que
+        # falta: el read_text levanta OSError y sin atraparlo sale una traza
+        # en vez del aborto limpio de F4.
+        self.ruta.write_text(json.dumps([entrada_del_par()]), encoding="utf-8")
+        antes = json.loads(self.ruta.read_text(encoding="utf-8"))
+        self.ruta.chmod(0o000)
+        codigo, salida = self.certificar(self.argv("--escribir"))
+        self.ruta.chmod(0o644)  # restituir antes de verificar el contenido
+        self.addCleanup(self.ruta.chmod, 0o644)
+        self.assertEqual(codigo, 1)
+        self.assertIn("ilegible", salida)
+        self.assertEqual(
+            json.loads(self.ruta.read_text(encoding="utf-8")),
+            antes,
+            "el archivo queda intacto",
+        )
+
     def test_escribir_sin_archivo_o_vacio_empieza_de_cero(self):
         codigo, _ = self.certificar(self.argv("--escribir"))
         self.assertEqual(codigo, 0)

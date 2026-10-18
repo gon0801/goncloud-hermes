@@ -99,13 +99,17 @@ def _escribir(ruta: Path, lista: list) -> None:
 
 def _previas(ruta: Path) -> list | None:
     """Los pares ya certificados: [] sin archivo o con uno vacío, None si el
-    archivo existe y no se puede leer como lista (ilegible). Escribir sobre
-    un ilegible descartaría pares acreditados por un error de sintaxis, así
-    que None aborta."""
-    if not ruta.exists() or ruta.read_text(encoding="utf-8").strip() == "":
-        return []
-    datos = capacidades.leer_certificadas(ruta)
-    if not datos and not _es_lista_json(ruta):
+    archivo existe y no se puede leer como lista (ilegible, incluido un
+    OSError de permisos: F9). Escribir sobre un ilegible descartaría pares
+    acreditados, así que None aborta limpio en vez de reventar."""
+    try:
+        if not ruta.exists() or ruta.read_text(encoding="utf-8").strip() == "":
+            return []
+        datos = capacidades.leer_certificadas(ruta)
+        es_lista = _es_lista_json(ruta)
+    except OSError:
+        return None
+    if not datos and not es_lista:
         return None
     return list(datos)
 
@@ -113,6 +117,8 @@ def _previas(ruta: Path) -> list | None:
 def _es_lista_json(ruta: Path) -> bool:
     try:
         datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except OSError:
+        return False
     except ValueError:
         return False
     return isinstance(datos, list)
