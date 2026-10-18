@@ -966,6 +966,9 @@ def configure(
                 state,
                 retired_targets,
                 shipped,
+                # CR2 (I08): si este perfil recibió el paquete de Poteto
+                # (SOUL + skills); solo él registra el digest.
+                is_team,
             )
         )
     root_config = contained(runtime_home / "config.yaml", runtime_home)
@@ -1070,6 +1073,7 @@ def configure(
         state,
         retired_targets,
         shipped,
+        recibio_poteto,
     ) in prepared:
         recorded_files = {
             **{
@@ -1097,9 +1101,15 @@ def configure(
             "config": desired,
             "source_revision": revision,
             "generation": poteto.siguiente_generation(state, recorded_files),
-            "poteto": {"digest": poteto.digest_de_manifiesto()},
             "files": recorded_files,
         }
+        if recibio_poteto:
+            # CR2 (I08): solo los perfiles que de verdad recibieron Poteto
+            # (el bloque de SOUL.md y las skills) registran el digest. Un
+            # dispatch_profile sin paquete no debe quedar con digest:
+            # poteto.paquete_del_perfil leeria un paquete inexistente y la
+            # puerta de despacho lo dejaria pasar.
+            recorded["poteto"] = {"digest": poteto.digest_de_manifiesto()}
         adopted = adoptions.get(profile.name)
         if adopted:
             recorded["adopted_manual_routing"] = {

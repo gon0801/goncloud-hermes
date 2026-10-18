@@ -1361,5 +1361,89 @@ class NoTextBridgeTests(unittest.TestCase):
                 self.assertNotIn(marker, text, f"{marker} in {path}")
 
 
+class PotetoSoloEnPerfilesConPotetoTests(unittest.TestCase):
+    """CR2 (I08): el bloque poteto de goncloud-managed.json (con el digest)
+    se registra SOLO en los perfiles que de verdad recibieron Poteto (el
+    bloque de SOUL.md y las skills). Un dispatch_profile sin Poteto no debe
+    quedar con digest: poteto.paquete_del_perfil leería un paquete inexistente
+    y la puerta de despacho lo dejaría pasar."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.temporary = Path(self.tmp.name)
+
+    def deploy(self, runtime):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "HOME": str(self.temporary / "home"),
+                "LOCALAPPDATA": str(self.temporary / "local-app-data"),
+                "PYTHONUTF8": "1",
+            },
+        )
+
+    def test_solo_los_perfiles_team_llevan_el_bloque_poteto(self):
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        runtime = self.temporary / "runtime"
+        # Un dispatch_profile ya existente (desplegado a mano o por una ronda
+        # anterior): es el caso donde el bug registraba el digest de un
+        # paquete que nunca llegó.
+        (runtime / "profiles" / team["kanban"]["dispatch_profiles"][0]).mkdir(
+            parents=True
+        )
+
+        resultado = self.deploy(runtime)
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+
+        def managed(perfil):
+            return json.loads(
+                (runtime / "profiles" / perfil / "goncloud-managed.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        for perfil in team["profiles"]:
+            with self.subTest(perfil=perfil):
+                estado = managed(perfil)
+                self.assertIn(
+                    "poteto",
+                    estado,
+                    "un perfil team recibió SOUL + skills: lleva su digest",
+                )
+                self.assertTrue((runtime / "profiles" / perfil / "SOUL.md").exists())
+        for perfil in team["kanban"]["dispatch_profiles"]:
+            # Los despachables frescos se saltan (ni managed.json); los que
+            # ya existen se actualizan SIN bloque poteto.
+            ruta_estado = runtime / "profiles" / perfil / "goncloud-managed.json"
+            if ruta_estado.exists():
+                self.assertNotIn(
+                    "poteto",
+                    json.loads(ruta_estado.read_text(encoding="utf-8")),
+                    f"{perfil}: un perfil sin Poteto no registra digest",
+                )
+
+        sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
+        from raices import poteto  # noqa: E402
+
+        for perfil in team["kanban"]["dispatch_profiles"]:
+            self.assertIsNone(
+                poteto.paquete_del_perfil(runtime, perfil),
+                f"{perfil}: sin paquete no abre despacho (I08)",
+            )
+        self.assertIsInstance(poteto.paquete_del_perfil(runtime, "claw"), dict)
+
+
 if __name__ == "__main__":
     unittest.main()
