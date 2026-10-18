@@ -1643,9 +1643,14 @@ class Store:
             except ValueError:
                 continue
             if isinstance(documento, dict):
+                reported_by = documento.get("reportedBy")
                 pending_results.append(
                     {
-                        "taskId": documento.get("reportedBy", {}).get("taskId"),
+                        "taskId": (
+                            reported_by.get("taskId")
+                            if isinstance(reported_by, Mapping)
+                            else None
+                        ),
                         "resultDigest": documento.get("resultDigest"),
                         "resultContract": documento.get("resultContract"),
                     }
@@ -1898,19 +1903,32 @@ class Store:
             (root_id,),
         ):
             documento = json.loads(f["result_json"])
-            payload = documento.get("payload") or {}
-            if documento["resultContract"] == "review.v1":
+            if not isinstance(documento, dict):
+                continue
+            payload = documento.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            if documento.get("resultContract") == "review.v1":
                 veredicto = payload.get("verdict")
+                hallazgos_ref = payload.get("findingsRef")
+                evidencia_ref = payload.get("evidenceRef")
                 referencia = (
-                    payload.get("findingsRef") or payload.get("evidenceRef") or {}
+                    hallazgos_ref
+                    if isinstance(hallazgos_ref, dict)
+                    else (evidencia_ref if isinstance(evidencia_ref, dict) else {})
                 )
             else:
                 veredicto = None
-                referencia = payload.get("evidenceRef") or {}
+                evidencia_ref = payload.get("evidenceRef")
+                referencia = evidencia_ref if isinstance(evidencia_ref, dict) else {}
+            reported_by = documento.get("reportedBy")
             resultados.append(
                 {
-                    "taskId": documento["reportedBy"]["taskId"],
-                    "contrato": documento["resultContract"],
+                    "taskId": (
+                        reported_by.get("taskId")
+                        if isinstance(reported_by, Mapping)
+                        else None
+                    ),
+                    "contrato": documento.get("resultContract"),
                     "verdict": veredicto,
                     "kind": "produced",
                     "ref": referencia.get("ref"),

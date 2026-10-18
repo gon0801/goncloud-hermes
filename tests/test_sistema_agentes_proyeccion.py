@@ -282,6 +282,44 @@ class I16Proyeccion(Escenario):
         por_unidad = {f["unitId"]: f["error"] for f in escrita["units"]}
         self.assertEqual(por_unidad, {"a": None, "b": None})
 
+    def test_un_reporteby_malo_no_tumba_la_pasada_y_las_sanas_se_proyectan(self):
+        self.abrir([unidad("a", "a1")], root_id="root-a")
+        self.abrir([unidad("b", "b1")], root_id="root-b")
+        roto = json.dumps(
+            {
+                "schema": "sistema-agentes.resultado.v1",
+                "resultContract": "review.v1",
+                "resultDigest": DIGEST,
+                "reportedBy": None,
+            }
+        )
+        self.tienda._conexion.execute(
+            "INSERT INTO resultados VALUES ('root-a', 'a', 1, ?, ?, NULL, ?)",
+            (DIGEST, roto, AHORA),
+        )
+        self.tienda._conexion.commit()
+        informe = proyeccion.pasada(
+            self.tienda,
+            ahora=AHORA,
+            dir_destino=self.destino,
+            enviar=lambda _texto: 1,
+            stale_after_ms=300000,
+            intervalo_ms=300000,
+            host_gateway="mac-local",
+        )
+        self.assertEqual(
+            [e for e in informe["errores"] if "root" in e],
+            [],
+            "ninguna raíz muere por una fila con reportedBy nulo",
+        )
+        self.assertEqual(informe["raices"], 2)
+        self.assertIn("root-b", informe["proyecciones"])
+        self.assertEqual(
+            self.tienda.snapshot_raiz("root-a")["pendingResults"][0]["taskId"], None
+        )
+        vista = self.tienda.leer_vista("root-a", hechos_nulos())
+        self.assertEqual(vista["resultados"][0]["taskId"], None)
+
     def test_metricas_ausentes_no_inventan_nada(self):
         self.abrir([unidad("a", "a1")])
         self.ligar_y_arrancar("a")
