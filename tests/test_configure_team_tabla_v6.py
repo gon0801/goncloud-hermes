@@ -634,6 +634,59 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
 
+class SkillRaicesDelDirector(unittest.TestCase):
+    """H6b: la skill raices se publica SOLO en el paquete del director (claw),
+    junto a sus otros files; ningún otro perfil la recibe."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.runtime = Path(self.tmp.name) / "runtime"
+        self.runtime.mkdir()
+
+    def deploy(self, *extra):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(self.runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+
+    def test_la_skill_llega_al_paquete_de_claw_y_a_ningun_otro(self):
+        resultado = self.deploy()
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        esperada = (ROOT / "skills" / "raices" / "SKILL.md").read_text("utf-8")
+        publicada = (
+            self.runtime / "profiles" / "claw" / "skills" / "raices" / "SKILL.md"
+        ).read_text("utf-8")
+        self.assertEqual(publicada, esperada)
+        perfiles = sorted(
+            p.name
+            for p in (self.runtime / "profiles").iterdir()
+            if p.is_dir() and p.name != "claw"
+        )
+        self.assertTrue(perfiles, "el deploy crea los perfiles de equipo")
+        for perfil in perfiles:
+            self.assertFalse(
+                (self.runtime / "profiles" / perfil / "skills" / "raices").exists(),
+                f"la skill no viaja al paquete de {perfil}",
+            )
+
+    def test_el_check_no_escribe_la_skill(self):
+        resultado = self.deploy("--check")
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertFalse((self.runtime / "profiles").exists())
+
+
 class RaizDefaultTests(unittest.TestCase):
     """The `default` profile is the home ROOT: only its routing is managed.
 
