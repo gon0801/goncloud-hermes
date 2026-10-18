@@ -24,14 +24,20 @@ instante = decidir.instante
 
 
 def _atomico(ruta: Path, documento: dict) -> None:
-    """Escritura atómica: temporal en el mismo directorio y os.replace."""
+    """Escritura atómica: temporal en el mismo directorio y os.replace. Si
+    algo revienta a mitad, el archivo previo queda intacto y no sobrevive
+    ningún temporal (F10)."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
     temporal = ruta.with_name(f".{ruta.name}.{os.getpid()}.tmp")
-    temporal.write_text(
-        json.dumps(documento, ensure_ascii=False, sort_keys=True, indent=1),
-        encoding="utf-8",
-    )
-    os.replace(temporal, ruta)
+    try:
+        temporal.write_text(
+            json.dumps(documento, ensure_ascii=False, sort_keys=True, indent=1),
+            encoding="utf-8",
+        )
+        os.replace(temporal, ruta)
+    except OSError:
+        temporal.unlink(missing_ok=True)
+        raise
 
 
 def notados_de(tienda, root_id: str) -> dict:
@@ -96,7 +102,10 @@ def proyectar(
         )
     except (ValueError, KeyError) as fallo:
         return None, errores + [f"raíz {root_id}: {fallo}"]
-    _atomico(Path(dir_destino) / "proyecciones" / f"{root_id}.json", documento)
+    try:
+        _atomico(Path(dir_destino) / "proyecciones" / f"{root_id}.json", documento)
+    except OSError as fallo:
+        return None, errores + [f"raíz {root_id}: escritura: {fallo}"]
     return documento, errores
 
 

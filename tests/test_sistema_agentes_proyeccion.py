@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
@@ -216,10 +217,29 @@ class I14Proyeccion(Escenario):
     def test_la_escritura_es_atomica(self):
         self.abrir([unidad("a", "a1")])
         self.ligar_y_arrancar("a")
-        self.proyectar()
+        primera, errores = self.proyectar()
+        self.assertEqual(errores, [])
         ruta = self.destino / "proyecciones" / f"{RAIZ}.json"
+        previo = ruta.read_text(encoding="utf-8")
+        # La segunda proyección difiere (el intento pasó a reported): si
+        # sobrevive el archivo previo no es porque nadie reescribiera.
+        self.tienda.transicionar_intento(RAIZ, "a", 1, "reported", "t-a")
+        with mock.patch(
+            "raices.proyeccion.os.replace", side_effect=OSError("disco lleno")
+        ):
+            segunda, errores = self.proyectar()
+        self.assertIsNone(segunda)
+        self.assertEqual(len(errores), 1)
+        self.assertIn("raíz", errores[0])
         self.assertEqual(
-            sorted(p.name for p in ruta.parent.iterdir()), [f"{RAIZ}.json"]
+            ruta.read_text(encoding="utf-8"),
+            previo,
+            "el archivo previo sobrevive intacto",
+        )
+        self.assertEqual(
+            sorted(p.name for p in ruta.parent.iterdir()),
+            [f"{RAIZ}.json"],
+            "no quedan temporales de la escritura fallida",
         )
 
 
