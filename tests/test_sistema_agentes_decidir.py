@@ -1195,5 +1195,72 @@ class F18EscritorTomado(unittest.TestCase):
         self.assertIn("relay", necesitaciones(propuesta), "sigue pidiendo el relevo")
 
 
+class F10LasPlazasDescuentanLoLiberado(unittest.TestCase):
+    """F10: las plazas descuentan lo que la propia decision libera. Cada
+    outcome sobre un intento vivo libera su plaza de raiz, una global y una
+    del perfil; y el cupo sigue mandando para lo que la decision no libera."""
+
+    def test_el_outcome_de_la_respuesta_libera_la_plaza_para_la_ligadura(self):
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {"kind": "attempt", "unitId": "a", "attempt": 1, "cause": "run:x"},
+            ["cancelar"],
+        )
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a"), unidad("c")],
+                intentos=[intento("a", 1, "running")],
+                plazas={"raiz": 0, "global": 0, "por_perfil": {"codex": 0}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("c", asignacion("c-1"))],
+                    "claims": [],
+                    "efectos": [],
+                },
+                excepciones=[
+                    {
+                        **borrador,
+                        "response": {
+                            "optionId": "cancelar",
+                            "by": ["david"],
+                            "at": AHORA,
+                        },
+                    }
+                ],
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["outcomes"],
+            [{"unitId": "a", "attempt": 1, "outcome": "cancelled"}],
+        )
+        self.assertEqual(
+            [b["unitId"] for b in propuesta.decision["bindings"]],
+            ["c"],
+            "la plaza que libera el outcome de esta decision cabe para c",
+        )
+
+    def test_el_cupo_sigue_mandando_para_lo_que_la_decision_no_libera(self):
+        propuesta = decidir.decidir(
+            vista(
+                [unidad("a"), unidad("b")],
+                intentos=[intento("a", 1, "failed"), intento("b", 1, "running")],
+                plazas={"raiz": 0, "global": 8, "por_perfil": {"codex": 8}},
+                hechos={
+                    "principal": ["david"],
+                    "asignaciones": [hecho_de("a", asignacion("a-2"))],
+                    "claims": [],
+                    "efectos": [],
+                },
+            )
+        )
+        self.assertEqual(
+            propuesta.decision["bindings"],
+            [],
+            "la unica plaza la ocupa el intento vivo de b y nada lo libera",
+        )
+        self.assertEqual(necesitaciones(propuesta), ["correction"])
+
+
 if __name__ == "__main__":
     unittest.main()

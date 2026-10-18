@@ -187,7 +187,7 @@ def politica_de_conciliacion(fila):
 
 
 def registrar_incidencias(vistas, unidades=("a", "b")):
-    def prepara(tienda):
+    def prepara(tienda, kanban):
         for intento in tienda.intentos_con_tarjeta():
             llave = (intento["unitId"], intento["attempt"])
             if (
@@ -204,6 +204,22 @@ def registrar_incidencias(vistas, unidades=("a", "b")):
                 f"inc-{intento['unitId']}-{intento['attempt']}",
                 {"kind": "permission-required", "evidenceRef": "run:x"},
             )
+
+    return prepara
+
+
+def archivar_la_tarjeta(attempt=1):
+    """F10: la tarjeta del intento vive archivada con el intento aun vivo."""
+
+    def prepara(tienda, kanban):
+        for intento in tienda.intentos_con_tarjeta():
+            if intento["attempt"] != attempt:
+                continue
+            clave = kanban_port.clave_de_tarjeta(
+                intento["rootId"], intento["unitId"], intento["attempt"]
+            )
+            if kanban.por_clave(clave) is not None:
+                kanban.crear_archivada(clave)
 
     return prepara
 
@@ -228,13 +244,17 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
         prepara=None,
         hasta_done=True,
         ademas=None,
+        presupuesto=None,
     ):
+        documento = meta(unidades)
+        if presupuesto is not None:
+            documento["budget"]["maxConcurrentTasks"] = presupuesto
         tienda = store.Store(
             self.directorio.name + f"/{nombre}.db",
             cupos=cupos,
         )
         self.addCleanup(tienda.cerrar)
-        self.assertIsInstance(tienda.abrir_raiz(meta(unidades)), store.Ok)
+        self.assertIsInstance(tienda.abrir_raiz(documento), store.Ok)
         kanban = kanban_port.DobleKanban()
         hechos_raiz = hechos_raiz or hechos([u["unitId"] for u in unidades])
         estados = {}
@@ -243,7 +263,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             self.cargar(tienda, kanban, carga)
             self.responder(tienda, politica)
             if prepara is not None:
-                prepara(tienda)
+                prepara(tienda, kanban)
             informe = ticker.vuelta(
                 tienda, kanban, {RAIZ: hechos_raiz}, **ARGUMENTOS_DE_VUELTA
             )
@@ -331,6 +351,35 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
             politica_de_cierre,
             cupos=store.Cupos(global_max=1),
             prepara=registrar_incidencias(vistas),
+        )
+
+    def test_el_reintento_ocupa_la_plaza_del_intento_que_cancela(self):
+        """F10: maxConcurrentTasks=1 y la unica plaza la tiene el intento
+        cuya tarjeta se archivo: la decision lo cancela, re-liga la unidad y
+        el store (que aplica los outcomes antes de contar cupos) la acepta.
+        Sin el descuento, el reintento se difiere para siempre y nunca llega
+        a INESPERADO ni al dueno."""
+        self.dirigir(
+            "reintento-raiz",
+            [unidad("a")],
+            {"a": ["cancelled", "accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            presupuesto=1,
+            prepara=archivar_la_tarjeta(1),
+        )
+
+    def test_el_reintento_con_el_cupo_global_lleno_por_ese_intento(self):
+        """F10: el cupo global lleno por el propio intento a cancelar tambien
+        se descuenta: el store acepta la decision."""
+        self.dirigir(
+            "reintento-global",
+            [unidad("a")],
+            {"a": ["cancelled", "accepted"]},
+            carga_aprobada,
+            politica_dueno,
+            cupos=store.Cupos(global_max=1),
+            prepara=archivar_la_tarjeta(1),
         )
 
     def test_el_claim_de_otra_revision_no_bloquea_la_aceptacion(self):
