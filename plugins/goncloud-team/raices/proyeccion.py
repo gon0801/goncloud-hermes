@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -21,6 +22,18 @@ modulo_derivar = compartido.derivar
 decidir = importlib.import_module("raices.decidir")
 
 instante = decidir.instante
+
+# F12: el rootId va crudo al nombre del archivo. Sólo esta forma y ni "." ni
+# ".." cuentan como nombre de archivo de una proyección.
+_NOMBRE_DE_ARCHIVO = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _sirve_como_nombre(root_id) -> bool:
+    return (
+        isinstance(root_id, str)
+        and root_id not in (".", "..")
+        and _NOMBRE_DE_ARCHIVO.fullmatch(root_id) is not None
+    )
 
 
 def _atomico(ruta: Path, documento: dict) -> None:
@@ -81,6 +94,8 @@ def proyectar(
 ) -> tuple[dict, list]:
     """Deriva y escribe la proyección de una raíz. Devuelve (proyección, errores);
     los errores son de snapshot roto y no tumban a las demás raíces."""
+    if not _sirve_como_nombre(root_id):
+        return None, [f"raíz {root_id}: rootId no válido como nombre de archivo"]
     errores: list = []
     try:
         snapshot = tienda.snapshot_raiz(root_id)

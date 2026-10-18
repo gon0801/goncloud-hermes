@@ -242,6 +242,67 @@ class I14Proyeccion(Escenario):
             "no quedan temporales de la escritura fallida",
         )
 
+    def test_un_rootid_que_no_es_nombre_de_archivo_no_se_escribe(self):
+        # F12: el rootId va al nombre del archivo; el store es una base y
+        # puede traer filas hostiles. Sólo [A-Za-z0-9._-]{1,128} y ni "." ni
+        # ".." pasan; el resto es error por raíz, sin archivo y sin tumbar
+        # la pasada.
+        for malo in ("../x", "a/b", "a\\b", "..", "."):
+            with self.subTest(root_id=malo):
+                self.insertar_raiz_cruda(malo)
+                documento, errores = self.proyectar(malo)
+                self.assertIsNone(documento)
+                self.assertEqual(len(errores), 1)
+                self.assertIn(malo, errores[0])
+        self.assertEqual(
+            sorted(p.name for p in (self.destino / "proyecciones").glob("*")),
+            [],
+            "ningún nombre hostil llegó a disco",
+        )
+        # y las demás raíces siguen proyectándose en la misma pasada
+        self.abrir([unidad("a", "a1")])
+        informe = proyeccion.pasada(
+            self.tienda,
+            ahora=AHORA,
+            dir_destino=self.destino,
+            enviar=lambda _texto: 1,
+            stale_after_ms=300000,
+            intervalo_ms=300000,
+            host_gateway="mac-local",
+        )
+        self.assertEqual(informe["raices"], 1)
+        self.assertTrue((self.destino / "proyecciones" / f"{RAIZ}.json").exists())
+
+    def insertar_raiz_cruda(self, root_id):
+        meta = meta_de([unidad("a", "a1")])
+        self.tienda._conexion.execute(
+            "INSERT INTO raices VALUES (?,?,?,?,?,?,?)",
+            (
+                root_id,
+                json.dumps(meta["requester"]),
+                json.dumps(meta["authority"]),
+                json.dumps(meta["budget"]),
+                meta["qualityPolicy"]["version"],
+                json.dumps({"version": "quality-kit.regla4"}),
+                "2026-10-17T00:00:00Z",
+            ),
+        )
+        self.tienda._conexion.execute(
+            "INSERT INTO revisiones VALUES (?,?,?,?,?)",
+            (
+                root_id,
+                1,
+                meta["plan"]["planDigest"],
+                meta["plan"]["requestDigest"],
+                "[]",
+            ),
+        )
+        self.tienda._conexion.execute(
+            "INSERT INTO controles VALUES (?,?,?,?,?)",
+            (root_id, 1, "active", None, None),
+        )
+        self.tienda._conexion.commit()
+
 
 class I16Proyeccion(Escenario):
     def test_un_hecho_de_otro_intento_no_atribuye_error(self):
