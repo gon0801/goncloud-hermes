@@ -10,12 +10,20 @@ parche con git, en bytes LF tal como los deja git (encargo H-jev r1,
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
+import site
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
@@ -123,3 +131,231 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
 
         self.assertEqual(merged["plugins"], existing["plugins"])
         self.assertEqual(merged["platform_toolsets"], existing["platform_toolsets"])
+
+
+PRISTINA = "def call_adapter():\n    return {}\n"
+PATCHADA = "def call_adapter():\n    document = {'model': 'x'}\n    return {}\n"
+MCP_SERVIDOR = "src/jev_skill_router/mcp_server.py"
+
+
+def _sha256(datos):
+    return hashlib.sha256(datos).hexdigest()
+
+
+def _git_en(ruta, *args):
+    return subprocess.run(
+        ["git", "-C", str(ruta), *args], capture_output=True, text=True, check=True
+    )
+
+
+def _repo(ruta, archivos):
+    ruta.mkdir(parents=True)
+    for nombre, texto in archivos.items():
+        destino = ruta / nombre
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(texto, encoding="utf-8")
+    _git_en(ruta, "init", "-q")
+    _git_en(ruta, "add", "-A")
+    _git_en(
+        ruta, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"
+    )
+    return _git_en(ruta, "rev-parse", "HEAD").stdout.strip()
+
+
+class ConciliacionTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, tmp)
+        base = Path(tmp.name)
+        self.jev_sha = _repo(base / "jev", {"plugin.yaml": "name: jev\n"})
+        repo_jsr = base / "jsr"
+        self.jsr_sha = _repo(repo_jsr, {MCP_SERVIDOR: PRISTINA})
+        self.sha256_pristino = _sha256(PRISTINA.encode())
+        (repo_jsr / MCP_SERVIDOR).write_text(PATCHADA, encoding="utf-8")
+        diff = _git_en(
+            repo_jsr,
+            "diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--",
+            MCP_SERVIDOR,
+        ).stdout
+        (base / "0001-sintetico.patch").write_text(diff, encoding="utf-8")
+        self.sha256_parchado = _sha256(PATCHADA.encode())
+        _git_en(repo_jsr, "checkout", "--", MCP_SERVIDOR)
+        self.plugins = [
+            {
+                "name": "jev",
+                "repo": "https://example.com/jev",
+                "sha": self.jev_sha,
+                "toolsets": ["jev"],
+                "patches": [],
+            },
+            {
+                "name": "jev-skill-router-mcp",
+                "repo": "https://example.com/jsr",
+                "sha": self.jsr_sha,
+                "toolsets": [],
+                "patches": [
+                    {
+                        "file": MCP_SERVIDOR,
+                        "patch": str(base / "0001-sintetico.patch"),
+                        "sha256_pristine": self.sha256_pristino,
+                        "sha256_patched": self.sha256_parchado,
+                    }
+                ],
+            },
+        ]
+        self.perfil = base / "perfiles" / "claw"
+        for plugin, plantilla in zip(self.plugins, ("jev", "jsr")):
+            shutil.copytree(base / plantilla, self.perfil / "plugins" / plugin["name"])
+        self.servidor = self.perfil / "plugins" / "jev-skill-router-mcp" / MCP_SERVIDOR
+
+    def test_parchado_esta_verde_y_apply_no_hace_nada(self):
+        self.servidor.write_text(PATCHADA, encoding="utf-8")
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
+            [],
+        )
+        antes = self.servidor.read_bytes()
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_bytes(), antes)
+
+    def test_prisitino_reporta_y_apply_lo_deja_parchado(self):
+        notas = module.conciliar_plugins_director(
+            self.perfil, self.plugins, aplicar=False
+        )
+        self.assertEqual(
+            notas, [f"Parche por aplicar: jev-skill-router-mcp: {MCP_SERVIDOR}"]
+        )
+        module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_text(), PATCHADA)
+        self.assertEqual(_sha256(self.servidor.read_bytes()), self.sha256_parchado)
+        segunda = module.conciliar_plugins_director(
+            self.perfil, self.plugins, aplicar=True
+        )
+        estable = self.servidor.read_bytes()
+        self.assertEqual(segunda, [])
+        self.assertEqual(self.servidor.read_bytes(), estable)
+
+    def test_otro_contenido_es_rojo_sin_tocar_nada(self):
+        self.servidor.write_text("otro\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "no coincide"):
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
+        with self.assertRaisesRegex(ValueError, "no coincide"):
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=True)
+        self.assertEqual(self.servidor.read_text(), "otro\n")
+
+    def test_otro_sha_es_rojo_con_instruccion(self):
+        self.plugins[1]["sha"] = "0" * 40
+        with self.assertRaises(ValueError) as contexto:
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
+        mensaje = str(contexto.exception)
+        self.assertIn("fija 0000000", mensaje)
+        self.assertIn("hermes plugins", mensaje)
+
+    def test_plugin_ausente_es_rojo_con_instruccion(self):
+        shutil.rmtree(self.perfil / "plugins" / "jev")
+        with self.assertRaises(ValueError) as contexto:
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
+        mensaje = str(contexto.exception)
+        self.assertIn("no está instalado", mensaje)
+        self.assertIn("hermes plugins", mensaje)
+        self.assertIn("https://example.com/jev", mensaje)
+        self.assertIn(self.jev_sha, mensaje)
+
+    def test_cambios_con_seguimiento_ajenos_son_rojos(self):
+        (self.perfil / "plugins" / "jev" / "plugin.yaml").write_text(
+            "name: jev\neditado\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError, "fuera del parche"):
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
+
+    def test_lo_untracked_se_tolera(self):
+        self.servidor.write_text(PATCHADA, encoding="utf-8")
+        (self.perfil / "plugins" / "jev" / ".hermes-catalog.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        cache = (
+            self.perfil
+            / "plugins"
+            / "jev-skill-router-mcp"
+            / "src"
+            / "jev_skill_router"
+            / "__pycache__"
+        )
+        cache.mkdir(parents=True)
+        (cache / "x.pyc").write_bytes(b"x")
+        self.assertEqual(
+            module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False),
+            [],
+        )
+
+
+class DespliegueFrescoTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, tmp)
+        self.temporary = Path(tmp.name)
+        self.runtime = self.temporary / "runtime"
+
+    def run_configure(self, *extra):
+        # El yaml de esta Mac vive en el user-site del HOME real; con el HOME
+        # aislado el subprocess no lo resolvería, así que va explícito (en la
+        # PC el runtime ya trae el suyo y esto no cambia nada).
+        env = {
+            **os.environ,
+            "HOME": str(self.temporary / "home"),
+            "LOCALAPPDATA": str(self.temporary / "local-app-data"),
+            "PYTHONUTF8": "1",
+        }
+        usersite = site.getusersitepackages()
+        if Path(usersite).is_dir():
+            previo = os.environ.get("PYTHONPATH")
+            env["PYTHONPATH"] = (
+                f"{usersite}{os.pathsep}{previo}" if previo else str(usersite)
+            )
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_team.py"),
+                "--home",
+                str(self.runtime),
+                "--install-dir",
+                str(ROOT / "tests/fixtures/hermes_stub"),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+
+    def test_un_home_fresco_declara_los_plugins_y_avisa_sin_fallar(self):
+        resultado = self.run_configure()
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn("hermes plugins", resultado.stdout)
+        config = yaml.safe_load(
+            (self.runtime / "profiles" / "claw" / "config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            config["plugins"]["enabled"],
+            ["goncloud-team", "jev", "jev-skill-router-mcp"],
+        )
+        self.assertEqual(
+            config["platform_toolsets"]["cli"],
+            [*module._DIRECTOR_TOOLSETS, "jev"],
+        )
+        # configure declara los plugins pero nunca los instala.
+        self.assertFalse(
+            (self.runtime / "profiles" / "claw" / "plugins" / "jev").exists()
+        )
+
+    def test_perfil_sin_plugins_es_rojo_con_instruccion(self):
+        self.run_configure()
+        resultado = self.run_configure("--check")
+        self.assertNotEqual(resultado.returncode, 0)
+        self.assertIn("no está instalado", resultado.stderr)
+        self.assertIn("hermes plugins", resultado.stderr)

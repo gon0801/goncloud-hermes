@@ -4,6 +4,7 @@ import argparse
 import collections
 import copy
 import csv
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -623,6 +624,93 @@ def director_plugins_manifest():
     ]
 
 
+def conciliar_plugins_director(perfil, plugins, *, aplicar):
+    """Estado de los plugins externos del director; con ``aplicar``, parchea.
+
+    Por cada plugin del manifiesto: el repo instalado en
+    ``perfil/plugins/<nombre>`` debe estar exactamente en el sha fijado
+    (``git rev-parse HEAD``), sin cambios con seguimiento fuera de los
+    archivos del parche (los untracked como .hermes-catalog.json, .venv o
+    __pycache__ se toleran) y cada archivo parchado con su sha256 del
+    manifiesto. Prístino se reporta como "Parche por aplicar"; con
+    ``aplicar`` se aplica el .patch del repo con ``git apply`` y se
+    re-verifica el sha256. Cualquier otro estado levanta ValueError con el
+    motivo y el arreglo, sin escribir nada. Devuelve las líneas del reporte.
+    """
+    notas = []
+    for plugin in plugins:
+        name = plugin["name"]
+        plugin_dir = perfil / "plugins" / name
+        head = _git(plugin_dir, "rev-parse", "HEAD")
+        if head is None or head.returncode != 0:
+            raise ValueError(
+                f"Plugin del director {name} no está instalado en {plugin_dir}; "
+                f"instálalo con `hermes plugins` desde {plugin['repo']} en el "
+                f"commit {plugin['sha']} (manifiesto director-plugins.json)"
+            )
+        head = head.stdout.strip()
+        if head != plugin["sha"]:
+            raise ValueError(
+                f"Plugin del director {name} está en {head[:12]}, el manifiesto "
+                f"fija {plugin['sha'][:12]}; reinstálalo en el commit fijado "
+                "con `hermes plugins`"
+            )
+        targets = {patch["file"] for patch in plugin["patches"]}
+        status = _git(plugin_dir, "status", "--porcelain")
+        ajenos = []
+        if status is not None and status.returncode == 0:
+            for line in status.stdout.splitlines():
+                if line.startswith("??"):
+                    continue
+                paths = [p.strip() for p in line[3:].split("->")]
+                if not any(p in targets for p in paths):
+                    ajenos.append(line[3:].strip())
+        if ajenos:
+            raise ValueError(
+                f"Plugin del director {name} tiene cambios con seguimiento "
+                f"fuera del parche: {', '.join(ajenos)}; reconcílicalos o "
+                "reinstálalo en el commit fijado"
+            )
+        for patch in plugin["patches"]:
+            target = plugin_dir / patch["file"]
+            digest = (
+                hashlib.sha256(target.read_bytes()).hexdigest()
+                if target.is_file()
+                else None
+            )
+            if digest == patch["sha256_patched"]:
+                continue
+            if digest != patch["sha256_pristine"]:
+                motivo = (
+                    "falta"
+                    if digest is None
+                    else "no coincide ni con el contenido prístino del sha "
+                    "fijado ni con el parche Goncloud"
+                )
+                raise ValueError(
+                    f"Plugin del director {name}: {patch['file']} {motivo}; "
+                    f"restáuralo con git -C {plugin_dir} checkout -- "
+                    f"{patch['file']} y vuelve a aplicar"
+                )
+            notas.append(f"Parche por aplicar: {name}: {patch['file']}")
+            if aplicar:
+                applied = _git(plugin_dir, "apply", str(ROOT / patch["patch"]))
+                if applied is None or applied.returncode != 0:
+                    raise ValueError(
+                        f"Plugin del director {name}: git apply falló sobre "
+                        f"{patch['file']}: "
+                        f"{applied.stderr.strip() if applied else ''}"
+                    )
+                digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                if digest != patch["sha256_patched"]:
+                    raise ValueError(
+                        f"Plugin del director {name}: {patch['file']} quedó sin "
+                        "el sha256 esperado tras aplicar el parche"
+                    )
+                print(f"Parche aplicado: {name}: {patch['file']}")
+    return notas
+
+
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
     routing_source = json.loads(
@@ -826,6 +914,7 @@ def configure(
     from hermes_cli.profiles import create_profile, get_profile_dir, seed_profile_skills
 
     team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+    plugins_director = director_plugins_manifest()
     plugin_root = ROOT / "plugins" / "goncloud-team"
     if str(plugin_root) not in sys.path:
         sys.path.insert(0, str(plugin_root))
@@ -846,6 +935,7 @@ def configure(
     )
     prepared = []
     adoptions = {}
+    notas_plugins, perfil_director = [], None
     # Team profiles are created and fully shaped here. A specialist profile is
     # the owner's: it is never created, and only its native model chain, its
     # copy of the plugin and its Muse key line are managed, so a card
@@ -941,6 +1031,19 @@ def configure(
                 f"plugins/goncloud-team/{source.relative_to(plugin_root).as_posix()}"
             ] = source.read_text(encoding="utf-8")
         files.update(archivos_compartidos())
+        if is_team and role == team["director"]:
+            # Validación en la fase de lectura: un plugin irreconciliable
+            # levanta antes de escribir nada, igual que el resto de configure.
+            if fresh:
+                print(
+                    "Plugins del director: no instalados; instálalos con "
+                    "`hermes plugins` (manifiesto director-plugins.json)"
+                )
+            else:
+                notas_plugins = conciliar_plugins_director(
+                    profile, plugins_director, aplicar=False
+                )
+                perfil_director = profile
         if role == team["director"]:
             # The daily model watcher and the daily full backup are no_agent
             # cron scripts of the director's gateway; cron resolves them under
@@ -1055,6 +1158,8 @@ def configure(
             "Root default routing: "
             + ("up to date" if root_text_routed == root_text else "would be written")
         )
+        for nota in notas_plugins:
+            print(nota)
         if env_files:
             stale = [
                 env
@@ -1174,6 +1279,8 @@ def configure(
         write_changed(env, text, backup=False)
     if env_files:
         print(f"Muse login key: {MUSE_KEY_VARIABLE} set in {len(env_files)} profiles")
+    if notas_plugins:
+        conciliar_plugins_director(perfil_director, plugins_director, aplicar=True)
 
 
 def main():
