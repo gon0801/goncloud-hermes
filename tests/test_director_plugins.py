@@ -188,12 +188,25 @@ def _con_chmod(func, ruta, _exc):
     func(ruta)
 
 
+def _borrar(ruta):
+    """rmtree con el handler de solo-lectura, en la API del Python de turno.
+
+    El Python 3.11 del venv de Hermes en la PC no tiene onexc (llego en
+    3.12) y su onerror recibe exc_info en vez de la excepcion: el handler es
+    uno solo porque ignora el tercer argumento.
+    """
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(ruta, onexc=_con_chmod)
+    else:
+        shutil.rmtree(ruta, onerror=_con_chmod)
+
+
 def _limpiar(tmp):
     """TemporaryDirectory cleanup that survives git's read-only files."""
     try:
         tmp.cleanup()
     except OSError:
-        shutil.rmtree(tmp.name, onexc=_con_chmod)
+        _borrar(tmp.name)
 
 
 def _repo(ruta, archivos):
@@ -216,6 +229,7 @@ class ConciliacionTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(_limpiar, tmp)
+        self.tmp = tmp
         base = Path(tmp.name)
         # La PC clona con core.autocrlf=true de sistema (Git for Windows): el
         # mismo config hostil, simulado con GIT_CONFIG_GLOBAL, reproduce aqui
@@ -342,7 +356,7 @@ class ConciliacionTests(unittest.TestCase):
         self.assertIn("hermes plugins", mensaje)
 
     def test_plugin_ausente_es_rojo_con_instruccion(self):
-        shutil.rmtree(self.perfil / "plugins" / "jev")
+        _borrar(self.perfil / "plugins" / "jev")
         with self.assertRaises(ValueError) as contexto:
             module.conciliar_plugins_director(self.perfil, self.plugins, aplicar=False)
         mensaje = str(contexto.exception)
@@ -382,19 +396,36 @@ class ConciliacionTests(unittest.TestCase):
         # Simulacion del WinError 5 de la PC: git deja .git/objects de solo
         # lectura. En POSIX el 0o444 del archivo no basta para reproducirlo,
         # asi que los directorios de .git van en 0o555 y el borrador corre
-        # directo con el handler: sin el chmod, falla en las dos plataformas.
-        tmp = tempfile.TemporaryDirectory()
-        base = Path(tmp.name)
+        # por _borrar: sin el chmod, falla en las dos plataformas. El arbol
+        # va dentro del tmp del setUp, cuya limpieza ya tolera solo-lectura.
+        base = Path(self.tmp.name) / "solo-lectura"
         objetos = base / "repo" / ".git" / "objects" / "pack"
         objetos.mkdir(parents=True)
         (objetos / "pack-abc.pack").write_bytes(b"x")
         for elemento in sorted(objetos.rglob("*")):
             elemento.chmod(0o444 if elemento.is_file() else 0o555)
         directorio = objetos
-        while directorio != base:
+        while directorio != Path(self.tmp.name):
             directorio.chmod(0o555)
             directorio = directorio.parent
-        shutil.rmtree(base, onexc=_con_chmod)
+        _borrar(base)
+        self.assertFalse(base.exists())
+
+    def test_el_mismo_handler_sirve_para_la_api_onerror_de_3_11(self):
+        # La PC corre 3.11: ahi _borrar usa onerror y el handler recibe
+        # exc_info en el tercer argumento. Esta prueba ejercita esa rama
+        # tambien en un Python nuevo, donde onerror sigue vivo pero
+        # deprecado.
+        base = Path(self.tmp.name) / "onerror"
+        objetos = base / ".git" / "objects"
+        objetos.mkdir(parents=True)
+        (objetos / "b9").mkdir()
+        objeto = objetos / "b9" / "b957c0"
+        objeto.write_bytes(b"x")
+        objeto.chmod(0o444)
+        objetos.chmod(0o555)
+        objetos.parent.chmod(0o555)
+        shutil.rmtree(base, onerror=_con_chmod)
         self.assertFalse(base.exists())
 
 
