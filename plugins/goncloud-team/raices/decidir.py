@@ -297,6 +297,8 @@ def decidir(
         return Propuesta(decision, [], avisados_vencidos(), "waiting")
 
     terminados: dict = {}
+    liberadas = {"raiz": 0, "global": 0}
+    liberadas_por_perfil: dict = {}
     ligadas = set()
     hechos_usados = set()
     fallo_por_resultado: dict = {}
@@ -365,6 +367,13 @@ def decidir(
         ):
             desenlace = "cancelled"
         terminados[llave] = desenlace
+        # F10: este outcome termina un intento vivo: libera su plaza de raiz,
+        # una global y una del perfil de ese intento, igual que las cuenta el
+        # store (aplica los outcomes antes que los cupos).
+        liberadas["raiz"] += 1
+        liberadas["global"] += 1
+        perfil_lib = _perfil_de(_target_de(documento.get("assignment")))
+        liberadas_por_perfil[perfil_lib] = liberadas_por_perfil.get(perfil_lib, 0) + 1
         decision["outcomes"].append(
             {
                 "unitId": documento["unitId"],
@@ -383,11 +392,26 @@ def decidir(
         ultimo = ultimo_de(unit_id)
         if not ultimo or unit_id in ligadas or aceptada(unit_id) or cerrada(unit_id):
             return True
-        if not se_puede_ligar(ultimo["assignment"]):
+        if not se_puede_ligar_liberando(ultimo):
             return False
         terminar(ultimo, "failed")
         ligar(unit_id, ultimo["assignment"])
         return True
+
+    def se_puede_ligar_liberando(documento) -> bool:
+        """F10: el reintento re-liga el mismo assignment del intento que va a
+        cancelar (misma raiz, mismo perfil): la plaza se mide contando ese
+        intento como ya liberado, como lo contara el store al aplicar."""
+        perfil = _perfil_de(_target_de(documento.get("assignment")))
+        liberadas["raiz"] += 1
+        liberadas["global"] += 1
+        liberadas_por_perfil[perfil] = liberadas_por_perfil.get(perfil, 0) + 1
+        try:
+            return se_puede_ligar(documento["assignment"])
+        finally:
+            liberadas["raiz"] -= 1
+            liberadas["global"] -= 1
+            liberadas_por_perfil[perfil] -= 1
 
     def _hecho_disponible(unit_id, relevo):
         for indice, hecho in enumerate(vista["hechos"]["asignaciones"]):
@@ -457,9 +481,13 @@ def decidir(
         perfil = _perfil_de(_target_de(assignment))
         por_perfil = plazas.get("por_perfil") or {}
         cabe = (
-            ya_ligados + 1 <= int(plazas.get("raiz", 0))
-            and ya_ligados + 1 <= int(plazas.get("global", 0))
-            and (perfil not in por_perfil or ya_ligados + 1 <= int(por_perfil[perfil]))
+            ya_ligados + 1 <= int(plazas.get("raiz", 0)) + liberadas["raiz"]
+            and ya_ligados + 1 <= int(plazas.get("global", 0)) + liberadas["global"]
+            and (
+                perfil not in por_perfil
+                or ya_ligados + 1
+                <= int(por_perfil[perfil]) + liberadas_por_perfil.get(perfil, 0)
+            )
         )
         return cabe
 
