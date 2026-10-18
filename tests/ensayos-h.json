@@ -24,7 +24,8 @@
   "H1",
   "H3",
   "H4b1",
-  "H4b2"
+  "H4b2",
+  "H4b3"
  ],
  "filas": [
   {
@@ -227,8 +228,8 @@
    "ensayo": "I09",
    "clausula": "I09.3",
    "texto": "permisos efectivos medidos (toolsets del hijo)",
-   "prueba": null,
-   "rebanada": "H4"
+   "prueba": "test_sistema_agentes_permisos.ToolsetsEfectivos.test_el_write_declarado_sin_coding_real_queda_sin_write",
+   "rebanada": "H4b3"
   },
   {
    "ensayo": "I09",

@@ -92,17 +92,23 @@ class ConviveConElReal(unittest.TestCase):
             self.assertIs(sys.modules["hermes_cli.kanban_db_connect"], real_connect)
 
     def test_instalar_sin_nada_previo_no_deja_residuos(self):
+        # F5: "sin residuos" compara contra el estado capturado ANTES de
+        # instalar: desinstalar restaura lo previo, así que si un módulo
+        # existía antes (el real de la PC, un residuo de otra prueba) debe
+        # seguir estando tras desinstalar, y si no estaba, no aparece.
+        antes = {nombre: sys.modules.get(nombre) for nombre in hermes_falso.MODULOS}
         hermes_falso.instalar()
         try:
             self.assertIn("hermes_cli", sys.modules)
         finally:
             hermes_falso.desinstalar()
-        # Sin residuos de hermes_cli: el doble se desinstala entero. El
-        # hermes_constants puede quedar (el real llega a sys.modules por su
-        # cuenta y esa es la convivencia esperada).
-        for nombre in hermes_falso.MODULOS:
-            if nombre.split(".")[0] == "hermes_cli":
-                self.assertNotIn(nombre, sys.modules)
+        for nombre, modulo in antes.items():
+            if modulo is None:
+                self.assertNotIn(nombre, sys.modules, f"{nombre} es residuo")
+            else:
+                self.assertIs(
+                    sys.modules.get(nombre), modulo, f"{nombre} no quedó restaurado"
+                )
 
 
 if __name__ == "__main__":
