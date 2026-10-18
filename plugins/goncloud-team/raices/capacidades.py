@@ -42,9 +42,17 @@ RUTA_CERTIFICADAS = Path(__file__).with_name("certificadas.json")
 _FORMA_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _FORMA_SHA = re.compile(r"^[0-9a-f]{40}$")
 _FORMA_INSTANTE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-# Sin el tramo "+N.g<sha>" no hay comprobación cruzada contra code_sha: un
-# texto así no parsea a par vivo y la puerta queda cerrada por par-incierto.
+# El tramo "+N.g<sha>" manda cuando existe. Si el CLI es de release, la
+# versión es "v<x.y.z>" y el sufijo es el hex tras "· local " (7 a 40 hex);
+# ese hex cruza contra code_sha igual que el de "+N.g". El hex de
+# "· upstream" es el commit de upstream, no el que corre: nunca cuenta como
+# sufijo. Sin ninguno de los dos no hay comprobación cruzada contra
+# code_sha: un texto así no parsea a par vivo y la puerta queda cerrada
+# por par-incierto.
 _VERSION_CLI = re.compile(r"Hermes Agent v(\d+\.\d+\.\d+)\+\d+\.g([0-9a-f]+)")
+_VERSION_CLI_RELEASE = re.compile(
+    r"Hermes Agent v(\d+\.\d+\.\d+)\b.*?· local ([0-9a-f]{7,40})(?![0-9a-f])"
+)
 
 
 class VersionCLI(NamedTuple):
@@ -105,7 +113,7 @@ def leer_version(runner=None) -> VersionCLI | None:
         return None
     if not isinstance(texto, str):
         return None
-    hallado = _VERSION_CLI.search(texto)
+    hallado = _VERSION_CLI.search(texto) or _VERSION_CLI_RELEASE.search(texto)
     if hallado is None:
         return None
     return VersionCLI(hallado.group(1), hallado.group(2))

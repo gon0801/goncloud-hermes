@@ -139,6 +139,40 @@ class LeerVersion(unittest.TestCase):
             capacidades.leer_version(lambda: "Hermes Agent v0.21.5 (2026.9.24)")
         )
 
+    def test_la_linea_literal_de_022_parsea_version_y_sha_local(self):
+        linea = "Hermes Agent v0.22.0 (2026.9.24) · stable · local e06df9c2eae6"
+        self.assertEqual(
+            capacidades.leer_version(lambda: linea),
+            capacidades.VersionCLI("0.22.0", "e06df9c2eae6"),
+        )
+
+    def test_el_sufijo_g_manda_sobre_la_forma_de_release(self):
+        linea = (
+            f"Hermes Agent v0.21.5+5822.g{SHA[:7]} (2026.9.24) · stable · local {SHA}"
+        )
+        self.assertEqual(capacidades.leer_version(lambda: linea), VERSION)
+
+    def test_una_version_de_release_sin_local_da_none(self):
+        self.assertIsNone(
+            capacidades.leer_version(
+                lambda: "Hermes Agent v0.22.0 (2026.9.24) · stable"
+            )
+        )
+
+    def test_upstream_sin_local_ni_sufijo_g_da_none(self):
+        self.assertIsNone(
+            capacidades.leer_version(
+                lambda: "Hermes Agent v0.22.0 (2026.9.24) · upstream e4635a16"
+            )
+        )
+
+    def test_un_hex_tras_local_de_menos_de_siete_no_cuenta(self):
+        self.assertIsNone(
+            capacidades.leer_version(
+                lambda: "Hermes Agent v0.22.0 (2026.9.24) · stable · local e06df9"
+            )
+        )
+
 
 class ElEjecutableDeVersion(unittest.TestCase):
     """Windows: el CLI vive en %LOCALAPPDATA%\\hermes\\bin\\hermes.CMD y
@@ -361,6 +395,26 @@ class Decidir(unittest.TestCase):
             capacidades.decidir(hechos_de(certificadas=[])),
             (False, "version-no-certificada"),
         )
+
+    def test_el_par_de_release_022_sin_certificar_da_version_no_certificada(self):
+        version = capacidades.VersionCLI("0.22.0", "e06df9c2eae6")
+        gateway = par_vivo()._replace(
+            code_version="0.22.0",
+            code_sha="e06df9c2eae6901f4c88f464e0ae6e753c0428b8",
+        )
+        hechos = hechos_de(version=version, gateway=gateway)
+        self.assertEqual(capacidades.decidir(hechos), (False, "version-no-certificada"))
+
+    def test_el_par_de_release_022_certificado_abre(self):
+        sha22 = "e06df9c2eae6901f4c88f464e0ae6e753c0428b8"
+        version = capacidades.VersionCLI("0.22.0", "e06df9c2eae6")
+        gateway = par_vivo()._replace(code_version="0.22.0", code_sha=sha22)
+        hechos = hechos_de(
+            version=version,
+            gateway=gateway,
+            certificadas=[entrada(version="0.22.0", sha=sha22)],
+        )
+        self.assertEqual(capacidades.decidir(hechos), (True, None))
 
     def test_decidir_nunca_lanza_con_hechos_rotos(self):
         rotos = (
