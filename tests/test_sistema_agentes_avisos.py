@@ -148,6 +148,28 @@ class Emisor(unittest.TestCase):
         informe, mensajes = self.avisar(mensaje_id=None)
         self.assertEqual(len(mensajes), 1)
         self.assertIn("el aviso no se confirmó", informe["errores"][0])
+
+    def test_un_conflicto_del_checkpoint_no_se_informa_como_avisada(self):
+        class TiendaQueConflicta:
+            def __init__(self, tienda):
+                self.envuelta = tienda
+                self._conexion = tienda._conexion
+
+            def notificar(self, root_id, exception_ids):
+                return store.Conflicto(
+                    "exception-unknown", {"exceptionId": exception_ids[0]}
+                )
+
+        informe, mensajes = self.avisar(tienda=TiendaQueConflicta(self.tienda))
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn("exception-unknown", informe["errores"][0])
+        self.assertEqual(informe["avisadas"], [])
+        self.assertIsNone(informe["messageId"])
+        fila = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (self.exception_id,),
+        )
+        self.assertIsNone(fila["noticed_at"])
         self.assertIsNone(informe["messageId"])
         fila = self.tienda._una_fila(
             "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
