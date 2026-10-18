@@ -4,10 +4,12 @@ El doble nunca va al sys.path: se instala por modulo y se desinstala entero,
 asi las pruebas reales de la PC (skipUnless hermes_cli importable) no pueden
 encontrarlo por accidente durante el discover.
 
-El hermes_constants REAL puede estar presente (raices.hogar lo resuelve en
-cada llamada y en la PC llega antes de que la prueba instale el doble):
-instalar lo guarda y desinstalar lo restaura. Un hermes_cli presente si es
-un mezclado a medias con el real y sigue siendo error.
+El hermes_constants y el hermes_cli REALES pueden estar presentes (en la PC
+el venv trae hermes_cli importable y una prueba que sondee capacidades sin
+inyectar el importador lo deja cargado en sys.modules): instalar GUARDA lo que
+haya de ambos y desinstalar lo RESTAURA, sin importar el orden de las
+pruebas. Asi un residuo de otra prueba no rompe la suite: cada prueba ve el
+mismo doble y al salir el modulo queda como estaba.
 """
 
 import importlib.util
@@ -28,11 +30,9 @@ _previos = None
 
 def instalar():
     global _previos
-    presentes = [nombre for nombre in MODULOS if nombre in sys.modules]
-    conflicto = [nombre for nombre in presentes if nombre.split(".")[0] == "hermes_cli"]
-    if conflicto:
-        raise RuntimeError(f"ya hay un hermes_cli instalado: {conflicto}")
-    _previos = {nombre: sys.modules[nombre] for nombre in presentes}
+    _previos = {
+        nombre: sys.modules[nombre] for nombre in MODULOS if nombre in sys.modules
+    }
     for nombre in MODULOS:
         if nombre == "hermes_cli":
             ruta = DOBLE / "hermes_cli" / "__init__.py"

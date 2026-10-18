@@ -652,9 +652,16 @@ class StoreCompartido(Base):
 
         def capturar(home=None, **kwargs):
             # La puerta REAL por dentro: hechos_vivos + decidir, sin pasar
-            # por el parche del Base.
+            # por el parche del Base. El importador inyectado falla: ninguna
+            # prueba unitaria importa el hermes_cli real en el proceso (en la
+            # PC dejaria el venv cargado y romperia el resto de la suite).
+            def sin_hermes_cli(_nombre):
+                raise ImportError("sondeo inyectado: sin hermes_cli")
+
             consultadas.append(Path(home))
-            resultado = capacidades.decidir(capacidades.hechos_vivos(home=home))
+            resultado = capacidades.decidir(
+                capacidades.hechos_vivos(home=home, importador=sin_hermes_cli)
+            )
             puertas.append(resultado)
             return resultado
 
@@ -669,12 +676,11 @@ class StoreCompartido(Base):
 
         # La MISMA puerta: ambas corridas consultaron la raiz y la puerta
         # real decidio lo MISMO y cerrada (el gateway_state.json de la raiz
-        # es el leido en ambos casos; la causa concreta depende del entorno:
-        # capacidad-faltante sin doble, par-incierto con el).
+        # es el leido en ambos casos). Con el sondeo inyectado sin
+        # hermes_cli la causa es determinista: capacidad-faltante:create_task.
         self.assertEqual(consultadas, [self.raiz, self.raiz])
         self.assertEqual(puertas[0], puertas[1])
-        self.assertFalse(puertas[0][0])
-        self.assertIsInstance(puertas[0][1], str)
+        self.assertEqual(puertas[0], (False, "capacidad-faltante:create_task"))
         # Los MISMOS permisos: toolsets efectivos (write declarado y coding
         # real) leidos del permisos.json de la raiz en ambos casos.
         esperados = {
