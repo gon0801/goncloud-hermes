@@ -18,6 +18,7 @@ compartido = importlib.import_module("raices.compartido")
 decidir = importlib.import_module("raices.decidir")
 kanban_port = importlib.import_module("raices.kanban_port")
 store_module = importlib.import_module("raices.store")
+autoridad = importlib.import_module("raices.autoridad")
 
 CaidaInyectada = kanban_port.CaidaInyectada
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -50,15 +51,18 @@ def cargar_politicas() -> dict:
     return store_module.leer_politicas()
 
 
-def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
+def vuelta(tienda, puerto, hechos_por_raiz=None, permisos_h=None) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
-    muerte del proceso, y la vuelta siguiente recupera desde las filas."""
+    muerte del proceso, y la vuelta siguiente recupera desde las filas.
+    `permisos_h` es el dict de permisos de H (I07): None o ausentes niegan todo."""
     hechos_por_raiz = hechos_por_raiz or {}
+    permisos = autoridad.PermisosH(permisos_h)
     conciliadas = 0
     aplicadas = 0
     conflictos: list = []
     creadas_antes = len(puerto.creaciones)
     estado: str | None = None
+    vistas: dict = {}
 
     for bloqueo in tienda.bloqueos_pendientes():
         with puerto.write_txn() as escritura:
@@ -76,9 +80,9 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
         )
         if vista is None:
             continue
+        vistas[root_id] = vista
         propuesta = decidir.decidir(vista)
         decision = propuesta.decision
-        resultado = None
         if any(len(decision[llave]) > 0 for llave in LLAVES_DE_DECISION):
             resultado = tienda.aplicar(
                 root_id, decision, _decision_id(vista, propuesta)
@@ -87,19 +91,21 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
                 conflictos.append((root_id, resultado.codigo))
             else:
                 aplicadas += 1
-        # Con aplicar en conflicto, las excepciones nuevas no están en la base (F13).
-        avisar = propuesta.avisar
-        if hasattr(resultado, "codigo"):
-            nuevas = {e["exceptionId"] for e in decision["excepciones"]}
-            avisar = [x for x in avisar if x not in nuevas]
-        if avisar:
-            aviso = tienda.notificar(root_id, avisar)
-            if hasattr(aviso, "codigo"):
-                conflictos.append((root_id, aviso.codigo))
+        # El aviso de las excepciones no pasa por aquí: el checkpoint
+        # (noticed_at) solo avanza cuando el emisor de la pasada del cron
+        # (proyeccion.avisar_excepciones) confirmó un messageId. Si la vuelta
+        # marcara sin enviar, la pasada no encontraría nada debido y el aviso
+        # nunca saldría (F9).
         if propuesta.estado == "done":
             estado = "done"
 
     for intencion in tienda.intenciones_pendientes():
+        vista_de = vistas.get(intencion.root_id)
+        if vista_de is not None:
+            razon = _negar_arranque(vista_de, permisos, intencion)
+            if razon is not None:
+                _levantar_arranque(tienda, vista_de, intencion, razon, conflictos)
+                continue
         reclamo = tienda.reclamar_intencion(
             intencion.root_id, intencion.unit_id, intencion.attempt
         )
@@ -126,6 +132,62 @@ def vuelta(tienda, puerto, hechos_por_raiz=None) -> Informe:
         len(puerto.creaciones) - creadas_antes,
         estado,
     )
+
+
+def _negar_arranque(vista, permisos, intencion) -> str | None:
+    """Punto 1 de la intersección (I07): la unidad no arranca si el contrato o
+    H lo niegan."""
+    unidad_plan = next(
+        (u for u in vista["meta"]["plan"]["units"] if u["unitId"] == intencion.unit_id),
+        None,
+    )
+    return autoridad.negar_arranque(
+        vista["meta"]["authority"],
+        permisos,
+        vista["ahora"],
+        intencion.assignment,
+        unidad_plan,
+    )
+
+
+def _levantar_arranque(tienda, vista, intencion, razon, conflictos) -> None:
+    """La pregunta por un arranque negado. Un sujeto de INTENTO no ofrece
+    `autorizar`: la concesión del dueño solo existe para efectos (F8/F15),
+    igual que en R, donde permission-required sale con
+    ["listo","omitir","cancelar"] (managed-root.decide.ts:550). Si la
+    decisión choca, el Conflicto entra al informe (F17). La decisión NO se
+    reaplica (C2): con la id fija `dec-arranque:<exceptionId>` y una época
+    que cambió sería un operation-conflict en cada vuelta, y con la raíz en
+    pausa un root-not-active; si la pregunta ya está en la base, no hace
+    falta, y si la raíz no está active la pregunta sale al reanudar."""
+    borrador = decidir.borrador_excepcion(
+        intencion.root_id,
+        "NECESITA_DAVID",
+        {
+            "kind": "attempt",
+            "unitId": intencion.unit_id,
+            "attempt": intencion.attempt,
+            "cause": autoridad.causa_de(razon),
+        },
+        ["listo", "omitir", "cancelar"],
+    )
+    conocidas = {e["exceptionId"] for e in vista.get("excepciones") or ()}
+    if (
+        borrador["exceptionId"] in conocidas
+        or vista["meta"]["control"]["state"] != "active"
+    ):
+        return
+    decision = decidir._decision_vacia(
+        vista["meta"]["plan"]["revision"], vista["meta"]["controlEpoch"]
+    )
+    decision["excepciones"] = [borrador]
+    resultado = tienda.aplicar(
+        intencion.root_id,
+        decision,
+        f"dec-arranque:{borrador['exceptionId']}",
+    )
+    if hasattr(resultado, "codigo"):
+        conflictos.append((intencion.root_id, resultado.codigo))
 
 
 def _hechos_vacios() -> dict:
@@ -199,11 +261,11 @@ def _reportar(tienda, intento, tarjeta, ahora) -> None:
     carga = tarjeta.resultado or {}
     documento = _documento_de_resultado(carga, intento, tarjeta, ahora)
     if documento is None:
-        _incidencia_invalida(tienda, intento, tarjeta)
+        _incidencia_invalida(tienda, intento, tarjeta, carga)
         return
     respuesta = tienda.reportar_resultado(documento)
     if hasattr(respuesta, "codigo"):
-        _incidencia_invalida(tienda, intento, tarjeta)
+        _incidencia_invalida(tienda, intento, tarjeta, carga)
 
 
 def _documento_de_resultado(carga, intento, tarjeta, ahora):
@@ -245,11 +307,25 @@ def _documento_de_resultado(carga, intento, tarjeta, ahora):
     return documento
 
 
-def _incidencia_invalida(tienda, intento, tarjeta) -> None:
+def _incidencia_invalida(tienda, intento, tarjeta, carga=None) -> None:
+    """El episodeId es el canónico de R (managed-task.worker.ts): el digest del
+    resultado si lo trajo, o el de schema-invalid sobre lo que llegó."""
+    identidad = carga.get("resultDigest") if isinstance(carga, dict) else None
+    if not isinstance(identidad, str) or not identidad:
+        identidad = digesto(
+            [
+                "schema-invalid",
+                carga if isinstance(carga, str) else "structured-result",
+            ]
+        )
     tienda.registrar_incidencia(
         intento["rootId"],
         intento["unitId"],
         intento["attempt"],
         f"invalid-result:{tarjeta.id}",
-        {"kind": "invalid-result", "evidenceRef": tarjeta.id},
+        {
+            "kind": "invalid-result",
+            "episodeId": f"invalid-result:{digesto([tarjeta.id, identidad])}",
+            "evidenceRef": tarjeta.id,
+        },
     )

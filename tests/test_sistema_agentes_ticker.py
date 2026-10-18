@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -32,6 +33,16 @@ clave_de_tarjeta = kanban_port.clave_de_tarjeta
 RAIZ = "root-abc"
 DIGEST = "sha256:" + "a" * 64
 REF = {"ref": "artifact:x", "digest": DIGEST}
+
+
+def permisos_de_prueba():
+    """Los permisos de H del escenario, explícitos: el None de producción
+    niega (fail-closed), así que ningún test depende del omisión."""
+    return {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"codex": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
 
 
 def asignacion(adapter="codex", repo="owner-01/repo-a"):
@@ -180,7 +191,12 @@ class Escenario(unittest.TestCase):
         return tienda, kanban
 
     def vuelta(self, tienda, kanban, hechos=None):
-        return ticker.vuelta(tienda, kanban, {RAIZ: hechos or hechos_de_raiz()})
+        return ticker.vuelta(
+            tienda,
+            kanban,
+            {RAIZ: hechos or hechos_de_raiz()},
+            permisos_h=permisos_de_prueba(),
+        )
 
     def terminar_a_y_b(self, tienda, kanban, hechos=None):
         self.vuelta(tienda, kanban, hechos)
@@ -331,6 +347,13 @@ class I04Ticker(Escenario):
             [(i["unitId"], i["incidentKey"]) for i in vista["incidencias"]],
             [("a", f"invalid-result:{tarjeta.id}")],
         )
+        episodio = vista["incidencias"][0]["incident"]["episodeId"]
+        identidad = decidir.digesto(["schema-invalid", "structured-result"])
+        self.assertEqual(
+            episodio,
+            "invalid-result:" + decidir.digesto([tarjeta.id, identidad]),
+        )
+        self.assertNotEqual(episodio, tarjeta.id)
         self.assertEqual(vista["resultados"], [])
 
     def test_una_tarjeta_archivada_es_un_intento_muerto_con_incidencia(self):
@@ -358,6 +381,33 @@ class I04Ticker(Escenario):
         clave_dos = clave_de_tarjeta(RAIZ, "a", 2)
         self.assertIn(clave_dos, kanban.creaciones)
         self.assertIsNotNone(kanban.por_clave(clave_dos))
+
+    def test_el_episodio_invalido_distingue_cargas_distintas(self):
+        tienda, kanban = self.frescar()
+        self.vuelta(tienda, kanban)
+        tarjeta_a = kanban.por_clave(clave_de_tarjeta(RAIZ, "a", 1))
+        tarjeta_b = kanban.por_clave(clave_de_tarjeta(RAIZ, "b", 1))
+        kanban.crear_hecha(
+            tarjeta_a.clave, {"resultContract": "review.v1", "verdict": "changes"}
+        )
+        kanban.crear_hecha(
+            tarjeta_b.clave,
+            {
+                "resultContract": "review.v1",
+                "verdict": "changes",
+                "resultDigest": DIGEST,
+            },
+        )
+        self.vuelta(tienda, kanban)
+        vista = tienda.leer_vista(RAIZ, hechos_de_raiz())
+        episodios = {
+            i["unitId"]: i["incident"]["episodeId"] for i in vista["incidencias"]
+        }
+        self.assertEqual(
+            episodios["b"],
+            "invalid-result:" + decidir.digesto([tarjeta_b.id, DIGEST]),
+        )
+        self.assertNotEqual(episodios["a"], episodios["b"])
 
     def test_tras_las_caidas_el_plan_termina_y_sigue(self):
         tienda, kanban = self.frescar()
@@ -643,8 +693,11 @@ class LosHechosMalFormadosNoTumbanLaVuelta(Escenario):
 
 
 class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
-    """F13: si aplicar devuelve conflicto, los avisos de excepciones ya
-    guardadas igual salen y el conflicto queda registrado en el informe."""
+    """F13: si aplicar devuelve conflicto, la vuelta sigue y los avisos de
+    excepciones YA guardadas igual salen: la vuelta ya no marca noticed_at
+    (F9: el checkpoint solo avanza cuando el emisor de la pasada del cron
+    confirmó un messageId), así que la excepción sigue debiéndose y
+    avisar_excepciones la manda pese al conflicto de aplicar."""
 
     def test_un_conflicto_de_aplicar_no_bloquea_el_renotice(self):
         tienda, kanban = self.frescar()
@@ -686,7 +739,228 @@ class ElConflictoDeAplicarNoTumbaLosAvisos(Escenario):
             "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
             (borrador["exceptionId"],),
         )
-        self.assertEqual(fila["noticed_at"], "2026-10-18T00:00:00Z")
+        self.assertEqual(
+            fila["noticed_at"],
+            "2026-10-17T10:00:00Z",
+            "la vuelta ya no avisa: el checkpoint es de la pasada del cron",
+        )
+        proyeccion = importlib.import_module("raices.proyeccion")
+        desde = datetime(2026, 10, 18, 0, 0, 0, tzinfo=timezone.utc)
+        informe_aviso = proyeccion.avisar_excepciones(
+            tienda, ahora=desde, enviar=lambda _texto: 1
+        )
+        self.assertIn(borrador["exceptionId"], informe_aviso["avisadas"])
+
+
+def decision_con_binding(unit_id):
+    return {
+        "expected_plan_revision": 1,
+        "expected_control_epoch": 1,
+        "consumidos": [],
+        "claims": [],
+        "outcomes": [],
+        "bindings": [{"unitId": unit_id, "assignment": asignacion(), "writers": []}],
+        "efectos": [],
+        "contadores": [],
+        "excepciones": [],
+        "respuestas_aplicadas": [],
+    }
+
+
+class ElConflictoDelArranqueNoSePierde(Escenario):
+    """F17: si la decisión del arranque negado choca (p. ej. root-not-active),
+    el Conflicto entra al informe de la vuelta en vez de descartarse."""
+
+    def test_un_conflicto_al_levantar_el_arranque_queda_en_el_informe(self):
+        tienda, _kanban = self.frescar()
+        # Una intención pendiente con el arranque negado (permisos sin el
+        # perfil codex): la vuelta levanta la excepción de arranque...
+        permisos_duros = {
+            "acciones": ["read", "implement", "review"],
+            "toolsets": {"otro": ["read", "write"]},
+            "comandos": ["git", "python3"],
+        }
+        self.assertIsInstance(
+            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+        )
+        # ...y su aplicar se hace conflictivo, como el F13 de r6.
+        original = tienda.aplicar
+
+        def aplicar_en_conflicto(root_id, decision, decision_id):
+            tienda.aplicar = original
+            return store.Conflicto("root-not-active", {"state": "cancelled"})
+
+        tienda.aplicar = aplicar_en_conflicto
+        informe = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=permisos_duros
+        )
+        self.assertIn((RAIZ, "root-not-active"), informe.conflictos)
+
+
+class FilasCorruptasEnLaVista(Escenario):
+    """F13: una fila corrupta (JSON que no parsea) en UNA raíz no tumba la
+    vuelta: se salta y las demás raíces siguen decidiendo y despachando."""
+
+    def frescar_dos_raices(self):
+        self.escenarios += 1
+        tienda = store.Store(self.directorio.name + f"/{self.escenarios}.db")
+        self.addCleanup(tienda.cerrar)
+        tienda.abrir_raiz(meta_de())
+        otra = meta_de()
+        otra["rootId"] = "root-sana"
+        otra["plan"]["planDigest"] = "sha256:" + "b" * 64
+        tienda.abrir_raiz(otra)
+        return tienda
+
+    @staticmethod
+    def hechos_de(raiz):
+        return {
+            raiz: {
+                "principal": ["david"],
+                "asignaciones": [
+                    {"unitId": "a", "assignment": asignacion(), "relay": False}
+                ],
+                "claims": [],
+                "efectos": [],
+            }
+        }
+
+    def corromper(self, tienda, que):
+        if que == "intento":
+            # Un intento terminal (cancelado) de la raíz rota: sigue en la
+            # vista pero no en las intenciones pendientes del despacho.
+            self.assertIsInstance(
+                tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+            )
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "cancel",
+                    "commandId": "cmd-corromper",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            )
+            tienda._conexion.execute(
+                "UPDATE intentos SET assignment_json = '{roto' WHERE root_id = ?",
+                (RAIZ,),
+            )
+        elif que == "resultado":
+            tienda._conexion.execute(
+                "INSERT INTO resultados VALUES (?,?,?,?,?,?,?)",
+                (
+                    RAIZ,
+                    "a",
+                    1,
+                    "sha256:" + "c" * 64,
+                    "{roto",
+                    None,
+                    "2026-10-17T11:00:00Z",
+                ),
+            )
+        else:
+            tienda.registrar_incidencia(RAIZ, "a", 1, "corrupta:x", {"kind": "x"})
+            tienda._conexion.execute(
+                "UPDATE incidencias SET incident_json = '{roto'"
+                " WHERE root_id = ? AND incident_key = 'corrupta:x'",
+                (RAIZ,),
+            )
+        tienda._conexion.commit()
+
+    def test_la_vuelta_sigue_con_las_demas_raices(self):
+        for que in ("intento", "resultado", "incidencia"):
+            with self.subTest(que=que):
+                tienda = self.frescar_dos_raices()
+                self.corromper(tienda, que)
+                informe = ticker.vuelta(
+                    tienda,
+                    DobleKanban(),
+                    self.hechos_de("root-sana"),
+                    permisos_h=permisos_de_prueba(),
+                )
+                self.assertEqual(informe.tarjetas_creadas, 1)
+
+
+class ElArranqueNoReaplica(Escenario):
+    """C2 (r6e): la decisión de arranque no se reaplica. Con la misma id
+    `dec-arranque:<exceptionId>` y una época que cambió (pausa/reanudación)
+    era un operation-conflict en cada vuelta, y con la raíz en pausa un
+    root-not-active en cada vuelta: conflictos falsos en el informe."""
+
+    PERMISOS_DUROS = {
+        "acciones": ["read", "implement", "review"],
+        "toolsets": {"otro": ["read", "write"]},
+        "comandos": ["git", "python3"],
+    }
+
+    def montar(self):
+        tienda, _kanban = self.frescar()
+        self.assertIsInstance(
+            tienda.aplicar(RAIZ, decision_con_binding("a"), "dec-liga"), store.Ok
+        )
+        return tienda
+
+    def test_una_raiz_en_pausa_no_genera_conflicto_falso(self):
+        tienda = self.montar()
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        informe = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(informe.conflictos, ())
+
+    def test_tras_reanudar_no_reaplica_la_misma_pregunta(self):
+        tienda = self.montar()
+        primera = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(primera.conflictos, ())
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "pause",
+                    "commandId": "cmd-pausa",
+                    "expectedControlEpoch": 1,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:00:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            tienda.control(
+                {
+                    "schema": "sistema-agentes.control.v1",
+                    "rootId": RAIZ,
+                    "command": "resume",
+                    "commandId": "cmd-resume",
+                    "expectedControlEpoch": 2,
+                    "reason": None,
+                    "issuedAt": "2026-10-17T11:01:00Z",
+                }
+            ),
+            store.Ok,
+        )
+        segunda = ticker.vuelta(
+            tienda, DobleKanban(), {RAIZ: {}}, permisos_h=self.PERMISOS_DUROS
+        )
+        self.assertEqual(segunda.conflictos, ())
 
 
 class I12PoliticaDelTicker(unittest.TestCase):

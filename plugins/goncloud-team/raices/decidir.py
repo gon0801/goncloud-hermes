@@ -2,10 +2,11 @@
 
 Pura y total: toda la información que usa entra en la vista (plan, intentos,
 resultados, incidencias, efectos, excepciones, contadores, política, hechos y el
-reloj `ahora`). Sin I/O y sin reloj propio. La autoridad es un parámetro inyectable;
-hoy admite todo y H3 la intersectará con los permisos de H. La semántica transcribe
-managed-root.decide.ts de R con la política quality-kit.regla4 (5+5, el relevo es la
-ronda 6, a la 10 sin converger NECESITA_DAVID).
+reloj `ahora`). Sin I/O y sin reloj propio. La autoridad es inyectable; por
+omisión es la intersección real (raices/autoridad.py): contrato.efecto_admisible
+de la copia fijada con los permisos de H que traiga la vista (I07). La semántica
+transcribe managed-root.decide.ts de R con la política quality-kit.regla4 (5+5,
+el relevo es la ronda 6, a la 10 sin converger NECESITA_DAVID).
 """
 
 from __future__ import annotations
@@ -138,10 +139,33 @@ class Propuesta(NamedTuple):
     estado: str
 
 
-def ADMITE_TODO(intento: Mapping) -> str | None:
-    # TODO(H3): intersectar contrato.efecto_admisible con los permisos de H en los
-    # tres puntos (arranque, reanudación y antes del efecto).
-    return None
+def _autoridad_de_vista(vista: Vista) -> Callable[[Mapping], str | None]:
+    modulo = importlib.import_module("raices.autoridad")
+    permisos = modulo.PermisosH(vista.get("permisos_h"))
+    # Una autoridad ausente entra tal cual y la intersección la niega con
+    # razón propia (F3): nunca un {} que el contrato convierta en KeyError.
+    return modulo.interseccion(vista["meta"].get("authority"), permisos, vista["ahora"])
+
+
+def _causa_de(razon: str) -> str:
+    """La causa del sujeto, la misma traducción que hace el gate del store."""
+    modulo = importlib.import_module("raices.autoridad")
+    return modulo.causa_de(razon)
+
+
+def _es_de_forma(razon: str) -> bool:
+    """C1: si la razón es de forma (efecto-sin-forma, autoridad-ilegible),
+    la concesión del dueño no la calla: nadie autoriza un documento roto."""
+    modulo = importlib.import_module("raices.autoridad")
+    return razon in modulo.RAZONES_DE_FORMA
+
+
+def _opciones_de_efecto(razon: str) -> list:
+    """r6f: una sola fuente (autoridad.opciones_por_razon) para las opciones
+    de la pregunta por un efecto: `autorizar` sólo si la razón se puede
+    conceder; una razón de forma no se autoriza."""
+    modulo = importlib.import_module("raices.autoridad")
+    return modulo.opciones_por_razon(razon)
 
 
 def digesto(partes: object) -> str:
@@ -255,11 +279,15 @@ def _decision_vacia(revision: int, epoch: int) -> dict:
 
 
 def decidir(
-    vista: Vista, autoridad: Callable[[Mapping], str | None] = ADMITE_TODO
+    vista: Vista,
+    autoridad: Callable[[Mapping], str | None] | None = None,
 ) -> Propuesta:
     """El juicio del controlador, en el orden fijo de R. Cada paso ve lo que los
     anteriores pusieron en la propuesta. Las necesidades son NecesidadAsignacion o
-    NecesidadVerificacion."""
+    NecesidadVerificacion. Sin autoridad explícita manda la intersección real de
+    la vista: lo que el contrato y los permisos de H admitan (I07)."""
+    if autoridad is None:
+        autoridad = _autoridad_de_vista(vista)
     meta = vista["meta"]
     root_id = meta["rootId"]
     revision = meta["plan"]["revision"]
@@ -699,6 +727,12 @@ def decidir(
                         [causa[len("claim:") :]],
                     )
                 )
+        elif opcion == "autorizar" and sujeto.get("kind") != "effect":
+            # F15: la concesión `autorizar` solo existe para efectos (F8). A
+            # cualquier otro sujeto (la forma vieja de intento la ofrecía) no
+            # se le puede aplicar nada: la respuesta NO queda aplicada y la
+            # pregunta sigue abierta en vez de enterrarse respondida.
+            aplicada = False
         if aplicada:
             decision["respuestas_aplicadas"].append(excepcion["exceptionId"])
 
@@ -830,18 +864,35 @@ def decidir(
             levantar("INESPERADO", sujeto)
 
     # Efectos: los nuevos siempre se preparan, así una pregunta nombra un efecto real.
+    # La pregunta por un efecto denegado la levanta decidir (es la única que llega a
+    # producción: nada llama a Store.iniciar_efecto), con el MISMO sujeto que el gate
+    # del store: {kind, effectId, cause}. Los dos usan la misma intersección (I07/F3),
+    # así que la razón, la causa y el exceptionId coinciden y la excepción se
+    # deduplica: una sola pregunta aunque pregunten los dos. La concesión del dueño
+    # (F8: `autorizar` sobre ese effectId después de la última restricción) llega en
+    # la vista: mientras siga vigente, ese efecto no vuelve a preguntarse aunque
+    # cambie la razón (el exceptionId con otra causa sería otro y reabriría).
+    concesiones = set(vista.get("concesiones") or ())
     for efecto in vista["efectos"]:
         if efecto["state"] == "uncertain":
             levantar(
                 "EVIDENCIA_INCIERTA",
                 {"kind": "effect", "effectId": efecto["effectId"]},
             )
-        elif efecto["state"] == "prepared" and autoridad(efecto["intent"]) is not None:
-            levantar(
-                "NECESITA_DAVID",
-                {"kind": "effect", "effectId": efecto["effectId"]},
-                ["autorizar", "listo", "omitir", "cancelar"],
-            )
+        elif efecto["state"] == "prepared":
+            razon = autoridad(efecto["intent"])
+            if razon is not None and (
+                efecto["effectId"] not in concesiones or _es_de_forma(razon)
+            ):
+                levantar(
+                    "NECESITA_DAVID",
+                    {
+                        "kind": "effect",
+                        "effectId": efecto["effectId"],
+                        "cause": _causa_de(razon),
+                    },
+                    _opciones_de_efecto(razon),
+                )
     for intent in vista["hechos"]["efectos"]:
         if not isinstance(intent, Mapping) or not isinstance(
             intent.get("effectId"), str
@@ -854,11 +905,18 @@ def decidir(
         if ya_visto:
             continue
         decision["efectos"].append(intent)
-        if autoridad(intent) is not None:
+        razon = autoridad(intent)
+        if razon is not None and (
+            intent["effectId"] not in concesiones or _es_de_forma(razon)
+        ):
             levantar(
                 "NECESITA_DAVID",
-                {"kind": "effect", "effectId": intent["effectId"]},
-                ["autorizar", "listo", "omitir", "cancelar"],
+                {
+                    "kind": "effect",
+                    "effectId": intent["effectId"],
+                    "cause": _causa_de(razon),
+                },
+                _opciones_de_efecto(razon),
             )
 
     # Correcciones: `rondas` cuenta por la vida de la unidad; el tope crece un bloque
