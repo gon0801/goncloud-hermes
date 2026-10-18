@@ -404,8 +404,15 @@ def decidir(
         de ese intento) y midiendo el assignment nuevo con SU perfil: un
         relevo que cambia de perfil necesita plaza en el nuevo; el mismo
         perfil netea. Igual que el store, que aplica los outcomes antes de
-        contar cupos. Sin intento que cancelar no hay nada que liberar."""
+        contar cupos. Sin intento que cancelar no hay nada que liberar.
+
+        F12: la liberacion solo cuenta si ese intento sigue vivo: terminar
+        no emite outcome sobre un intento ya terminal (o terminado mas
+        arriba en esta decision), y descontarlo abre una plaza ficticia que
+        liga una de mas y el store rechaza con capacity."""
         if intento_a_cancelar is None:
+            return se_puede_ligar(assignment)
+        if estado_de(intento_a_cancelar) in TERMINALES:
             return se_puede_ligar(assignment)
         perfil_viejo = _perfil_de(_target_de(intento_a_cancelar.get("assignment")))
         liberadas["raiz"] += 1
