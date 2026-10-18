@@ -7,6 +7,7 @@ El texto de una instrucción NUNCA va dentro de la asignación (fixture G):
 siempre por referencia artifact:<hex>, como el artifact store de R.
 """
 
+import hashlib
 import importlib
 import os
 import sys
@@ -192,6 +193,28 @@ class Instrucciones(unittest.TestCase):
         self.assertEqual(
             instrucciones.resolver(self.dir, ref, otro_digest),
             (None, "digest-distinto"),
+        )
+
+    def test_fines_de_linea_y_no_ascii_no_rompen_el_ref_y_no_utf8_da_motivo(self):
+        for texto in ["a\r\nb", "linea\rsola", "café — texto no ASCII con acentos"]:
+            with self.subTest(texto=repr(texto)):
+                ref, digest = instrucciones.guardar(self.dir, texto)
+                hex64 = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+                self.assertEqual(ref, f"artifact:{hex64}")
+                self.assertEqual(digest, f"sha256:{hex64}")
+                self.assertEqual((self.dir / hex64).read_bytes(), texto.encode("utf-8"))
+                self.assertEqual(
+                    hashlib.sha256((self.dir / hex64).read_bytes()).hexdigest(), hex64
+                )
+                resuelto, motivo = instrucciones.resolver(self.dir, ref, digest)
+                self.assertEqual((resuelto, motivo), (texto, None))
+        crudo = b"\xff\xfe"
+        hex64 = hashlib.sha256(crudo).hexdigest()
+        (self.dir / hex64).write_bytes(crudo)
+        os.chmod(self.dir / hex64, 0o644)
+        self.assertEqual(
+            instrucciones.resolver(self.dir, f"artifact:{hex64}", f"sha256:{hex64}"),
+            (None, "no-utf8"),
         )
 
 
