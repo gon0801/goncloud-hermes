@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock  # noqa: F401
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
@@ -277,7 +277,7 @@ class Avisos(Escenario):
 
     def test_el_texto_no_lleva_briefs(self):
         tienda = self.abrir()
-        ref, digest = instrucciones.guardar(
+        ref, _digest = instrucciones.guardar(
             tienda.dir_de_instrucciones, "SECRETO del brief que no debe salir"
         )
         self.asentar(
@@ -314,6 +314,198 @@ class Salida(Escenario):
             codigo = despertar.main()
         self.assertEqual(codigo, 1)
         self.assertIn("ERROR despertar raices:", salida.getvalue())
+
+
+class E2eDelBriefH6b(Escenario):
+    """El e2e del brief sin inyectar nada a mano: submit -> instruction_put
+    -> reconcile -> cron ticker -> tarjeta -> resultado review.v1 del doble
+    -> despertar imprime la necesidad verify -> instruction_put (evidencia)
+    -> reconcile con claim passed -> ticker -> unidad aceptada y raíz
+    terminada."""
+
+    def setUp(self):
+        super().setUp()
+        import json
+
+        import hermes_falso
+        from yaml_doble import YamlDoble, yaml_real
+
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        self.permisos = importlib.import_module("raices.permisos")
+        self._mock_yaml = mock.patch.object(
+            self.permisos, "yaml", yaml_real or YamlDoble
+        )
+        self._mock_yaml.start()
+        self.addCleanup(self._mock_yaml.stop)
+        # Las herramientas resuelven su home del entorno y la puerta real de
+        # H4a cierra en la Mac (no hay gateway vivo): abierta inyectada.
+        self._mock_home = mock.patch.dict(
+            "os.environ", {"HERMES_HOME": str(Path(self.directorio.name))}
+        )
+        self._mock_home.start()
+        self.addCleanup(self._mock_home.stop)
+        capacidades = importlib.import_module("raices.capacidades")
+        self._mock_puerta = mock.patch.object(
+            capacidades, "abrir_ruta", return_value=(True, None)
+        )
+        self._mock_puerta.start()
+        self.addCleanup(self._mock_puerta.stop)
+        raices = Path(self.directorio.name) / "raices"
+        raices.mkdir(parents=True, exist_ok=True)
+        (raices / "permisos.json").write_text(
+            json.dumps(
+                {
+                    "acciones": ["read", "implement", "review"],
+                    "toolsets": {"codex": ["read", "write"]},
+                    "comandos": ["git", "python3"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        perfil = Path(self.directorio.name) / "profiles" / "codex"
+        perfil.mkdir(parents=True, exist_ok=True)
+        (perfil / "goncloud-managed.json").write_text(
+            json.dumps(
+                {
+                    "source_revision": "abc",
+                    "generation": 1,
+                    "poteto": {"digest": "sha256:" + "b" * 64},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (perfil / "config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - coding\n    - kanban\n",
+            encoding="utf-8",
+        )
+
+    def cron(self):
+        cron = importlib.import_module("raices.cron_ticker")
+        with mock.patch.object(self.permisos, "yaml", self.permisos.yaml):
+            return cron.correr(
+                home=Path(self.directorio.name),
+                ruta_abierta=lambda: (True, None),
+                enviar=lambda _texto: 42,
+            )
+
+    def test_del_submit_a_la_raiz_terminada(self):
+        herramientas = importlib.import_module("raices.herramientas")
+        kanban_mod = importlib.import_module("raices.kanban")
+
+        recibo = herramientas.enviar_raiz({"plan": meta_de()}, "claw")
+        self.assertNotIn("error", recibo)
+        brief = herramientas.guardar_instruccion(
+            {"text": "brief del e2e H6b: unidad a"}, "claw"
+        )
+        vinculo = {
+            "unitId": "a",
+            "assignment": {
+                "target": {"kind": "cli", "hostId": "gon-pc", "adapterId": "codex"},
+                "instructionRef": brief,
+                "resultContract": "review.v1",
+                "inputRevision": {
+                    "kind": "code",
+                    "repository": "owner-01/repo-a",
+                    "sha": "0" * 40,
+                },
+                "continuation": {"kind": "requester"},
+            },
+            "relay": False,
+        }
+        reconciliado = herramientas.reconciliar_raiz(
+            {"rootId": RAIZ, "asignaciones": [vinculo]}, "claw"
+        )
+        self.assertNotIn("error", reconciliado)
+
+        # El ticker despacha la tarjeta con el TEXTO del brief.
+        self.assertEqual(self.cron(), 0)
+        puerto = kanban_mod.KanbanHermes(Path(self.directorio.name) / "kanban.db")
+        self.addCleanup(puerto.cerrar)
+        clave = f"sa:{RAIZ}:a:1"
+        tarjeta = puerto.leer_estado(clave)
+        self.assertIsNotNone(tarjeta)
+        # El doble completa la tarjeta con un resultado review.v1 aprobado.
+        with puerto.write_txn() as escritura:
+            escritura.completar(
+                tarjeta.id,
+                {
+                    "resultContract": "review.v1",
+                    "verdict": "approved",
+                    "evidenceRef": {"ref": "artifact:x", "digest": DIGEST},
+                    "resultDigest": DIGEST,
+                },
+            )
+        puerto.cerrar()
+
+        # La vuelta concilia el resultado: la unidad queda reported y nace la
+        # necesidad verify.
+        self.assertEqual(self.cron(), 0)
+        leido = herramientas.leer_raiz({"rootId": RAIZ}, "claw")
+        estados = {u["unitId"]: u["state"] for u in leido["unidades"]}
+        self.assertEqual(estados["a"], "reported")
+        self.assertEqual(
+            [(n["kind"], n.get("criteria")) for n in leido["necesidades"]["items"]],
+            [("verify", ["a1"])],
+        )
+
+        # El despertar le avisa a claw esa necesidad.
+        self.impresos.clear()
+        self.assertEqual(
+            despertar.correr(
+                home=Path(self.directorio.name),
+                escribir=self.impresos.append,
+                reloj=lambda: self.reloj[0],
+            ),
+            0,
+        )
+        self.assertEqual(len(self.impresos), 1)
+        self.assertIn("verify", self.impresos[0])
+        self.assertIn("a1", self.impresos[0])
+
+        # claw contesta: sube la evidencia y trae el claim passed.
+        evidencia = herramientas.guardar_instruccion(
+            {"text": "evidencia del e2e H6b: unittest verde en el head"}, "claw"
+        )
+        claim = {
+            "unitId": "a",
+            "attempt": 1,
+            "criterionId": "a1",
+            "artifactRef": evidencia,
+            "environment": {"host": "mac-local", "versions": {}},
+            "procedure": "python3 -m unittest",
+            "outcome": "passed",
+            "at": "2026-10-18T12:00:00Z",
+            "expiresAt": None,
+            "role": "verifier",
+        }
+        contestado = herramientas.reconciliar_raiz(
+            {"rootId": RAIZ, "asignaciones": [], "claims": [claim]}, "claw"
+        )
+        self.assertNotIn("error", contestado)
+        self.assertEqual(
+            contestado["claims"],
+            [{"unitId": "a", "criterionId": "a1", "replayed": False}],
+        )
+
+        # La última vuelta acepta la unidad y termina la raíz.
+        self.assertEqual(self.cron(), 0)
+        leido = herramientas.leer_raiz({"rootId": RAIZ}, "claw")
+        estados = {u["unitId"]: u["state"] for u in leido["unidades"]}
+        self.assertEqual(estados["a"], "accepted")
+        self.assertEqual(leido["meta"]["control"]["state"], "active")
+        self.assertEqual(leido["necesidades"]["items"], [])
+        # Y el despertar ya no tiene nada que decir.
+        self.impresos.clear()
+        self.assertEqual(
+            despertar.correr(
+                home=Path(self.directorio.name),
+                escribir=self.impresos.append,
+                reloj=lambda: self.reloj[0],
+            ),
+            0,
+        )
+        self.assertEqual(self.impresos, [])
 
 
 if __name__ == "__main__":
