@@ -74,26 +74,33 @@ class Outcome:
 def plan_table(source, view):
     """Promotions for the table, and the labels skipped for running on two routes.
 
-    A label only on positions 0/1 follows the OpenCode Go list; one only on
-    2+ follows its vendor's catalog. One label on both would need two
-    catalogs to agree, so it is left to the owner.
+    A label whose provider is OpenCode Go follows the Go list; any other
+    provider follows its vendor's catalog (v6 table, 2026-10-17: binding is
+    by family on every position, Go only for DeepSeek Flash and Muse Spark).
+    One model on both routes would need two catalogs to agree, so it is left
+    to the owner.
     """
-    cells_by_ref = {}
+    cells_by_ref, refs_by_model = {}, {}
     for row, labels in source["chains"].items():
         for position, label in enumerate(labels):
             ref, _ = split_label(label)
             cells_by_ref.setdefault(ref, []).append(f"{row}:{position}")
+            refs_by_model.setdefault(ref.rpartition("/")[2], set()).add(ref)
     promotions, mixed = [], []
-    for ref, cells in cells_by_ref.items():
-        provider, _, model = ref.rpartition("/")
-        on_go = [cell for cell in cells if int(cell.rsplit(":", 1)[1]) < 2]
-        if on_go and len(on_go) < len(cells):
-            mixed.append(ref)
+    for model, refs in sorted(refs_by_model.items()):
+        if len(refs) > 1:
+            mixed.append(model)
             continue
-        catalog = view.get(GO if on_go else FAMILIES.get(family_of(model)))
-        newer = newer_in_line(model, catalog) if catalog is not None else None
+        ref = next(iter(refs))
+        provider, _, model_id = ref.rpartition("/")
+        catalog = view.get(
+            GO if provider.startswith(GO) else FAMILIES.get(family_of(model_id))
+        )
+        newer = newer_in_line(model_id, catalog) if catalog is not None else None
         if newer:
-            promotions.append(Promotion(ref, f"{provider}/{newer}", tuple(cells)))
+            promotions.append(
+                Promotion(ref, f"{provider}/{newer}", tuple(cells_by_ref[ref]))
+            )
     return promotions, mixed
 
 

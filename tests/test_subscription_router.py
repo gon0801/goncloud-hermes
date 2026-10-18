@@ -39,14 +39,10 @@ SOURCE = {
     "profile_inheritance": {"entrega": "main"},
     "chains": {
         "main": [
-            "opencode-go/muse-spark-1.3-contributor",
-            "opencode-go/muse-spark-1.3-contributor",
+            "opencode-go/deepseek-v4.1-flash (off)",
             "anthropic/claude-sonnet-5",
             "meta/muse-spark-1.3 (max)",
-            "meta/muse-spark-1.3 (max)",
             "xai/grok-4.6",
-            "zai/glm-5.3",
-            "openai/gpt-5.6-terra (xhigh)",
         ]
     },
 }
@@ -100,10 +96,9 @@ def routes_for_main():
 
 
 def primary_and_next():
-    """Primary and the next distinct subscription; slot 1 is Primary's copy on
-    the second Go account (owner table, 2026-09-27)."""
+    """Primary and the next distinct subscription (v6 table, 2026-10-17)."""
     routes = routes_for_main()
-    return [routes[0], routes[2]]
+    return [routes[0], routes[1]]
 
 
 def request(workspace, workflow_id="wf-6", stage_id="st-6", prompt="Do it once."):
@@ -293,7 +288,7 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
         self.assertEqual(self.fake_adapters["opencode_go"].requests, [])
         attempts = resumed.store.stage_attempts("wf-6", "st-6")
-        self.assertEqual([row["slot"] for row in attempts], [0, 2])
+        self.assertEqual([row["slot"] for row in attempts], [0, 1])
         self.assertEqual(
             [row.get("disposition") for row in attempts], ["skipped", "executed"]
         )
@@ -688,39 +683,19 @@ class FailoverTests(RouterTestCase):
 
     def test_exhausted_chain_blocks_with_owner_facing_evidence(self):
         router = self.router()
-        for name in (
-            "opencode_go",
-            "claude",
-            "muse",
-            "grok",
-            "opencode_zai",
-            "codex",
-        ):
+        for name in ("opencode_go", "claude", "muse", "grok"):
             self.fake_adapters[name].result = failed(FailureKind.AUTH, name)
 
         result = router.run(request(self.workspace), routes_for_main())
 
         self.assertFalse(result.success)
-        # Slots 3 and 4 share Muse; AUTH on the first quarantines the account
-        # so the repeated position is recorded without a second invocation.
-        self.assertEqual(
-            router.calls,
-            ["opencode_go", "claude", "muse", "grok", "opencode_zai", "codex"],
-        )
-        self.assertIn("all 8 slots primary..f7", result.text.lower())
+        self.assertEqual(router.calls, ["opencode_go", "claude", "muse", "grok"])
+        self.assertIn("all 4 slots primary..f3", result.text.lower())
         attempts = router.store.stage_attempts("wf-6", "st-6")
-        self.assertEqual(len(attempts), 7)
+        self.assertEqual(len(attempts), 4)
         self.assertEqual(
             [row.get("disposition") for row in attempts],
-            [
-                "executed",
-                "executed",
-                "executed",
-                "skipped",
-                "executed",
-                "executed",
-                "executed",
-            ],
+            ["executed", "executed", "executed", "executed"],
         )
 
     def test_quota_cooldown_skips_adapter(self):
@@ -752,7 +727,7 @@ class FailoverTests(RouterTestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.adapter, "claude")
-        self.assertEqual(result.slot, 2)
+        self.assertEqual(result.slot, 1)
         self.assertEqual(result.route_label, "anthropic/claude-sonnet-5")
         self.assertEqual(
             result.skipped_routes,
@@ -833,7 +808,7 @@ class FailoverTests(RouterTestCase):
                 (0, 0, "rate_limit"),
                 (0, 1, "rate_limit"),
                 (0, 2, "rate_limit"),
-                (2, 0, None),
+                (1, 0, None),
             ],
         )
         self.assertEqual(
@@ -968,14 +943,11 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(self.sleeps, [20, 60, 20, 60, 20])
         self.assertEqual(
             router.calls,
-            ["opencode_go"] * 3
-            + ["claude"] * 3
-            + ["muse"] * 2
-            + ["grok", "opencode_zai", "codex"],
+            ["opencode_go"] * 3 + ["claude"] * 3 + ["muse"] * 2 + ["grok"],
         )
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
-        self.assertIn("all 8 slots primary..f7 are exhausted", result.text.lower())
+        self.assertIn("all 4 slots primary..f3 are exhausted", result.text.lower())
 
     def test_plan_exhaustion_advances_at_once_and_benches_the_account(self):
         self.fake_adapters["opencode_go"].result = failed(
@@ -1038,7 +1010,7 @@ class FailoverTests(RouterTestCase):
                 availability = router._availability
 
                 def crash(route):
-                    if route.slot == 2:
+                    if route.slot == 1:
                         raise KeyboardInterrupt
                     return availability(route)
 
@@ -1048,7 +1020,7 @@ class FailoverTests(RouterTestCase):
                 resumed = self.router()
                 self.assertTrue(resumed.run(assignment, primary_and_next()).success)
                 attempts = resumed.store.stage_attempts("wf-6", "st-6")
-                self.assertEqual([row["slot"] for row in attempts], [0, 2])
+                self.assertEqual([row["slot"] for row in attempts], [0, 1])
                 self.assertEqual(
                     [row["disposition"] for row in attempts], ["skipped", "executed"]
                 )
@@ -1412,26 +1384,24 @@ class StatusTests(RouterTestCase):
 
         status = router.status("claw")
 
-        self.assertEqual(len(status["routes"]), 8)
-        deepseekless = [r for r in status["routes"] if r["adapter"] == "codex"]
-        self.assertEqual(deepseekless[0]["slot"], 7)
+        self.assertEqual(len(status["routes"]), 4)
+        deepseekless = [r for r in status["routes"] if r["adapter"] == "grok"]
+        self.assertEqual(deepseekless[0]["slot"], 3)
         self.assertTrue(
             all(r["billing_mode"] == "subscription" for r in status["routes"])
         )
 
-    def test_status_reports_api_billing_for_deepseek_profile(self):
+    def test_status_reports_deepseek_flash_on_the_go_subscription(self):
+        # Owner, 2026-10-17: no table position bills as API anymore; DeepSeek
+        # Flash rides the OpenCode Go subscription on every lane.
         router = self.router()
         source = {
             "chains": {
                 "scout": [
-                    "zai/glm-5.3",
-                    "zai/glm-5.3",
-                    "kimi/k3",
                     "xai/grok-4.6",
-                    "anthropic/claude-sonnet-5",
-                    "opencode/gpt-6-astra",
-                    "opencode/muse-spark-1.3-contributor-free",
-                    "deepseek/deepseek-flash",
+                    "kimi/k3",
+                    "zai/glm-5.3",
+                    "opencode-go/deepseek-v4.1-flash (off)",
                 ]
             }
         }
@@ -1439,8 +1409,11 @@ class StatusTests(RouterTestCase):
 
         status = router.status("scout")
 
-        self.assertEqual(status["routes"][7]["billing_mode"], "api")
-        self.assertEqual(status["routes"][7]["adapter"], "deepseek")
+        self.assertEqual(status["routes"][3]["adapter"], "opencode_go")
+        self.assertEqual(status["routes"][3]["billing_mode"], "subscription")
+        self.assertTrue(
+            all(route["billing_mode"] == "subscription" for route in status["routes"])
+        )
 
     def test_status_reports_stage_evidence(self):
         router = self.router()

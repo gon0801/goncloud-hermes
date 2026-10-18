@@ -10,44 +10,70 @@ import model_watch as module  # noqa: E402
 
 TABLE = {
     "chains": {
-        "main": [
-            "opencode-go-resp/muse-spark-1.3-contributor",
-            "opencode-go-resp/muse-spark-1.3-contributor",
-            "anthropic/claude-opus-5 (xhigh)",
-            "meta/muse-spark-1.3 (max)",
-        ],
-        "scout": [
-            "opencode-go/deepseek-v4.1-flash",
-            "opencode-go/deepseek-v4.1-flash",
-            "meta/muse-spark-1.3 (max)",
+        "dirigir-claw": [
+            "anthropic/claude-opus-5 (medium)",
+            "anthropic/claude-sonnet-5",
+            "zai/glm-5.3",
             "kimi/k3",
+        ],
+        "operativo": [
+            "anthropic/claude-sonnet-5 (medium)",
+            "zai/glm-5.3 (low)",
+            "xai/grok-4.7 (low)",
+            "opencode-go/deepseek-v4.1-flash (off)",
+        ],
+        "simples": [
+            "anthropic/claude-haiku-5-5 (low)",
+            "opencode-go/deepseek-v4.1-flash (off)",
+            "zai/glm-5.3-flash (low)",
+            "xai/grok-4.7 (low)",
         ],
     }
 }
 
 
-def view(meta=(), go=(), anthropic=("claude-opus-5",)):
+def view(
+    meta=(),
+    go=(),
+    anthropic=("claude-opus-5", "claude-sonnet-5", "claude-haiku-5-5"),
+    zai=("glm-5.3", "glm-5.3-flash"),
+    xai=("grok-4.7",),
+    kimi=("k3",),
+):
     return {
         "meta": {model: {"release_date": "2026-09-02"} for model in meta},
         "anthropic": {model: {} for model in anthropic},
         "opencode-go": {model: {} for model in go},
+        "zai-coding-plan": {model: {} for model in zai},
+        "xai": {model: {} for model in xai},
+        "kimi-code-plan-global": {model: {} for model in kimi},
     }
 
 
 BASE = view(
     meta=("muse-spark-1.3", "muse-spark-1.3-contributor"),
-    go=("muse-spark-1.3-contributor", "deepseek-v4.1-flash", "qwen3.8-max"),
+    go=("deepseek-v4.1-flash",),
 )
 
 
 class InUseTests(unittest.TestCase):
-    def test_models_in_use_keep_where_they_are_used(self):
+    def test_models_in_use_keep_where_they_are_used_and_on_which_route(self):
         in_use = module.models_in_use(TABLE)
 
-        self.assertEqual(in_use["muse-spark-1.3-contributor"], ["main:0", "main:1"])
-        self.assertEqual(in_use["muse-spark-1.3"], ["main:3", "scout:2"])
-        self.assertEqual(in_use["claude-opus-5"], ["main:2"])
-        self.assertNotIn("claude-opus-5 (xhigh)", in_use)
+        # OpenCode Go only carries DeepSeek Flash in the v6 table; the label's
+        # provider decides the route, never the position.
+        self.assertEqual(
+            in_use["deepseek-v4.1-flash"],
+            {"go": ["operativo:3", "simples:1"], "vendor": []},
+        )
+        self.assertEqual(
+            in_use["claude-opus-5"], {"go": [], "vendor": ["dirigir-claw:0"]}
+        )
+        self.assertEqual(
+            in_use["claude-sonnet-5"],
+            {"go": [], "vendor": ["dirigir-claw:1", "operativo:0"]},
+        )
+        self.assertNotIn("claude-opus-5 (medium)", in_use)
 
 
 class CompareTests(unittest.TestCase):
@@ -59,10 +85,11 @@ class CompareTests(unittest.TestCase):
 
     def test_a_new_model_of_a_family_in_use_is_announced(self):
         now = view(
-            meta=("muse-spark-1.3", "muse-spark-1.3-contributor", "muse-wonder-1.0"),
+            meta=BASE["meta"],
             go=BASE["opencode-go"],
+            zai=("glm-5.3", "glm-5.3-flash", "glm-5.4"),
         )
-        now["meta"]["muse-wonder-1.0"] = {
+        now["zai-coding-plan"]["glm-5.4"] = {
             "release_date": "2026-10-12",
             "context": 1048576,
         }
@@ -72,8 +99,8 @@ class CompareTests(unittest.TestCase):
             [
                 {
                     "kind": "new",
-                    "source": "meta",
-                    "id": "muse-wonder-1.0",
+                    "source": "zai-coding-plan",
+                    "id": "glm-5.4",
                     "release_date": "2026-10-12",
                     "context": 1048576,
                 }
@@ -86,9 +113,7 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(module.compare(BASE, now, self.in_use), [])
 
     def test_a_family_in_use_arriving_on_opencode_go_is_announced(self):
-        now = view(
-            meta=BASE["meta"], go=(*BASE["opencode-go"], "muse-wonder-1.0-contributor")
-        )
+        now = view(meta=BASE["meta"], go=(*BASE["opencode-go"], "deepseek-v4.2-flash"))
 
         self.assertEqual(
             module.compare(BASE, now, self.in_use),
@@ -96,7 +121,7 @@ class CompareTests(unittest.TestCase):
                 {
                     "kind": "new",
                     "source": "opencode-go",
-                    "id": "muse-wonder-1.0-contributor",
+                    "id": "deepseek-v4.2-flash",
                 }
             ],
         )
@@ -114,25 +139,29 @@ class CompareTests(unittest.TestCase):
                     "kind": "gone",
                     "source": "opencode-go",
                     "id": "deepseek-v4.1-flash",
-                    "uses": ["scout:0", "scout:1"],
+                    "uses": ["operativo:3", "simples:1"],
                 }
             ],
         )
         self.assertEqual(module.compare(now, now, self.in_use), [])
 
-    def test_a_direct_model_is_checked_at_its_vendor_not_at_go(self):
-        # muse-spark-1.3 runs on Meta directly (position 2+), so losing it on
-        # OpenCode Go means nothing and losing it at Meta does.
-        now = view(meta=("muse-spark-1.3-contributor",), go=BASE["opencode-go"])
+    def test_a_vendor_model_is_checked_at_its_vendor_not_at_go(self):
+        # k3 runs on Kimi directly, so losing it on OpenCode Go means nothing
+        # and losing it at Kimi does; DeepSeek Flash is the reverse.
+        now = view(
+            meta=BASE["meta"],
+            go=BASE["opencode-go"],
+            kimi=(),
+        )
 
         self.assertEqual(
             module.compare(BASE, now, self.in_use),
             [
                 {
                     "kind": "gone",
-                    "source": "meta",
-                    "id": "muse-spark-1.3",
-                    "uses": ["main:3", "scout:2"],
+                    "source": "kimi-code-plan-global",
+                    "id": "k3",
+                    "uses": ["dirigir-claw:3"],
                 }
             ],
         )
@@ -147,7 +176,14 @@ class CompareTests(unittest.TestCase):
         # Real history (models.dev, 2026): Spark 1.2 on Meta 08-05 and on Go
         # 08-19; Spark 1.3 on both 09-02; Wonder on Meta 10-12, not on Go yet.
         table = {
-            "chains": {"main": ["go/muse-spark-1.1-contributor", "meta/muse-spark-1.1"]}
+            "chains": {
+                "main": [
+                    "opencode-go/muse-spark-1.1-contributor",
+                    "meta/muse-spark-1.1",
+                    "zai/glm-5.3",
+                    "xai/grok-4.7",
+                ]
+            }
         }
         in_use = module.models_in_use(table)
         steps = [
@@ -250,21 +286,16 @@ class RenderTests(unittest.TestCase):
             [
                 {
                     "kind": "new",
-                    "source": "meta",
-                    "id": "muse-wonder-1.0",
+                    "source": "zai-coding-plan",
+                    "id": "glm-5.4",
                     "release_date": "2026-10-12",
                     "context": 1048576,
-                },
-                {
-                    "kind": "new",
-                    "source": "opencode-go",
-                    "id": "muse-wonder-1.0-contributor",
                 },
                 {
                     "kind": "gone",
                     "source": "opencode-go",
                     "id": "deepseek-v4.1-flash",
-                    "uses": ["scout:0", "scout:1"],
+                    "uses": ["operativo:3", "simples:1"],
                 },
                 {
                     "kind": "cli",
@@ -279,14 +310,11 @@ class RenderTests(unittest.TestCase):
 
         self.assertIn("2026-10-13", text)
         self.assertIn(
-            "Nuevo en Meta: muse-wonder-1.0 (salio 2026-10-12, contexto 1048576)", text
+            "Nuevo en Z.AI: glm-5.4 (salio 2026-10-12, contexto 1048576)", text
         )
+        self.assertIn("Hoy usas de esa familia: glm-5.3, glm-5.3-flash", text)
         self.assertIn(
-            "Hoy usas de esa familia: muse-spark-1.3, muse-spark-1.3-contributor", text
-        )
-        self.assertIn("Nuevo en OpenCode Go: muse-wonder-1.0-contributor", text)
-        self.assertIn(
-            "Ya no aparece en OpenCode Go: deepseek-v4.1-flash (lo usan scout:0, scout:1)",
+            "Ya no aparece en OpenCode Go: deepseek-v4.1-flash (lo usan operativo:3, simples:1)",
             text,
         )
         self.assertIn("muse atrasado: instalado 1.4.0, disponible 1.4.6", text)

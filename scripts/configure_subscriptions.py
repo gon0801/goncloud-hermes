@@ -766,7 +766,14 @@ def _probe_routes():
             continue
         source = next((r for r in bound if r.model.startswith(family)), None)
         if source is not None:
-            routes[http_adapter] = replace(source, adapter=http_adapter)
+            # The twin keeps the billing of its own adapter, never the CLI
+            # slot whose model id it borrows: the deepseek twin verifies an
+            # API key, and since the v6 table (2026-10-17) no cell binds it
+            # (DeepSeek Flash rides the Go subscription).
+            billing = "api" if http_adapter == "deepseek" else "subscription"
+            routes[http_adapter] = replace(
+                source, adapter=http_adapter, billing_mode=billing
+            )
     return routes
 
 

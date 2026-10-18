@@ -36,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("label", help='Table label, e.g. "meta/muse-wonder-1.0 (high)"')
     parser.add_argument(
-        "--position", type=int, required=True, help="Table position 0-7"
+        "--position", type=int, required=True, help="Table position 0-3"
     )
     parser.add_argument(
         "--plugin-dir", type=Path, default=ROOT / "plugins" / "goncloud-team"

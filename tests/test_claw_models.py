@@ -179,8 +179,9 @@ class RealFilesTests(unittest.TestCase):
         self.assertEqual(set(desired), set(mapping["agents"]))
         for agent, entry in desired.items():
             with self.subTest(agent=agent):
-                self.assertEqual(len(entry["model"]["fallbacks"]), 7)
-                self.assertIn("meta/muse-wonder-1.0", entry["model"]["fallbacks"])
+                row = source["chains"][mapping["agents"][agent]["row"]]
+                self.assertEqual(entry["model"]["primary"], row[0].split(" ")[0])
+                self.assertEqual(len(entry["model"]["fallbacks"]), 3)
         # Every specialist the gateway may dispatch has a chain in claw too.
         self.assertLessEqual(
             set(team["kanban"]["dispatch_profiles"]), set(mapping["agents"])

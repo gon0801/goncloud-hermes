@@ -6,6 +6,7 @@ import copy
 import csv
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
@@ -155,6 +156,46 @@ def remove_owned_native_routing(existing, previous):
             raise ValueError(f"user-managed model conflict: {key}")
         cleaned.pop(key, None)
     return cleaned
+
+
+#: Why a run with --adoptar-ruteo-manual accepted the live routing as its
+#: previous. Recorded verbatim in every goncloud-managed.json it touches.
+ADOPTION_REASON = (
+    "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude "
+    "subscription; ruteo vivo aceptado como previo con --adoptar-ruteo-manual"
+)
+ADOPTION_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def live_routing_changes(existing, previous):
+    """The routing keys the owner changed by hand since the last deploy.
+
+    Only the routing block counts: ``model``, ``fallback_providers`` and the
+    chain's ``agent.reasoning_overrides``. Anything absent from the live
+    config is not adopted; deleting a managed key stays a conflict.
+    """
+    adopted = {}
+    for key in ("model", "fallback_providers"):
+        if key in existing and existing[key] != previous.get(key):
+            adopted[key] = existing[key]
+    overrides = existing.get("agent", {}).get("reasoning_overrides")
+    before = previous.get("agent", {}).get("reasoning_overrides")
+    if overrides is not None and overrides != before:
+        adopted["agent.reasoning_overrides"] = overrides
+    return adopted
+
+
+def with_adopted_routing(previous, adopted):
+    """``previous`` with the live routing values recorded in it."""
+    effective = copy.deepcopy(previous)
+    for key, value in adopted.items():
+        if key == "agent.reasoning_overrides":
+            effective.setdefault("agent", {})["reasoning_overrides"] = copy.deepcopy(
+                value
+            )
+        else:
+            effective[key] = copy.deepcopy(value)
+    return effective
 
 
 def merge_profile_config(existing, desired, previous, *, fresh=False):
@@ -543,13 +584,15 @@ def autoupdate_setup(runtime_home):
 
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
+    routing_source = json.loads(
+        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+    )
     desired = {
         "plugins": {"enabled": ["goncloud-team"]},
         # Copilot and Copilot ACP are out of scope for this team. deepseek is
-        # the one adapter that bills as API: the subscription router reaches
-        # it deliberately at two slots through its own adapter, so leaving it
-        # in a native catalog would let an agent spend outside that decision.
-        # opencode-free is not one of the owner's accounts.
+        # the one adapter that bills as API: leaving it in a native catalog
+        # would let an agent spend outside that decision. opencode-free is
+        # not one of the owner's accounts.
         "model_catalog": {
             "excluded_providers": [
                 "copilot",
@@ -569,17 +612,11 @@ def desired_profile_config(role, team, runtime_home):
         },
         "kanban": team["kanban"],
     }
+    # Every team profile converses on native providers compiled from its own
+    # v6 row (2026-10-17: the owner moved every profile to Anthropic on his
+    # Claude subscription), so no hand-written chain can contradict the table.
+    desired.update(native_config(routing_source, role))
     if role == team["director"]:
-        # The director converses on native providers (native tool calls),
-        # compiled from the authoritative main row so no hand-written chain
-        # can contradict the table.
-        desired.update(
-            director_native_config(
-                json.loads(
-                    (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-                )
-            )
-        )
         # The director carries the full toolset over Telegram by owner decision
         # (browser, computer_use and the rest): it drives Odoo and Edge and runs
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
@@ -661,6 +698,7 @@ def configure(
     allow_regression=False,
     preserve_local_soul=False,
     check_only=False,
+    adopt_manual_routing=False,
 ):
     import yaml
 
@@ -686,6 +724,7 @@ def configure(
         (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
     )
     prepared = []
+    adoptions = {}
     # Team profiles are created and fully shaped here. A specialist profile is
     # the owner's: it is never created, and only its native model chain, its
     # copy of the plugin and its Muse key line are managed, so a card
@@ -718,9 +757,17 @@ def configure(
         desired = (
             desired_profile_config(role, team, runtime_home)
             if is_team
-            else native_config(routing_source, team["specialist_row"])
+            else native_config(routing_source, role)
         )
         previous_config = state.get("config", {})
+        adopted = (
+            live_routing_changes(existing or {}, previous_config)
+            if adopt_manual_routing
+            else {}
+        )
+        if adopted:
+            previous_config = with_adopted_routing(previous_config, adopted)
+            adoptions[role] = adopted
         existing = remove_owned_native_routing(existing or {}, previous_config)
         merged = merge_profile_config(
             existing,
@@ -816,6 +863,9 @@ def configure(
     ensure_tools_executable(runtime_home, check_only=check_only)
     if check_only:
         print(f"Check passed: {len(prepared)} profiles would deploy {revision}")
+        if adoptions:
+            listed = ", ".join(sorted(adoptions))
+            print(f"Ruteo manual a adoptar como previo en: {listed}")
         print(
             "Root dispatch allowlist: "
             + ("up to date" if root_desired == root_text else "would be written")
@@ -837,6 +887,7 @@ def configure(
         return
     # The allowlist goes first: it is what keeps the gateway off stage cards.
     write_changed(root_config, root_desired.encode("utf-8"))
+    adoption_stamp = datetime.now(timezone.utc).strftime(ADOPTION_STAMP)
     for (
         profile,
         config_path,
@@ -870,14 +921,26 @@ def configure(
             if target.exists():
                 target.unlink()
             _prune_empty_dirs(target.parent, profile)
+        recorded = {
+            "config": desired,
+            "source_revision": revision,
+            "files": recorded_files,
+        }
+        adopted = adoptions.get(profile.name)
+        if adopted:
+            recorded["adopted_manual_routing"] = {
+                **(state.get("adopted_manual_routing") or {}),
+                adoption_stamp: {
+                    "reason": ADOPTION_REASON,
+                    "keys": sorted(adopted),
+                },
+            }
+        elif "adopted_manual_routing" in state:
+            recorded["adopted_manual_routing"] = state["adopted_manual_routing"]
         write_changed(
             state_path,
             json.dumps(
-                {
-                    "config": desired,
-                    "source_revision": revision,
-                    "files": recorded_files,
-                },
+                recorded,
                 indent=2,
                 ensure_ascii=False,
             )
@@ -919,6 +982,15 @@ def main():
         help="Overwrite profiles deployed from a commit this checkout does not contain",
     )
     parser.add_argument(
+        "--adoptar-ruteo-manual",
+        action="store_true",
+        help=(
+            "Accept the live model/fallback_providers/reasoning_overrides the "
+            "owner set by hand as the managed previous (recorded with date and "
+            "reason), then apply the table; without it the conflict remains"
+        ),
+    )
+    parser.add_argument(
         "--preserve-local-soul",
         action="store_true",
         help=(
@@ -939,6 +1011,7 @@ def main():
         allow_regression=args.allow_regression,
         preserve_local_soul=args.preserve_local_soul,
         check_only=args.check,
+        adopt_manual_routing=args.adoptar_ruteo_manual,
     )
 
 

@@ -26,190 +26,102 @@ def load_live_source() -> dict:
     return json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
 
 
-EXPECTED_ADAPTERS = {
-    "claw": [
-        "opencode_go",
-        "opencode_go_2",
-        "claude",
-        "muse",
-        "grok",
-        "opencode_zai",
-        "codex",
-        "kimi",
+#: Agent -> v6 lane; every lane is four positions of primary + 3 fallbacks.
+PROFILE_LANE = {
+    "claw": "dirigir-claw",
+    "entrega": "dirigir",
+    "ingenieria": "planear",
+    "reviewer": "planear",
+    "implementer": "codigo",
+    "verifier": "verificar",
+    "scout": "investigar",
+    "adversary": "adversary",
+    "operaciones": "operativo",
+    "amazon": "operativo",
+    "meli": "operativo",
+    "odoo": "operativo",
+    "pers": "operativo",
+    "arras": "operativo",
+    "mail": "simples",
+    "limpia": "simples",
+    "gonserver": "simples",
+    "skillverif": "simples",
+    "tinkabot": "simples",
+    "eggbot": "simples",
+    "default": "simples",
+}
+
+#: adapter, model and reasoning effort of every v6 lane, in order.
+LANES = {
+    "dirigir": [
+        ("claude", "claude-opus-5-5", "high"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("kimi", "k3", "high"),
     ],
-    "operaciones": [
-        "opencode_go",
-        "opencode_go_2",
-        "opencode_zai",
-        "codex",
-        "claude",
-        "grok",
-        "kimi",
-        "muse",
+    "dirigir-claw": [
+        ("claude", "claude-opus-5-5", "medium"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("kimi", "k3", "high"),
     ],
-    "ingenieria": [
-        "opencode_go",
-        "opencode_go_2",
-        "codex",
-        "kimi",
-        "opencode_zai",
-        "muse",
-        "claude",
-        "grok",
+    "planear": [
+        ("claude", "claude-opus-5-5", "high"),
+        ("kimi", "k3", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("grok", "grok-4.7", "high"),
     ],
-    "implementer": [
-        "opencode_go",
-        "opencode_go_2",
-        "muse",
-        "opencode_zai",
-        "grok",
-        "claude",
-        "codex",
-        "kimi",
+    "codigo": [
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("kimi", "k3", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("grok", "grok-4.7", "medium"),
     ],
-    "reviewer": [
-        "opencode_go",
-        "opencode_go_2",
-        "claude",
-        "kimi",
-        "codex",
-        "muse",
-        "grok",
-        "opencode_zai",
+    "verificar": [
+        ("opencode_zai", "glm-5.3", "high"),
+        ("grok", "grok-4.7", "high"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("kimi", "k3", "high"),
+    ],
+    "investigar": [
+        ("grok", "grok-4.7", "medium"),
+        ("kimi", "k3", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("claude", "claude-sonnet-5-5", "medium"),
+    ],
+    "operativo": [
+        ("claude", "claude-sonnet-5-5", "medium"),
+        ("opencode_zai", "glm-5.3", "low"),
+        ("grok", "grok-4.7", "low"),
+        ("opencode_go", "deepseek-v4.1-flash", None),
+    ],
+    "simples": [
+        ("claude", "claude-haiku-5-5", "low"),
+        ("opencode_go", "deepseek-v4.1-flash", None),
+        ("opencode_zai", "glm-5.3-flash", "low"),
+        ("grok", "grok-4.7", "low"),
     ],
     "adversary": [
-        "opencode_go",
-        "opencode_go_2",
-        "grok",
-        "kimi",
-        "opencode_zai",
-        "muse",
-        "claude",
-        "codex",
-    ],
-    "verifier": [
-        "opencode_go",
-        "opencode_go_2",
-        "opencode_zai",
-        "muse",
-        "kimi",
-        "claude",
-        "codex",
-        "deepseek",
-    ],
-    "scout": [
-        "opencode_go",
-        "opencode_go_2",
-        "opencode_zai",
-        "muse",
-        "kimi",
-        "deepseek",
-        "claude",
-        "codex",
-    ],
-}
-EXPECTED_ADAPTERS["entrega"] = EXPECTED_ADAPTERS["claw"]
-
-EXPECTED_EFFORTS = {
-    "claw": [None, None, "xhigh", "max", None, None, "xhigh", None],
-    "operaciones": [None, None, None, "xhigh", "xhigh", None, "high", "max"],
-    "ingenieria": [None, None, "xhigh", None, None, "max", "xhigh", None],
-    "implementer": [None, None, "max", None, None, "xhigh", "xhigh", "high"],
-    "reviewer": [None, None, None, None, None, "max", None, None],
-    "adversary": [None, None, None, None, None, "max", "xhigh", "xhigh"],
-    "verifier": [None, None, None, "max", "high", "xhigh", "xhigh", None],
-    "scout": [None, None, None, "max", None, None, "xhigh", "xhigh"],
-}
-EXPECTED_EFFORTS["entrega"] = EXPECTED_EFFORTS["claw"]
-
-EXPECTED_MODELS = {
-    "claw": [
-        "muse-spark-1.3-contributor",
-        "muse-spark-1.3-contributor",
-        "claude-opus-5-5",
-        "muse-wonder-1.0",
-        "grok-4.7",
-        "glm-5.3",
-        "gpt-5.6-sol",
-        "k3",
-    ],
-    "operaciones": [
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash",
-        "glm-5.3-flash",
-        "gpt-5.6-terra",
-        "claude-sonnet-5-5",
-        "grok-4.7",
-        "kimi-for-coding",
-        "muse-wonder-1.0",
-    ],
-    "ingenieria": [
-        "muse-spark-1.3-contributor",
-        "muse-spark-1.3-contributor",
-        "gpt-5.6-sol",
-        "k3",
-        "glm-5.3",
-        "muse-wonder-1.0",
-        "claude-opus-5-5",
-        "grok-4.7",
-    ],
-    "implementer": [
-        "muse-spark-1.3-contributor",
-        "muse-spark-1.3-contributor",
-        "muse-wonder-1.0",
-        "glm-5.3-flash",
-        "grok-4.7",
-        "claude-sonnet-5-5",
-        "gpt-5.6-terra",
-        "kimi-for-coding",
-    ],
-    "reviewer": [
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash",
-        "claude-fable-5-1",
-        "k3",
-        "gpt-6-astra",
-        "muse-wonder-1.0",
-        "grok-4.7",
-        "glm-5.3",
-    ],
-    "adversary": [
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash",
-        "grok-4.7",
-        "k3",
-        "glm-5.3",
-        "muse-wonder-1.0",
-        "claude-opus-5-5",
-        "gpt-5.6-sol",
-    ],
-    "verifier": [
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash",
-        "glm-5.3-flash",
-        "muse-wonder-1.0",
-        "kimi-for-coding",
-        "claude-sonnet-5-5",
-        "gpt-5.6-terra",
-        "deepseek-flash",
-    ],
-    "scout": [
-        "deepseek-v4.1-flash",
-        "deepseek-v4.1-flash",
-        "glm-5.3-flash",
-        "muse-wonder-1.0",
-        "kimi-for-coding",
-        "deepseek-flash",
-        "claude-sonnet-5-5",
-        "gpt-5.6-terra",
+        ("claude", "claude-opus-5-5", "high"),
+        ("grok", "grok-4.7", "high"),
+        ("kimi", "k3", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
     ],
 }
 
-API_PROFILES = {"verifier", "scout"}
+
+def compiled(profile):
+    source = load_source()
+    lane = LANES[PROFILE_LANE[profile]]
+    routes = compile_profile_routes(profile, source)
+    assert [
+        (route.adapter, route.model, route.reasoning_effort) for route in routes
+    ] == lane, profile
+    return routes
 
 
 class LiveTableTests(unittest.TestCase):
-    def test_the_live_table_keeps_every_slot_bound_to_the_same_adapters(self):
+    def test_the_live_table_keeps_every_lane_in_the_v6_shape(self):
         # A release switch stays inside a model's line, so the adapters (bound
         # by family) and the shape of every chain never change with it.
         source = load_live_source()
@@ -217,121 +129,126 @@ class LiveTableTests(unittest.TestCase):
         for chain_name, chain in source["chains"].items():
             with self.subTest(chain=chain_name):
                 self.assertEqual(len(chain), SLOT_COUNT)
-                self.assertEqual(chain[1], chain[0])
-        for profile, adapters in EXPECTED_ADAPTERS.items():
+                self.assertEqual(
+                    [
+                        (route.adapter, route.model)
+                        for route in compile_profile_routes(chain_name, source)
+                    ],
+                    [(adapter, model) for adapter, model, _ in LANES[chain_name]],
+                )
+        for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)
-                self.assertEqual([route.adapter for route in routes], adapters)
-                self.assertEqual(
-                    [route.billing_mode for route in routes].count("api"),
-                    1 if profile in API_PROFILES else 0,
+                self.assertEqual(len(routes), SLOT_COUNT)
+                self.assertTrue(
+                    all(route.billing_mode == "subscription" for route in routes),
+                    profile,
                 )
 
 
 class SlotSemanticsTests(unittest.TestCase):
-    def test_primary_is_go_and_later_slots_bind_by_family(self):
+    def test_primary_binds_by_family_like_every_other_slot(self):
+        # Owner, 2026-10-17: no position is forced to an account; Anthropic on
+        # his Claude subscription carries most primaries.
         routes = compile_profile_routes("claw", load_source())
 
-        self.assertEqual([route.adapter for route in routes], EXPECTED_ADAPTERS["claw"])
-        self.assertEqual([route.model for route in routes], EXPECTED_MODELS["claw"])
+        self.assertEqual(
+            [route.adapter for route in routes],
+            [row[0] for row in LANES["dirigir-claw"]],
+        )
+        self.assertEqual(
+            [route.model for route in routes], [row[1] for row in LANES["dirigir-claw"]]
+        )
 
-    def test_the_second_go_account_copies_primary_in_every_chain(self):
-        # Owner, 2026-09-27: position 2 is an exact copy of Primary on the
-        # second OpenCode Go account, for main and for every agent.
-        source = load_source()
-        for chain_name, chain in source["chains"].items():
-            with self.subTest(chain=chain_name):
-                self.assertEqual(chain[1], chain[0])
-        for profile in EXPECTED_ADAPTERS:
-            with self.subTest(profile=profile):
-                routes = compile_profile_routes(profile, source)
-                self.assertEqual(routes[0].adapter, "opencode_go")
-                self.assertEqual(routes[1].adapter, "opencode_go_2")
-                self.assertEqual(
-                    (routes[1].model, routes[1].label, routes[1].reasoning_effort),
-                    (routes[0].model, routes[0].label, routes[0].reasoning_effort),
-                )
+    def test_claw_takes_medium_on_the_primary_and_entrega_high(self):
+        claw = compile_profile_routes("claw", load_source())
+        entrega = compile_profile_routes("entrega", load_source())
 
-    def test_entrega_inherits_main(self):
+        self.assertEqual(claw[0].reasoning_effort, "medium")
+        self.assertEqual(entrega[0].reasoning_effort, "high")
+        self.assertEqual(
+            [(r.adapter, r.model) for r in claw],
+            [(r.adapter, r.model) for r in entrega],
+        )
+        self.assertNotEqual(
+            [r.reasoning_effort for r in claw], [r.reasoning_effort for r in entrega]
+        )
+
+    def test_entrega_inherits_its_lane_and_default_the_simples_lane(self):
         source = load_source()
 
         self.assertEqual(
             compile_profile_routes("entrega", source),
-            compile_profile_routes("claw", source),
+            compile_profile_routes("dirigir", source),
+        )
+        self.assertEqual(
+            compile_profile_routes("default", source),
+            compile_profile_routes("simples", source),
         )
 
     def test_duplicate_labels_are_distinct_attempts(self):
         source = {
+            "profile_inheritance": {"implementer": "codigo"},
             "chains": {
-                "implementer": [
-                    "opencode-go/muse-spark-1.3-contributor",
-                    "opencode-go/muse-spark-1.3-contributor",
-                    "meta/muse-wonder-1.0 (max)",
+                "codigo": [
                     "zai/glm-5.3",
                     "zai/glm-5.3",
                     "zai/glm-5.3",
-                    "xai/grok-4.7",
-                    "anthropic/claude-opus-5-5 (xhigh)",
+                    "xai/grok-4.7 (medium)",
                 ]
-            }
+            },
         }
         routes = compile_profile_routes("implementer", source)
 
         self.assertEqual(len(routes), SLOT_COUNT)
         self.assertEqual(
-            [route.adapter for route in routes[3:6]],
+            [route.adapter for route in routes[:3]],
             ["opencode_zai", "opencode_zai", "opencode_zai"],
         )
-        self.assertEqual({route.model for route in routes[3:6]}, {"glm-5.3"})
-        self.assertEqual([route.slot for route in routes[3:6]], [3, 4, 5])
+        self.assertEqual({route.model for route in routes[:3]}, {"glm-5.3"})
+        self.assertEqual([route.slot for route in routes[:3]], [0, 1, 2])
 
     def test_kimi_for_coding_binds_to_kimi_and_high_stays_on_the_label(self):
         # kimi-for-coding is a Kimi family id, not k3; (high) is provenance.
         source = {
+            "profile_inheritance": {"scout": "investigar"},
             "chains": {
-                "scout": [
-                    "opencode-go/deepseek-v4.1-flash",
-                    "opencode-go/deepseek-v4.1-flash",
+                "investigar": [
                     "kimi/kimi-for-coding (high)",
                     "kimi/kimi-for-coding",
                     "zai/glm-5.3-flash",
                     "xai/grok-4.7",
-                    "anthropic/claude-sonnet-5-5",
-                    "openai/gpt-6-astra",
                 ]
-            }
+            },
         }
         routes = compile_profile_routes("scout", source)
 
-        self.assertEqual(routes[2].adapter, "kimi")
-        self.assertEqual(routes[2].model, "kimi-for-coding")
-        self.assertEqual(routes[2].label, "kimi/kimi-for-coding (high)")
-        self.assertEqual(routes[3].adapter, "kimi")
-        self.assertEqual(routes[3].model, "kimi-for-coding")
-        self.assertEqual(routes[3].label, "kimi/kimi-for-coding")
-        self.assertEqual(routes[4].adapter, "opencode_zai")
-        self.assertEqual(routes[4].model, "glm-5.3-flash")
+        self.assertEqual(routes[0].adapter, "kimi")
+        self.assertEqual(routes[0].model, "kimi-for-coding")
+        self.assertEqual(routes[0].label, "kimi/kimi-for-coding (high)")
+        self.assertEqual(routes[1].adapter, "kimi")
+        self.assertEqual(routes[1].model, "kimi-for-coding")
+        self.assertEqual(routes[1].label, "kimi/kimi-for-coding")
+        self.assertEqual(routes[2].adapter, "opencode_zai")
+        self.assertEqual(routes[2].model, "glm-5.3-flash")
 
     def test_every_kimi_release_binds_to_kimi_and_other_k_names_do_not(self):
         source = {
+            "profile_inheritance": {"scout": "investigar"},
             "chains": {
-                "scout": [
-                    "opencode-go/deepseek-v4.1-flash",
-                    "opencode-go/deepseek-v4.1-flash",
+                "investigar": [
                     "kimi/k3",
                     "kimi/k4",
                     "kimi/k3-256k",
                     "kimi/kimi-for-coding",
-                    "xai/grok-4.7",
-                    "openai/gpt-6-astra",
                 ]
-            }
+            },
         }
 
         routes = compile_profile_routes("scout", source)
 
         self.assertEqual(
-            [(route.adapter, route.model) for route in routes[2:6]],
+            [(route.adapter, route.model) for route in routes],
             [
                 ("kimi", "k3"),
                 ("kimi", "k4"),
@@ -339,75 +256,58 @@ class SlotSemanticsTests(unittest.TestCase):
                 ("kimi", "kimi-for-coding"),
             ],
         )
-        source["chains"]["scout"][3] = "kling/kling-1"
+        source["chains"]["investigar"][1] = "kling/kling-1"
         with self.assertRaisesRegex(ValueError, "unknown model family: kling-1"):
             compile_profile_routes("scout", source)
 
     def test_parenthetical_annotations_stay_on_the_label_not_the_model_id(self):
         source = load_source()
         claw = compile_profile_routes("claw", source)
-        muse = claw[3]
-        opus = claw[2]
-        sol = claw[6]
 
-        self.assertEqual(muse.adapter, "muse")
-        self.assertEqual(muse.model, "muse-wonder-1.0")
-        self.assertEqual(muse.label, "meta/muse-wonder-1.0 (max)")
-        self.assertEqual(opus.adapter, "claude")
-        self.assertEqual(opus.model, "claude-opus-5-5")
-        self.assertEqual(opus.label, "anthropic/claude-opus-5-5 (xhigh)")
-        self.assertEqual(sol.adapter, "codex")
-        self.assertEqual(sol.model, "gpt-5.6-sol")
-        self.assertEqual(sol.label, "openai/gpt-5.6-sol (xhigh)")
-
+        self.assertEqual(claw[0].label, "anthropic/claude-opus-5-5 (medium)")
+        self.assertEqual(claw[0].model, "claude-opus-5-5")
         scout = compile_profile_routes("scout", source)
-        self.assertEqual(scout[6].model, "claude-sonnet-5-5")
-        self.assertEqual(scout[6].label, "anthropic/claude-sonnet-5-5 (xhigh)")
-
-        operaciones = compile_profile_routes("operaciones", source)
-        self.assertEqual(operaciones[6].model, "kimi-for-coding")
-        self.assertEqual(operaciones[6].label, "kimi/kimi-for-coding (high)")
+        self.assertEqual(scout[0].label, "xai/grok-4.7 (medium)")
+        self.assertEqual(scout[0].model, "grok-4.7")
+        self.assertEqual(scout[3].label, "anthropic/claude-sonnet-5-5 (medium)")
 
     def test_every_table_cell_preserves_its_literal_reasoning_effort(self):
-        source = load_source()
-
-        for profile, efforts in EXPECTED_EFFORTS.items():
+        for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
-                routes = compile_profile_routes(profile, source)
+                routes = compiled(profile)
                 self.assertEqual(
-                    [
-                        (route.adapter, route.model, route.reasoning_effort)
-                        for route in routes
-                    ],
-                    list(
-                        zip(
-                            EXPECTED_ADAPTERS[profile],
-                            EXPECTED_MODELS[
-                                "claw" if profile == "entrega" else profile
-                            ],
-                            efforts,
-                            strict=True,
-                        )
-                    ),
+                    [(r.model, r.reasoning_effort) for r in routes],
+                    [(model, effort) for _, model, effort in LANES[lane]],
+                    profile,
                 )
 
-        main = compile_profile_routes("claw", source)
-        self.assertEqual(
-            (main[2].adapter, main[2].model, main[2].reasoning_effort),
-            ("claude", "claude-opus-5-5", "xhigh"),
-        )
-        self.assertEqual(
-            (main[3].adapter, main[3].model, main[3].reasoning_effort),
-            ("muse", "muse-wonder-1.0", "max"),
-        )
-        self.assertEqual(
-            (main[7].adapter, main[7].model, main[7].reasoning_effort),
-            ("kimi", "k3", None),
-        )
+    def test_off_marks_a_position_that_sends_no_reasoning_parameter(self):
+        source = load_source()
+
+        for profile in ("operaciones", "mail"):
+            routes = compile_profile_routes(profile, source)
+            deepseek = next(r for r in routes if r.model.startswith("deepseek"))
+            self.assertIsNone(deepseek.reasoning_effort, profile)
+            self.assertEqual(deepseek.label.endswith("(off)"), True, profile)
+
+        with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
+            compile_profile_routes(
+                "operaciones",
+                {
+                    **source,
+                    "chains": {
+                        **source["chains"],
+                        "operativo": [
+                            *source["chains"]["operativo"][:3],
+                            "opencode-go/deepseek-v4.1-flash (maximum)",
+                        ],
+                    },
+                },
+            )
 
     def test_unknown_parenthetical_annotation_is_rejected(self):
         source = load_source()
-        source["chains"]["main"][2] = "anthropic/claude-opus-5-5 (maximum)"
+        source["chains"]["dirigir-claw"][0] = "anthropic/claude-opus-5-5 (maximum)"
 
         with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
             compile_profile_routes("claw", source)
@@ -418,21 +318,18 @@ class SlotSemanticsTests(unittest.TestCase):
         # answers "model does not exist" when it is sent, so the suffix is
         # provenance on the label exactly like " dup", never part of the id.
         source = {
+            "profile_inheritance": {"verifier": "verificar"},
             "chains": {
-                "scout": [
-                    "opencode-go/deepseek-v4.1-flash",
-                    "opencode-go/deepseek-v4.1-flash",
+                "verificar": [
                     "meta/muse-spark-1.3-contributor-free",
                     "kimi/k3",
                     "zai/glm-5.3",
                     "xai/grok-4.7",
-                    "anthropic/claude-sonnet-5-5",
-                    "openai/gpt-6-astra",
                 ]
-            }
+            },
         }
 
-        muse = compile_profile_routes("scout", source)[2]
+        muse = compile_profile_routes("verifier", source)[0]
         self.assertEqual(muse.adapter, "muse")
         self.assertEqual(muse.model, "muse-spark-1.3-contributor")
         self.assertEqual(muse.label, "meta/muse-spark-1.3-contributor-free")
@@ -443,40 +340,33 @@ class SlotSemanticsTests(unittest.TestCase):
         compile_profile_routes("claw", source)
         compile_profile_routes("ingenieria", source)
 
+        self.assertEqual(source["columns"], ["Primary", "F1", "F2", "F3"])
         self.assertEqual(
-            source["columns"],
-            ["Primary", "Primary Go 2", "F1", "F2", "F3", "F4", "F5", "F6"],
+            source["chains"]["dirigir-claw"][0],
+            "anthropic/claude-opus-5-5 (medium)",
         )
         self.assertEqual(
-            source["chains"]["main"][0],
-            "opencode-go-resp/muse-spark-1.3-contributor",
-        )
-        self.assertEqual(source["chains"]["main"][3], "meta/muse-wonder-1.0 (max)")
-        self.assertEqual(
-            source["chains"]["ingenieria"][2], "openai/gpt-5.6-sol (xhigh)"
-        )
-        self.assertEqual(
-            source["chains"]["main"][2], "anthropic/claude-opus-5-5 (xhigh)"
+            source["chains"]["dirigir"][0], "anthropic/claude-opus-5-5 (high)"
         )
 
     def test_every_profile_compiles_the_owner_table(self):
         source = load_source()
 
-        for profile, adapters in EXPECTED_ADAPTERS.items():
+        for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)
                 self.assertEqual(len(routes), SLOT_COUNT, profile)
                 self.assertEqual(
                     [route.slot for route in routes], list(range(SLOT_COUNT))
                 )
-                self.assertEqual([route.adapter for route in routes], adapters)
                 self.assertEqual(
-                    [route.model for route in routes],
-                    EXPECTED_MODELS["claw" if profile == "entrega" else profile],
+                    [(r.adapter, r.model, r.reasoning_effort) for r in routes],
+                    LANES[lane],
+                    profile,
                 )
                 self.assertEqual(
-                    [route.billing_mode for route in routes].count("api"),
-                    1 if profile in API_PROFILES else 0,
+                    [route.billing_mode for route in routes],
+                    ["subscription"] * SLOT_COUNT,
                     profile,
                 )
 
@@ -491,7 +381,7 @@ class SlotSemanticsTests(unittest.TestCase):
         """
         source = load_source()
         seen = 0
-        for profile in EXPECTED_ADAPTERS:
+        for profile, lane in PROFILE_LANE.items():
             for route in compile_profile_routes(profile, source):
                 if route.model.startswith("glm-"):
                     seen += 1
@@ -501,33 +391,32 @@ class SlotSemanticsTests(unittest.TestCase):
                     self.assertEqual(route.billing_mode, "subscription", profile)
         self.assertGreater(seen, 0, "the owner table should route some glm slot")
 
-    def test_only_deepseek_family_slots_are_api_billed(self):
-        routes = compile_profile_routes("reviewer", load_source())
-
-        self.assertEqual(routes[0].adapter, "opencode_go")
-        self.assertEqual(routes[0].model, "deepseek-v4.1-flash")
-        self.assertEqual(routes[0].billing_mode, "subscription")
-        self.assertEqual(routes[2].adapter, "claude")
-        self.assertEqual(routes[2].model, "claude-fable-5-1")
-        self.assertEqual(routes[4].adapter, "codex")
-        self.assertEqual(routes[4].model, "gpt-6-astra")
-
-        scout = compile_profile_routes("scout", load_source())
-        self.assertEqual(scout[5].adapter, "deepseek")
-        self.assertEqual(scout[5].model, "deepseek-flash")
-        self.assertEqual(scout[5].billing_mode, "api")
-        self.assertEqual(scout[7].adapter, "codex")
-        self.assertEqual(scout[7].billing_mode, "subscription")
-
-        adversary = compile_profile_routes("adversary", load_source())
-        self.assertEqual(adversary[7].adapter, "codex")
-        self.assertEqual(adversary[7].model, "gpt-5.6-sol")
-        self.assertEqual(adversary[7].billing_mode, "subscription")
-
-        verifier = compile_profile_routes("verifier", load_source())
-        self.assertEqual(verifier[7].adapter, "deepseek")
-        self.assertEqual(verifier[7].model, "deepseek-flash")
-        self.assertEqual(verifier[7].billing_mode, "api")
+    def test_deepseek_flash_rides_the_go_subscription_never_the_api(self):
+        # Owner, 2026-10-17: the pay-per-token deepseek adapter is deliberately
+        # unbound; the only DeepSeek in the table is DeepSeek Flash on Go.
+        for profile in ("operaciones", "amazon", "mail", "default"):
+            with self.subTest(profile=profile):
+                routes = compile_profile_routes(profile, load_source())
+                deepseek = [r for r in routes if r.model.startswith("deepseek")]
+                self.assertEqual(len(deepseek), 1, profile)
+                self.assertEqual(deepseek[0].adapter, "opencode_go", profile)
+                self.assertEqual(deepseek[0].billing_mode, "subscription", profile)
+        self.assertIsNone(
+            next(
+                (
+                    adapter
+                    for family, adapter in (
+                        ("muse-", "muse"),
+                        ("claude-", "claude"),
+                        ("gpt-", "codex"),
+                        ("glm-", "opencode_zai"),
+                        ("grok-", "grok"),
+                    )
+                    if adapter == "deepseek"
+                ),
+                None,
+            )
+        )
 
     def test_unknown_family_and_profile_are_rejected(self):
         source = load_source()
@@ -539,20 +428,42 @@ class SlotSemanticsTests(unittest.TestCase):
                     **source,
                     "chains": {
                         **source["chains"],
-                        "scout": ["zai/glm-5.3"] + ["mystery/model"] * 7,
+                        "investigar": ["zai/glm-5.3"] + ["mystery/model"] * 3,
                     },
                 },
             )
         with self.assertRaisesRegex(ValueError, "No model chain"):
             compile_profile_routes("pirate", source)
-        with self.assertRaisesRegex(ValueError, "exactly 8 slots"):
+        with self.assertRaisesRegex(ValueError, "exactly 4 slots"):
             compile_profile_routes(
                 "scout",
                 {
                     **source,
-                    "chains": {**source["chains"], "scout": ["zai/glm-5.3"]},
+                    "chains": {**source["chains"], "investigar": ["zai/glm-5.3"]},
                 },
             )
+
+    def test_the_family_table_covers_every_family_the_watcher_follows(self):
+        # model_lines.FAMILIES keeps its prefixes equal to these by an AST test;
+        # every family here must also have a native provider binding.
+        import sys as _sys
+
+        _sys.path.insert(0, str(ROOT / "scripts"))
+        import model_lines
+
+        self.assertEqual(
+            {prefix for prefix, _ in ()} | set(model_lines.FAMILIES),
+            {
+                "muse-",
+                "claude-",
+                "gpt-",
+                r"k\d",
+                "kimi-",
+                "glm-",
+                "grok-",
+                "deepseek-",
+            },
+        )
 
 
 if __name__ == "__main__":
