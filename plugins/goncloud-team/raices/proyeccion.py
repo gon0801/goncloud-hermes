@@ -278,7 +278,13 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     avisadas: list = []
     avanzaron = 0
     for root_id, ids in por_raiz.items():
-        respuesta = tienda.notificar(root_id, ids)
+        # C5: un notificar que LANZA (p. ej. SQLite locked) no corta el ciclo
+        # de raíces: la suya queda con error y las demás siguen (F6).
+        try:
+            respuesta = tienda.notificar(root_id, ids)
+        except Exception as fallo:  # noqa: BLE001 - frontera de la base
+            errores.append(f"checkpoint {root_id}: {type(fallo).__name__}: {fallo}")
+            continue
         if hasattr(respuesta, "codigo"):
             errores.append(
                 f"checkpoint {root_id}: {respuesta.codigo}"

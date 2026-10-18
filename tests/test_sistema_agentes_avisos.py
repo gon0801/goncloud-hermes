@@ -5,6 +5,7 @@ checkpoint que solo avanza con messageId positivo."""
 
 import importlib
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -508,6 +509,54 @@ class EmisorQueLanza(Emisor):
         self.assertTrue(
             any("el aviso no se confirmó" in e for e in informe["errores"]), informe
         )
+
+
+class CheckpointQueLanza(Emisor):
+    """C5 (r6e): un notificar que LANZA (p. ej. SQLite locked) no corta el
+    ciclo de raíces: la suya queda con error y las demás avanzan."""
+
+    def test_un_notificar_que_lanza_no_corta_a_las_demas(self):
+        otra = meta_de()
+        otra["rootId"] = "root-otra"
+        self.assertIsInstance(self.tienda.abrir_raiz(otra), store.Ok)
+        borrador = decidir.borrador_excepcion(
+            "root-otra",
+            "NECESITA_DAVID",
+            {"kind": "rounds", "unitId": "a", "block": 0},
+            ["seguir", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(
+            self.tienda.aplicar("root-otra", dec, "dec-exc-otra"), store.Ok
+        )
+
+        class TiendaQueLanzaUna:
+            def __init__(self, tienda, raiz_mala):
+                self.envuelta = tienda
+                self._conexion = tienda._conexion
+                self.raiz_mala = raiz_mala
+
+            def notificar(self, root_id, exception_ids):
+                if root_id == self.raiz_mala:
+                    raise sqlite3.OperationalError("database is locked")
+                return self.envuelta.notificar(root_id, exception_ids)
+
+        informe, mensajes = self.avisar(tienda=TiendaQueLanzaUna(self.tienda, RAIZ))
+        self.assertEqual(len(mensajes), 1)
+        self.assertIn(f"checkpoint {RAIZ}: OperationalError", informe["errores"][0])
+        self.assertEqual(informe["avisadas"], [borrador["exceptionId"]])
+        self.assertEqual(informe["messageId"], 42)
+        mala = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (self.exception_id,),
+        )
+        sana = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            (borrador["exceptionId"],),
+        )
+        self.assertIsNone(mala["noticed_at"])
+        self.assertIsNotNone(sana["noticed_at"])
 
 
 if __name__ == "__main__":
