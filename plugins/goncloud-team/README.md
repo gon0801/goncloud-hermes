@@ -58,6 +58,23 @@ el recibo original), read devuelve el snapshot de la raiz, control entrega el
 recibo de `control.v1` (un reintento exacto devuelve el original con
 `replayed: true`) y resolve guarda la respuesta del dueno en la `excepcion.v1`.
 
+`goncloud_root_instruction_put` y `goncloud_root_reconcile` (SUA-07 H6a,
+tambien solo claw) traen los hechos de asignacion que al ticker le faltaban:
+instruction_put guarda el TEXTO del brief en el store content-addressed
+`<raiz>/raices/instrucciones/<sha256>` (escritura atomica, idempotente por
+contenido: el mismo texto devuelve el mismo `artifact:<hex>`; tope de 32,768
+caracteres) y el texto NUNCA viaja dentro de la asignacion, solo su
+`{ref, digest}` (fixture G). reconcile valida cada assignment contra la copia
+fijada del contrato, exige que su `instructionRef` resuelva en ese store con
+el digest verificado y persiste por clave estable
+`(rootId, planRevision, unitId, relay)`: el reintento exacto es `replayed:
+true`, otra asignacion con la fila viva es `operation-conflict` y una fila ya
+consumida abre un ciclo nuevo de correccion o relevo. El recibo incluye las
+necesidades vigentes de la raiz (el espejo de los `needs` de R), que
+`goncloud_root_read` tambien expone. El consumo de cada asignacion ocurre en
+la MISMA transaccion que liga el intento: una vuelta interrumpida nunca
+duplica la tarjeta.
+
 El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
 salida. El instalador (H4b3) copia `raices/cron_ticker.py` a

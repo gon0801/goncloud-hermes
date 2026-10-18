@@ -19,5 +19,7 @@ provides_tools:
   - goncloud_root_read
   - goncloud_root_control
   - goncloud_root_resolve
+  - goncloud_root_instruction_put
+  - goncloud_root_reconcile
 provides_hooks:
   - pre_tool_call

@@ -18,7 +18,9 @@ from .schemas import (
     LOCAL_STATUS,
     MUSE_DELEGATE,
     ROOT_CONTROL,
+    ROOT_INSTRUCTION_PUT,
     ROOT_READ,
+    ROOT_RECONCILE,
     ROOT_RESOLVE,
     ROOT_SUBMIT,
     SUBSCRIPTION_RUN,
@@ -196,6 +198,13 @@ def register(ctx) -> None:
         ("goncloud_root_read", ROOT_READ, "leer_raiz", "📄"),
         ("goncloud_root_control", ROOT_CONTROL, "controlar_raiz", "🎛"),
         ("goncloud_root_resolve", ROOT_RESOLVE, "resolver_excepcion", "🧷"),
+        (
+            "goncloud_root_instruction_put",
+            ROOT_INSTRUCTION_PUT,
+            "guardar_instruccion",
+            "📥",
+        ),
+        ("goncloud_root_reconcile", ROOT_RECONCILE, "reconciliar_raiz", "⚖"),
     ):
         ctx.register_tool(
             name=name,

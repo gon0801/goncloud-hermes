@@ -154,12 +154,14 @@ class Base(unittest.TestCase):
 
 
 class Registro(Base):
-    def test_las_cuatro_herramientas_quedan_registradas_para_claw(self):
+    def test_las_seis_herramientas_quedan_registradas_para_claw(self):
         for nombre in (
             "goncloud_root_submit",
             "goncloud_root_read",
             "goncloud_root_control",
             "goncloud_root_resolve",
+            "goncloud_root_instruction_put",
+            "goncloud_root_reconcile",
         ):
             with self.subTest(nombre=nombre):
                 self.assertIn(nombre, self.ctx.herramientas)
@@ -167,13 +169,15 @@ class Registro(Base):
                     self.ctx.herramientas[nombre]["toolset"], "goncloud_team"
                 )
 
-    def test_plugin_yaml_declara_las_cuatro(self):
+    def test_plugin_yaml_declara_las_seis(self):
         texto = (PLUGIN / "plugin.yaml").read_text(encoding="utf-8")
         for nombre in (
             "goncloud_root_submit",
             "goncloud_root_read",
             "goncloud_root_control",
             "goncloud_root_resolve",
+            "goncloud_root_instruction_put",
+            "goncloud_root_reconcile",
         ):
             self.assertIn(f"- {nombre}", texto)
 
@@ -195,6 +199,11 @@ class SoloClaw(Base):
             (
                 "goncloud_root_resolve",
                 {"exceptionId": "ex-1", "optionId": "listo", "by": ["david"]},
+            ),
+            ("goncloud_root_instruction_put", {"text": "brief"}),
+            (
+                "goncloud_root_reconcile",
+                {"rootId": RAIZ, "asignaciones": []},
             ),
         ):
             with self.subTest(nombre=nombre):
@@ -353,6 +362,152 @@ class Lectura(Base):
     def test_una_raiz_desconocida_da_error(self):
         respuesta = self.llamar("goncloud_root_read", {"rootId": "root-nadie"})
         self.assertEqual(respuesta["error"], "raiz-desconocida")
+
+    def test_el_snapshot_expone_las_necesidades_vigentes(self):
+        plan = meta_de()
+        unidad_b = {
+            **plan["plan"]["units"][0],
+            "unitId": "b",
+            "title": "Unidad b",
+            "criteria": [{"criterionId": "b1", "text": "b1", "verifier": "verifier"}],
+        }
+        plan["plan"] = {**plan["plan"], "units": [plan["plan"]["units"][0], unidad_b]}
+        recibo_submit = self.llamar("goncloud_root_submit", {"plan": plan})
+        self.assertNotIn("error", recibo_submit)
+        guardada = self.llamar("goncloud_root_instruction_put", {"text": "brief a"})
+        recibo = self.llamar(
+            "goncloud_root_reconcile",
+            {
+                "rootId": RAIZ,
+                "asignaciones": [
+                    {
+                        "unitId": "a",
+                        "assignment": {
+                            "target": {
+                                "kind": "cli",
+                                "hostId": "host-01",
+                                "adapterId": "codex",
+                            },
+                            "instructionRef": guardada,
+                            "resultContract": "review.v1",
+                            "inputRevision": {
+                                "kind": "code",
+                                "repository": "owner-01/repo-a",
+                                "sha": "0" * 40,
+                            },
+                            "continuation": {"kind": "requester"},
+                        },
+                        "relay": False,
+                    }
+                ],
+            },
+        )
+        self.assertNotIn("error", recibo)
+        snapshot = self.llamar("goncloud_root_read", {"rootId": RAIZ})
+        self.assertEqual(
+            snapshot["necesidades"]["items"],
+            recibo["necesidades"],
+        )
+
+
+class GuardarInstruccion(Base):
+    def test_devuelve_ref_y_digest_y_el_mismo_texto_el_mismo_ref(self):
+        primera = self.llamar("goncloud_root_instruction_put", {"text": "brief"})
+        self.assertNotIn("error", primera)
+        self.assertTrue(primera["ref"].startswith("artifact:"))
+        self.assertTrue(primera["digest"].startswith("sha256:"))
+        segunda = self.llamar("goncloud_root_instruction_put", {"text": "brief"})
+        self.assertEqual(segunda, primera)
+        dir_instr = Path(self.temporal.name) / "raices" / "instrucciones"
+        self.assertTrue((dir_instr / primera["ref"][len("artifact:") :]).exists())
+
+    def test_el_texto_vacio_o_fuera_del_tope_no_guarda_nada(self):
+        vacio = self.llamar("goncloud_root_instruction_put", {"text": ""})
+        self.assertEqual(vacio["error"], "documento-invalido")
+        largo = self.llamar("goncloud_root_instruction_put", {"text": "x" * 32769})
+        self.assertEqual(largo["error"], "documento-invalido")
+        dir_instr = Path(self.temporal.name) / "raices" / "instrucciones"
+        self.assertFalse(dir_instr.exists())
+
+
+class ReconcileHerramienta(Base):
+    def asignacion(self, guardada, unit_id="a"):
+        return {
+            "unitId": unit_id,
+            "assignment": {
+                "target": {"kind": "cli", "hostId": "host-01", "adapterId": "codex"},
+                "instructionRef": guardada,
+                "resultContract": "review.v1",
+                "inputRevision": {
+                    "kind": "code",
+                    "repository": "owner-01/repo-a",
+                    "sha": "0" * 40,
+                },
+                "continuation": {"kind": "requester"},
+            },
+            "relay": False,
+        }
+
+    def test_devuelve_recibo_necesidades_y_replayed(self):
+        self.abrir_raiz()
+        guardada = self.llamar("goncloud_root_instruction_put", {"text": "brief a"})
+        recibo = self.llamar(
+            "goncloud_root_reconcile",
+            {
+                "rootId": RAIZ,
+                "asignaciones": [self.asignacion(guardada)],
+            },
+        )
+        self.assertEqual(recibo["rootId"], RAIZ)
+        self.assertEqual(recibo["planRevision"], 1)
+        self.assertEqual(
+            recibo["asignaciones"],
+            [{"unitId": "a", "relay": False, "replayed": False}],
+        )
+        self.assertIs(recibo["replayed"], False)
+        self.assertEqual(recibo["necesidades"], [])
+        repetido = self.llamar(
+            "goncloud_root_reconcile",
+            {
+                "rootId": RAIZ,
+                "asignaciones": [self.asignacion(guardada)],
+            },
+        )
+        self.assertIs(repetido["replayed"], True)
+        self.assertEqual(
+            repetido["asignaciones"],
+            [{"unitId": "a", "relay": False, "replayed": True}],
+        )
+
+    def test_el_conflicto_del_store_llega_como_error_tipado(self):
+        self.abrir_raiz()
+        guardada = self.llamar("goncloud_root_instruction_put", {"text": "brief a"})
+        rota = {**guardada, "digest": "sha256:" + "c" * 64}
+        respuesta = self.llamar(
+            "goncloud_root_reconcile",
+            {"rootId": RAIZ, "asignaciones": [self.asignacion(rota)]},
+        )
+        self.assertEqual(respuesta["error"], "instruccion-invalida")
+        self.assertEqual(respuesta["detalle"]["motivo"], "digest-distinto")
+
+    def test_la_forma_cruda_invalida_es_documento_invalido(self):
+        self.abrir_raiz()
+        for asignaciones in (
+            [{"unitId": "a", "assignment": "en texto", "relay": False}],
+            [{"unitId": "", "assignment": {}, "relay": False}],
+            [{"unitId": "a", "assignment": {}, "relay": "si"}],
+            "no soy una lista",
+        ):
+            with self.subTest(asignaciones=asignaciones):
+                respuesta = self.llamar(
+                    "goncloud_root_reconcile",
+                    {"rootId": RAIZ, "asignaciones": asignaciones},
+                )
+                self.assertEqual(respuesta["error"], "documento-invalido")
+        sin_raiz = self.llamar(
+            "goncloud_root_reconcile", {"rootId": "", "asignaciones": []}
+        )
+        self.assertEqual(sin_raiz["error"], "documento-invalido")
 
 
 class Resolucion(Base):

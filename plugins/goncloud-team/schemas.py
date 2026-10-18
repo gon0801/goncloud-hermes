@@ -409,3 +409,65 @@ ROOT_RESOLVE = {
         "required": ["rootId", "exceptionId", "optionId", "by"],
     },
 }
+
+ROOT_INSTRUCTION_PUT = {
+    "name": "goncloud_root_instruction_put",
+    "description": (
+        "Store the text of a managed-root brief in the content-addressed "
+        "instruction store and return its {ref, digest}. The same text always "
+        "returns the same ref. Text is limited to 32,768 characters and never "
+        "travels inside an assignment. Only the claw profile may call this."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Brief text, 1 to 32,768 characters.",
+            },
+        },
+        "required": ["text"],
+    },
+}
+
+ROOT_RECONCILE = {
+    "name": "goncloud_root_reconcile",
+    "description": (
+        "Deliver assignment facts to one managed root, mirroring "
+        "managedRootsReconcileInput: each assignment is validated against the "
+        "fixed contract copy and its instructionRef must resolve in the "
+        "instruction store with a matching digest. An exact retry returns the "
+        "original receipt with replayed=true; a different assignment for the "
+        "same live key is refused with operation-conflict. The receipt also "
+        "carries the root's current needs. Only the claw profile may call this."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "rootId": {"type": "string", "description": "Root id."},
+            "asignaciones": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "unitId": {
+                            "type": "string",
+                            "description": "Plan unit the assignment binds.",
+                        },
+                        "assignment": {
+                            "type": "object",
+                            "description": "ManagedTaskAssignment document.",
+                        },
+                        "relay": {
+                            "type": "boolean",
+                            "description": "True when the fact is a relay.",
+                        },
+                    },
+                    "required": ["unitId", "assignment", "relay"],
+                },
+                "description": "Assignment facts to persist.",
+            },
+        },
+        "required": ["rootId", "asignaciones"],
+    },
+}
