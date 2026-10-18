@@ -422,5 +422,56 @@ class RecortePorLargo(unittest.TestCase):
         self.assertEqual(self.notadas(), {"exc-larga-a", "exc-larga-b", "exc-larga-c"})
 
 
+class OptionsInvalidos(Emisor):
+    """C3 (r6e): un options_json que no parsea se salta con su error, como
+    un raisedAt malformado: no sale un aviso SIN opciones ni checkpoint."""
+
+    def test_un_options_json_roto_se_salta_sin_checkpoint(self):
+        self.tienda._conexion.execute(
+            "INSERT INTO excepciones (exception_id, root_id, unit_id, type,"
+            " subject_json, options_json, recipient_json, raised_at,"
+            " renotice_after_ms)"
+            " VALUES ('exc-options-roto', ?, 'a', 'INESPERADO', '{}',"
+            " '{roto',"
+            ' \'{"channel": "telegram", "principal": ["david"]}\','
+            " '2026-10-17T12:00:00Z', 3600000)",
+            (RAIZ,),
+        )
+        self.tienda._conexion.commit()
+        informe, mensajes = self.avisar()
+        self.assertEqual(informe["avisadas"], [self.exception_id])
+        self.assertTrue(
+            any("exc-options-roto" in error for error in informe["errores"]), informe
+        )
+        self.assertEqual(len(mensajes), 1)
+        self.assertNotIn("exc-options-roto", mensajes[0])
+        fila = self.tienda._una_fila(
+            "SELECT noticed_at FROM excepciones WHERE exception_id = ?",
+            ("exc-options-roto",),
+        )
+        self.assertIsNone(fila["noticed_at"])
+
+    def test_un_options_json_null_tampoco_pasa(self):
+        # JSON válido pero null: la excepción del contrato siempre trae
+        # opciones; un aviso sin cómo responder no sale.
+        self.tienda._conexion.execute(
+            "INSERT INTO excepciones (exception_id, root_id, unit_id, type,"
+            " subject_json, options_json, recipient_json, raised_at,"
+            " renotice_after_ms)"
+            " VALUES ('exc-options-null', ?, 'a', 'INESPERADO', '{}',"
+            " 'null',"
+            ' \'{"channel": "telegram", "principal": ["david"]}\','
+            " '2026-10-17T12:00:00Z', 3600000)",
+            (RAIZ,),
+        )
+        self.tienda._conexion.commit()
+        informe, mensajes = self.avisar()
+        self.assertEqual(informe["avisadas"], [self.exception_id])
+        self.assertTrue(
+            any("exc-options-null" in error for error in informe["errores"]), informe
+        )
+        self.assertNotIn("exc-options-null", mensajes[0])
+
+
 if __name__ == "__main__":
     unittest.main()

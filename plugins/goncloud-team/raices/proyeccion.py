@@ -183,7 +183,7 @@ def _excepcion_avisable(excepcion: dict) -> str | None:
     except (ValueError, TypeError) as fallo:
         return str(fallo)
     opciones = excepcion.get("options")
-    if opciones is not None and not isinstance(opciones, list):
+    if not isinstance(opciones, list):
         return "options no es una lista"
     for opcion in opciones or []:
         if not (
@@ -208,10 +208,14 @@ def avisar_excepciones(tienda, *, ahora, enviar) -> dict:
     errores: list = []
     debidas: list = []
     for f in filas:
+        # C3: un options_json que no parsea se salta con su error, igual que
+        # un raisedAt malformado: un aviso sin cómo responder no sale ni
+        # recibe checkpoint.
         try:
             opciones = json.loads(f["options_json"])
         except ValueError:
-            opciones = None
+            errores.append(f"excepción {f['exception_id']}: options no es JSON")
+            continue
         fila = {
             "exceptionId": f["exception_id"],
             "rootId": f["root_id"],
