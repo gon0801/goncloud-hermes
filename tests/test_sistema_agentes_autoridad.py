@@ -941,24 +941,36 @@ class LaConcesionNoCallaLasRazonesDeForma(TiendaCerrada, unittest.TestCase):
         return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
 
     def test_un_efecto_sin_forma_autorizado_sigue_negado(self):
+        # La forma VIEJA (pre-r6f) ofrecía autorizar por una razón de forma:
+        # esa concesión puede existir en datos viejos y no calla la razón
+        # (C1/r6e). Las preguntas nuevas ya no la ofrecen (r6f).
         self.assertIsInstance(
             self.tienda.aplicar(
                 RAIZ, decision(efectos=[{"effectId": "roto-concedido"}]), "dec-roto"
             ),
             store.Ok,
         )
+        borrador = decidir.borrador_excepcion(
+            RAIZ,
+            "NECESITA_DAVID",
+            {
+                "kind": "effect",
+                "effectId": "roto-concedido",
+                "cause": "autoridad:efecto-sin-forma",
+            },
+            ["autorizar", "listo", "omitir", "cancelar"],
+        )
+        dec = decidir._decision_vacia(1, 1)
+        dec["excepciones"] = [borrador]
+        self.assertIsInstance(self.tienda.aplicar(RAIZ, dec, "dec-vieja"), store.Ok)
         recibo = self.tienda.iniciar_efecto(RAIZ, "roto-concedido", "start-1", 1)
         self.assertIsInstance(recibo, store.Conflicto)
         self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
-        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
-        exception_id = next(
-            e["exceptionId"]
-            for e in vista["excepciones"]
-            if e["subject"].get("kind") == "effect"
-        )
         self.instante_actual = "2026-10-17T12:00:00Z"
         self.assertIsInstance(
-            self.tienda.responder_excepcion(RAIZ, exception_id, "autorizar", ["david"]),
+            self.tienda.responder_excepcion(
+                RAIZ, borrador["exceptionId"], "autorizar", ["david"]
+            ),
             store.Ok,
         )
         # La concesión quedó vigente pero la razón es de forma: sigue negado.
@@ -1011,6 +1023,127 @@ class LaConcesionNoCallaLasRazonesDeForma(TiendaCerrada, unittest.TestCase):
             if b["subject"].get("kind") == "effect"
         ]
         self.assertEqual(causas, ["autoridad:efecto-sin-forma"])
+
+
+class OpcionesPorRazonDeForma(TiendaCerrada, unittest.TestCase):
+    """r6f: cuando la razón es de forma (efecto-sin-forma,
+    autoridad-ilegible), la pregunta NECESITA_DAVID por un efecto NO ofrece
+    `autorizar` en ninguno de los cuatro caminos (decidir x2, iniciar_efecto
+    y reanudación): la concesión no calla una razón de forma (C1/r6e) y la
+    pregunta respondida no se reabriría — la raíz quedaría trabada. Por una
+    razón de permisos, `autorizar` se sigue ofreciendo."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.tienda = store.Store(
+            self.ruta,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    @staticmethod
+    def hechos_nulos():
+        return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
+
+    def opciones_del_efecto(self, effect_id):
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        return next(
+            [o["optionId"] for o in e["options"]]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+            and e["subject"].get("effectId") == effect_id
+        )
+
+    def opciones_del_borrador(self, propuesta, effect_id):
+        return next(
+            b["options"]
+            for b in propuesta.decision["excepciones"]
+            if b["subject"].get("kind") == "effect"
+            and b["subject"].get("effectId") == effect_id
+        )
+
+    def test_el_inicio_de_un_efecto_sin_forma_no_ofrece_autorizar(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "roto"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "roto", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.detalle["reason"], "efecto-sin-forma")
+        self.assertEqual(
+            self.opciones_del_efecto("roto"), ["listo", "omitir", "cancelar"]
+        )
+
+    def test_la_reanudacion_no_ofrece_autorizar_por_un_efecto_sin_forma(self):
+        permisosa = store.Store(
+            self.ruta.parent / "permisosa.db", permisos_h=permisos()
+        )
+        self.addCleanup(permisosa.cerrar)
+        permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))
+        self.assertIsInstance(
+            permisosa.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "roto"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        self.assertIsInstance(
+            permisosa.control(comando("pause", "cmd-01", 1)), store.Ok
+        )
+        permisosa.cerrar()
+
+        endurecida = store.Store(
+            self.ruta.parent / "permisosa.db", permisos_h=permisos()
+        )
+        self.addCleanup(endurecida.cerrar)
+        self.assertIsInstance(
+            endurecida.control(comando("resume", "cmd-02", 2)), store.Ok
+        )
+        vista = endurecida.leer_vista(RAIZ, self.hechos_nulos())
+        opciones = next(
+            [o["optionId"] for o in e["options"]]
+            for e in vista["excepciones"]
+            if e["subject"].get("kind") == "effect"
+        )
+        self.assertEqual(opciones, ["listo", "omitir", "cancelar"])
+
+    def test_decidir_preparado_no_ofrece_autorizar_por_forma(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[{"effectId": "roto"}]), "dec-roto"
+            ),
+            store.Ok,
+        )
+        propuesta = decidir.decidir(self.tienda.leer_vista(RAIZ, self.hechos_nulos()))
+        self.assertEqual(
+            self.opciones_del_borrador(propuesta, "roto"),
+            ["listo", "omitir", "cancelar"],
+        )
+
+    def test_decidir_hecho_nuevo_no_ofrece_autorizar_por_forma(self):
+        hechos = {**self.hechos_nulos(), "efectos": [{"effectId": "roto-hechos"}]}
+        propuesta = decidir.decidir(self.tienda.leer_vista(RAIZ, hechos))
+        self.assertEqual(
+            self.opciones_del_borrador(propuesta, "roto-hechos"),
+            ["listo", "omitir", "cancelar"],
+        )
+
+    def test_una_razon_de_permisos_sigue_ofreciendo_autorizar(self):
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto()]), "dec-ef"), store.Ok
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.detalle["reason"], "accion-preguntar")
+        self.assertEqual(
+            self.opciones_del_efecto("effect-push"),
+            ["autorizar", "listo", "omitir", "cancelar"],
+        )
 
 
 class I07Reanudacion(unittest.TestCase):

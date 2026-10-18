@@ -487,7 +487,6 @@ class Store:
             return None
         return razon
 
-    OPCIONES_DE_AUTORIDAD = ["autorizar", "listo", "omitir", "cancelar"]
     # F15: un sujeto de INTENTO no ofrece `autorizar`; la concesión del dueño
     # solo existe para efectos (F8), igual que permission-required en R
     # (managed-root.decide.ts:550).
@@ -515,7 +514,9 @@ class Store:
                         "effectId": fila["effect_id"],
                         "cause": autoridad.causa_de(razon),
                     },
-                    self.OPCIONES_DE_AUTORIDAD,
+                    # r6f: las opciones por razón, la misma tabla de los
+                    # cuatro caminos (una razón de forma no se autoriza).
+                    autoridad.opciones_por_razon(razon),
                     ahora,
                 )
         autoridad_meta = json.loads(
@@ -1293,7 +1294,8 @@ class Store:
                         "effectId": effect_id,
                         "cause": autoridad.causa_de(razon),
                     },
-                    ["autorizar", "listo", "omitir", "cancelar"],
+                    # r6f: la misma tabla por razón que los demás caminos.
+                    autoridad.opciones_por_razon(razon),
                     ahora,
                 )
                 self._commit()

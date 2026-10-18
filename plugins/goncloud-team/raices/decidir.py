@@ -160,6 +160,14 @@ def _es_de_forma(razon: str) -> bool:
     return razon in modulo.RAZONES_DE_FORMA
 
 
+def _opciones_de_efecto(razon: str) -> list:
+    """r6f: una sola fuente (autoridad.opciones_por_razon) para las opciones
+    de la pregunta por un efecto: `autorizar` sólo si la razón se puede
+    conceder; una razón de forma no se autoriza."""
+    modulo = importlib.import_module("raices.autoridad")
+    return modulo.opciones_por_razon(razon)
+
+
 def digesto(partes: object) -> str:
     canonico = json.dumps(
         partes, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -883,7 +891,7 @@ def decidir(
                         "effectId": efecto["effectId"],
                         "cause": _causa_de(razon),
                     },
-                    ["autorizar", "listo", "omitir", "cancelar"],
+                    _opciones_de_efecto(razon),
                 )
     for intent in vista["hechos"]["efectos"]:
         if not isinstance(intent, Mapping) or not isinstance(
@@ -908,7 +916,7 @@ def decidir(
                     "effectId": intent["effectId"],
                     "cause": _causa_de(razon),
                 },
-                ["autorizar", "listo", "omitir", "cancelar"],
+                _opciones_de_efecto(razon),
             )
 
     # Correcciones: `rondas` cuenta por la vida de la unidad; el tope crece un bloque

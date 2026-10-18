@@ -37,6 +37,23 @@ LLAVES_DE_AUTORIDAD = ("deadline", "actions", "repos", "destinations", "mode")
 # calla razones de autoridad o de permisos de H, nunca éstas.
 RAZONES_DE_FORMA = frozenset({"efecto-sin-forma", "autoridad-ilegible"})
 
+# r6f: las opciones de la pregunta NECESITA_DAVID por un EFECTO salen de
+# una sola tabla por razón, compartida por los cuatro caminos que la
+# levantan (decidir x2, iniciar_efecto y reanudación). `autorizar` sólo
+# cuando el dueño puede conceder algo (una razón de autoridad o de
+# permisos); con una razón de forma la concesión no vale (C1), así que
+# ofrecerla trabaría la raíz: la respuesta se aplicaría, la razón seguiría
+# y la pregunta ya respondida no se reabriría.
+OPCIONES_DE_AUTORIDAD = ("autorizar", "listo", "omitir", "cancelar")
+OPCIONES_DE_FORMA = ("listo", "omitir", "cancelar")
+
+
+def opciones_por_razon(razon: str) -> list:
+    """Las opciones de la pregunta por un efecto según su razón de negación."""
+    if razon in RAZONES_DE_FORMA:
+        return list(OPCIONES_DE_FORMA)
+    return list(OPCIONES_DE_AUTORIDAD)
+
 
 def autoridad_ilegible(autoridad_meta: object) -> str | None:
     """La razón por la que el documento de autoridad no tiene la forma que el
