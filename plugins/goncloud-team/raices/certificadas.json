@@ -12,12 +12,12 @@
  {
   "version": "0.22.0",
   "code_sha": "e06df9c2eae6901f4c88f464e0ae6e753c0428b8",
-  "certificadoEn": "2026-10-18T19:47:49Z",
+  "certificadoEn": "2026-10-18T20:24:21Z",
   "evidencia": {
    "pruebas": "tests.test_sistema_agentes_kanban_real",
    "resumen": "OK",
-   "hermesVersion": "Hermes Agent v0.22.0 (2026.9.24) ┬╖ stable ┬╖ local e06df9c2eae6\nInstall directory: C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\nInstall method: git\nPython: 3.14.7\nOpenAI SDK: 2.24.0\nUpdate available ΓÇö run 'hermes update'",
-   "corridoEn": "2026-10-18T19:47:49Z"
+   "hermesVersion": "Hermes Agent v0.22.0 (2026.9.24) · stable · local e06df9c2eae6\nInstall directory: C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\nInstall method: git\nPython: 3.14.7\nOpenAI SDK: 2.24.0\nUpdate available — run 'hermes update'",
+   "corridoEn": "2026-10-18T20:24:21Z"
   }
  }
 ]
