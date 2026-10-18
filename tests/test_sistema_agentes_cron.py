@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -159,12 +159,17 @@ class Script(Base):
 
     def test_la_ruta_cerrada_no_corre_y_no_abre_nada(self):
         cron = importlib.import_module("raices.cron_ticker")
-        salida = StringIO()
-        with redirect_stdout(salida):
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
             codigo = cron.correr(ruta_abierta=lambda: (False, "version-no-certificada"))
         self.assertEqual(codigo, 0)
+        self.assertEqual(
+            salida.getvalue(),
+            "",
+            "el stdout del no_agent se entrega: la ruta cerrada no es ruido",
+        )
         self.assertIn(
-            "ruta de raices cerrada (version-no-certificada)", salida.getvalue()
+            "ruta de raices cerrada (version-no-certificada)", errores.getvalue()
         )
         self.assertFalse((self.home / "sistema-agentes.db").exists())
 

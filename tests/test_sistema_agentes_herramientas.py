@@ -459,5 +459,76 @@ class Resolucion(Base):
         self.assertEqual(respuesta["error"], "exception-unknown")
 
 
+class RutaDelStore(unittest.TestCase):
+    """F1: sin HERMES_HOME las herramientas fallan con error claro y no
+    abren ./sistema-agentes.db en el cwd del gateway."""
+
+    def test_sin_hermes_home_falla_y_no_crea_archivo_en_el_cwd(self):
+        herramientas = importlib.import_module("raices.herramientas")
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaises(ValueError):
+                herramientas.ruta_del_store(None)
+            with self.assertRaises(ValueError):
+                herramientas.ruta_del_store("")
+            with self.assertRaises(ValueError):
+                herramientas.abrir_tienda(None)
+        self.assertFalse(
+            Path("sistema-agentes.db").exists(),
+            "sin HERMES_HOME no se abre un store en el cwd",
+        )
+
+
+class CargaComoPaquete(unittest.TestCase):
+    """F2: el plugin cargado como paquete sin el directorio del plugin en
+    sys.path igual deja las herramientas raiz operables (no 'No module
+    named')."""
+
+    def test_las_herramientas_raiz_responden_sin_path_previo(self):
+        import importlib
+
+        hermes_falso.instalar()
+        self.addCleanup(hermes_falso.desinstalar)
+        for nombre in [m for m in list(sys.modules) if m.split(".")[0] == "raices"]:
+            del sys.modules[nombre]
+        plugins = str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
+        sys.path[:] = [
+            p
+            for p in sys.path
+            if str(Path(p).resolve()) != str(Path(plugins).resolve())
+        ]
+        spec = importlib.util.spec_from_file_location(
+            "goncloud_team_paquete",
+            Path(__file__).resolve().parents[1] / "plugins/goncloud-team/__init__.py",
+            submodule_search_locations=[
+                str(Path(__file__).resolve().parents[1] / "plugins/goncloud-team")
+            ],
+        )
+        modulo = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = modulo
+        spec.loader.exec_module(modulo)
+
+        class Ctx:
+            profile_name = "claw"
+
+            def __init__(self):
+                self.herramientas = {}
+
+            def register_tool(self, **kwargs):
+                self.herramientas[kwargs["name"]] = kwargs
+
+            def register_hook(self, nombre, funcion):
+                pass
+
+        ctx = Ctx()
+        modulo.register(ctx)
+        respuesta = json.loads(
+            ctx.herramientas["goncloud_root_read"]["handler"]({"rootId": "root-x"})
+        )
+        self.assertNotIn(
+            "No module named", json.dumps(respuesta), "las herramientas responden"
+        )
+        self.assertIn("error", respuesta)
+
+
 if __name__ == "__main__":
     unittest.main()

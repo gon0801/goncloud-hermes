@@ -10,6 +10,7 @@ el kanban real de la PC viven en test_sistema_agentes_kanban_real.py.
 
 import importlib
 import sys
+from unittest import mock
 import tempfile
 import threading
 import time
@@ -101,6 +102,36 @@ class BuscarOCrear(BaseDeAdaptador):
         self.assertEqual(hallada.estado, "archivada")
         self.assertEqual(puerto.creaciones, [clave])
         self.assertEqual(len(self.filas_por_clave(clave)), 1)
+
+    @con_hermes_falso
+    def test_el_contexto_de_upstream_recibe_el_exit_con_la_excepcion(self):
+        """F4: cerrar(False) no tira la pila a mano: el write_txn de upstream
+        recibe __exit__ con la excepcion viva y hace su rollback y limpieza."""
+        import contextlib
+
+        from hermes_cli import kanban_db_connect
+
+        recibidas = []
+        original = kanban_db_connect.write_txn
+
+        @contextlib.contextmanager
+        def write_txn_espia(conn, **kwargs):
+            with original(conn, **kwargs):
+                try:
+                    yield conn
+                except Exception as exc:
+                    recibidas.append(exc)
+                    raise
+
+        puerto = self.adaptador()
+        clave = clave_de_tarjeta("root-1", "unit-c", 1)
+        with mock.patch.object(kanban_db_connect, "write_txn", write_txn_espia):
+            with self.assertRaises(RuntimeError), puerto.write_txn() as escritura:
+                escritura.buscar_o_crear(clave, SPEC)
+                raise RuntimeError("cayo el proceso antes del commit")
+        self.assertEqual(len(recibidas), 1, "upstream recibe __exit__ con la excepcion")
+        self.assertIsInstance(recibidas[0], RuntimeError)
+        self.assertIsNone(puerto.leer_estado(clave))
 
     @con_hermes_falso
     def test_una_excepcion_tras_la_creacion_no_deja_tarjeta_ni_cuenta(self):
