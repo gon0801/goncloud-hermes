@@ -179,6 +179,12 @@ CREATE TABLE IF NOT EXISTS bandeja (
   FOREIGN KEY (root_id, unit_id, attempt)
     REFERENCES intentos(root_id, unit_id, attempt)
 );
+CREATE TABLE IF NOT EXISTS restricciones (
+  root_id    TEXT NOT NULL REFERENCES raices(root_id),
+  revision   INTEGER NOT NULL CHECK (revision >= 2),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (root_id, revision)
+);
 """
 
 
@@ -403,35 +409,94 @@ class Store:
         self._insertar_excepcion(root_id, borrador, documento, ahora)
         return borrador["exceptionId"]
 
-    def _razon_de_autoridad(self, root_id: str, efecto: dict, ahora: str) -> str | None:
-        """Primera razón por la que el efecto no procede: forma, contrato o H."""
+    def _restriccion_vigente(self, root_id: str) -> str:
+        """El momento de la última restricción de la autoridad de la raíz: la
+        marca más nueva de `restricciones` o, sin ninguna, la apertura (nadie
+        reescribe authority_json después de abrir_raiz; una restricción futura
+        deja su marca ahí, como managed_root_authority en R)."""
+        fila = self._una_fila(
+            "SELECT MAX(created_at) AS ultima FROM restricciones WHERE root_id = ?",
+            (root_id,),
+        )
+        if fila is not None and fila["ultima"]:
+            return fila["ultima"]
+        return self._una_fila(
+            "SELECT created_at FROM raices WHERE root_id = ?", (root_id,)
+        )["created_at"]
+
+    def _concesiones_de(self, root_id: str) -> frozenset:
+        """Los effectId concedidos por el dueño (SUA-02 «Conceder un efecto»,
+        como effectGranted en R): una NECESITA_DAVID sobre ese efecto
+        respondida `autorizar` DESPUÉS de la última restricción. Concede ese
+        effectId y ningún otro; una respuesta anterior a la restricción no
+        vale, y una respuesta sin forma no concede (falla cerrado)."""
+        try:
+            restriccion = decidir.instante(self._restriccion_vigente(root_id))
+        except ValueError:
+            return frozenset()
+        concedidos = set()
+        for fila in self._conexion.execute(
+            "SELECT subject_json, response_json FROM excepciones"
+            " WHERE root_id = ? AND type = 'NECESITA_DAVID'"
+            " AND response_json IS NOT NULL",
+            (root_id,),
+        ):
+            try:
+                sujeto = json.loads(fila["subject_json"])
+                respuesta = json.loads(fila["response_json"])
+            except ValueError:
+                continue
+            if not isinstance(sujeto, dict) or not isinstance(respuesta, dict):
+                continue
+            if (
+                sujeto.get("kind") != "effect"
+                or respuesta.get("optionId") != "autorizar"
+            ):
+                continue
+            if not isinstance(sujeto.get("effectId"), str):
+                continue
+            try:
+                respondido = decidir.instante(respuesta["at"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if respondido > restriccion:
+                concedidos.add(sujeto["effectId"])
+        return frozenset(concedidos)
+
+    def _razon_de_autoridad(
+        self, root_id: str, effect_id: str, efecto: dict, ahora: str
+    ) -> str | None:
+        """Primera razón por la que el efecto no procede: forma, contrato o H.
+        Una concesión del dueño sobre ESTE effectId posterior a la última
+        restricción la calla: el efecto inicia igual (F8)."""
         autoridad_meta = json.loads(
             self._una_fila(
                 "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
             )["authority_json"]
         )
         negar = autoridad.interseccion(autoridad_meta, self.permisos_h, ahora)
-        return negar(efecto)
+        razon = negar(efecto)
+        if razon is None:
+            return None
+        if effect_id in self._concesiones_de(root_id):
+            return None
+        return razon
 
     OPCIONES_DE_AUTORIDAD = ["autorizar", "listo", "omitir", "cancelar"]
 
     def _revisar_permisos_al_reanudar(self, root_id: str, ahora: str) -> None:
         """Punto 2 de la intersección (I07): al reanudar, lo que va a correr se
         vuelve a contrastar con el contrato y con H; lo denegado levanta su
-        excepción y no recupera el permiso de inicio."""
-        autoridad_meta = json.loads(
-            self._una_fila(
-                "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
-            )["authority_json"]
-        )
-        negar = autoridad.interseccion(autoridad_meta, self.permisos_h, ahora)
+        excepción y no recupera el permiso de inicio. La concesión de un
+        efecto (F8) se respeta: la respuesta `autorizar` del dueño sigue
+        valiendo si ninguna restricción posterior la anuló."""
         for fila in self._conexion.execute(
             "SELECT effect_id, intent_json FROM efectos"
             " WHERE root_id = ? AND state = 'prepared'",
             (root_id,),
         ):
             intent = json.loads(fila["intent_json"])
-            razon = negar(intent)
+            razon = self._razon_de_autoridad(root_id, fila["effect_id"], intent, ahora)
             if razon is not None:
                 self._levantar_excepcion(
                     root_id,
@@ -444,6 +509,11 @@ class Store:
                     self.OPCIONES_DE_AUTORIDAD,
                     ahora,
                 )
+        autoridad_meta = json.loads(
+            self._una_fila(
+                "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
+            )["authority_json"]
+        )
         for fila in self._conexion.execute(
             "SELECT b.unit_id, b.attempt, i.assignment_json FROM bandeja b"
             " JOIN intentos i ON i.root_id = b.root_id AND i.unit_id = b.unit_id"
@@ -1204,7 +1274,7 @@ class Store:
                 return Conflicto("stale-control-epoch", {"actual": vigente["epoch"]})
             ahora = self.reloj()
             intent = json.loads(fila["intent_json"])
-            razon = self._razon_de_autoridad(root_id, intent, ahora)
+            razon = self._razon_de_autoridad(root_id, effect_id, intent, ahora)
             if razon is not None:
                 self._levantar_excepcion(
                     root_id,
@@ -2076,5 +2146,6 @@ class Store:
             "hechos": hechos,
             "politica": json.loads(raiz["politica_json"]),
             "permisos_h": self.permisos_h_datos,
+            "concesiones": sorted(self._concesiones_de(root_id)),
             "ahora": self.reloj(),
         }

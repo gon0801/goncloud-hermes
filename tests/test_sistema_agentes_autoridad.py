@@ -614,6 +614,125 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         self.assertIn("autoridad:modo-fuera-de-autoridad", causas)
 
 
+class ConcesionDeEfecto(TiendaCerrada, unittest.TestCase):
+    """F8 (SUA-02 «Conceder un efecto», R effectGranted): la respuesta
+    `autorizar` del dueño a la NECESITA_DAVID de un efecto concede ESE
+    effectId y ningún otro, mientras ninguna restricción posterior la anule.
+    La compuerta de arranque (iniciar_efecto) y la reanudación la respetan."""
+
+    def setUp(self):
+        self.directorio = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
+        self.instante_actual = "2026-10-17T11:00:00Z"
+        self.tienda = store.Store(
+            self.ruta,
+            reloj=lambda: self.instante_actual,
+            permisos_h=permisos(acciones=["read", "implement", "review"]),
+        )
+        self.addCleanup(self._verificar_cierre)
+        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(self.tienda.cerrar)
+        self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
+
+    @staticmethod
+    def hechos_nulos():
+        return {"principal": [], "asignaciones": [], "claims": [], "efectos": []}
+
+    def pregunta_del_efecto(self, effect_id="effect-push"):
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        return next(
+            e["exceptionId"]
+            for e in vista["excepciones"]
+            if e["type"] == "NECESITA_DAVID"
+            and e["subject"].get("kind") == "effect"
+            and e["subject"].get("effectId") == effect_id
+        )
+
+    def abiertas_por_efecto(self):
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        return [
+            e["subject"].get("effectId")
+            for e in vista["excepciones"]
+            if e["type"] == "NECESITA_DAVID"
+            and e["response"] is None
+            and e["subject"].get("kind") == "effect"
+        ]
+
+    def negar_y_autorizar(self, effect_id="effect-push"):
+        """Efecto negado -> pregunta -> respuesta autorizar del dueño."""
+        self.assertIsInstance(
+            self.tienda.aplicar(
+                RAIZ, decision(efectos=[efecto(effect_id)]), f"dec-{effect_id}"
+            ),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, effect_id, "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.codigo, "authority")
+        self.instante_actual = "2026-10-17T12:00:00Z"
+        self.assertIsInstance(
+            self.tienda.responder_excepcion(
+                RAIZ, self.pregunta_del_efecto(effect_id), "autorizar", ["david"]
+            ),
+            store.Ok,
+        )
+
+    def test_el_autorizar_del_dueno_concede_ese_efecto(self):
+        self.negar_y_autorizar()
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Ok)
+        self.assertEqual(recibo.valor.state, "started")
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        self.assertEqual([e["state"] for e in vista["efectos"]], ["started"])
+
+    def test_otro_effect_id_con_la_misma_accion_vuelve_a_preguntar_y_se_niega(self):
+        self.negar_y_autorizar()
+        self.assertIsInstance(
+            self.tienda.aplicar(RAIZ, decision(efectos=[efecto("push-otro")]), "dec-2"),
+            store.Ok,
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "push-otro", "start-2", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.codigo, "authority")
+        self.assertEqual(self.abiertas_por_efecto(), ["push-otro"])
+
+    def test_una_restriccion_posterior_a_la_respuesta_anula_la_concesion(self):
+        self.negar_y_autorizar()
+        self.instante_actual = "2026-10-17T13:00:00Z"
+        # La restricción futura: quien revise la autoridad de la raíz deja su
+        # marca (restricciones) junto al authority_json nuevo.
+        self.tienda._conexion.execute(
+            "INSERT INTO restricciones VALUES (?,?,?)",
+            (RAIZ, 2, "2026-10-17T13:30:00Z"),
+        )
+        recibo = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 1)
+        self.assertIsInstance(recibo, store.Conflicto)
+        self.assertEqual(recibo.codigo, "authority")
+
+    def test_la_reanudacion_respeta_la_concesion(self):
+        self.negar_y_autorizar()
+        self.assertIsInstance(
+            self.tienda.control(comando("pause", "cmd-01", 1)), store.Ok
+        )
+        recibo = self.tienda.control(comando("resume", "cmd-02", 2))
+        self.assertIsInstance(recibo, store.Ok)
+        self.assertEqual(self.abiertas_por_efecto(), [])
+        arrancado = self.tienda.iniciar_efecto(RAIZ, "effect-push", "start-1", 3)
+        self.assertIsInstance(arrancado, store.Ok)
+        self.assertEqual(arrancado.valor.state, "started")
+
+    def test_decidir_no_reabre_la_pregunta_mientras_la_concesion_siga_vigente(self):
+        self.negar_y_autorizar()
+        vista = self.tienda.leer_vista(RAIZ, self.hechos_nulos())
+        propuesta = decidir.decidir(vista)
+        preguntas = [
+            b["subject"].get("effectId")
+            for b in propuesta.decision["excepciones"]
+            if b["subject"].get("kind") == "effect"
+        ]
+        self.assertEqual(preguntas, [])
+
+
 class I07Reanudacion(unittest.TestCase):
     """Punto 2: al reanudar tras pause/resume."""
 

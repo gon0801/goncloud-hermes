@@ -847,7 +847,11 @@ def decidir(
     # producción: nada llama a Store.iniciar_efecto), con el MISMO sujeto que el gate
     # del store: {kind, effectId, cause}. Los dos usan la misma intersección (I07/F3),
     # así que la razón, la causa y el exceptionId coinciden y la excepción se
-    # deduplica: una sola pregunta aunque pregunten los dos.
+    # deduplica: una sola pregunta aunque pregunten los dos. La concesión del dueño
+    # (F8: `autorizar` sobre ese effectId después de la última restricción) llega en
+    # la vista: mientras siga vigente, ese efecto no vuelve a preguntarse aunque
+    # cambie la razón (el exceptionId con otra causa sería otro y reabriría).
+    concesiones = set(vista.get("concesiones") or ())
     for efecto in vista["efectos"]:
         if efecto["state"] == "uncertain":
             levantar(
@@ -855,6 +859,8 @@ def decidir(
                 {"kind": "effect", "effectId": efecto["effectId"]},
             )
         elif efecto["state"] == "prepared":
+            if efecto["effectId"] in concesiones:
+                continue
             razon = autoridad(efecto["intent"])
             if razon is not None:
                 levantar(
@@ -878,6 +884,8 @@ def decidir(
         if ya_visto:
             continue
         decision["efectos"].append(intent)
+        if intent["effectId"] in concesiones:
+            continue
         razon = autoridad(intent)
         if razon is not None:
             levantar(
