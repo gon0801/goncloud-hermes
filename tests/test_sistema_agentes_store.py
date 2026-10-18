@@ -1719,11 +1719,11 @@ class F18EscritorEnElStore(AlmacenDePrueba):
             )
             return borrador
 
-        def decidir_y_aplicar(tienda, hechos):
+        def decidir_y_aplicar(tienda, hechos, id_decision):
             vista = tienda.leer_vista(RAIZ, hechos)
             propuesta = decidir.decidir(vista)
             ligadas = [b["unitId"] for b in propuesta.decision["bindings"]]
-            respuesta = tienda.aplicar(RAIZ, propuesta.decision, "dec-A")
+            respuesta = tienda.aplicar(RAIZ, propuesta.decision, id_decision)
             return ligadas, respuesta, propuesta
 
         hechos = {
@@ -1808,7 +1808,7 @@ class F18EscritorEnElStore(AlmacenDePrueba):
 
         # La decisión de A difiere a (repo de B) y avanza con d, sin writer-held.
         tienda_a = self.tienda_de()
-        ligadas, respuesta, _propuesta = decidir_y_aplicar(tienda_a, hechos)
+        ligadas, respuesta, _propuesta = decidir_y_aplicar(tienda_a, hechos, "dec-A-1")
         self.assertEqual(ligadas, ["d"], "a queda para la siguiente; el resto avanza")
         self.assertIsInstance(respuesta, store.Ok, "sin writer-held")
 
@@ -1816,12 +1816,16 @@ class F18EscritorEnElStore(AlmacenDePrueba):
         self.assertIsInstance(
             tienda_b.aplicar(
                 "root-B",
-                decision(outcomes=[{"unitId": "x", "attempt": 1, "outcome": "failed"}]),
+                decision(
+                    outcomes=[{"unitId": "x", "attempt": 1, "outcome": "cancelled"}]
+                ),
                 "dec-B-fallida",
             ),
             store.Ok,
         )
-        ligadas2, respuesta2, _propuesta2 = decidir_y_aplicar(tienda_a, hechos)
+        ligadas2, respuesta2, _propuesta2 = decidir_y_aplicar(
+            tienda_a, hechos, "dec-A-2"
+        )
         self.assertEqual(ligadas2, ["a"], "libre el recurso, a se liga")
         self.assertIsInstance(respuesta2, store.Ok)
 

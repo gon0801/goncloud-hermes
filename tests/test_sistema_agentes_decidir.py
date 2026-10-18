@@ -65,7 +65,7 @@ def asignacion(etiqueta="a-1", destino=None):
     }
 
 
-def intento(unit_id, n, estado, destino=None):
+def intento(unit_id, n, estado, destino=None, assignment=None):
     return {
         "schema": "sistema-agentes.unidad.v1",
         "rootId": RAIZ,
@@ -73,7 +73,7 @@ def intento(unit_id, n, estado, destino=None):
         "unitId": unit_id,
         "attempt": n,
         "taskId": f"task-{unit_id}-{n}",
-        "assignment": asignacion(f"{unit_id}-{n}", destino),
+        "assignment": assignment or asignacion(f"{unit_id}-{n}", destino),
         "state": estado,
         "controlEpoch": 1,
     }
@@ -1103,7 +1103,9 @@ class F18EscritorTomado(unittest.TestCase):
     def test_un_reintento_con_recurso_ajeno_queda_para_la_siguiente(self):
         propuesta = decidir.decidir(
             self.vista_con_recurso_ajeno(
-                intentos=[intento("a", 1, "running", destino=asignacion_con_repo())],
+                intentos=[
+                    intento("a", 1, "running", assignment=asignacion_con_repo("a-1"))
+                ],
                 incidencias=[incidencia_de_reintento("a")],
                 contadores={"reintentos:a": 0},
             )
@@ -1125,7 +1127,9 @@ class F18EscritorTomado(unittest.TestCase):
         )
         propuesta = decidir.decidir(
             self.vista_con_recurso_ajeno(
-                intentos=[intento("a", 1, "reported", destino=asignacion_con_repo())],
+                intentos=[
+                    intento("a", 1, "reported", assignment=asignacion_con_repo("a-1"))
+                ],
                 resultados=[resultado("a", 1)],
                 excepciones=[
                     {
@@ -1156,7 +1160,9 @@ class F18EscritorTomado(unittest.TestCase):
         )
         propuesta = decidir.decidir(
             self.vista_con_recurso_ajeno(
-                intentos=[intento("a", 1, "reported", destino=asignacion_con_repo())],
+                intentos=[
+                    intento("a", 1, "reported", assignment=asignacion_con_repo("a-1"))
+                ],
                 resultados=[resultado("a", 1)],
                 excepciones=[
                     {
@@ -1186,9 +1192,7 @@ class F18EscritorTomado(unittest.TestCase):
             propuesta.decision["bindings"], [], "no liga con el recurso ajeno"
         )
         self.assertEqual(propuesta.decision["respuestas_aplicadas"], [])
-        self.assertIn(
-            ("relay", ()), necesitaciones(propuesta), "sigue pidiendo el relevo"
-        )
+        self.assertIn("relay", necesitaciones(propuesta), "sigue pidiendo el relevo")
 
 
 if __name__ == "__main__":
