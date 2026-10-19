@@ -44,7 +44,11 @@ Durably enforced by the database graph:
   suggestion" — and a `transform_llm_output` hook appends a `JEV: ...` footer
   to that same turn's reply, once per turn and switchable off with the
   plugin config key `jev_auto_visible` or the `GONCLOUD_JEV_AUTO_VISIBLE`
-  variable (on by default). The router is called the way its own `mcp.json`
+  variable (on by default, same `false`/`0`/`no`/`off` parsing for both).
+  The request text leaves the machine redacted through the router's own
+  `subscriptions/redaction.redact_text` filter and capped at 4,000
+  characters (work data may reach TypeSafe; credentials never do). The
+  router is called the way its own `mcp.json`
   does (its `suggest` function from the pinned, unpatched installed plugin,
   in a subprocess via `uv run --project`, request text over stdin, 8 s cap,
   fail-open with a bounded reason), `JEV_TYPESAFE_API_KEY` resolves through

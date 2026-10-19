@@ -18,11 +18,15 @@ un JSON minimo: sugerencia, decision y nada mas.
 
 La llave JEV_TYPESAFE_API_KEY se resuelve en tiempo de ejecucion como hace
 el parche de jev (agent.secret_scope.get_secret con os.environ de respaldo)
-y SOLO viaja al entorno del hijo: jamas a argv, logs ni registro. El turno es
-fail-open: si el router no responde dentro de TOPE_S, no esta instalado o
-falla, sigue sin el y el contexto lo dice. El registro JSONL en
-<home de claw>/jev/consultas.jsonl deja una linea por consulta sin el texto
-del mensaje (a lo mas su largo y un sha256 corto) y sin la llave.
+y SOLO viaja al entorno del hijo: jamas a argv, logs ni registro. El texto
+que sale hacia TypeSafe va REDACTADO con subscriptions/redaction.redact_text
+(el mismo filtro de evidencias del plugin) y acotado a TOPE_MENSAJE
+caracteres: David autorizo mandar datos del trabajo a TypeSafe, nunca
+credenciales. El turno es fail-open: si el router no responde dentro de
+TOPE_S, no esta instalado o falla, sigue sin el y el contexto lo dice. El
+registro JSONL en <home de claw>/jev/consultas.jsonl deja una linea por
+consulta sin el texto del mensaje (a lo mas su largo y un sha256 corto) y
+sin la llave.
 """
 
 from __future__ import annotations
@@ -39,9 +43,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from .subscriptions.redaction import redact_text
+except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
+    from subscriptions.redaction import redact_text
+
 DIRECTOR = "claw"
 PLATAFORMAS = frozenset({"telegram", "cli"})
 TOPE_S = 8.0
+TOPE_MENSAJE = 4000
 ROUTER = "jev-skill-router-mcp"
 VAR_VISIBLE = "GONCLOUD_JEV_AUTO_VISIBLE"
 CLAVE_VISIBLE = "jev_auto_visible"
@@ -159,13 +169,24 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
             "ms": int((time.monotonic() - inicio) * 1000),
         }
 
-    raiz = (Path(hogar) if hogar else _hogar_perfil()) / "plugins" / ROUTER
+    # El home se resuelve UNA vez: con el van la ubicacion del plugin y el
+    # HERMES_HOME/JEV_SKILLS_ROOT del hijo, tambien sin hogar inyectado.
+    casa = Path(hogar) if hogar else _hogar_perfil()
+    raiz = casa / "plugins" / ROUTER
     if not (raiz / "pyproject.toml").is_file():
         return fallo("router no instalado")
     clave = _clave_typesafe()
-    if not clave and not os.environ.get("JEV_SKILL_ADAPTER_URL"):
-        return fallo("sin JEV_TYPESAFE_API_KEY")
-    comando, env = _comando_y_ambiente(raiz, hogar, clave)
+    url_adapter = os.environ.get("JEV_SKILL_ADAPTER_URL", "").strip()
+    token_adapter = os.environ.get("JEV_SKILL_ADAPTER_TOKEN", "").strip()
+    if not clave:
+        if url_adapter and not token_adapter:
+            return fallo("sin JEV_SKILL_ADAPTER_TOKEN")
+        if not url_adapter:
+            return fallo("sin JEV_TYPESAFE_API_KEY")
+    comando, env = _comando_y_ambiente(raiz, casa, clave)
+    # Lo que sale a TypeSafe: redactado con el mismo filtro del router y
+    # acotado; David autorizo datos del trabajo, nunca credenciales.
+    pedido = redact_text(texto)[:TOPE_MENSAJE]
     try:
         proceso = _popen(
             comando,
@@ -180,7 +201,7 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
         return fallo(_acotar(exc))
     try:
         fuera, errores = proceso.communicate(
-            input=texto.encode("utf-8"), timeout=tope_s
+            input=pedido.encode("utf-8"), timeout=tope_s
         )
     except subprocess.TimeoutExpired:
         _matar_arbol(proceso)
@@ -251,7 +272,8 @@ class JevAuto:
         self.hogar = hogar
         self.corredor = corredor or _ejecutar_router
         self.visible = visible  # None: decide la variable de entorno por turno
-        self._pendiente: dict = {}
+        self._pendiente: dict = {}  # (session_id, turn_id) -> veredicto
+        self._pieados: dict = {}  # turnos que ya llevaron el pie
 
     def pre_llm_call(self, **kwargs):
         """UNA consulta por turno de David al director, en chat con persona."""
@@ -263,13 +285,17 @@ class JevAuto:
         mensaje = kwargs.get("user_message")
         if not isinstance(mensaje, str) or not mensaje.strip():
             return None
+        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
+        previo = self._pendiente.get(llave)
+        if previo is not None:
+            # F3: una sola consulta por turno; el mismo contexto vuelve sin
+            # otro subproceso ni otra linea de registro.
+            return {"context": _linea_contexto(previo)}
         texto = mensaje.strip()
         veredicto = self.consultar(texto)
         self._registrar(veredicto, texto, kwargs, plataforma)
-        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
         self._pendiente[llave] = veredicto
-        if len(self._pendiente) > 16:
-            self._pendiente.pop(next(iter(self._pendiente)))
+        self._podar()
         return {"context": _linea_contexto(veredicto)}
 
     def transform_llm_output(self, **kwargs):
@@ -277,8 +303,8 @@ class JevAuto:
         if not self._pie_encendido():
             return None
         llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
-        veredicto = self._pendiente.pop(llave, None)
-        if veredicto is None:
+        veredicto = self._pendiente.get(llave)
+        if veredicto is None or llave in self._pieados:
             return None
         respuesta = kwargs.get("response_text")
         if not isinstance(respuesta, str) or not respuesta:
@@ -286,6 +312,8 @@ class JevAuto:
         pie = _pie_visible(veredicto)
         if respuesta.rstrip().endswith(pie):
             return None
+        self._pieados[llave] = True
+        self._podar()
         return respuesta.rstrip() + "\n\n" + pie
 
     def consultar(self, texto: str) -> dict:
@@ -311,6 +339,13 @@ class JevAuto:
         if isinstance(self.visible, bool):
             return self.visible
         return os.environ.get(VAR_VISIBLE, "").strip().lower() not in APAGADORES
+
+    def _podar(self) -> None:
+        """Los dos libros acotados: memoria plana, sin fuga por turnos largos."""
+        while len(self._pendiente) > 16:
+            self._pendiente.pop(next(iter(self._pendiente)))
+        while len(self._pieados) > 16:
+            self._pieados.pop(next(iter(self._pieados)))
 
     def _registrar(self, veredicto: dict, texto: str, kwargs: dict, plataforma: str):
         """Una linea JSONL por consulta: sin mensaje, sin llave, sin excusas."""
@@ -340,12 +375,19 @@ class JevAuto:
             pass  # el registro jamas rompe el turno
 
 
+def _visible_de_llave(bruto) -> bool:
+    """El mismo parseo de APAGADORES, para la llave de config del plugin."""
+    if isinstance(bruto, str):
+        return bruto.strip().lower() not in APAGADORES
+    return bool(bruto)
+
+
 def registrar(ctx):
     """Registra los dos ganchos con el perfil del contexto; devuelve la instancia."""
     config = getattr(ctx, "plugin_config", None)
     visible = None
     if isinstance(config, dict) and CLAVE_VISIBLE in config:
-        visible = bool(config[CLAVE_VISIBLE])
+        visible = _visible_de_llave(config[CLAVE_VISIBLE])
     auto = JevAuto(perfil=str(getattr(ctx, "profile_name", "") or ""), visible=visible)
     ctx.register_hook("pre_llm_call", auto.pre_llm_call)
     ctx.register_hook("transform_llm_output", auto.transform_llm_output)

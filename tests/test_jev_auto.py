@@ -31,6 +31,8 @@ import yaml
 RAIZ = Path(__file__).resolve().parents[1]
 PLUGIN = RAIZ / "plugins/goncloud-team"
 sys.path.insert(0, str(RAIZ / "tests"))
+if str(PLUGIN) not in sys.path:
+    sys.path.insert(0, str(PLUGIN))
 
 import hermes_falso  # noqa: E402
 
@@ -153,6 +155,48 @@ class PuertaDelTurnoTests(Base):
         auto = self.auto()
         self.assertIsNone(auto.pre_llm_call(**turno(platform="CRON")))
         self.assertIsNotNone(auto.pre_llm_call(**turno(platform=" Telegram ")))
+
+
+class UnaConsultaPorTurnoTests(Base):
+    """F3: si el turno ya tiene veredicto, no se vuelve a consultar."""
+
+    def test_dos_invocaciones_del_gancho_en_el_mismo_turno_consultan_una(self):
+        auto = self.auto()
+        primera = auto.pre_llm_call(**turno())
+        segunda = auto.pre_llm_call(**turno())
+        self.assertEqual(primera, segunda)
+        self.assertEqual(len(self.llamadas), 1)
+        self.assertEqual(len(self.registro()), 1)
+
+    def test_tambien_con_el_pie_ya_entregado(self):
+        auto = self.auto()
+        auto.pre_llm_call(**turno())
+        auto.transform_llm_output(
+            session_id="s1",
+            turn_id="t1",
+            platform="telegram",
+            response_text="listo",
+        )
+        de_nuevo = auto.pre_llm_call(**turno())
+        self.assertIn("JEV skill_select: web-navigation", de_nuevo["context"])
+        self.assertEqual(len(self.llamadas), 1)
+        self.assertEqual(len(self.registro()), 1)
+
+    def test_otro_turno_si_consulta_de_nuevo(self):
+        auto = self.auto()
+        auto.pre_llm_call(**turno())
+        auto.pre_llm_call(**turno(turn_id="t2"))
+        self.assertEqual(len(self.llamadas), 2)
+
+    def test_un_turno_fallido_tambien_cuenta_como_consultado(self):
+        # El fail-open no convierte el turno en reintentos: el mismo motivo
+        # vuelve sin otro subproceso ni otra linea de registro.
+        auto = self.auto(corredor=self.corredor_fallo("vencio el tope de 8 s"))
+        primera = auto.pre_llm_call(**turno())
+        segunda = auto.pre_llm_call(**turno())
+        self.assertEqual(primera, segunda)
+        self.assertEqual(len(self.llamadas), 1)
+        self.assertEqual(len(self.registro()), 1)
 
 
 class VeredictosTests(Base):
@@ -361,6 +405,31 @@ class PieVisibleTests(Base):
             encendido.pre_llm_call(**turno(turn_id="t5"))
             self.assertIsNotNone(self.transformar(encendido, turn_id="t5"))
 
+    def test_la_llave_de_config_acepta_texto_apagador(self):
+        # F4: "false"/"0"/"no"/"off" apagan igual que el parseo de la variable.
+        for valor in ("false", "0", "no", "off", " Off ", False):
+            with self.subTest(valor=valor):
+                auto = self.modulo.registrar(
+                    _CtxFalso(config={"jev_auto_visible": valor})
+                )
+                auto.hogar = self.hogar
+                auto.corredor = self.corredor_ok
+                os.environ.pop("GONCLOUD_JEV_AUTO_VISIBLE", None)
+                self.assertIsNotNone(auto.pre_llm_call(**turno(turn_id="t6")))
+                self.assertIsNone(self.transformar(auto, turn_id="t6"), valor)
+
+    def test_la_llave_de_config_acepta_texto_encendedor(self):
+        for valor in ("true", "1", "si", "ON", True):
+            with self.subTest(valor=valor):
+                auto = self.modulo.registrar(
+                    _CtxFalso(config={"jev_auto_visible": valor})
+                )
+                auto.hogar = self.hogar
+                auto.corredor = self.corredor_ok
+                with mock.patch.dict(os.environ, {"GONCLOUD_JEV_AUTO_VISIBLE": "0"}):
+                    auto.pre_llm_call(**turno(turn_id="t7"))
+                    self.assertIsNotNone(self.transformar(auto, turn_id="t7"), valor)
+
 
 class _CtxFalso:
     def __init__(self, perfil="claw", config=None):
@@ -502,12 +571,78 @@ class CorredorRealTests(Base):
         self.assertEqual(veredicto["motivo"], "sin JEV_TYPESAFE_API_KEY")
 
     def test_en_modo_adapter_la_llave_no_es_obligatoria(self):
-        limpio = {"JEV_TYPESAFE_API_KEY": "", "JEV_SKILL_ADAPTER_URL": "http://lan"}
+        limpio = {
+            "JEV_TYPESAFE_API_KEY": "",
+            "JEV_SKILL_ADAPTER_URL": "http://lan",
+            "JEV_SKILL_ADAPTER_TOKEN": "tok-adapter",
+        }
         with mock.patch.dict(os.environ, limpio):
             veredicto = self.correr()
         self.assertEqual(veredicto["estado"], "ok")
         env = self.ultimo_proceso().kwargs["env"]
         self.assertNotIn("JEV_TYPESAFE_API_KEY", env)
+
+    def test_adapter_sin_token_es_fallo_sin_subproceso(self):
+        class PopenQueNoDebeArrancar(self.PopenFalso):
+            def __init__(self, args, **kwargs):
+                raise AssertionError("adapter sin token no debe arrancar")
+
+        medio = {
+            "JEV_TYPESAFE_API_KEY": "",
+            "JEV_SKILL_ADAPTER_URL": "http://lan",
+            "JEV_SKILL_ADAPTER_TOKEN": "",
+        }
+        with mock.patch.dict(os.environ, medio):
+            os.environ.pop("JEV_SKILL_ADAPTER_TOKEN", None)
+            veredicto = self.correr(popen=PopenQueNoDebeArrancar)
+        self.assertEqual(veredicto["estado"], "fallo")
+        self.assertEqual(veredicto["motivo"], "sin JEV_SKILL_ADAPTER_TOKEN")
+
+    def test_produccion_sin_hogar_resuelve_el_home_al_hijo(self):
+        # La via viva de registrar(): JevAuto sin hogar y corredor real; el
+        # home RESUELTO (no el crudo) debe llegar como HERMES_HOME y
+        # JEV_SKILLS_ROOT al entorno del hijo, aunque el gateway no lo pase.
+        hechos = []
+
+        def fabrica(*a, **k):
+            proceso = self.PopenFalso(*a, **k)
+            hechos.append(proceso)
+            return proceso
+
+        with mock.patch.dict(sys.modules, {"hermes_constants": None}):
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(self.hogar)}):
+                auto = self.modulo.registrar(_CtxFalso())
+                with mock.patch.object(self.modulo, "_popen", fabrica):
+                    veredicto = auto.consultar(MENSAJE)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertTrue(hechos)
+        self._ultimo = hechos[-1]
+        proceso = self.ultimo_proceso()
+        env = proceso.kwargs["env"]
+        self.assertEqual(env["HERMES_HOME"], str(self.hogar))
+        self.assertEqual(env["JEV_SKILLS_ROOT"], str(self.hogar / "skills"))
+        self.assertEqual(proceso.kwargs["cwd"], str(self.raiz_router))
+
+    def test_el_mensaje_sale_redactado_al_hijo(self):
+        secreto = "sk-live-abcdefghijklmnop1234567890"
+        texto = f"configura el panel con la llave {secreto} y sigue"
+        self.correr(texto)
+        proceso = self.ultimo_proceso()
+        entrada = proceso.entrada.decode("utf-8")
+        self.assertNotIn(secreto, entrada)
+        self.assertIn("[redacted]", entrada)
+        self.assertNotIn(secreto, " ".join(proceso.args))
+
+    def test_la_llave_del_entorno_tampoco_sale_en_el_stdin(self):
+        texto = f"mi llave es {LLAVE_ENV}, sigue con el panel"
+        self.correr(texto)
+        self.assertNotIn(LLAVE_ENV, self.ultimo_proceso().entrada.decode("utf-8"))
+
+    def test_el_mensaje_largo_queda_acotado(self):
+        self.correr("x" * 6000)
+        self.assertLessEqual(len(self.ultimo_proceso().entrada), 4000)
+        self.correr("x" * 3999)
+        self.assertEqual(len(self.ultimo_proceso().entrada), 3999)
 
     def test_el_tope_mata_el_arbol_y_da_el_motivo(self):
         class PopenLento(self.PopenFalso):
