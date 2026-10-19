@@ -20,8 +20,36 @@ from . import (
     health_for_process_error,
 )
 
-#: Autonomous session mode that still keeps the CLI's sandbox intact.
+#: Autonomous session mode that still keeps the CLI's sandbox intact. dontAsk
+#: auto-denies every call that would otherwise prompt (Claude Code permission
+#: modes), so a role's tools must be pre-approved with --allowedTools or no
+#: stage could ever edit a file or run a command.
 _PERMISSION_MODE = "dontAsk"
+
+#: Roles that mutate the workspace: the implementer (initial and corrective
+#: runs; the corrective loop in CORRECTIVE_STAGES, workflow.py, writes only
+#: through its implementer turn) and the delivery stage. Adversary also
+#: writes: roles/adversary.md requires its evidence and reproductions to be
+#: saved into the assignment's scratch, which dontAsk would deny without
+#: Write/Edit. The tool list narrows each role's normal path; it is not
+#: isolation -- Bash can still write -- and the workspace fingerprint is
+#: only checked for scout and ingenieria (local_orchestrator's
+#: _READ_ONLY_STAGES).
+_WRITING_ROLES = frozenset({"implementer", "entrega", "adversary"})
+
+#: Bare tool names in Claude Code permission-rule syntax allow every use of
+#: the tool. One comma-joined argv value: the flag also accepts space-
+#: separated names, but as a variadic option a single argument cannot swallow
+#: the flags that follow it.
+_WRITING_TOOLS = ("Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "Bash")
+_READ_ONLY_TOOLS = ("Read", "Glob", "Grep", "Bash")
+
+
+def allowed_tools_for(role: str) -> str:
+    """The narrowest --allowedTools list that lets one stage role work."""
+    tools = _WRITING_TOOLS if role in _WRITING_ROLES else _READ_ONLY_TOOLS
+    return ",".join(tools)
+
 
 _SUCCESS_SUBTYPES = {"success", "success_streamcomplete", "streamcomplete"}
 
@@ -108,6 +136,8 @@ class ClaudeAdapter(SubscriptionAdapter):
             "stream-json",
             "--permission-mode",
             _PERMISSION_MODE,
+            "--allowedTools",
+            allowed_tools_for(request.role),
             "--model",
             route.model,
             *(

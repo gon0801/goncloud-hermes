@@ -88,12 +88,17 @@ def request_json(
     *,
     headers: Mapping[str, str],
     payload: Any = None,
-    timeout: float = 120,
+    timeout: float | None = 120,
 ) -> tuple[int, str]:
-    """One JSON request with a total deadline and bounded process-tree cleanup."""
-    timeout = min(float(timeout), 300)
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("HTTP timeout must be a positive finite number")
+    """One JSON request with a total deadline and bounded process-tree cleanup.
+
+    ``timeout=None`` is a stage request without a deadline: the endpoint has as
+    long as it needs. Probes always pass their bounded window.
+    """
+    if timeout is not None:
+        timeout = float(timeout)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("HTTP timeout must be a positive finite number")
     config = json.dumps(
         {
             "method": method,

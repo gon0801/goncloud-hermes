@@ -43,6 +43,25 @@ Durably enforced by the database graph:
   substituting native `kanban_complete` for the required durable review tool,
   and blocks a reviewer completion whose task id it cannot resolve at all;
   review comments are audit records, never completion authorization.
+- a `pre_llm_call` hook consults the JEV skill router automatically on every
+  owner message the claw director receives over telegram or cli (never cron,
+  bot-chat, kanban or subagents): the suggested skill rides the turn context
+  as a `JEV skill_select: ...` line — the old rule "consult before loading a
+  skill" becomes "the platform already consulted: use the context's
+  suggestion" — and a `transform_llm_output` hook appends a `JEV: ...` footer
+  to that same turn's reply, once per turn and switchable off with the
+  plugin config key `jev_auto_visible` or the `GONCLOUD_JEV_AUTO_VISIBLE`
+  variable (on by default, same `false`/`0`/`no`/`off` parsing for both).
+  The request text leaves the machine redacted through the router's own
+  `subscriptions/redaction.redact_text` filter and capped at 4,000
+  characters (work data may reach TypeSafe; credentials never do). The
+  router is called the way its own `mcp.json`
+  does (its `suggest` function from the pinned, unpatched installed plugin,
+  in a subprocess via `uv run --project`, request text over stdin, 8 s cap,
+  fail-open with a bounded reason), `JEV_TYPESAFE_API_KEY` resolves through
+  `agent.secret_scope.get_secret` and only ever travels to the child
+  environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
+  with no message text (just its length and a short sha256) and no key.
 
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers
 cannot supply a role argument. This is a trusted-single-user application guard,
