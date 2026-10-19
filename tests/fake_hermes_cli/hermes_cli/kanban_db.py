@@ -437,9 +437,15 @@ def claim_task(conn, task_id, *, claimer, expected_run_id=None):
 
 
 def archive_task(conn, task_id, *, signal_fn=None):
-    """Referencia :3884, reducida a lo observable para el doble: deja archived."""
+    """Referencia :3813, reducida a lo observable para el doble: deja archived.
+
+    Fiel a la referencia en lo transaccional: abre su PROPIO write_txn sin
+    allow_nested (la referencia 0.22 no lo hace opt-in; anidada dentro de un
+    write_txn externo lanza "already inside a transaction"), una transaccion
+    por tarea.
+    """
     del signal_fn
-    with write_txn(conn, allow_nested=True):
+    with write_txn(conn):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'archived' WHERE id = ? AND status != 'archived'",
             (task_id,),
@@ -451,6 +457,7 @@ def archive_task(conn, task_id, *, signal_fn=None):
 
 
 def add_comment(conn, task_id, author, body):
+    # Referencia :1698: primitiva de composicion con allow_nested=True.
     with write_txn(conn, allow_nested=True):
         conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at)"

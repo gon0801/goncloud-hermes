@@ -63,6 +63,15 @@ _CLOSEABLE_ROOT_STATUSES = frozenset(
     {"todo", "ready", "scheduled", "blocked", "triage"}
 )
 
+#: Durable driver outcomes that prove the driver process stopped. "paused"
+#: and "blocked" are its own checkpoints; "waiting" is a stage whose parents
+#: never went ready (resume wrote it and quit, local_orchestrator ~880) and
+#: "error" the bounded result of a failed driver (the bootstrap catch writes
+#: it, ~141). Live review F5: waiting and error jam the repository exactly
+#: like paused (root not done, start mutex holds, close refused), so they
+#: count as stop evidence for the hint and the close alike.
+_STOPPED_DRIVER_OUTCOMES = frozenset({"paused", "blocked", "waiting", "error"})
+
 #: Marker of the durable close receipt on the director root; a second close
 #: recognizes it instead of writing another comment.
 _CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
@@ -181,19 +190,20 @@ def close_hint(status_output, driver_outcome, *, driver_live=False):
     Nothing puts a stage in "running" while the driver works: the router
     owns a lease in the subscription store and the result file appears only
     when the driver finishes. So a close is announced only with a durable
-    signal that the driver is gone: the driver's own paused or blocked
-    outcome, no live lease, and a root status that is closeable at all (a
-    done root was delivered; an archived one is already closed; a running
-    or unknown one is never announced).
+    signal that the driver is gone: one of its stopped outcomes (paused,
+    blocked, waiting or error), no live lease, and a root status that is
+    closeable at all (a done root was delivered; an archived one is already
+    closed; a running or unknown one is never announced).
     """
     root_status = (status_output.get("root") or {}).get("status")
     if root_status not in _CLOSEABLE_ROOT_STATUSES:
         return None
-    if driver_outcome not in {"paused", "blocked"} or driver_live:
+    if driver_outcome not in _STOPPED_DRIVER_OUTCOMES or driver_live:
         return None
     return (
-        "paused or blocked chain: close it with goncloud_local_close "
-        "{workflow_id, reason} to free the repository for a new chain"
+        "driver stopped (paused, blocked, waiting or error): close it with "
+        "goncloud_local_close {workflow_id, reason} to free the repository "
+        "for a new chain"
     )
 
 
@@ -560,18 +570,21 @@ class LocalOrchestrator:
             return {"workflow_id": workflow_id, "outcome": "error"}
 
     def close(self, workflow_id, *, reason, store=None, home=None):
-        """Close a paused or blocked chain and free its repository.
+        """Close a chain the driver already stopped and free its repository.
 
         Archives the director root and every stage that is not done with the
         native Kanban archive (done stages stay as evidence), and leaves the
         reason as a comment on the root. A chain whose driver may still be
         working is refused: closing requires the driver's own durable
-        outcome paused or blocked (the result file it writes when it stops)
-        plus no live subscription lease, and no stage the kernel shows
-        running. A root stuck in "triage" without its stage graph never had
-        a driver, so it closes without one. The receipt is derived from the
-        durable post-close state, so closing an already-closed chain returns
-        the same receipt without writing anything twice.
+        stopped outcome (paused, blocked, waiting or error — the result file
+        it writes when it quits) plus no live subscription lease, and no
+        stage the kernel shows running. A root stuck in "triage" without its
+        stage graph never had a driver, so it closes without one. The native
+        writes run one transaction per task, outside any transaction of this
+        close (F6: the reference write_txn refuses nesting); the receipt is
+        derived from the durable post-close state, so closing an
+        already-closed chain returns the same receipt without writing
+        anything twice.
         """
         check_workflow_id(workflow_id)
         if type(reason) is not str or not reason.strip():
@@ -603,17 +616,23 @@ class LocalOrchestrator:
             sort_keys=True,
             separators=(",", ":"),
         )
-        with service._connect() as conn, write_txn(conn):
+        # No write_txn propio: la referencia 0.22 falla siempre anidada
+        # (archive_task abre write_txn sin allow_nested y el write_txn real
+        # lanza "already inside a transaction"). Los guards se leen primero y
+        # cada escritura nativa (un archive_task por tarea, el comentario al
+        # final) abre y confirma su propia transaccion; la idempotencia y el
+        # recibo salen del estado durable leido despues.
+        with service._connect() as conn:
             root = service._require_workflow_root(conn, workflow_id)
             if root.status == "running":
                 raise WorkflowError(
                     "workflow is running; goncloud_local_close only closes "
-                    "paused or blocked chains"
+                    "chains the driver already stopped"
                 )
             if root.status == "done":
                 raise WorkflowError(
                     "workflow already delivered; goncloud_local_close only "
-                    "closes paused or blocked chains"
+                    "closes chains the driver already stopped"
                 )
             if root.status not in _CLOSEABLE_ROOT_STATUSES | {"archived"}:
                 raise WorkflowError(
@@ -625,12 +644,12 @@ class LocalOrchestrator:
             ):
                 raise WorkflowError(
                     "workflow is running; goncloud_local_close only closes "
-                    "paused or blocked chains"
+                    "chains the driver already stopped"
                 )
             if store is not None and store.active_leases(workflow_id):
                 raise WorkflowError(
                     "workflow is running; goncloud_local_close only closes "
-                    "paused or blocked chains"
+                    "chains the driver already stopped"
                 )
             if root.status != "archived" and stages:
                 # The driver's result file is the marker it writes when it
@@ -639,11 +658,11 @@ class LocalOrchestrator:
                 outcome = (self.driver_result(workflow_id, home=home) or {}).get(
                     "outcome"
                 )
-                if outcome not in {"paused", "blocked"}:
+                if outcome not in _STOPPED_DRIVER_OUTCOMES:
                     raise WorkflowError(
-                        "no durable driver outcome paused or blocked; the "
-                        "driver may still be running; goncloud_local_close "
-                        "refuses"
+                        "no durable driver outcome paused, blocked, waiting "
+                        "or error; the driver may still be running; "
+                        "goncloud_local_close refuses"
                     )
             members = [(workflow_id, root.status)] + [
                 (task_id, service._require_task(conn, task_id).status)
@@ -651,7 +670,9 @@ class LocalOrchestrator:
             ]
             for member_id, member_status in members:
                 # Done stages are the chain's evidence: they stay exactly as
-                # they are; archived ones are already closed.
+                # they are; archived ones are already closed — the durable
+                # status is what makes a re-run a no-op (F6: one native
+                # transaction per task, never under an outer one).
                 if member_status in {"archived", "done"}:
                     continue
                 if not archive_task(conn, member_id):
@@ -694,8 +715,9 @@ class LocalOrchestrator:
     def close_hint(self, workflow_id, *, store=None, home=None):
         """Whether goncloud_local_status announces the close, with evidence.
 
-        Same contract the close enforces: the driver's durable paused or
-        blocked outcome, no live subscription lease, and a closeable root.
+        Same contract the close enforces: one of the driver's durable
+        stopped outcomes (paused, blocked, waiting or error), no live
+        subscription lease, and a closeable root.
         A chain whose status cannot even be read (unknown id, or the triage
         root of a failed decomposition) has no driver outcome to speak of,
         so it never gets a hint.

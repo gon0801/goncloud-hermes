@@ -108,9 +108,17 @@ def _transport_handlers(ctx):
             driver = getattr(orchestrator, "driver_result", None)
             if driver is not None:
                 result["driver"] = driver(workflow_id)
-            # The hint enforces the same evidence the close does: the
-            # driver's durable stopped outcome and no live lease.
-            result["close_hint"] = orchestrator.close_hint(workflow_id)
+            # The hint is additive (live review F4): its own failure — it
+            # opens the subscription store, which can be locked or
+            # unreadable — must never turn the status read into
+            # {"error": ...}; like driver_result it is read defensively and
+            # degrades to None.
+            hint = getattr(orchestrator, "close_hint", None)
+            if hint is not None:
+                try:
+                    result["close_hint"] = hint(workflow_id)
+                except Exception:
+                    result["close_hint"] = None
             return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)

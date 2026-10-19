@@ -323,7 +323,10 @@ class SubscriptionStateStore:
         vivas = []
         for row in rows:
             expiry = _parse_iso(row["expires_at"])
-            if expiry is not None and expiry > ahora:
+            # An unreadable expiry counts as live, like claim_stage: this is
+            # the side that authorizes archiving a chain, so it fails closed
+            # (live review F7).
+            if expiry is None or expiry > ahora:
                 vivas.append(
                     {
                         "stage_id": row["stage_id"],

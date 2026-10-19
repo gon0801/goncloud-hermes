@@ -1786,6 +1786,23 @@ class StateStoreTests(RouterTestCase):
         )
         self.assertEqual(store.latest_success("wf", "st")["detail"], "done")
 
+    def test_a_lease_with_an_unreadable_expiry_counts_as_live(self):
+        # Live review F7: claim_stage treats an unparsable expires_at as a
+        # live lease (it refuses to take the stage over); active_leases —
+        # the side that authorizes the close — must agree instead of
+        # dropping the lease and failing open.
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf", "st", "owner", 60))
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_stage_leases SET expires_at = 'not-a-date'"
+            )
+            conn.commit()
+        self.assertEqual(
+            [item["owner"] for item in store.active_leases("wf")], ["owner"]
+        )
+        self.assertFalse(store.claim_stage("wf", "st", "other", 60))
+
     def test_expired_lease_is_recoverable_and_wrong_owner_cannot_release(self):
         store = SubscriptionStateStore(self.db_path)
         self.assertTrue(store.claim_stage("wf", "st", "old", 60))
