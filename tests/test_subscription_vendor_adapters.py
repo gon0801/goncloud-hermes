@@ -1460,6 +1460,56 @@ class FailureEvidenceDetailTests(unittest.TestCase):
         self.assertNotIn("sk-fixture-grok-key-000123", detail)
         self.assertNotIn("sk-fixture-grok-key-000123", repr(result))
 
+    def test_prompt_echo_across_the_tail_window_is_redacted_before_truncation(self):
+        # A CLI echoing an assignment longer than the detail window leaves only
+        # the prompt's tail inside the window: redaction must run on the FULL
+        # channel, or that suffix reaches the durable detail and status.
+        prompt = "Assign the fixture deadline. " * 143  # ~4000 chars
+        marker = "APIConnectionError"
+        runner = ProbeAwareRunner(
+            stderr=(
+                f"{prompt}\n"
+                f"vendor died: {marker} while reading the assignment\n" + "pad " * 200
+            ),
+            returncode=1,
+        )
+        windows = [prompt[i : i + 40] for i in range(0, len(prompt) - 40, 97)]
+
+        adapter_result = GrokAdapter(runner=runner).invoke(
+            request(self.workspace, prompt=prompt), route_for("grok", "grok-4.6")
+        )
+        router = SubscriptionRouter(
+            adapters={"grok": GrokAdapter(runner=runner)},
+            db_path=self.workspace / "echo.db",
+            routing_source={
+                "profile_names": {"main": "claw"},
+                "profile_inheritance": {},
+                "chains": {
+                    "claw": [
+                        "opencode-go/deepseek-v4.1-flash (off)",
+                        "anthropic/claude-sonnet-5",
+                        "meta/muse-spark-1.3 (max)",
+                        "xai/grok-4.6",
+                    ]
+                },
+            },
+        )
+        router.run(
+            request(self.workspace, prompt=prompt),
+            [route_for("grok", "grok-4.6", slot=0)],
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+        status = router.status("claw", workflow_id="wf-5", stage_id="stage-verifier")
+
+        self.assertFalse(adapter_result.success)
+        # The evidence that is not prompt survives redaction; the prompt is
+        # gone from every reader-visible surface, in any 40-char piece.
+        self.assertIn(marker, adapter_result.detail)
+        self.assertIn(marker, attempts[0]["detail"])
+        for surface in (adapter_result.detail, attempts[0]["detail"], repr(status)):
+            for window in windows:
+                self.assertNotIn(window, surface)
+
     def test_detail_keeps_only_the_last_1500_characters_of_each_channel(self):
         stderr = "head " + "a" * 4000 + " END-OF-STDERR"
         stream = "head " + "b" * 4000 + " END-OF-STREAM"

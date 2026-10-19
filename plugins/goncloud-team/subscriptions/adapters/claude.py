@@ -155,7 +155,9 @@ class ClaudeAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_claude_stream(evidence.stream)
         if evidence.returncode == 0 and parsed["subtype"] in _SUCCESS_SUBTYPES:
@@ -173,6 +175,7 @@ class ClaudeAdapter(SubscriptionAdapter):
         return self._failed_result(
             route,
             failure,
+            request=request,
             evidence=(evidence.stderr, evidence.stream),
             returncode=evidence.returncode,
         )

@@ -106,7 +106,10 @@ class DeepSeekAdapter(SubscriptionAdapter):
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         if not self.api_key:
             return self._failed_result(
-                route, FailureKind.AUTH, "DeepSeek API key is not configured"
+                route,
+                FailureKind.AUTH,
+                "DeepSeek API key is not configured",
+                request=request,
             )
         try:
             status, body = request_json(
@@ -128,7 +131,7 @@ class DeepSeekAdapter(SubscriptionAdapter):
             )
         except SubscriptionHttpError as error:
             failure = FailureKind.TIMEOUT if error.timeout else FailureKind.TASK_FAILURE
-            return self._failed_result(route, failure, str(error))
+            return self._failed_result(route, failure, str(error), request=request)
 
         if status == 200:
             parsed = _parse_completion_body(body)
@@ -142,7 +145,11 @@ class DeepSeekAdapter(SubscriptionAdapter):
             )
         failure = classify_http_failure(status, body)
         return self._failed_result(
-            route, failure, evidence=(body,), channel_labels=("http response",)
+            route,
+            failure,
+            request=request,
+            evidence=(body,),
+            channel_labels=("http response",),
         )
 
 

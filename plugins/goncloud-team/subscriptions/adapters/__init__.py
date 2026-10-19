@@ -306,6 +306,7 @@ class SubscriptionAdapter:
         failure: FailureKind,
         detail: str = "",
         *,
+        request: InvocationRequest,
         evidence: tuple[str, ...] = (),
         returncode: int | None = None,
         channel_labels: tuple[str, ...] = ("stderr", "stream"),
@@ -315,16 +316,17 @@ class SubscriptionAdapter:
         # the exit code and the redacted tails of stderr and the stream, so a
         # failed chain records WHY it failed. Diagnostics are not a public
         # evidence channel; only the attempt record and a recovered attempt
-        # read them, and every boundary re-redacts. Channels arrive redacted
-        # from the process boundary (which holds the child's own environment),
-        # so this pass re-redacts shapes against the router's environment.
+        # read them, and every boundary re-redacts. Redaction runs on the FULL
+        # channel — the process boundary never holds the assignment prompt, so
+        # a CLI echoing a prompt longer than the tail window would otherwise
+        # leave a prompt suffix no later boundary can recognize (2026-10-19).
         parts = [text]
         if returncode is not None:
             parts.append(f"exit {returncode}")
         if detail:
             parts.append(detail)
         parts.extend(
-            f"{label} tail: {redact_text((channel or '')[-_DETAIL_TAIL_CHARS:])}"
+            f"{label} tail: {redact_text(channel or '', (request.prompt,))[-_DETAIL_TAIL_CHARS:]}"
             for label, channel in zip(channel_labels, evidence)
             if channel
         )

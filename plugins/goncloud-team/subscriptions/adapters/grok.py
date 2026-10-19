@@ -150,7 +150,9 @@ class GrokAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_grok_ndjson(evidence.stream)
         if (
@@ -174,6 +176,7 @@ class GrokAdapter(SubscriptionAdapter):
         return self._failed_result(
             route,
             failure,
+            request=request,
             evidence=(evidence.stderr, evidence.stream),
             returncode=evidence.returncode,
         )

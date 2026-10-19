@@ -71,12 +71,14 @@ class MuseAdapter(SubscriptionAdapter):
                 reasoning_effort=route.reasoning_effort,
             )
         except MuseBridgeError as error:
-            return self._failed_result(route, error.failure)
+            return self._failed_result(route, error.failure, request=request)
 
         if outcome.get("model") != route.model:
-            return self._failed_result(route, FailureKind.MODEL_UNAVAILABLE)
+            return self._failed_result(
+                route, FailureKind.MODEL_UNAVAILABLE, request=request
+            )
         if not isinstance(outcome.get("text"), str) or not outcome["text"].strip():
-            return self._failed_result(route, FailureKind.TASK_FAILURE)
+            return self._failed_result(route, FailureKind.TASK_FAILURE, request=request)
         if outcome.get("terminal") != "completed":
             detail = (
                 str(outcome.get("terminal") or ""),
@@ -84,7 +86,11 @@ class MuseAdapter(SubscriptionAdapter):
             )
             failure = classify_failure(1, detail[1], detail[0])
             return self._failed_result(
-                route, failure, evidence=detail, channel_labels=("terminal", "output")
+                route,
+                failure,
+                request=request,
+                evidence=detail,
+                channel_labels=("terminal", "output"),
             )
         return InvocationResult(
             success=True,

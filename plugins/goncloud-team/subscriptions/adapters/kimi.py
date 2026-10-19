@@ -224,7 +224,9 @@ class KimiAdapter(SubscriptionAdapter):
             route.reasoning_effort is not None
             and self._configured_effort() != route.reasoning_effort
         ):
-            return self._failed_result(route, FailureKind.INVALID_REQUEST)
+            return self._failed_result(
+                route, FailureKind.INVALID_REQUEST, request=request
+            )
         # kimi resolves models through its configured aliases (config.toml
         # defines them as kimi-code/<name>), so qualify bare table models.
         model = route.model if "/" in route.model else f"kimi-code/{route.model}"
@@ -251,7 +253,9 @@ class KimiAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_kimi_jsonl(evidence.stream)
         if evidence.returncode == 0:
@@ -267,6 +271,7 @@ class KimiAdapter(SubscriptionAdapter):
             return self._failed_result(
                 route,
                 FailureKind.TASK_FAILURE,
+                request=request,
                 evidence=(evidence.stderr, evidence.stream),
                 returncode=evidence.returncode,
             )
@@ -276,6 +281,7 @@ class KimiAdapter(SubscriptionAdapter):
         return self._failed_result(
             route,
             failure,
+            request=request,
             evidence=(evidence.stderr, evidence.stream),
             returncode=evidence.returncode,
         )
