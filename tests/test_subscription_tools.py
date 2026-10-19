@@ -50,6 +50,36 @@ SOURCES = [
     }
 ]
 
+#: La tabla de rutas en su formato vigente (lista v6): 4 posiciones por
+#: carril (Primary + F1..F3) y el adaptador sale de la familia del modelo.
+#: Carril propio con el adaptador que esta prueba registra, en vez de las
+#: lanes propietarias de model-routing.source.json: esas las mueve el dueno
+#: por decision de negocio (la v6 saco a claw de los 8 carriles OpenCode Go
+#: y las pruebas de comportamiento no se reescriben en cada movimiento).
+SOURCE = {
+    "profile_names": {},
+    "profile_inheritance": {
+        profile: "investigar"
+        for profile in (
+            "scout",
+            "ingenieria",
+            "implementer",
+            "verifier",
+            "adversary",
+            "reviewer",
+            "entrega",
+        )
+    },
+    "chains": {
+        "investigar": [
+            "opencode_go/deepseek-v4.1-flash (off)",
+            "opencode_go/deepseek-v4.1-flash (off)",
+            "opencode_go/deepseek-v4.1-flash (off)",
+            "opencode_go/deepseek-v4.1-flash (off)",
+        ]
+    },
+}
+
 
 def payload(**overrides):
     base = {
@@ -291,9 +321,7 @@ class ScriptedRouter:
         self.result = result
         self.requests = []
         self.run_count = 0
-        self.routing_source = json.loads(
-            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-        )
+        self.routing_source = SOURCE
 
     def run(self, request, routes):
         self.run_count += 1
@@ -835,9 +863,11 @@ class SubscriptionRunTests(unittest.TestCase):
         self.assertEqual(request.workflow_id, started["workflow_id"])
         self.assertEqual(request.stage_id, task_id)
         self.assertEqual(request.workspace, self.repo.resolve())
-        self.assertEqual([route.slot for route in routes], list(range(8)))
-        self.assertEqual(routes[0].adapter, "opencode_go")
-        self.assertEqual(routes[1].adapter, "opencode_go_2")
+        # La tabla vigente son 4 posiciones por carril (Primary + F1..F3).
+        self.assertEqual([route.slot for route in routes], list(range(4)))
+        self.assertEqual({route.adapter for route in routes}, {"opencode_go"})
+        self.assertEqual(routes[0].model, "deepseek-v4.1-flash")
+        self.assertEqual(routes[0].billing_mode, "subscription")
         with connect_closing(self.db_path) as conn:
             complete_task(conn, task_id, summary="scout done")
 

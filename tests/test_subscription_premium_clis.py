@@ -102,7 +102,15 @@ def request(
     )
 
 
+@unittest.skipUnless(
+    os.name == "nt",
+    "el puente muse necesita rutas Windows (prompt por tempfile y /mnt/c)",
+)
 class MuseAdapterTests(unittest.TestCase):
+    """El puente de muse solo existe en Windows: el prompt sale por un
+    tempfile que se traduce a /mnt/c dentro de wsl.exe, asi que en POSIX la
+    construccion del comando levanta antes de llegar al runner falso."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
