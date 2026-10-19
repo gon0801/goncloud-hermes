@@ -36,10 +36,7 @@ un especialista o la cadena de ingenieria) y la linea "Jev sugiere: X (conf)"
 entra al contexto; las tarjetas de especialista y las etapas de cadena
 Goncloud que terminaron desde el turno anterior (incluido blocked) traen su
 "Jev cierre: X (conf)". Confianza >= 0.85 se sigue, debajo decide claw; JEV
-con tope de 2 s y fail-open (jev_decisiones.py). pre_llm_call y
-post_llm_call tambien anotan el seguimiento (mensajes sin respuesta,
-promesas "te aviso") que lee el vigilante sin modelo
-(raices/jev_vigilante.py).
+con tope de 2 s y fail-open (jev_decisiones.py).
 """
 
 from __future__ import annotations
@@ -353,8 +350,6 @@ class JevAuto:
             # otro subproceso ni otra linea de registro.
             return {"context": self._contexto(llave, previo)}
         texto = mensaje.strip()
-        if self.decisor is not None and plataforma == "telegram":
-            jev_estado.anotar_mensaje(self._casa(), "|".join(llave), int(time.time()))
         hilos, casillas = self._lanzar_decisiones(texto)
         veredicto = self.consultar(texto)
         for hilo in hilos:
@@ -365,22 +360,6 @@ class JevAuto:
         self._lineas[llave] = [linea for casilla in casillas for linea in casilla]
         self._podar()
         return {"context": self._contexto(llave, veredicto)}
-
-    def post_llm_call(self, **kwargs):
-        """Salio la respuesta: el mensaje se atendio; ¿prometio un aviso?"""
-        if self.perfil != DIRECTOR or self.decisor is None:
-            return None
-        plataforma = str(kwargs.get("platform") or "").strip().lower()
-        if plataforma not in PLATAFORMAS:
-            return None
-        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
-        jev_estado.cerrar_turno(
-            self._casa(),
-            "|".join(llave),
-            kwargs.get("assistant_response"),
-            int(time.time()),
-        )
-        return None
 
     def _casa(self) -> Path:
         return Path(self.hogar) if self.hogar else _hogar_perfil()
@@ -556,11 +535,10 @@ def registrar(ctx):
     if isinstance(config, dict) and CLAVE_VISIBLE in config:
         visible = _visible_de_llave(config[CLAVE_VISIBLE])
     perfil = str(getattr(ctx, "profile_name", "") or "")
-    # El ruteo, el cierre y el seguimiento son del director: otro perfil
+    # El ruteo y el cierre son del director: otro perfil
     # carga el plugin sin decisor y sus ganchos ni consultan ni anotan.
     decisor = Decisor() if perfil == DIRECTOR else None
     auto = JevAuto(perfil=perfil, visible=visible, decisor=decisor)
     ctx.register_hook("pre_llm_call", auto.pre_llm_call)
-    ctx.register_hook("post_llm_call", auto.post_llm_call)
     ctx.register_hook("transform_llm_output", auto.transform_llm_output)
     return auto

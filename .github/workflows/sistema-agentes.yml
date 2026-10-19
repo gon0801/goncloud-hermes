@@ -68,10 +68,9 @@ jobs:
       - name: Pruebas del espejo, el contrato, derivar y el recorrido de ensayos
         if: steps.reuso.outputs.reusar != 'true'
         run: python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py" -v
-      - name: Pruebas de JEV (ruteo, cierre, vigilante) sin Hermes ni red
+      - name: Pruebas de JEV (ruteo y cierre) sin Hermes ni red
         run: |
           python3 -m unittest discover -s tests -p "test_jev_ruteo.py" -v
-          python3 -m unittest discover -s tests -p "test_jev_vigilante.py" -v
       - name: El espejo coincide byte a byte con G en el commit fijado
         if: steps.reuso.outputs.reusar != 'true'
         run: |

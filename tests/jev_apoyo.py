@@ -1,4 +1,4 @@
-"""Dobles compartidos de las pruebas de JEV (ruteo, cierre y vigilante).
+"""Dobles compartidos de las pruebas de JEV (ruteo y cierre).
 
 Un kanban.db minimo con las columnas que lee jev_estado, un JEV falso que
 contesta lo que la prueba le programa (sin red) y la carga del plugin por su

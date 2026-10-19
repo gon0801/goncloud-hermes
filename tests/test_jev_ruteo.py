@@ -1,10 +1,10 @@
-"""Ruteo, cierre y seguimiento de JEV por codigo (encargo H-jev-hermes).
+"""Ruteo y cierre de JEV por codigo (encargo H-jev-hermes).
 
 Criterios: un mensaje simulado produce skill_select + ruteo sin que el modelo
 lo pida; la etapa o tarjeta que termino (incluido blocked) trae su cierre en
 el turno siguiente; JEV caido, lento o respondiendo mal no bloquea el turno;
 el umbral 0.85 manda; cada decision deja su linea en decisiones.jsonl sin el
-texto del mensaje; los ganchos anotan mensajes sin respuesta y promesas.
+texto del mensaje.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ import jev_apoyo  # noqa: E402
 
 import jev_auto  # noqa: E402
 import jev_decisiones  # noqa: E402
-import jev_estado  # noqa: E402
 
 MENSAJE = "revisa las ordenes de amazon de hoy"
 
@@ -355,59 +354,7 @@ class CierreTests(Base):
         self.assertIn("Jev cierre: t_p (pers, completed)", contexto)
 
 
-class SeguimientoTests(Base):
-    def seguimiento(self):
-        return jev_estado.leer_seguimiento(self.claw)
-
-    def test_el_mensaje_queda_anotado_hasta_que_sale_la_respuesta(self):
-        auto = self.auto()
-        auto.pre_llm_call(**turno())
-        self.assertIn("s1|t1", self.seguimiento()["mensajes"])
-        auto.post_llm_call(**turno(assistant_response="listo, ya quedo"))
-        self.assertEqual(self.seguimiento()["mensajes"], {})
-        self.assertEqual(self.seguimiento()["promesas"], {})
-
-    def test_una_promesa_de_aviso_se_anota_y_un_turno_posterior_la_cierra(self):
-        auto = self.auto()
-        auto.pre_llm_call(**turno())
-        auto.post_llm_call(
-            **turno(assistant_response="Ya lo mande a amazon, te aviso cuando termine.")
-        )
-        self.assertIn("s1|t1", self.seguimiento()["promesas"])
-        auto.pre_llm_call(**turno(turn_id="t2"))
-        auto.post_llm_call(
-            **turno(turn_id="t2", assistant_response="Termino: 5 ordenes.")
-        )
-        self.assertEqual(self.seguimiento()["promesas"], {})
-
-    def test_el_mensaje_de_un_turno_que_no_contesto_sigue_abierto(self):
-        auto = self.auto()
-        auto.pre_llm_call(**turno())
-        auto.pre_llm_call(**turno(turn_id="t2", user_message="¿ya?"))
-        self.assertEqual(sorted(self.seguimiento()["mensajes"]), ["s1|t1", "s1|t2"])
-
-    def test_cli_y_otros_perfiles_no_anotan_mensajes(self):
-        auto = self.auto()
-        auto.pre_llm_call(**turno(platform="cli"))
-        self.assertEqual(self.seguimiento()["mensajes"], {})
-        decisor = jev_decisiones.Decisor(self.claw, llamar=self.jev)
-        otro = jev_auto.JevAuto(
-            "scout", hogar=self.claw, corredor=corredor_ok, decisor=decisor
-        )
-        self.assertIsNone(otro.post_llm_call(**turno(assistant_response="te aviso")))
-        self.assertEqual(self.seguimiento()["promesas"], {})
-
-    def test_frases_que_son_promesa_y_las_que_no(self):
-        for texto in (
-            "te aviso cuando termine",
-            "Te avisaré en cuanto salga",
-            "te confirmo cuando llegue",
-            "te escribo apenas lo tenga",
-        ):
-            self.assertTrue(jev_estado.PROMESA.search(texto), texto)
-        for texto in ("ya te avise ayer", "no hay aviso", "te mando el archivo"):
-            self.assertFalse(jev_estado.PROMESA.search(texto), texto)
-
+class RegistrarTests(Base):
     def test_register_cablea_el_decisor_solo_para_el_director(self):
         class Ctx:
             def __init__(self, perfil):
@@ -421,8 +368,7 @@ class SeguimientoTests(Base):
         jev_auto.registrar(director)
         jev_auto.registrar(otro)
         self.assertEqual(
-            sorted(director.hooks),
-            ["post_llm_call", "pre_llm_call", "transform_llm_output"],
+            sorted(director.hooks), ["pre_llm_call", "transform_llm_output"]
         )
         self.assertIsNotNone(director.hooks["pre_llm_call"].__self__.decisor)
         self.assertIsNone(otro.hooks["pre_llm_call"].__self__.decisor)

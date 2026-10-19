@@ -940,7 +940,7 @@ class HogarTests(Base):
 
 
 class CableadoTests(unittest.TestCase):
-    """El plugin registra los dos ganchos como registra el que ya tenia."""
+    """El plugin registra los ganchos como registra el que ya tenia."""
 
     @classmethod
     def setUpClass(cls):
@@ -960,12 +960,12 @@ class CableadoTests(unittest.TestCase):
     def tearDownClass(cls):
         hermes_falso.desinstalar()
 
-    def test_register_deja_los_cuatro_ganchos(self):
+    def test_register_deja_los_tres_ganchos(self):
         ctx = _CtxFalso()
         self.plugin.register(ctx)
         self.assertEqual(
             sorted(ctx.hooks),
-            ["post_llm_call", "pre_llm_call", "pre_tool_call", "transform_llm_output"],
+            ["pre_llm_call", "pre_tool_call", "transform_llm_output"],
         )
 
     def test_el_plugin_yaml_declara_los_ganchos(self):
@@ -973,7 +973,6 @@ class CableadoTests(unittest.TestCase):
         for gancho in (
             "pre_tool_call",
             "pre_llm_call",
-            "post_llm_call",
             "transform_llm_output",
         ):
             self.assertIn(gancho, manifest["provides_hooks"])

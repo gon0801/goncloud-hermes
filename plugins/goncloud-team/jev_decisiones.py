@@ -1,12 +1,11 @@
-"""Decisiones chicas de JEV por codigo: ruteo, cierre y vigilancia.
+"""Decisiones chicas de JEV por codigo: ruteo y cierre.
 
 El esquema de OpenClaw (jev-auto) replicado en Hermes sin depender de lo que
-el modelo se acuerde de hacer: la plataforma pregunta sola. Tres preguntas
+el modelo se acuerde de hacer: la plataforma pregunta sola. Dos preguntas
 de opcion multiple (type choice de System One), cada una con su criterio:
 
   ruteo      un mensaje de David -> claw directo | especialista | ingenieria
   cierre     una tarjeta o etapa terminada      -> quedo | corregir | bloqueado
-  vigilancia un candidato a atorado             -> normal | atorado | abandonado
 
 Reglas que viven aqui y no en el SOUL:
   - Umbral: confianza >= UMBRAL se sigue; debajo decide claw.
@@ -43,7 +42,6 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
     from subscriptions.redaction import redact_text
 
 UMBRAL = 0.85
-UMBRAL_AVISO = 0.8
 TOPE_JEV_S = 2.0
 TOPE_ESTADO = 3000
 MODELO = "jev-latest"
@@ -75,11 +73,6 @@ CIERRES = {
     "quedo": "el resultado resuelve lo pedido y la evidencia lo respalda; se da por cerrado",
     "corregir": "el resultado no resuelve lo pedido o le falta evidencia; hay que reintentar o corregir",
     "bloqueado": "falta algo externo (acceso, decision de David, dato); nadie puede avanzar solo",
-}
-VIGILANCIA = {
-    "normal": "avanza o espera con motivo; no hace falta avisar a David",
-    "atorado": "lleva demasiado sin avanzar y nadie lo esta destrabando; David debe enterarse",
-    "abandonado": "se dejo a medias o se prometio y no se cumplio; David debe enterarse",
 }
 
 _cliente = None
@@ -228,7 +221,7 @@ def _confianza(respuesta: dict) -> float | None:
 
 
 class Decisor:
-    """Las tres preguntas sobre un mismo cliente, registro y tope de 2 s."""
+    """Las dos preguntas sobre un mismo cliente, registro y tope de 2 s."""
 
     def __init__(self, hogar=None, llamar=None, tope_s: float = TOPE_JEV_S):
         self.hogar = _hogar_de(hogar)
@@ -256,15 +249,6 @@ class Decisor:
             ficha,
             "Como queda esta tarjeta o etapa, segun lo que reporto?",
             CIERRES,
-            entrada,
-        )
-
-    def vigilar(self, ficha: str, entrada: dict) -> Decision:
-        return self._decidir(
-            "vigilancia",
-            ficha,
-            "Este caso esta bien o David debe enterarse de que se atoro?",
-            VIGILANCIA,
             entrada,
         )
 
