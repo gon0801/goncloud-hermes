@@ -28,6 +28,12 @@ perfil default) se encuentren. Por cada aviso no entregado imprime UNA
 línea corta en español y lo renombra a .entregado para no repetirlo; lo
 ilegible o desconocido no se imprime ni se marca. Sin avisos, stdout vacío:
 cero tokens, claw no se despierta.
+
+Encargo H-avisos-a-la-sesion: los avisos que traen origin_session_key NO
+pasan por aquí — el vigilante del gateway (avisos_sesion.py) los inyecta
+en la sesión que lanzó la cadena. Este cron los ignora sin marcarlos, y
+sigue drenando como siempre los que no traen origen (cadenas viejas o
+lanzadas por CLI).
 """
 
 from __future__ import annotations
@@ -170,6 +176,11 @@ def correr(home=None, escribir=print, reloj=None) -> int:
     # en crisis. Imprimir antes de marcar: una caída a media vuelta repite
     # una línea antes que perder un aviso.
     for ruta, aviso in avisos_de_cadenas(base / "goncloud-local" / "avisos"):
+        # H-avisos-a-la-sesion: un aviso con sesión de origen lo entrega el
+        # vigilante del gateway EN ESA conversación; imprimirlo aquí lo
+        # duplicaría en el Bot Chat. Ni se imprime ni se marca.
+        if str(aviso.get("origin_session_key") or "").strip():
+            continue
         linea = linea_de_aviso(aviso)
         if linea:
             escribir(linea)

@@ -117,6 +117,103 @@ MAX_AVISO_CHARS = 200
 #: The reason is bounded like the other model-supplied texts.
 MAX_CLOSE_REASON_CHARS = 1000
 
+#: Routing keys a background completion carries back to its launching
+#: session (mirrors tools.async_delegation._ROUTING_KEYS in Hermes): the
+#: gateway rebuilds the session source from them after a restart.
+ORIGIN_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+#: Session identifiers are routing data, not prose: bounded and one line.
+MAX_ORIGIN_CHARS = 512
+
+
+def _origin_text(value):
+    texto = " ".join(str(value or "").split())
+    return texto[:MAX_ORIGIN_CHARS]
+
+
+def _session_env(name):
+    """One HERMES_SESSION_* value from the calling session, best effort.
+
+    Same seam async_delegation uses (gateway.session_context.get_session_env);
+    outside the gateway (CLI, tests) the process environment is the fallback
+    and every miss is simply "" — no session, no origin, today's behaviour.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return _origin_text(get_session_env(name, ""))
+    except Exception:
+        return _origin_text(os.environ.get(name, ""))
+
+
+def capturar_origen_sesion(session_key_hint=""):
+    """Snapshot the session launching a chain, for its mailbox avisos.
+
+    Returns {} when nothing names a session (CLI launches): those avisos
+    keep going through the cron despertar-raices. Otherwise
+    {"origin_session_key": ..., "origin_routing": {...}} with the routing
+    keys the gateway needs to inject the aviso back into THAT session.
+    """
+    session_key = _origin_text(session_key_hint)
+    if not session_key:
+        try:
+            from tools.approval_context import get_current_session_key
+
+            session_key = _origin_text(get_current_session_key(default=""))
+        except Exception:
+            session_key = ""
+    if not session_key:
+        session_key = _session_env("HERMES_SESSION_KEY")
+    routing = {
+        key: valor
+        for key in ORIGIN_ROUTING_KEYS
+        if (valor := _session_env(f"HERMES_SESSION_{key.upper()}"))
+    }
+    platform = _session_env("HERMES_SESSION_PLATFORM")
+    chat_id = _session_env("HERMES_SESSION_CHAT_ID")
+    if platform == "api_server":
+        # _current_origin_session_id's rule: on api_server the chat id IS
+        # the raw session id, never a messaging chat.
+        if chat_id:
+            routing["origin_session_id"] = chat_id
+    else:
+        if platform:
+            routing["platform"] = platform
+        if chat_id:
+            routing["chat_id"] = chat_id
+    thread_id = _session_env("HERMES_SESSION_THREAD_ID")
+    if thread_id:
+        routing["thread_id"] = thread_id
+    if not session_key:
+        return {}
+    origen = {"origin_session_key": session_key}
+    if routing:
+        origen["origin_routing"] = routing
+    return origen
+
+
+def _asegurar_contrato_local(conn):
+    """The local execution contract table, migrated in place.
+
+    Older chains carry a two-column table; the origin columns are added
+    without touching their rows, so a chain launched before this change
+    simply has no origin and its avisos keep the despertar path.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS goncloud_local_workflows "
+        "(workflow_id TEXT PRIMARY KEY, max_steps INTEGER NOT NULL, "
+        "origin_session_key TEXT NOT NULL DEFAULT '', "
+        "origin_routing TEXT NOT NULL DEFAULT '')"
+    ).close()
+    columnas = {
+        fila[1] for fila in conn.execute("PRAGMA table_info(goncloud_local_workflows)")
+    }
+    for columna in ("origin_session_key", "origin_routing"):
+        if columna not in columnas:
+            conn.execute(
+                f"ALTER TABLE goncloud_local_workflows "
+                f"ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"
+            ).close()
+
 
 def _workspace_fingerprint(repository):
     """HEAD plus every tracked and untracked change, or None without git."""
@@ -178,6 +275,19 @@ _DRIVER_BOOTSTRAP = (
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "launch_run_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None\n"
     "sys.path.insert(0, hermes)\n"
+    "# F3: el origen de la cadena vive en la marca running que el lanzador\n"
+    "# dejó en out; se lee ANTES de que resume la sobrescriba, para que el\n"
+    "# aviso de boot-error lo herede y también llegue a la sesión.\n"
+    "origen_boot = {}\n"
+    "try:\n"
+    "    with open(out, encoding='utf-8') as handle:\n"
+    "        marca = json.load(handle)\n"
+    "    if isinstance(marca, dict):\n"
+    "        for clave in ('origin_session_key', 'origin_routing'):\n"
+    "            if marca.get(clave):\n"
+    "                origen_boot[clave] = marca[clave]\n"
+    "except Exception:\n"
+    "    pass\n"
     "fallo = False\n"
     "try:\n"
     "    try:\n"
@@ -221,7 +331,7 @@ _DRIVER_BOOTSTRAP = (
     "        if not os.path.exists(nombre):\n"
     "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
     "            evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
-    "                      'motivo': result['error'],\n"
+    "                      'motivo': result['error'], **origen_boot,\n"
     "                      'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
     "            with open(parcial, 'w', encoding='utf-8') as handle:\n"
     "                json.dump(evento, handle, ensure_ascii=True)\n"
@@ -255,7 +365,7 @@ def _write_result(workflow_id, payload, *, home=None):
     os.replace(tmp, results / f"{workflow_id}.json")
 
 
-def _running_mark(workflow_id, run_id):
+def _running_mark(workflow_id, run_id, origen=None):
     """The mark every driver writes before its first stage (live review F8).
 
     The result file doubles as the running mark: a start overwrites whatever
@@ -264,13 +374,34 @@ def _running_mark(workflow_id, run_id):
     run id, and the same run overwrites the mark with its outcome when it
     quits. The pid stays as evidence for telling a dead driver from a live
     one (encargo H punto 4); nothing acted on it before that check existed.
+
+    The launching session rides on the mark too (F3): the detached
+    bootstrap reads the result file before anything overwrites it, and
+    its boot-error mailbox event inherits the origin from here — the one
+    aviso that never passes through _report.
     """
-    return {
+    marca = {
         "workflow_id": workflow_id,
         "outcome": "running",
         "run_id": run_id,
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    origen = origen or {}
+    if origen.get("origin_session_key"):
+        marca["origin_session_key"] = origen["origin_session_key"]
+        if origen.get("origin_routing"):
+            marca["origin_routing"] = origen["origin_routing"]
+    return marca
+
+
+def _origen_de(contract):
+    """The origin slice of a contract dict, for marks and avisos."""
+    contract = contract or {}
+    return {
+        key: contract[key]
+        for key in ("origin_session_key", "origin_routing")
+        if contract.get(key)
     }
 
 
@@ -531,8 +662,15 @@ def _etapa_y_motivo(report):
     return None, "the driver failed; check the durable status."
 
 
-def _aviso_evento(report, *, repo, instruction):
-    """One bounded mailbox event: what stopped, where, why, and the ask."""
+def _aviso_evento(report, *, repo, instruction, origen=None):
+    """One bounded mailbox event: what stopped, where, why, and the ask.
+
+    The launching session rides along only when the chain has one
+    (encargo H-avisos-a-la-sesion): with origin_session_key the gateway
+    vigilante injects the aviso into that session and the cron despertar
+    leaves the file alone; without it the event is byte-identical to the
+    one chains have always written and the despertar drains it.
+    """
     etapa, motivo = _etapa_y_motivo(report)
     if report.get("pull_request"):
         # H-entrega-pr: el detalle de la entrega es el link del PR (la línea
@@ -540,7 +678,7 @@ def _aviso_evento(report, *, repo, instruction):
         motivo = report["pull_request"]
     elif report.get("pr_no_abierto"):
         motivo = f"PR no abierto: {report['pr_no_abierto']}"
-    event = {
+    evento = {
         "workflow_id": report["workflow_id"],
         "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
         "outcome": report["outcome"],
@@ -549,9 +687,22 @@ def _aviso_evento(report, *, repo, instruction):
         "instruccion": _trimmed(_sanitize(instruction), MAX_AVISO_CHARS),
         "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    origen = origen or {}
+    session_key = _origin_text(origen.get("origin_session_key"))
+    if session_key:
+        evento["origin_session_key"] = _sanitize(session_key)
+        routing = origen.get("origin_routing")
+        if isinstance(routing, dict):
+            limpio = {
+                str(key): _sanitize(_origin_text(valor))
+                for key, valor in routing.items()
+                if _origin_text(valor)
+            }
+            if limpio:
+                evento["origin_routing"] = limpio
     pendientes = report.get("pendientes_no_bloqueantes")
     if pendientes:
-        event["pendientes_no_bloqueantes"] = [
+        evento["pendientes_no_bloqueantes"] = [
             {
                 "severity": item.get("severity"),
                 "summary": _trimmed(
@@ -562,11 +713,19 @@ def _aviso_evento(report, *, repo, instruction):
             for item in pendientes
             if isinstance(item, dict)
         ]
-    return event
+    return evento
 
 
 def _write_aviso(
-    workflow_id, run_id, outcome, report, *, home, repo="", instruction=""
+    workflow_id,
+    run_id,
+    outcome,
+    report,
+    *,
+    home,
+    repo="",
+    instruction="",
+    origen=None,
 ):
     """Drop the run's mailbox event for the cron despertar-raices to drain.
 
@@ -585,6 +744,7 @@ def _write_aviso(
             {**report, "outcome": outcome, "workflow_id": workflow_id},
             repo=repo,
             instruction=instruction,
+            origen=origen,
         )
         avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
         mkdir_privado(avisos)
@@ -849,6 +1009,8 @@ class LocalOrchestrator:
         max_steps,
         stop_after=None,
         affects_business_rules=False,
+        origin_session_key="",
+        origin_routing=None,
     ):
         self._check_stop(stop_after)
         created = self.create(
@@ -859,6 +1021,8 @@ class LocalOrchestrator:
             sources=sources,
             max_steps=max_steps,
             affects_business_rules=affects_business_rules,
+            origin_session_key=origin_session_key,
+            origin_routing=origin_routing,
         )
         # r6: un repo ocupado contesta busy — no hay cadena que resume.
         if created.get("busy"):
@@ -875,6 +1039,8 @@ class LocalOrchestrator:
         sources,
         max_steps,
         affects_business_rules=False,
+        origin_session_key="",
+        origin_routing=None,
     ):
         """Register the durable chain and its step limit without running a stage.
 
@@ -955,10 +1121,7 @@ class LocalOrchestrator:
             return started
         workflow_id = started["workflow_id"]
         with service._connect() as conn, write_txn(conn):
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS goncloud_local_workflows "
-                "(workflow_id TEXT PRIMARY KEY, max_steps INTEGER NOT NULL)"
-            ).close()
+            _asegurar_contrato_local(conn)
             row = conn.execute(
                 "SELECT max_steps FROM goncloud_local_workflows WHERE workflow_id=?",
                 (workflow_id,),
@@ -966,9 +1129,26 @@ class LocalOrchestrator:
             if row is not None and row[0] != max_steps:
                 raise WorkflowError("request_key already has a different step limit")
             conn.execute(
-                "INSERT OR IGNORE INTO goncloud_local_workflows VALUES (?, ?)",
+                "INSERT OR IGNORE INTO goncloud_local_workflows "
+                "(workflow_id, max_steps) VALUES (?, ?)",
                 (workflow_id, max_steps),
             ).close()
+            # The launching session is part of the local contract: a
+            # relaunch from a new session reroutes the chain's future
+            # avisos there, and the detached driver — which only reads
+            # the contract — copies it into every mailbox event.
+            session_key = _origin_text(origin_session_key)
+            if session_key:
+                routing = origin_routing if isinstance(origin_routing, dict) else {}
+                conn.execute(
+                    "UPDATE goncloud_local_workflows SET origin_session_key=?, "
+                    "origin_routing=? WHERE workflow_id=?",
+                    (
+                        session_key,
+                        json.dumps(routing, ensure_ascii=True, sort_keys=True),
+                        workflow_id,
+                    ),
+                ).close()
         result = {"workflow_id": workflow_id, "stages": dict(started["stages"])}
         # Encargo H punto 2 (r6): la cadena vieja parada se cerró sola y la
         # nueva arranca; un repo ocupado no llega aquí — service.start
@@ -1010,7 +1190,15 @@ class LocalOrchestrator:
         # this launch's id, until this run's driver overwrites it with its
         # own outcome — a close can never mistake the old file for proof
         # that the new driver stopped.
-        mark = _running_mark(workflow_id, uuid4().hex)
+        # F3: la marca lleva el origen del contrato para que el aviso de
+        # boot-error del bootstrap lo herede; sin contrato legible, sin
+        # origen (el aviso sigue por el despertar, como siempre).
+        try:
+            contrato, _ = self._context(workflow_id)
+            origen = _origen_de(contrato)
+        except Exception:
+            origen = {}
+        mark = _running_mark(workflow_id, uuid4().hex, origen=origen)
         _write_result(workflow_id, mark, home=home)
         result_file = _result_file(workflow_id, home)
         argv = [
@@ -1283,16 +1471,38 @@ class LocalOrchestrator:
             table = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='goncloud_local_workflows'"
             ).fetchone()
-            row = (
-                conn.execute(
-                    "SELECT max_steps FROM goncloud_local_workflows WHERE workflow_id=?",
-                    (workflow_id,),
-                ).fetchone()
-                if table
-                else None
-            )
+            row = None
+            if table:
+                columnas = {
+                    fila[1]
+                    for fila in conn.execute(
+                        "PRAGMA table_info(goncloud_local_workflows)"
+                    )
+                }
+                if {"origin_session_key", "origin_routing"} <= columnas:
+                    row = conn.execute(
+                        "SELECT max_steps, origin_session_key, origin_routing "
+                        "FROM goncloud_local_workflows WHERE workflow_id=?",
+                        (workflow_id,),
+                    ).fetchone()
+                else:
+                    # A pre-origin table: the chain simply has no origin.
+                    fila = conn.execute(
+                        "SELECT max_steps FROM goncloud_local_workflows WHERE workflow_id=?",
+                        (workflow_id,),
+                    ).fetchone()
+                    row = (fila[0], "", "") if fila else None
         if row is None or type(row[0]) is not int or not 1 <= row[0] <= 200:
             raise WorkflowError("workflow has no valid local execution contract")
+        contract = dict(contract)
+        if row[1]:
+            contract["origin_session_key"] = row[1]
+            try:
+                routing = json.loads(row[2] or "{}")
+            except ValueError:
+                routing = {}
+            if isinstance(routing, dict) and routing:
+                contract["origin_routing"] = routing
         return contract, row[0]
 
     def status(self, workflow_id):
@@ -1431,6 +1641,7 @@ class LocalOrchestrator:
             home=home,
             repo=(contract or {}).get("repository", ""),
             instruction=(contract or {}).get("instruction", ""),
+            origen=_origen_de(contract),
         )
         return report
 
@@ -1657,7 +1868,11 @@ class LocalOrchestrator:
         # From this write on, the previous driver's stopped outcome is no
         # longer the file's last word.
         run_id = uuid4().hex
-        _write_result(workflow_id, _running_mark(workflow_id, run_id), home=home)
+        _write_result(
+            workflow_id,
+            _running_mark(workflow_id, run_id, origen=_origen_de(contract)),
+            home=home,
+        )
         # Encargo H punto 1: relanzar es reintentar.
         self._reopen_blocked_stages(
             workflow_id, service, mark=mark, own_launch=own_launch, home=home

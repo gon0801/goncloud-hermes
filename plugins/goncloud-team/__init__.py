@@ -68,7 +68,6 @@ def _transport_handlers(ctx):
     """Bind the transport tools: create the chain, detach the driver, report."""
 
     def local_run(args: dict, **kwargs) -> str:
-        del kwargs
         try:
             if ctx.profile_name != "claw":
                 raise PermissionError("only the claw director may start local work")
@@ -76,9 +75,19 @@ def _transport_handlers(ctx):
             stop_after = arguments.get("stop_after") or None
             # Validate the stop before the chain exists: a bad value would
             # otherwise leave seven orphan cards and no id to reach them by.
-            from .local_orchestrator import check_stop_after
+            from .local_orchestrator import capturar_origen_sesion, check_stop_after
 
             check_stop_after(stop_after)
+            # The session launching the chain (encargo H-avisos-a-la-sesion):
+            # captured like delegate_task captures its origin, stored in
+            # the chain's contract, and copied by the driver into every
+            # mailbox aviso so the gateway can inject it back HERE — in
+            # this conversation — instead of the hidden Bot Chat.
+            origen = capturar_origen_sesion(
+                str(
+                    kwargs.get("session_key") or kwargs.get("gateway_session_key") or ""
+                )
+            )
             orchestrator = _build_orchestrator(ctx)
             created = orchestrator.create(
                 request_key=str(arguments.get("request_key", "")),
@@ -90,6 +99,8 @@ def _transport_handlers(ctx):
                 affects_business_rules=bool(
                     arguments.get("affects_business_rules", False)
                 ),
+                origin_session_key=origen.get("origin_session_key", ""),
+                origin_routing=origen.get("origin_routing"),
             )
             if created.get("busy"):
                 # Contrato r6: el repo ya tiene una cadena viva — no se
@@ -293,6 +304,18 @@ def register(ctx) -> None:
                 "action": "block",
                 "message": f"Goncloud review completion guard unavailable: {exc}",
             }
+
+    # Avisos a la sesión (encargo H-avisos-a-la-sesion): SOLO en el proceso
+    # del gateway — iniciar_vigilante no arranca nada si no resuelve la
+    # completion_queue real — un hilo sin modelo drena el buzón de cadenas
+    # y encola cada aviso con origin_session_key en la sesión que lanzó la
+    # cadena, para que el gateway lo inyecte ahí y no en el Bot Chat.
+    try:
+        from .avisos_sesion import iniciar_vigilante
+
+        iniciar_vigilante()
+    except Exception:
+        pass  # el buzón es durable: el aviso espera a la próxima vida
 
     # JEV (H-jev-auto, tanda 2) se registra ANTES que la guarda: Hermes admite
     # varias funciones por gancho, pero los dobles de prueba guardan una sola por
