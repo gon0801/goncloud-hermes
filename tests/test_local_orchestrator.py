@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import local_orchestrator as local_orchestrator_module  # noqa: E402
+import entrega_pr as entrega_pr_module  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
@@ -970,6 +971,139 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         self._real_git_repo()
         result = self.start()
         self.assertEqual(result["outcome"], "delivered")
+
+    def _origen_pelado(self):
+        """Un origin pelado local para el repo real: git sin red."""
+        origen = self.root / "origin.git"
+        subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.repo), str(origen)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "add", "origin", str(origen)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "fetch", "-q", "origin"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "set-head", "origin", "-a"],
+            check=True,
+            capture_output=True,
+        )
+        return origen
+
+    def _aviso_delivered(self, workflow_id, run_id):
+        ruta = (
+            self.root
+            / "goncloud-local"
+            / "avisos"
+            / f"{workflow_id}-{run_id}-delivered.json"
+        )
+        return json.loads(ruta.read_text(encoding="utf-8"))
+
+    def test_a_delivered_chain_pushes_its_branch_and_opens_the_pr(self):
+        # H-entrega-pr: al entregar, el driver sube cadena/<id> al origin y
+        # abre el PR por la API; el link va al resultado durable y al aviso
+        # ("Cadena X entregada: <url>"), y el token jamas sale por ningun
+        # lado. Git real sin red; credencial y API con dobles.
+        self._real_git_repo()
+        origen = self._origen_pelado()
+        llamadas = []
+        token = "ghp_Abc123Def456Ghi789"
+
+        def api(metodo, ruta, token_llamada, payload=None):
+            llamadas.append((metodo, ruta, payload))
+            if metodo == "GET":
+                return 200, []
+            return 201, {"html_url": "https://github.com/acme/repo/pull/7"}
+
+        with (
+            patch.object(entrega_pr_module, "_credencial", return_value=token),
+            patch.object(entrega_pr_module, "_api", api),
+            patch.object(
+                entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
+            ),
+        ):
+            result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual(result["pull_request"], "https://github.com/acme/repo/pull/7")
+        # El push fue real: la rama de la cadena vive en el origen pelado.
+        subido = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(origen),
+                "rev-parse",
+                "--verify",
+                f"refs/heads/cadena/{result['workflow_id']}",
+            ],
+            capture_output=True,
+        )
+        self.assertEqual(subido.returncode, 0)
+        # El POST lleva head = cadena/<id> y base = donde nacio (origin/HEAD).
+        metodo, ruta, payload = next(
+            llamada for llamada in llamadas if llamada[0] == "POST"
+        )
+        self.assertEqual(payload["head"], f"cadena/{result['workflow_id']}")
+        self.assertEqual(payload["base"], "main")
+        evento = self._aviso_delivered(result["workflow_id"], result["run_id"])
+        self.assertEqual(
+            evento["motivo"],
+            f"Cadena {result['workflow_id']} entregada: "
+            "https://github.com/acme/repo/pull/7",
+        )
+        # El resultado durable tambien lleva el link, y el token no sale ni
+        # en el resultado ni en el aviso.
+        durable = json.loads(
+            (self.root / "goncloud-local" / f"{result['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(durable["pull_request"], "https://github.com/acme/repo/pull/7")
+        self.assertNotIn(token, json.dumps(durable))
+        self.assertNotIn(token, json.dumps(evento))
+
+    def test_without_a_credential_the_chain_stays_delivered_and_says_why(self):
+        self._real_git_repo()
+        origen = self._origen_pelado()
+        with (
+            patch.object(entrega_pr_module, "_credencial", return_value=None),
+            patch.object(
+                entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
+            ),
+        ):
+            result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual(
+            result["pr_no_abierto"],
+            "sin credencial de GitHub para https://github.com",
+        )
+        # Sin credencial no hay PR, pero el push SI: la rama queda subida.
+        subido = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(origen),
+                "rev-parse",
+                "--verify",
+                f"refs/heads/cadena/{result['workflow_id']}",
+            ],
+            capture_output=True,
+        )
+        self.assertEqual(subido.returncode, 0)
+        evento = self._aviso_delivered(result["workflow_id"], result["run_id"])
+        self.assertEqual(
+            evento["motivo"],
+            f"rama cadena/{result['workflow_id']} lista, PR no abierto: "
+            "sin credencial de GitHub para https://github.com",
+        )
 
     def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
         self,

@@ -29,6 +29,7 @@ from hermes_cli.kanban_db import (
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
+    from . import entrega_pr
     from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from .subscriptions.router import GitInspector, default_db_path
     from .subscriptions.state import SubscriptionStateStore
@@ -48,6 +49,7 @@ try:
         WorkflowService,
     )
 except ImportError:
+    import entrega_pr
     from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from subscriptions.router import GitInspector, default_db_path
     from subscriptions.state import SubscriptionStateStore
@@ -522,6 +524,14 @@ def _etapa_y_motivo(report):
 def _aviso_evento(report, *, repo, instruction):
     """One bounded mailbox event: what stopped, where, why, and the ask."""
     etapa, motivo = _etapa_y_motivo(report)
+    if report.get("pull_request"):
+        # H-entrega-pr: el link del PR es el aviso de la entrega.
+        motivo = f"Cadena {report['workflow_id']} entregada: {report['pull_request']}"
+    elif report.get("pr_no_abierto"):
+        motivo = (
+            f"rama cadena/{report['workflow_id']} lista, PR no abierto: "
+            f"{report['pr_no_abierto']}"
+        )
     return {
         "workflow_id": report["workflow_id"],
         "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
@@ -1351,6 +1361,19 @@ class LocalOrchestrator:
         # stamp the liveness check could not date the mark and failed
         # open.
         report["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if outcome == "delivered" and (contract or {}).get("worktree"):
+            # H-entrega-pr: al entregar, el driver sube la rama cadena/<id> y
+            # abre el PR (codigo del plugin, fuera del sandbox del modelo).
+            # Fail-open: la cadena ya esta entregada; el link del PR o el
+            # motivo corto viajan en el resultado durable y en el aviso.
+            report.update(
+                entrega_pr.publicar(
+                    workflow_id,
+                    worktree=contract["worktree"],
+                    instruction=(contract or {}).get("instruction", ""),
+                    summary=_etapa_y_motivo(report)[1],
+                )
+            )
         _write_result(workflow_id, report, home=home)
         # The mailbox event rides the same stop the result file records, so
         # the cron despertar-raices can tell claw with zero model calls —
