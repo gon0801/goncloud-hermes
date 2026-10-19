@@ -14,6 +14,8 @@ NECESITA_DAVID con causa poteto:<perfil> y no se despacha.
 from __future__ import annotations
 
 import importlib
+import json
+from pathlib import Path
 from typing import NamedTuple
 
 compartido = importlib.import_module("raices.compartido")
@@ -47,6 +49,7 @@ class Informe(NamedTuple):
     conflictos: tuple
     tarjetas_creadas: int
     estado: str | None
+    lanzamientos: int = 0
 
 
 def cargar_politicas() -> dict:
@@ -55,8 +58,33 @@ def cargar_politicas() -> dict:
     return store_module.leer_politicas()
 
 
+def perfiles_de_despacho_nativo() -> frozenset:
+    """Los especialistas que el despachador nativo del gateway SÍ corre
+    (team.json kanban.dispatch_profiles). A esos el ticker NUNCA les lanza el
+    ejecutor: su ruta es la compuerta poteto del gateway, que los niega con
+    causa poteto:<perfil> (H4b2, I08). El archivo vive en la raíz del repo, la
+    misma resolución que usa poteto para su copia (poteto.REPO = parents[3]);
+    sin archivo legible, vacío — la puerta poteto del despacho sigue siendo la
+    que decide, esto solo evita lanzar dos veces lo mismo."""
+    raiz = Path(__file__).resolve().parents[3]
+    try:
+        team = json.loads((raiz / "team.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    perfiles = (team.get("kanban") or {}).get("dispatch_profiles")
+    if not isinstance(perfiles, list):
+        return frozenset()
+    return frozenset(str(p) for p in perfiles)
+
+
 def vuelta(
-    tienda, puerto, hechos_por_raiz=None, permisos_h=None, ruta_abierta=True, home=None
+    tienda,
+    puerto,
+    hechos_por_raiz=None,
+    permisos_h=None,
+    ruta_abierta=True,
+    home=None,
+    lanzador=None,
 ) -> Informe:
     """Una vuelta completa. Una CaidaInyectada del doble kanban se propaga: simula la
     muerte del proceso, y la vuelta siguiente recupera desde las filas.
@@ -65,13 +93,20 @@ def vuelta(
     documento flota.v1 del intento que admite (I09).
     Con `ruta_abierta=False` (H4a) la puerta de capacidades está cerrada: bloquea
     y concilia igual (un intento abierto conserva su snapshot), pero no decide, no
-    despacha ni levanta el gate de arranque."""
+    despacha ni levanta el gate de arranque.
+    `lanzador` (H7) es la función que nace un hijo CLI por tarjeta de un perfil
+    de equipo: el cron pasa el lanzador desacoplado de producción
+    (ejecutor.lanzador_de); None no lanza nada (las pruebas inyectan el suyo).
+    Los gates — perfil de equipo, presupuesto maxModelCalls y reclamo atómico
+    con TTL — viven en _despachar_ejecutores, DESPUÉS de la bandeja: la tarjeta
+    ya existe cuando se lanza su ejecutor (I03 cierra antes)."""
     hechos_por_raiz = hechos_por_raiz or {}
     permisos = autoridad.PermisosH(permisos_h)
     conciliadas = 0
     aplicadas = 0
     conflictos: list = []
     creadas_antes = len(puerto.creaciones)
+    lanzados = 0
     estado: str | None = None
 
     for bloqueo in tienda.bloqueos_pendientes():
@@ -177,13 +212,111 @@ def vuelta(
                 flota=documento,
             )
 
+    if ruta_abierta:
+        lanzados = _despachar_ejecutores(tienda, lanzador, vistas, conflictos)
+
     return Informe(
         conciliadas,
         aplicadas,
         tuple(conflictos),
         len(puerto.creaciones) - creadas_antes,
         estado,
+        lanzados,
     )
+
+
+def _despachar_ejecutores(tienda, lanzador, vistas, conflictos) -> int:
+    """La fase H7: por cada intento con tarjeta viva de un perfil de equipo,
+    reclamar y lanzar su ejecutor DESACOPLADO. NUNCA dos para la misma
+    tarjeta: el reclamo (store.reclamar_lanzamiento) es UNA transacción que
+    verifica active, reserva UNA llamada del budget y toma el reclamo con TTL;
+    vivo, no se lanza; vencido (el hijo murió), la poda de limpiar_lanzamientos
+    lo libera y la vuelta relanza. Un especialista de dispatch_profiles no se
+    lanza (lo corre el despachador nativo) y un lanzamiento que no nace suelta
+    el reclamo con su incidencia launch-failed (decidir la clasifica retry)."""
+    if lanzador is None:
+        return 0
+    despacho_nativo = perfiles_de_despacho_nativo()
+    lanzados = 0
+    tienda.limpiar_lanzamientos()
+    for intento in tienda.intentos_lanzables():
+        perfil = str(
+            (intento["assignment"].get("target") or {}).get("agentId")
+            or (intento["assignment"].get("target") or {}).get("adapterId")
+            or "sin-perfil"
+        )
+        if perfil in despacho_nativo:
+            continue
+        reclamo = tienda.reclamar_lanzamiento(
+            intento["rootId"],
+            intento["unitId"],
+            intento["attempt"],
+            intento["cardId"],
+        )
+        if hasattr(reclamo, "codigo"):
+            if reclamo.codigo == "sin-cuota":
+                vista_de = vistas.get(intento["rootId"])
+                if vista_de is not None:
+                    _levantar_sin_cuota(tienda, vista_de, intento, conflictos)
+            continue
+        nacido = lanzador(
+            intento["rootId"],
+            intento["unitId"],
+            intento["attempt"],
+            intento["cardId"],
+        )
+        if nacido is None:
+            tienda.soltar_lanzamiento(
+                intento["rootId"], intento["unitId"], intento["attempt"]
+            )
+            tienda.registrar_incidencia(
+                intento["rootId"],
+                intento["unitId"],
+                intento["attempt"],
+                f"launch:{intento['cardId']}",
+                {
+                    "kind": "transport-unavailable",
+                    "episodeId": "launch-failed",
+                },
+            )
+            continue
+        lanzados += 1
+    return lanzados
+
+
+def _levantar_sin_cuota(tienda, vista, intento, conflictos) -> None:
+    """La pregunta SIN_CUOTA cuando no hay cupo de maxModelCalls. Espejo de
+    _levantar_arranque: subject attempt con la causa del presupuesto, opciones
+    de la clase, dedupe por exceptionId y C2 (la decisión no se reaplica: id
+    fija `dec-cuota:<exceptionId>`; en pausa ni pregunta — al reanudar
+    vuelve). El dueño elige seguir (esperar cupo), relevo o cancelar."""
+    borrador = decidir.borrador_excepcion(
+        intento["rootId"],
+        "SIN_CUOTA",
+        {
+            "kind": "attempt",
+            "unitId": intento["unitId"],
+            "attempt": intento["attempt"],
+            "cause": "budget:maxModelCalls",
+        },
+    )
+    conocidas = {e["exceptionId"] for e in vista.get("excepciones") or ()}
+    if (
+        borrador["exceptionId"] in conocidas
+        or vista["meta"]["control"]["state"] != "active"
+    ):
+        return
+    decision = decidir._decision_vacia(
+        vista["meta"]["plan"]["revision"], vista["meta"]["controlEpoch"]
+    )
+    decision["excepciones"] = [borrador]
+    resultado = tienda.aplicar(
+        intento["rootId"],
+        decision,
+        f"dec-cuota:{borrador['exceptionId']}",
+    )
+    if hasattr(resultado, "codigo"):
+        conflictos.append((intento["rootId"], resultado.codigo))
 
 
 def _negar_arranque(vista, permisos, intencion) -> str | None:

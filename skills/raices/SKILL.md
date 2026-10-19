@@ -34,10 +34,19 @@ El cron te avisa en el chat qué raíz necesita qué. Léela con
 
 - `assignment` con razón `first`: perfil por modo y carril — `implement` →
   `implementer`, `read` → `scout`, `design` → `ingenieria`, `publish` →
-  `entrega` (el perfil de cierre y despliegue autorizado). `target`
+  `entrega` (el perfil de cierre y despliegue autorizado). SIEMPRE perfiles de
+  equipo: los especialistas del despacho nativo (`kanban.dispatch_profiles` de
+  team.json — amazon, meli, mail, limpia, odoo, pers, arras, gonserver,
+  skillverif, tinkabot, eggbot) NO aceptan raíces; la compuerta poteto los
+  niega con causa `poteto:<perfil>` y nadie les ejecuta la tarjeta. Los
+  perfiles de equipo sí: el ejecutor de tarjetas les levanta un hijo CLI por
+  tarjeta (H7). `target`
   `{kind: "cli", hostId: "gon-pc", adapterId: <perfil>}`, `resultContract:
-  "review.v1"`, `inputRevision` con el sha REAL del head (`git ls-remote` o
-  `gh`; nunca inventado), `continuation` `{kind: "requester"}`, y el brief
+  "review.v1"`, `inputRevision` con el slug `owner/nombre` EXACTO que lista la
+  autoridad (el contrato lo exige así), el sha REAL del head (`git ls-remote`
+  o `gh`; nunca inventado) y `workspace`: la ruta ABSOLUTA del checkout local
+  de ese repo en la PC — es el directorio donde el hijo corre; sin `workspace`
+  la tarjeta se bloquea. `continuation` `{kind: "requester"}`, y el brief
   (instruction_put) con las instrucciones.
 - `assignment` con razón `correction`: mismo carril, el brief lleva los
   `findingsRefs` de la necesidad.

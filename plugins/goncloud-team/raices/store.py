@@ -29,6 +29,19 @@ RENOTICE_MS = decidir.RENOTICE_MS
 TEXTO_DE_OPCION = decidir.TEXTO_DE_OPCION
 digesto = decidir.digesto
 
+# El reclamo del ejecutor de tarjetas (H7): una corrida viva lo retiene y
+# vencido la vuelta siguiente relanza. Un run sano de un perfil de equipo cabe
+# de sobra; si el hijo muere, la espera acotada es el precio de NUNCA dos
+# ejecutores para la misma tarjeta. La segunda barrera es el lease del propio
+# router (subscriptions/router.py: _STAGE_LEASE_SECONDS = 600): un segundo
+# lanzamiento sobre un run aún vivo recibe stage_busy y no toca la tarjeta.
+TTL_LANZAMIENTO_S = 3600
+# El contador de presupuesto (I20) que H7 lleva: cada lanzamiento reserva UNA
+# llamada de modelo contra budget.maxModelCalls. El router no reporta tokens
+# (subscriptions/types.py: InvocationResult no trae usage), así que la cuenta
+# es de llamadas: una reservada por lanzamiento, la unidad mínima cierta.
+CONTADOR_DE_LLAMADAS = "llamadas-modelo"
+
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS raices (
   root_id          TEXT PRIMARY KEY,
@@ -233,6 +246,15 @@ CREATE TABLE IF NOT EXISTS avisos_de_necesidades (
   needs_digest TEXT NOT NULL,
   avisado_at   TEXT NOT NULL,
   PRIMARY KEY (root_id)
+);
+CREATE TABLE IF NOT EXISTS lanzamientos (
+  root_id    TEXT NOT NULL,
+  unit_id    TEXT NOT NULL,
+  attempt    INTEGER NOT NULL CHECK (attempt >= 1),
+  card_id    TEXT NOT NULL,
+  claimed_at TEXT NOT NULL,
+  vence_at   TEXT NOT NULL,
+  PRIMARY KEY (root_id, unit_id, attempt)
 );
 """
 
@@ -2212,6 +2234,163 @@ class Store:
                     "INSERT OR IGNORE INTO flotas VALUES (?,?,?,?,?)",
                     (root_id, unit_id, attempt, _a_json(flota), ahora),
                 )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(True)
+
+    # -- lanzamiento del ejecutor de tarjetas (H7) -------------------------
+
+    def presupuesto_de(self, root_id: str) -> dict:
+        """El budget de la raíz tal como quedó congelado al abrirla."""
+        fila = self._una_fila(
+            "SELECT budget_json FROM raices WHERE root_id = ?", (root_id,)
+        )
+        if fila is None:
+            return {}
+        presupuesto = json.loads(fila["budget_json"])
+        return presupuesto if isinstance(presupuesto, dict) else {}
+
+    def llamadas_modelo(self, root_id: str) -> int:
+        """Las llamadas reservadas hasta ahora: una por lanzamiento."""
+        fila = self._una_fila(
+            "SELECT value FROM contadores WHERE root_id = ? AND counter = ?",
+            (root_id, CONTADOR_DE_LLAMADAS),
+        )
+        return int(fila["value"]) if fila is not None else 0
+
+    def intentos_lanzables(self) -> list:
+        """Los intentos con tarjeta viva que el ejecutor puede estar corriendo:
+        admitted (primer lanzamiento) o running (relanzamiento si el reclamo
+        venció), con su assignment ya parseado para los gates del ticker."""
+        filas = self._conexion.execute(
+            "SELECT root_id, unit_id, attempt, card_id, state, assignment_json"
+            " FROM intentos WHERE card_id IS NOT NULL AND outcome_ref IS NULL"
+            " AND state IN ('admitted', 'running')"
+            " ORDER BY created_at, unit_id, attempt"
+        ).fetchall()
+        return [
+            {
+                "rootId": f["root_id"],
+                "unitId": f["unit_id"],
+                "attempt": f["attempt"],
+                "cardId": f["card_id"],
+                "state": f["state"],
+                "assignment": json.loads(f["assignment_json"]),
+            }
+            for f in filas
+        ]
+
+    def limpiar_lanzamientos(self) -> Ok:
+        """Una transacción con las dos podas: reclamos vencidos y reclamos de
+        intentos que ya no están en pie (reported/terminal no se relanzan)."""
+        self._begin()
+        try:
+            ahora = self.reloj()
+            self._conexion.execute(
+                "DELETE FROM lanzamientos WHERE vence_at <= ?", (ahora,)
+            )
+            self._conexion.execute(
+                "DELETE FROM lanzamientos WHERE EXISTS ("
+                " SELECT 1 FROM intentos i WHERE i.root_id = lanzamientos.root_id"
+                " AND i.unit_id = lanzamientos.unit_id"
+                " AND i.attempt = lanzamientos.attempt"
+                " AND i.state NOT IN ('admitted', 'running'))"
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(True)
+
+    def _vence_el_reclamo(self, ttl_s: int) -> str:
+        momento = decidir.instante(self.reloj()) + timedelta(seconds=int(ttl_s))
+        return momento.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def reclamar_lanzamiento(
+        self, root_id, unit_id, attempt, card_id, ttl_s=TTL_LANZAMIENTO_S
+    ) -> object:
+        """El reclamo atómico del ejecutor (H7): UNA transacción que verifica
+        active, verifica el cupo de maxModelCalls, inserta o renueva el reclamo
+        y reserva UNA llamada. Dos tickers sobre la misma tarjeta: el segundo
+        se lleva reclamo-vivo; sin cupo, sin-cuota y sin reserva. El
+        incrementado del contador dentro de la MISMA transacción es lo que
+        hace al presupuesto exacto en carrera."""
+        self._begin()
+        try:
+            fila = self._una_fila(
+                "SELECT state FROM intentos WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            if fila is None or fila["state"] not in ("admitted", "running"):
+                self._rollback()
+                return Conflicto(
+                    "intento-no-lanzable",
+                    {"state": fila["state"] if fila else None},
+                )
+            vigente = self._una_fila(
+                "SELECT epoch, state FROM controles WHERE root_id = ?"
+                " ORDER BY epoch DESC LIMIT 1",
+                (root_id,),
+            )
+            if vigente is None or vigente["state"] != "active":
+                self._rollback()
+                return Conflicto(
+                    "root-not-active",
+                    {"state": vigente["state"] if vigente else None},
+                )
+            vivo = self._una_fila(
+                "SELECT card_id, vence_at FROM lanzamientos WHERE root_id = ?"
+                " AND unit_id = ? AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            ahora = self.reloj()
+            if vivo is not None and vivo["vence_at"] > ahora:
+                self._rollback()
+                return Conflicto("reclamo-vivo", {"venceAt": vivo["vence_at"]})
+            tope = self.presupuesto_de(root_id).get("maxModelCalls")
+            usadas = self.llamadas_modelo(root_id)
+            if isinstance(tope, bool) or not isinstance(tope, int):
+                self._rollback()
+                return Conflicto("presupuesto-ilegible", {"maxModelCalls": tope})
+            if usadas >= tope:
+                self._rollback()
+                return Conflicto("sin-cuota", {"usadas": usadas, "tope": tope})
+            vence = self._vence_el_reclamo(ttl_s)
+            self._conexion.execute(
+                "INSERT OR REPLACE INTO lanzamientos VALUES (?,?,?,?,?,?)",
+                (root_id, unit_id, attempt, card_id, ahora, vence),
+            )
+            self._conexion.execute(
+                "INSERT INTO contadores VALUES (?,?,1)"
+                " ON CONFLICT(root_id, counter)"
+                " DO UPDATE SET value = value + 1",
+                (root_id, CONTADOR_DE_LLAMADAS),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(True)
+
+    def soltar_lanzamiento(self, root_id, unit_id, attempt) -> Ok:
+        """La contrapartida de un lanzamiento que no llegó a nacer: quita el
+        reclamo y devuelve la llamada reservada, para que la vuelta siguiente
+        reintente sin haber gastado presupuesto."""
+        self._begin()
+        try:
+            self._conexion.execute(
+                "DELETE FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            self._conexion.execute(
+                "UPDATE contadores SET value = value - 1 WHERE root_id = ?"
+                " AND counter = ? AND value > 0",
+                (root_id, CONTADOR_DE_LLAMADAS),
+            )
             self._commit()
         except Exception:
             self._rollback()

@@ -230,7 +230,8 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     permisos = hogar.leer_permisos(home)
     tienda = store.Store(base / "sistema-agentes.db", permisos_h=permisos)
     try:
-        puerto = kanban.KanbanHermes(ruta_del_kanban(base))
+        ruta_kanban = ruta_del_kanban(base)
+        puerto = kanban.KanbanHermes(ruta_kanban)
         try:
             ticker.vuelta(
                 tienda,
@@ -238,6 +239,12 @@ def correr(home=None, ruta_abierta=None, enviar=None):
                 hechos_por_raiz=tienda.hechos_por_raiz(),
                 permisos_h=permisos,
                 home=base,
+                # H7: el lanzador desacoplado de los hijos CLI por tarjeta de
+                # equipo. Sin él las tarjetas de raíz quedan sin corredor (el
+                # despachador nativo solo corre dispatch_profiles).
+                lanzador=importlib.import_module("raices.ejecutor").lanzador_de(
+                    base, ruta_kanban
+                ),
             )
         finally:
             puerto.cerrar()

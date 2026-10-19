@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO / "tests"))
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
 
+ejecutor = importlib.import_module("raices.ejecutor")
 instrucciones = importlib.import_module("raices.instrucciones")
 from yaml_doble import YamlDoble, yaml_real  # noqa: E402
 
@@ -152,6 +153,13 @@ class Base(unittest.TestCase):
         yaml_parche = mock.patch.object(permisos, "yaml", yaml_de_prueba())
         yaml_parche.start()
         self.addCleanup(yaml_parche.stop)
+        # H7: el lanzador real del ejecutor nace hijos desacoplados de verdad
+        # y ningun escenario de este archivo debe correr un modelo. Sin
+        # lanzador la vuelta no lanza nada; el wiring de produccion se prueba
+        # aparte en test_el_cron_lanza_el_ejecutor_desacoplado.
+        sin_lanzador = mock.patch.object(ejecutor, "lanzador_de", return_value=None)
+        sin_lanzador.start()
+        self.addCleanup(sin_lanzador.stop)
 
     PERMISOS = {
         "acciones": ["read", "implement", "review"],
@@ -227,6 +235,41 @@ class Script(Base):
         tarjeta = self.tarjeta_en_el_kanban()
         self.assertIsNotNone(tarjeta)
         self.assertEqual(tarjeta.estado, "pendiente")
+
+    def test_el_cron_lanza_el_ejecutor_desacoplado(self):
+        """El wiring de H7: correr() entrega a la vuelta el lanzador del
+        ejecutor (ejecutor.lanzador_de) y el lanzamiento deja su reclamo y su
+        llamada reservada en el store, para que la vuelta siguiente no
+        relance."""
+        tienda = self.dejar_intencion_pendiente()
+        self.instalar_permisos()
+        tienda.cerrar()
+        fabricados = []
+
+        def lanzador_falso(base, ruta_kanban):
+            fabricados.append((str(base), str(ruta_kanban)))
+
+            def lanzar(root_id, unit_id, attempt, card_id):
+                return {"pid": 7}
+
+            return lanzar
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida = StringIO()
+        with redirect_stdout(salida):
+            with mock.patch.object(ejecutor, "lanzador_de", side_effect=lanzador_falso):
+                codigo = cron.correr(
+                    ruta_abierta=lambda: (True, None), enviar=lambda _texto: 42
+                )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(fabricados, [(str(self.home), str(self.home / "kanban.db"))])
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(self.home / "sistema-agentes.db")
+        self.addCleanup(tienda.cerrar)
+        fila = tienda._una_fila("SELECT * FROM lanzamientos")
+        self.assertIsNotNone(fila)
+        self.assertEqual(fila["unit_id"], "a")
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
 
     def test_sin_permisos_json_la_vuelta_no_despacha_y_falla_cerrado(self):
         tienda = self.dejar_intencion_pendiente()
