@@ -250,48 +250,47 @@ leaves the mark in `running`; one more `resume` produces a fresh outcome. A
 `running` mark is read through its pid (encargo H punto 4): the marked
 process must predate its own mark, so a dead pid — or one recycled by a
 process born after the mark — reads as a stopped driver, while a live pid
-keeps the close refused and a relaunch queued. A `running` mark without a
-usable pid has no driver behind it — every driver signs its launch and its
-report — so it reads as driverless (review F12): the chain stays closable
-and relaunchable instead of jamming the repository, and an unreadable
-result file reads the same way (a foreign state: every write is atomic).
+keeps the close refused and a relaunch answered busy. The report signs the
+same `started_at` stamp as the launch mark (review F18), so a recycled pid
+reads dead even there. A `running` mark without a usable pid has no driver
+behind it — every driver signs its launch and its report — so it reads as
+driverless (review F12): the chain stays closable and relaunchable instead
+of jamming the repository, and an unreadable result file reads the same
+way (a foreign state: every write is atomic). The pid check itself only
+accepts "no such process" (ps exits non-zero with nothing to say) as a
+dead pid; a ps that fails otherwise — an option it does not serve — is
+unchecked ground and the mark reads live (review F19).
 Relaunching is retrying (encargo H punto 1): a run whose request key lands
 on a chain with blocked stages and a stopped driver unblocks those stages
 with the native unblock and opens a new attempt generation for each, so the
 router calls the model again instead of replaying the recorded result. Done
 stages are respected; reviewer stages stay closed (the two-round ceiling and
-its durable decision are contracts); there is no retry cap.
+its durable decision are contracts); there is no retry cap. A read-only
+stage (scout/ingenieria) blocked by the mutation guard keeps its block
+across relaunches (cr:4314695530) — its own block reason says the stage
+changed the repository it must only read, and retrying would run it again
+over its own edit: it stays blocked until the owner reverts.
 Delivery closes the director root after all stages and review gates finish.
-`WorkflowService.start` no longer refuses when a repository already has an
-active chain (encargo H punto 2): a chain whose driver already stopped is
-closed automatically with the same native path `goncloud_local_close` uses
-(the not-done stages archived, the reason left as a close comment), and the
-new chain starts; a chain whose driver may still be working — a running
-stage, a live subscription lease, or a live running mark — leaves the new
-one queued instead of failing, and the old chain's driver launches the
-queue's head itself (FIFO by `queued_at`, one chain) when it writes a
-repo-freeing final outcome — `running` (the stage belongs to another
-owner) frees nothing, so it launches nothing (r5 punto 4); the next run
-(or `resume`) is only the fallback. Two drivers never edit the same
-checkout at once.
-The queue has ONE source of truth (r5 punto 1): the chain's result file. A
-chain is queued exactly while its last write reads
-`{"outcome": "queued", "behind": <id>, "queued_at": <iso>}` — `start`
-writes it when the new chain must wait, and a launched driver whose
-`resume` finds the repository still busy writes it again itself (r5 punto
-2), so a relaunched chain goes back to the queue instead of stranding.
-"queued" is a known no-driver state (r5 punto 3): `goncloud_local_close`
-takes it out of the queue, `goncloud_local_status` announces the close,
-the automatic close never archives it, and it holds no driver — a new key
-starts without waiting behind it, and its own relaunch re-queues it
-behind live work. The launch itself overwrites the record with the
-running mark (review F13): a launched chain reads as exactly what its
-driver last wrote, nothing else.
+The repository keeps ONE active chain, and the queue is gone (decisión del
+lead, r6 — it produced a new High every round: F16, F17, F20). The
+contract of `start` / `goncloud_local_run` on a repository that already
+has a chain: (a) the other chain carries stop evidence — a final outcome,
+a dead or recycled pid, a pidless running mark — and it closes itself
+automatically (atomic, the same native path `goncloud_local_close` uses)
+while the new chain starts; (b) the other chain is still alive and
+NOTHING is created — the answer is clear, without a generic error:
+`{"busy": true, "repo": ..., "cadena_viva": <id>, "mensaje": "El repo ya
+tiene la cadena <id> trabajando; cuando termine te llega su aviso y la
+relanzas"}`. Relaunching the live chain's own request key spawns no second
+driver and answers the same busy. Two drivers never edit the same checkout
+at once: the launch guard refuses a live chain's own relaunch, and the
+aviso a claw (encargo H) is what asks for the relaunch when the chain
+frees the repository.
 The claw profile can still release a chain with `goncloud_local_close`
 (`workflow_id`, `reason`): the tool requires durable evidence that the
 driver is gone — one
-of the durable no-driver outcomes (paused, blocked, waiting, error or
-queued) as
+of the driver's own stopped outcomes (paused, blocked, waiting or error)
+as
 the result file's last write, a running mark whose pid is gone, and no live
 subscription lease — and it
 archives the root and the stages that are not done through the native

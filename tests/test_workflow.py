@@ -161,29 +161,29 @@ class WorkflowTestCase(unittest.TestCase):
         self.assertEqual([kind for kind, _ in outcomes].count("ok"), 2)
         self.assertEqual([kind for kind, _ in outcomes].count("error"), 0)
         with connect_closing(self.db_path) as conn:
-            self.assertEqual(len(list_tasks(conn, include_archived=True)), 16)
+            self.assertEqual(len(list_tasks(conn, include_archived=True)), 8)
             roots = [
                 task
                 for task in list_tasks(conn, include_archived=True)
                 if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
             ]
-        self.assertEqual(len(roots), 2)
-        # Review F2: neither root carries driver evidence — no mark, no
-        # lease — and since F2 "no evidence" no longer reads as "driver
-        # stopped": the loser stays a chain and queues behind the winner's.
-        self.assertEqual(sum(task.status == "archived" for task in roots), 0)
-        queued = [
-            result
-            for kind, result in outcomes
-            if kind == "ok" and result.get("queued_behind")
+        self.assertEqual(len(roots), 1, "the loser created nothing")
+        # One root is the winner's chain; the loser's busy answer names it.
+        busy = [
+            result for kind, result in outcomes if kind == "ok" and result.get("busy")
         ]
-        self.assertEqual(len(queued), 1)
         winner = next(
             result
             for kind, result in outcomes
-            if kind == "ok" and not result.get("queued_behind")
+            if kind == "ok" and not result.get("busy")
         )
-        self.assertEqual(queued[0]["queued_behind"], winner["workflow_id"])
+        self.assertEqual(len(busy), 1)
+        self.assertEqual(busy[0]["cadena_viva"], winner["workflow_id"])
+        self.assertEqual(
+            sum(task.status == "archived" for task in roots),
+            0,
+            "nobody archives anybody in the race",
+        )
 
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")

@@ -91,13 +91,12 @@ def _transport_handlers(ctx):
                     arguments.get("affects_business_rules", False)
                 ),
             )
-            if created.get("queued_behind") is not None:
-                # Encargo H punto 2: the repository still has a live chain;
-                # the new one waits in queue instead of failing, and the
-                # next run (or resume) starts it when the old one finishes.
-                # No driver is spawned over the busy checkout.
+            if created.get("busy"):
+                # Contrato r6: el repo ya tiene una cadena viva — no se
+                # creó nada y la respuesta va clara a claw, que relanza
+                # cuando le llegue el aviso de la cadena viva.
                 return json.dumps(
-                    {**created, "queued": True, "driver_pid": None},
+                    created,
                     ensure_ascii=False,
                     sort_keys=True,
                     default=str,
