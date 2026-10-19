@@ -136,7 +136,11 @@ class ToolsDirectoryTests(unittest.TestCase):
         if args[0] == "icacls" and args[2:3] == ("/grant",):
             return completed(args, "processed file: " + args[1] + "\n")
         if args[0] == "icacls":
-            name = Path(args[1]).name
+            # Sin pathlib aqui: el patch de os.name que envuelve a
+            # ensure_tools_executable es GLOBAL (module.os es el modulo os),
+            # y en Python <= 3.12 Path() intenta WindowsPath dentro del
+            # parche -> NotImplementedError en POSIX. Basename por string.
+            name = args[1].replace("\\", "/").rsplit("/", 1)[-1]
             if name.startswith("python"):
                 return completed(args, PROTECTED)
             if name == "git":

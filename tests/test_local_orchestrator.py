@@ -8,9 +8,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +20,8 @@ sys.path.insert(0, str(Path.home() / "AppData/Local/hermes/hermes-agent"))
 sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+import local_orchestrator as local_orchestrator_module  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
     archive_task,
@@ -25,21 +29,24 @@ from hermes_cli.kanban_db import (  # noqa: E402
     create_task,
     get_task,
     list_comments,
+    list_events,
     list_runs,
     list_tasks,
 )
 from hermes_cli.kanban_db_connect import connect_closing, write_txn  # noqa: E402
-from workflow import WorkflowError, WorkflowService  # noqa: E402
-from subscriptions.router import SubscriptionRouter  # noqa: E402
-from subscriptions.state import SubscriptionStateStore  # noqa: E402
-from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from local_orchestrator import (  # noqa: E402
     LocalOrchestrator,
     close_hint,
     parse_terminal_envelope,
 )
-import local_orchestrator as local_orchestrator_module  # noqa: E402
-from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+from subscriptions.router import SubscriptionRouter  # noqa: E402
+from subscriptions.state import SubscriptionStateStore  # noqa: E402
+from subscriptions.types import (  # noqa: E402
+    AdapterHealth,
+    FailureKind,
+    InvocationResult,
+)
+from workflow import WorkflowError, WorkflowService  # noqa: E402
 
 SOURCES = [{"reference": "owner-approved local test", "observed_at": "2026-09-14"}]
 
@@ -227,9 +234,8 @@ class TerminalParserTests(unittest.TestCase):
             "Prose." + "```json\n" + json.dumps({"status": "completed"}) + "\n```",
             "Prose." + "```python\n{}\n```",
         ):
-            with self.subTest(text=text):
-                with self.assertRaises(WorkflowError):
-                    parse_terminal_envelope(text, role="ingenieria")
+            with self.subTest(text=text), self.assertRaises(WorkflowError):
+                parse_terminal_envelope(text, role="ingenieria")
 
     def test_malformed_trailing_multiple_objects_and_wrong_fences_fail_closed(self):
         valid = fenced(envelope())
@@ -245,9 +251,8 @@ class TerminalParserTests(unittest.TestCase):
             valid + "\n```text\nOK\n```",
             valid + "\n```json\n{}\n```",
         ):
-            with self.subTest(text=text):
-                with self.assertRaises(WorkflowError):
-                    parse_terminal_envelope(text, role="scout")
+            with self.subTest(text=text), self.assertRaises(WorkflowError):
+                parse_terminal_envelope(text, role="scout")
 
     def test_schema_types_duplicate_keys_and_nonfinite_values_are_rejected(self):
         invalid = [
@@ -433,7 +438,9 @@ class TransportEntryPointTests(unittest.TestCase):
 
     def test_launch_detached_carries_a_stop_after_stage_to_the_driver(self):
         # A read-only inspection stops after scout instead of running seven
-        # stages; the stage name is an identifier, so argv may carry it.
+        # stages; the stage name is an identifier, so argv may carry it. The
+        # launch's run id rides argv too (the driver uses it to recognize
+        # its own launch's mark).
         created = self.orchestrator.create(**self.assignment())
         launched = {}
 
@@ -450,7 +457,8 @@ class TransportEntryPointTests(unittest.TestCase):
                     created["workflow_id"], home=self.root, stop_after="nope"
                 )
 
-        self.assertEqual(launched["argv"][-1], "scout")
+        self.assertEqual(launched["argv"][-2], "scout")
+        self.assertTrue(launched["argv"][-1])
 
     def test_create_derives_the_revision_from_the_expanded_repository_path(self):
         home = self.root / "home"
@@ -546,9 +554,9 @@ class DriverBootstrapTests(unittest.TestCase):
     def write_plugin(self, header):
         (self.plugin / "local_orchestrator.py").write_text(
             header + "class LocalOrchestrator:\n"
-            "    def resume(self, workflow_id, stop_after=None):\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
             "        return {'workflow_id': workflow_id, 'outcome': 'completed',\n"
-            "                'stop_after': stop_after}\n",
+            "                'stop_after': stop_after, 'launch_run_id': launch_run_id}\n",
             encoding="utf-8",
         )
 
@@ -674,7 +682,7 @@ class DriverBootstrapTests(unittest.TestCase):
             "\n"
             "\n"
             "class LocalOrchestrator:\n"
-            "    def resume(self, workflow_id, stop_after=None):\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
             "        report = {'workflow_id': workflow_id, 'outcome': 'delivered',\n"
             "                  'run_id': 'feedc0de', 'stages': {}}\n"
             "        driver._write_result(workflow_id, report, home="
@@ -828,6 +836,62 @@ class _OrchestratorHarness(unittest.TestCase):
             json.dumps({"workflow_id": workflow_id, "outcome": outcome}),
             encoding="utf-8",
         )
+
+    def write_mark(self, workflow_id, mark):
+        results = self.root / "goncloud-local"
+        results.mkdir(exist_ok=True)
+        (results / f"{workflow_id}.json").write_text(json.dumps(mark), encoding="utf-8")
+
+    @staticmethod
+    def running_mark(pid, *, started_at=None):
+        return {
+            "workflow_id": "wf",
+            "outcome": "running",
+            "run_id": "mark-run",
+            "pid": pid,
+            "started_at": started_at
+            or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    def sleeper(self):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        )
+        # Cleanups unwind LIFO: kill first, then the reaping wait — the
+        # other order waited out the sleeper's full sleep in every test
+        # that used it.
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process
+
+    @staticmethod
+    def recording_popen(spawned, pid=4242):
+        """A Popen double that records argv and survives subprocess.run:
+        the ps query inside the pid check opens its own Popen in a with
+        and talks to it (communicate/kill)."""
+
+        def double(argv, **kwargs):
+            spawned.append(argv)
+            return type(
+                "P",
+                (),
+                {
+                    "pid": pid,
+                    "returncode": 0,
+                    "args": argv,
+                    "__enter__": lambda self: self,
+                    "__exit__": lambda self, *exc: None,
+                    "communicate": lambda self, input=None, timeout=None: (
+                        "",
+                        "",
+                    ),
+                    "kill": lambda self: None,
+                    "wait": lambda self, timeout=None: 0,
+                    "poll": lambda self: 0,
+                },
+            )()
+
+        return double
 
     def close(self, workflow_id, **kwargs):
         kwargs.setdefault("home", self.root)
@@ -1135,11 +1199,13 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
     def test_terminal_task_failure_survives_crash_without_reinvocation(self):
         self.responses["scout"] = "malformed"
-        with patch.object(
-            self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+        with (
+            patch.object(
+                self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+            ),
+            self.assertRaises(KeyboardInterrupt),
         ):
-            with self.assertRaises(KeyboardInterrupt):
-                self.start()
+            self.start()
         request = self.requests[0]
         result = self.orchestrator.resume(request.workflow_id)
         self.assertEqual(result["outcome"], "blocked")
@@ -1170,9 +1236,9 @@ class LocalOrchestratorTests(_OrchestratorHarness):
             patch.object(
                 self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
             ),
+            self.assertRaises(KeyboardInterrupt),
         ):
-            with self.assertRaises(KeyboardInterrupt):
-                self.start()
+            self.start()
         request = self.requests[0]
         self.router.store.save_health(
             "opencode_go", ready=True, account_class="subscription"
@@ -1715,16 +1781,24 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         result = self.start()
         self.assertEqual(result["outcome"], "blocked")
         self.assertEqual([r.role for r in self.requests], ["scout"])
+        # Encargo H punto 1: a relaunch is a retry — the resume unblocks the
+        # stage, opens a fresh attempt generation and calls the model again;
+        # with the model still answering blocked, the chain blocks again.
         self.orchestrator.resume(result["workflow_id"])
-        self.assertEqual(len(self.requests), 1)
+        self.assertEqual([r.role for r in self.requests], ["scout", "scout"])
+        self.assertEqual(
+            self.orchestrator.status(result["workflow_id"])["outcome"], "blocked"
+        )
 
     def test_final_envelope_after_2000_chars_survives_restart_before_completion(self):
         self.responses["scout"] = "raw-log-secret " * 300 + "\n" + fenced(envelope())
-        with patch.object(
-            self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+        with (
+            patch.object(
+                self.orchestrator, "_finish_stage", side_effect=KeyboardInterrupt
+            ),
+            self.assertRaises(KeyboardInterrupt),
         ):
-            with self.assertRaises(KeyboardInterrupt):
-                self.start(stop_after="scout")
+            self.start(stop_after="scout")
         with connect_closing(self.db) as conn:
             root = next(task for task in list_tasks(conn) if task.assignee == "claw")
         result = LocalOrchestrator(service_factory=self.service).resume(root.id)
@@ -2128,23 +2202,27 @@ class LocalCloseTests(_OrchestratorHarness):
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, first["workflow_id"]).status, "todo")
         # An outcome that is not a stop ("running" is a live driver talking,
-        # not one that quit) refuses too; the paused stop goes through.
-        self.write_driver_outcome(first["workflow_id"], "running")
+        # not one that quit) refuses too; the paused stop goes through. The
+        # mark carries a live pid — since review F12 a pidless running mark
+        # reads as driverless, never as a live driver.
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
         self.assertIsNone(
             self.orchestrator.close_hint(first["workflow_id"], home=self.root)
         )
         with self.assertRaisesRegex(WorkflowError, "driver"):
             self.close(first["workflow_id"], reason="no")
-        # Live review F8: an illegible file proves nothing either — the
-        # close fails closed, like a driver that may still be running.
+        # Live review F8, overturned by review F12: an illegible file is a
+        # foreign state — every driver write is atomic — and it reads as no
+        # driver at all, so the status announces the close and the chain
+        # stays recoverable instead of jamming the repository.
         (self.root / "goncloud-local" / f"{first['workflow_id']}.json").write_text(
             "{broken", encoding="utf-8"
         )
-        self.assertIsNone(
-            self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root),
         )
-        with self.assertRaisesRegex(WorkflowError, "driver"):
-            self.close(first["workflow_id"], reason="no")
         self.write_driver_outcome(first["workflow_id"], "paused")
         self.assertEqual(
             self.close(first["workflow_id"], reason="ya paro")["outcome"], "closed"
@@ -2156,11 +2234,13 @@ class LocalCloseTests(_OrchestratorHarness):
         # "paused" was still there, so the close archived a live chain.
         # Every driver start now overwrites the file with a running mark
         # (its own run id) before any stage, and the close and the hint
-        # refuse until that driver's own outcome is the last write.
+        # refuse until that driver's own outcome is the last write. The
+        # fake driver carries this process's pid: a live one, exactly what
+        # a real Popen returns.
         first = self.paused()
         with patch(
             "local_orchestrator.subprocess.Popen",
-            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+            lambda *args, **kwargs: type("P", (), {"pid": os.getpid()})(),
         ):
             self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
         mark = json.loads(
@@ -2183,11 +2263,13 @@ class LocalCloseTests(_OrchestratorHarness):
     def test_the_relaunched_driver_paused_outcome_closes(self):
         # Live review F8 (2): the same relaunched driver quits paused — its
         # outcome, written under the run id it started with, is now the last
-        # write: the hint announces the close and the close accepts it.
+        # write: the hint announces the close and the close accepts it. The
+        # fake driver pid is this process: the resume guard reads its mark
+        # as a previous sequential run, not another driver.
         first = self.paused()
         with patch(
             "local_orchestrator.subprocess.Popen",
-            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+            lambda *args, **kwargs: type("P", (), {"pid": os.getpid()})(),
         ):
             self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
         report = self.orchestrator.resume(
@@ -2214,10 +2296,18 @@ class LocalCloseTests(_OrchestratorHarness):
         # Live review F8 (3): launch_detached marks the file running before
         # spawning the driver, and the CLI resume marks it through the same
         # orchestrator resume — in both cases before the first stage runs.
+        # The fake driver pid is a real, already-harvested process: the CLI
+        # subprocess resume must read the mark as a stopped driver and
+        # proceed (with review F19, an out-of-range pid would read
+        # unchecked, i.e. live).
         first = self.paused()
-        with patch(
-            "local_orchestrator.subprocess.Popen",
-            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+        dead = self.sleeper()
+        dead.kill()
+        dead.wait()
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen([], pid=dead.pid),
         ):
             launched = self.orchestrator.launch_detached(
                 first["workflow_id"], home=self.root
@@ -2325,10 +2415,14 @@ class LocalCloseTests(_OrchestratorHarness):
         with self.assertRaisesRegex(WorkflowError, "delivered"):
             self.close(first["workflow_id"], reason="no")
 
-    def test_a_triage_root_without_graph_closes_and_frees_the_repository(self):
+    def test_a_triage_root_without_graph_answers_busy_until_closed(self):
         # Live review F3: workflow.py inserts the root in triage and
-        # decomposes afterwards; a failure in between leaves a root that
-        # blocks the repository forever, with no driver and no stages.
+        # decomposes afterwards; a failure in between leaves a root with
+        # no driver and no stages. Regla simple A: una raíz en triage sin
+        # hijos NO es evidencia de parada — es una cadena naciendo — así
+        # que start no la archiva: contesta busy con su id, sin crear
+        # nada, y goncloud_local_close (que sí acepta la raíz sin driver)
+        # la libera; entonces la siguiente clave arranca.
         contract = "GONCLOUD_ENGINEERING_V1\n" + json.dumps(
             {
                 "request_key": "stuck-triage",
@@ -2353,26 +2447,916 @@ class LocalCloseTests(_OrchestratorHarness):
                 triage=True,
                 idempotency_key="goncloud-workflow:stuck-triage",
             )
-        with self.assertRaisesRegex(WorkflowError, "already has active"):
-            self.start(request_key="otra-cadena")
-
-        self.assertIsNone(self.orchestrator.close_hint(root_id, home=self.root))
-        receipt = self.close(root_id, reason="descomposicion fallida")
-        self.assertEqual(receipt["outcome"], "closed")
-        self.assertEqual(receipt["archived_stages"], [])
-        self.assertEqual(receipt["done_stages"], [])
         with connect_closing(self.db) as conn:
-            self.assertEqual(get_task(conn, root_id).status, "archived")
-        # The repository accepts new chains again.
-        created = self.orchestrator.create(
-            request_key="next-after-triage",
+            before = len(list_tasks(conn, include_archived=True))
+
+        busy = self.orchestrator.create(
+            request_key="otra-cadena",
             repository=str(self.repo),
             revision="baseline",
             instruction="Inspect again.",
             sources=SOURCES,
             max_steps=5,
         )
-        self.assertNotEqual(created["workflow_id"], root_id)
+
+        self.assertTrue(busy.get("busy"))
+        self.assertEqual(busy["cadena_viva"], root_id)
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                len(list_tasks(conn, include_archived=True)),
+                before,
+                "busy creates nothing",
+            )
+            self.assertEqual(get_task(conn, root_id).status, "triage")
+
+        # The explicit close releases the driverless root; the next key
+        # then starts clean.
+        receipt = self.close(root_id, reason="descomposicion fallida")
+        self.assertEqual(receipt["outcome"], "closed")
+        created = self.orchestrator.create(
+            request_key="otra-cadena",
+            repository=str(self.repo),
+            revision="baseline",
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertIsNone(created.get("busy"))
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, root_id).status, "archived")
+
+
+class RetryAndQueueTests(_OrchestratorHarness):
+    """Encargo H: relanzar = reintentar; driver muerto ≠ driver vivo.
+    r6: sin cola — el repo ocupado contesta busy con la cadena viva, y el
+    aviso a claw pide relanzarla.
+    """
+
+    def test_a_relaunched_blocked_stage_calls_the_model_again_and_advances(self):
+        self.responses["scout"] = fenced(envelope(status="blocked"))
+        first = self.start()
+        self.assertEqual(first["outcome"], "blocked")
+        scout_id = first["stages"]["scout"]["id"]
+        self.assertEqual(
+            self.router.store.current_generation(first["workflow_id"], scout_id), 0
+        )
+        del self.responses["scout"]
+
+        again = self.start()
+
+        self.assertEqual(again["workflow_id"], first["workflow_id"])
+        self.assertEqual(again["outcome"], "delivered")
+        self.assertEqual([r.role for r in self.requests], ["scout"] + ORDER)
+        self.assertEqual(
+            self.router.store.current_generation(first["workflow_id"], scout_id), 1
+        )
+        attempts = self.router.store.stage_attempts(first["workflow_id"], scout_id)
+        self.assertEqual(len(attempts), 1, "the router sees only the new generation")
+
+    def test_the_retry_never_touches_done_stages_or_the_review_ceiling(self):
+        self.reviews = [{"decision": "reject", "severity": "medium"}]
+        first = self.start()
+        self.assertEqual(first["outcome"], "blocked")
+        reviewer_id = first["stages"]["reviewer"]["id"]
+        calls = len(self.requests)
+
+        again = self.orchestrator.resume(first["workflow_id"])
+
+        self.assertEqual(again["outcome"], "blocked")
+        self.assertEqual(len(self.requests), calls)
+        self.assertEqual(
+            self.router.store.current_generation(first["workflow_id"], reviewer_id),
+            0,
+            "the reviewer's two-round ceiling is a contract, not a jam",
+        )
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["stages"]["scout"]["id"]).status, "done"
+            )
+
+    # (b) — encargo H punto 2
+    def test_a_stopped_chain_is_auto_closed_when_a_new_chain_starts(self):
+        first = self.paused()
+
+        second = self.start(request_key="second-chain")
+
+        self.assertNotEqual(second["workflow_id"], first["workflow_id"])
+        self.assertEqual(second["outcome"], "delivered")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            self.assertEqual(
+                get_task(conn, first["stages"]["scout"]["id"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, first["stages"]["entrega"]["id"]).status, "archived"
+            )
+            # The same native audit trail archive_task leaves (review F14):
+            # one "archived" event per archived member, none for done ones.
+            self.assertIn(
+                "archived",
+                [event["kind"] for event in list_events(conn, first["workflow_id"])],
+            )
+            self.assertIn(
+                "archived",
+                [
+                    event["kind"]
+                    for event in list_events(conn, first["stages"]["entrega"]["id"])
+                ],
+            )
+            self.assertNotIn(
+                "archived",
+                [
+                    event["kind"]
+                    for event in list_events(conn, first["stages"]["scout"]["id"])
+                ],
+            )
+            comentarios = [c.body for c in list_comments(conn, first["workflow_id"])]
+        self.assertTrue(
+            any("GONCLOUD_LOCAL_CLOSE_V1" in body for body in comentarios),
+            "the automatic close leaves the same close receipt",
+        )
+        self.assertTrue(
+            any("freed for a new chain" in body for body in comentarios),
+            "the automatic close leaves the reason",
+        )
+
+    # (c) — encargo H punto 2
+    def test_a_live_chain_answers_busy_until_it_finishes(self):
+        first = self.paused()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        stage_id = first["stages"]["ingenieria"]["id"]
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"], stage_id, owner="driver-live", lease_seconds=900
+            )
+        )
+
+        busy = self.start(request_key="second-chain")
+
+        self.assertTrue(busy["busy"], "the new chain is not created")
+        self.assertEqual(busy["cadena_viva"], first["workflow_id"])
+        self.assertEqual(
+            [r.role for r in self.requests],
+            ["scout"],
+            "no model runs over a busy repository",
+        )
+
+        store.release_stage(first["workflow_id"], stage_id, "driver-live")
+        second = self.start(request_key="second-chain")
+
+        self.assertEqual(second["outcome"], "delivered")
+        self.assertEqual(len(self.requests), 1 + len(ORDER))
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            comentarios = [c.body for c in list_comments(conn, first["workflow_id"])]
+        self.assertTrue(any("GONCLOUD_LOCAL_CLOSE_V1" in body for body in comentarios))
+
+    def test_a_missing_store_does_not_jam_the_new_chain(self):
+        first = self.paused()
+
+        with patch.dict(
+            os.environ,
+            {"GONCLOUD_SUBSCRIPTION_DB": str(self.root / "no-router" / "routes.db")},
+        ):
+            second = self.start(request_key="second-chain")
+
+        self.assertEqual(
+            second["outcome"],
+            "delivered",
+            "the chain starts even though the router store is absent",
+        )
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            comentarios = [c.body for c in list_comments(conn, first["workflow_id"])]
+        self.assertTrue(any("GONCLOUD_LOCAL_CLOSE_V1" in body for body in comentarios))
+
+    # review F12 — el outcome running de _report firma su pid y uno muerto
+    # reintenta; sin pid no hay driver que lo respalde y no atasca nada.
+    def test_a_report_running_mark_with_a_dead_pid_retries(self):
+        first = self.paused()
+        report = self.orchestrator._report(
+            first["workflow_id"], "running", home=self.root, run_id="busy-run"
+        )
+        result_file = self.root / "goncloud-local" / f"{first['workflow_id']}.json"
+        written = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertEqual(written["outcome"], "running")
+        self.assertEqual(written["pid"], os.getpid(), "the report signs its writer")
+        self.assertEqual(report["pid"], os.getpid())
+
+        spawned = []
+
+        def recording_popen(argv, **kwargs):
+            spawned.append(argv)
+            # Context-manager protocol: the ps query inside the pid check
+            # goes through subprocess.run, which opens its Popen in a with.
+            return type(
+                "P",
+                (),
+                {
+                    "pid": 4242,
+                    "__enter__": lambda self: self,
+                    "__exit__": lambda self, *exc: None,
+                },
+            )()
+
+        # A live driver of the same chain (a foreign pid, like production:
+        # the driver signs, the gateway launches) answers busy. The
+        # liveness verdict is pinned per block (epoch 0 = a process
+        # born long before its mark; None = proven gone) — the verdict
+        # machinery itself has its own tests.
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+        with (
+            patch.object(
+                local_orchestrator_module.subprocess, "Popen", recording_popen
+            ),
+            patch.object(
+                local_orchestrator_module, "_process_start_epoch", lambda pid: 0
+            ),
+        ):
+            busy = self.orchestrator.launch_detached(
+                first["workflow_id"], home=self.root
+            )
+        self.assertTrue(busy["busy"])
+        self.assertEqual(busy["cadena_viva"], first["workflow_id"])
+        self.assertEqual(spawned, [], "no driver spawns over a live one")
+
+        # The driver dies — exactly what a finished driver leaves behind:
+        # the same key relaunches the driver instead of answering busy
+        # forever.
+        live.kill()
+        live.wait()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+        with (
+            patch.object(
+                local_orchestrator_module.subprocess, "Popen", recording_popen
+            ),
+            patch.object(
+                local_orchestrator_module, "_process_start_epoch", lambda pid: None
+            ),
+        ):
+            relaunched = self.orchestrator.launch_detached(
+                first["workflow_id"], home=self.root
+            )
+        self.assertEqual(relaunched["driver_pid"], 4242)
+        self.assertEqual(len(spawned), 1, "the same-key relaunch spawns the driver")
+
+    def test_a_pidless_running_mark_jams_nothing(self):
+        # F12: una marca running sin pid ya no lee como driver vivo — la
+        # clave nueva del mismo repo arranca y la vieja se cierra sola.
+        first = self.paused()
+        self.write_mark(
+            first["workflow_id"],
+            {"workflow_id": first["workflow_id"], "outcome": "running"},
+        )
+
+        second = self.start(request_key="second-chain")
+
+        self.assertEqual(
+            second["outcome"],
+            "delivered",
+            "the new key starts; the pidless mark is nobody's driver",
+        )
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+
+    # review F13 — una sola fuente de verdad: lanzada la cadena, su archivo
+    # pasa a decir "running" (marca viva) y deja de leerse como cola; close
+    # y close_hint leen lo mismo que el lanzador escribió.
+    # F13-equivalente r6 — una cadena lanzada tiene su marca viva como
+    # última escritura: ni close ni close_hint la archivan entre etapas.
+    def test_a_launched_chain_refuses_the_close_while_its_driver_is_live(self):
+        live = self.sleeper()
+        second = self.paused(request_key="second-chain")
+        self.write_mark(second["workflow_id"], self.running_mark(live.pid))
+
+        # The launch's running mark (this double's live pid) is the life
+        # signal: between stages — no lease, no running stage — the chain
+        # refuses the close and the status announces nothing.
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen([], pid=live.pid),
+        ):
+            self.orchestrator.launch_detached(second["workflow_id"], home=self.root)
+
+        self.assertIsNone(
+            self.orchestrator.close_hint(second["workflow_id"], home=self.root)
+        )
+        with self.assertRaisesRegex(WorkflowError, "refuses"):
+            self.close(second["workflow_id"], reason="entre etapas")
+        # Y cuando el driver de la cadena muere, el mismo archivo pasa a ser
+        # la evidencia de parada: el close ya la archiva (contrato 2).
+        live.kill()
+        live.wait()
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(second["workflow_id"], home=self.root),
+        )
+        receipt = self.close(second["workflow_id"], reason="driver muerto")
+        self.assertEqual(receipt["outcome"], "closed")
+
+    # contrato r6 (1) — repo con cadena viva: la herramienta contesta busy
+    # con su id y no construye nada.
+    def test_the_local_run_handler_answers_busy_without_spawning(self):
+        first = self.paused()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"],
+                first["stages"]["ingenieria"]["id"],
+                owner="driver-live",
+                lease_seconds=900,
+            )
+        )
+        with connect_closing(self.db) as conn:
+            before = len(list_tasks(conn, include_archived=True))
+        plugin = _plugin_package()
+        registered = {}
+
+        class Ctx:
+            profile_name = "claw"
+
+            def register_tool(self, **kwargs):
+                registered[kwargs["name"]] = kwargs
+
+            def register_hook(self, name, hook):
+                pass
+
+        plugin.register(Ctx())
+        handler = registered["goncloud_local_run"]["handler"]
+        environment = {
+            "HERMES_KANBAN_DB": str(self.db),
+            "GONCLOUD_SUBSCRIPTION_DB": str(self.root / "routes.db"),
+            "HERMES_HOME": str(self.root),
+        }
+        with patch.dict(os.environ, environment):
+            with patch("local_orchestrator.subprocess.Popen") as popen:
+                result = json.loads(
+                    handler(
+                        {
+                            "request_key": "second-chain",
+                            "repository": str(self.repo),
+                            "revision": "baseline",
+                            "instruction": "Inspect again.",
+                            "sources": SOURCES,
+                            "max_steps": 5,
+                        }
+                    )
+                )
+        popen.assert_not_called()
+        self.assertTrue(result["busy"])
+        self.assertEqual(result["cadena_viva"], first["workflow_id"])
+        self.assertIn("relanzas", result["mensaje"])
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                len(list_tasks(conn, include_archived=True)),
+                before,
+                "busy creates nothing",
+            )
+
+    def test_launch_detached_never_spawns_over_a_live_driver_of_the_same_chain(
+        self,
+    ):
+        first = self.paused()
+        pid = self.sleeper().pid
+        self.write_mark(first["workflow_id"], self.running_mark(pid))
+
+        launched = self.orchestrator.launch_detached(
+            first["workflow_id"], home=self.root
+        )
+
+        self.assertTrue(launched.get("busy"))
+        self.assertEqual(launched["cadena_viva"], first["workflow_id"])
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["pid"], pid, "the live mark stays untouched")
+
+    # punto 4 — driver muerto ≠ driver vivo
+    def test_a_running_mark_with_a_dead_pid_is_stop_evidence(self):
+        # Marca running con un pid comprobadamente muerto (un proceso real,
+        # ya cosechado): close acepta y el relanzamiento reintenta (encargo
+        # H punto 4). Con review F19 el pid es real: macOS le dice
+        # "process id too large" a uno fuera de rango, y eso es
+        # incomprobable, no muerto.
+        self.responses["scout"] = fenced(envelope(status="blocked"))
+        first = self.start()
+        self.assertEqual(first["outcome"], "blocked")
+        dead = self.sleeper()
+        dead.kill()
+        dead.wait()
+        self.write_mark(first["workflow_id"], self.running_mark(dead.pid))
+
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root),
+        )
+        del self.responses["scout"]
+        again = self.orchestrator.resume(first["workflow_id"], home=self.root)
+
+        self.assertEqual(again["outcome"], "delivered")
+        # La etapa scout estaba bloqueada y el relanzamiento la reabre:
+        # scout corre otra vez (generación nueva) y luego el resto.
+        self.assertEqual([r.role for r in self.requests], ["scout"] + ORDER)
+
+    def test_a_recycled_pid_reads_as_a_dead_driver(self):
+        # El pid existe, pero nació mucho después de la marca: el pid se
+        # recicló y el driver marcado ya no está.
+        first = self.paused()
+        self.write_mark(
+            first["workflow_id"],
+            self.running_mark(os.getpid(), started_at="2000-01-01T00:00:00Z"),
+        )
+
+        receipt = self.close(first["workflow_id"], reason="pid reciclado")
+
+        self.assertEqual(receipt["outcome"], "closed")
+
+    def test_a_live_pid_refuses_the_close_and_answers_busy_on_relaunch(self):
+        # Marca running con un pid vivo (otro proceso de verdad): el close
+        # rechaza, el relanzamiento contesta busy y el archivo no se toca —
+        # la marca viva sigue siendo la señal de vida (review F17).
+        first = self.paused()
+        sleeper = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(sleeper.pid))
+
+        self.assertIsNone(
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+        )
+        with self.assertRaisesRegex(WorkflowError, "driver"):
+            self.close(first["workflow_id"], reason="no")
+        result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "busy")
+        self.assertTrue(result["busy"])
+        self.assertEqual(result["cadena_viva"], first["workflow_id"])
+        self.assertEqual([r.role for r in self.requests], ["scout"])
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        # Nothing overwrote the live mark: pid and outcome stay exactly as
+        # the live driver wrote them.
+        self.assertEqual(written["pid"], sleeper.pid)
+        self.assertEqual(written["outcome"], "running")
+
+        sleeper.kill()
+        sleeper.wait()
+        result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertEqual([r.role for r in self.requests], ["scout"] + ORDER[1:])
+
+    def test_launch_detached_without_stop_after_runs_the_driver(self):
+        # Review F1 (Critical): stop_after es opcional, su hueco en argv no.
+        # El run_id caía en ese hueco y todo lanzamiento sin checkpoint
+        # moría en check_stop_after antes de correr una sola etapa. El
+        # argv del lanzador REAL — capturado, nunca rearmado — debe llevar
+        # el hueco vacío de stop_after y el run_id al final, y ese argv
+        # exacto debe manejar un intérprete real por el bootstrap real.
+        first = self.paused()
+        eco_plugin = self.root / "eco-plugin"
+        eco_hermes = self.root / "eco-hermes"
+        eco_plugin.mkdir()
+        eco_hermes.mkdir()
+        (eco_plugin / "local_orchestrator.py").write_text(
+            "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
+            "        return {'workflow_id': workflow_id, 'outcome': 'completed',\n"
+            "                'stop_after': stop_after, 'launch_run_id': launch_run_id}\n",
+            encoding="utf-8",
+        )
+        captured = {}
+
+        def capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            return type("Spawned", (), {"pid": 424242})()
+
+        with patch("local_orchestrator.subprocess.Popen", capture):
+            launched = self.orchestrator.launch_detached(
+                first["workflow_id"], home=self.root
+            )
+
+        argv = captured["argv"]
+        self.assertEqual(argv[0], sys.executable, "the real launcher boots python")
+        self.assertEqual(argv[1:3], ["-I", "-c"])
+        self.assertEqual(len(argv), 10, "fixed positions: no spliced slots")
+        self.assertEqual(argv[8], "", "stop_after's own slot stays empty")
+        self.assertEqual(argv[9], launched["run_id"])
+        # The driver side is the echo double; the launch under test is the
+        # launcher's own argv product.
+        argv[4], argv[5] = str(eco_plugin), str(eco_hermes)
+        subprocess.run(
+            argv, cwd=str(self.root), capture_output=True, timeout=60, check=True
+        )
+        result = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(result["outcome"], "completed")
+        self.assertIsNone(result["stop_after"], "no stop_after, no run_id leaking in")
+        self.assertEqual(result["launch_run_id"], launched["run_id"])
+
+    # review F2 — una cadena en cola nunca se cierra sola
+    # contrato r6 (b) — un repo con cadena viva contesta busy y no crea
+    # nada.
+    def test_a_live_chain_answers_busy_and_creates_nothing(self):
+        first = self.paused()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"],
+                first["stages"]["ingenieria"]["id"],
+                owner="driver-live",
+                lease_seconds=900,
+            )
+        )
+        with connect_closing(self.db) as conn:
+            before = len(list_tasks(conn, include_archived=True))
+
+        busy = self.start(request_key="second-chain")
+
+        self.assertTrue(busy["busy"])
+        self.assertEqual(busy["cadena_viva"], first["workflow_id"])
+        self.assertEqual(busy["repo"], str(self.repo.resolve()))
+        self.assertIn("relanzas", busy["mensaje"])
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                len(list_tasks(conn, include_archived=True)),
+                before,
+                "busy creates nothing",
+            )
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "todo")
+
+    # review F3, contrato r6 — si el cierre automático no cierra (la vieja
+    # despertó), la nueva no se crea: busy, y nada escrito.
+    def test_a_chain_that_turns_alive_answers_busy_and_creates_nothing(self):
+        first = self.paused()
+        signals = iter([(False, True), (True, False)])
+        with patch("workflow._driver_signals", side_effect=lambda _id: next(signals)):
+            started = self.service().start(
+                request_key="second-chain",
+                repository=str(self.repo),
+                revision="baseline",
+                instruction="Inspect again.",
+                sources=SOURCES,
+            )
+
+        self.assertTrue(started.get("busy"))
+        self.assertEqual(started["cadena_viva"], first["workflow_id"])
+        with connect_closing(self.db) as conn:
+            self.assertNotEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(
+            len(roots),
+            1,
+            "the refused close creates nothing: only the old chain exists",
+        )
+        with connect_closing(self.db) as conn:
+            comentarios = [
+                comment.body for comment in list_comments(conn, first["workflow_id"])
+            ]
+        self.assertTrue(
+            all("GONCLOUD_LOCAL_CLOSE_V1" not in body for body in comentarios)
+        )
+
+    # cr:4314695530 — una etapa de solo lectura bloqueada por el guard de
+    # mutación NO se reabre con el relanzamiento: sigue bloqueada hasta que
+    # el dueño revierta, y su motivo lo dice.
+    def test_a_read_only_stage_blocked_by_its_guard_stays_blocked(self):
+        self.responses["scout"] = fenced(
+            envelope(status="completed", summary="leo y no toco")
+        )
+        fingerprints = iter([("base", ""), ("editado", "M archivo.py")])
+        with patch.object(
+            local_orchestrator_module,
+            "_workspace_fingerprint",
+            side_effect=lambda repo: next(fingerprints),
+        ):
+            first = self.start(stop_after="scout")
+        self.assertEqual(first["outcome"], "blocked")
+        scout_id = first["stages"]["scout"]["id"]
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, scout_id).status, "blocked")
+        requests_after_block = len(self.requests)
+
+        result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+
+        self.assertEqual(result["outcome"], "blocked")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, scout_id).status,
+                "blocked",
+                "the guard's block survives a relaunch",
+            )
+            motivo = [
+                event["payload"]["reason"]
+                for event in list_events(conn, scout_id)
+                if event["kind"] == "blocked"
+            ][-1]
+        self.assertIn("changed the repository", motivo)
+        self.assertIn("owner reverts", motivo)
+        self.assertEqual(
+            len(self.requests),
+            requests_after_block,
+            "no model runs: the stage keeps waiting for the owner's revert",
+        )
+
+    # review F18 — la marca running de _report firma pid y started_at: un
+    # pid reciclado (dueño nacido después de la marca) lee muerto.
+    def test_the_report_signs_started_at_and_a_recycled_pid_reads_dead(self):
+        first = self.paused()
+        self.orchestrator._report(
+            first["workflow_id"], "running", home=self.root, run_id="busy-run"
+        )
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["outcome"], "running")
+        self.assertEqual(written["pid"], os.getpid())
+        self.assertEqual(
+            written["started_at"],
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "the same stamp format _running_mark uses",
+        )
+
+        # A live pid whose owner was born AFTER the mark: recycled, dead.
+        live = self.sleeper()
+        started_before = datetime.now(timezone.utc) - timedelta(seconds=30)
+        self.write_mark(
+            first["workflow_id"],
+            self.running_mark(
+                live.pid, started_at=started_before.isoformat(timespec="seconds")
+            ),
+        )
+        mark = local_orchestrator_module.read_driver_mark(
+            first["workflow_id"], home=self.root
+        )
+        self.assertFalse(
+            local_orchestrator_module.driver_mark_live(mark),
+            "a recycled pid is not a live driver",
+        )
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root),
+        )
+
+    # review F19 — solo "no existe ese proceso" (ps != 0 con stdout y
+    # stderr vacíos) es pid muerto; cualquier otro fallo de ps es
+    # incomprobable (vivo).
+    def test_only_a_missing_process_reads_as_dead(self):
+        def ps_run(returncode, stdout, stderr):
+            return lambda *args, **kwargs: SimpleNamespace(
+                returncode=returncode, stdout=stdout, stderr=stderr
+            )
+
+        with patch.object(
+            local_orchestrator_module.subprocess, "run", ps_run(1, "", "")
+        ):
+            self.assertIsNone(
+                local_orchestrator_module._process_start_epoch(4242),
+                "empty stdout and stderr with a non-zero exit: no such process",
+            )
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "run",
+            ps_run(1, "", "ps: illegal option -- o"),
+        ):
+            checked = local_orchestrator_module._process_start_epoch(4242)
+        self.assertIsInstance(checked, local_orchestrator_module._UncheckedPid)
+        self.assertIn("illegal option", checked.cause)
+        # La marca con ese pid queda viva y anota la causa (review F4/F19).
+        first = self.paused()
+        self.write_mark(first["workflow_id"], self.running_mark(4242))
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "run",
+            ps_run(1, "", "ps: illegal option -- o"),
+        ):
+            mark = local_orchestrator_module.read_driver_mark(
+                first["workflow_id"], home=self.root
+            )
+            self.assertTrue(
+                local_orchestrator_module.driver_mark_live(mark),
+                "an uncheckable ps never reads as a dead driver",
+            )
+        self.assertIn("ps refused", mark["pid_check"])
+
+    # contrato r6 (3) — el stop_after no tiene camino que lo pierda: la
+    # única puerta de lanzamiento es launch_detached, y en repo ocupado no
+    # se crea nada que pudiera perderlo.
+    def test_stop_after_never_loses_the_checkpoint(self):
+        first = self.paused()
+        self.assertEqual(first["outcome"], "paused")
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+
+        busy = self.start(request_key="second-chain", stop_after="scout")
+
+        self.assertTrue(busy["busy"])
+        self.assertNotIn("workflow_id", busy, "nothing was created to lose it")
+        self.assertNotIn("stages", busy)
+
+    def test_relaunching_the_live_chains_own_key_answers_busy(self):
+        # Contrato r6 (b): relanzar la MISMA request_key de la cadena viva
+        # no lanza un segundo driver — el guard de resume con la marca viva
+        # propia contesta lo mismo: busy con esa cadena.
+        first = self.paused()
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+
+        again = self.start(request_key="local-1")
+
+        self.assertTrue(again.get("busy"))
+        self.assertEqual(again["cadena_viva"], first["workflow_id"])
+        self.assertEqual(
+            [r.role for r in self.requests],
+            ["scout"],
+            "no model runs over a busy repository, same key or not",
+        )
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["pid"], live.pid, "the live mark stays untouched")
+
+    def test_an_uncheckable_pid_reads_alive_and_records_the_cause(self):
+        # Review F4: sin ps, con timeout o con acceso denegado, la marca
+        # lee VIVA — no se cierra ni se reintenta — y la causa queda
+        # registrada en la propia marca. Solo un pid comprobadamente muerto
+        # o reciclado cuenta como driver parado.
+        first = self.paused()
+        self.write_mark(first["workflow_id"], self.running_mark(99999999))
+
+        def sin_ps(*args, **kwargs):
+            raise OSError("no hay ps")
+
+        with patch.object(local_orchestrator_module.subprocess, "run", sin_ps):
+            checked = local_orchestrator_module._process_start_epoch(99999999)
+            self.assertIsInstance(checked, local_orchestrator_module._UncheckedPid)
+            self.assertIn("no hay ps", checked.cause)
+            mark = local_orchestrator_module.read_driver_mark(
+                first["workflow_id"], home=self.root
+            )
+            self.assertTrue(
+                local_orchestrator_module.driver_mark_live(mark),
+                "an uncheckable pid is not a dead driver",
+            )
+            self.assertIn("ps unavailable", mark["pid_check"])
+            self.assertIsNone(
+                self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+            )
+            with self.assertRaises(WorkflowError):
+                self.close(first["workflow_id"], reason="pid incomprobable")
+            result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+
+        self.assertEqual(
+            result["outcome"], "busy", "no retry over a possibly live driver"
+        )
+        self.assertEqual(result["cadena_viva"], first["workflow_id"])
+        self.assertEqual([r.role for r in self.requests], ["scout"])
+
+    # Hallazgo del lead — en Windows, un proceso que ya terminó no es un
+    # driver vivo: OpenProcess abre el pid mientras quede un handle y
+    # GetProcessTimes contesta igual, así que el código de salida decide
+    # (259 = STILL_ACTIVE; cualquier otro código, terminado).
+    def test_windows_exit_code_says_whether_the_driver_is_gone(self):
+        import ctypes
+
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", ctypes.c_ulong),
+                ("dwHighDateTime", ctypes.c_ulong),
+            ]
+
+        # En macOS ctypes.wintypes no importa (es de Windows): el doble
+        # aporta un módulo equivalente con los tipos reales de ctypes.
+        fake_wintypes = SimpleNamespace(DWORD=ctypes.c_ulong, FILETIME=_FILETIME)
+
+        def fake_kernel32(*, exit_code=None, fail_exit_code=False, times_ok=True):
+            kernel32 = SimpleNamespace()
+
+            def get_exit(handle, ref):
+                if fail_exit_code:
+                    return False
+                ref._obj.value = exit_code
+                return True
+
+            def get_times(handle, creation, exit_time, kernel_time, user_time):
+                if not times_ok:
+                    return False
+                creation._obj.dwHighDateTime = 310_000_000
+                creation._obj.dwLowDateTime = 0
+                return True
+
+            kernel32.OpenProcess = lambda access, inherit, pid: 4242
+            kernel32.GetExitCodeProcess = get_exit
+            kernel32.GetProcessTimes = get_times
+            kernel32.CloseHandle = lambda handle: None
+            return kernel32
+
+        def windows_pid_check(kernel32):
+            with (
+                patch("os.name", "nt"),
+                patch("ctypes.WinDLL", lambda *args, **kwargs: kernel32, create=True),
+                patch("ctypes.get_last_error", lambda: 0, create=True),
+                patch.dict("sys.modules", {"ctypes.wintypes": fake_wintypes}),
+            ):
+                return local_orchestrator_module._process_start_epoch(4242)
+
+        expected_epoch = (310_000_000 << 32) / 10_000_000 - 11_644_473_600
+
+        # Exit code 0: el proceso ya terminó — pid muerto.
+        self.assertIsNone(
+            windows_pid_check(fake_kernel32(exit_code=0)),
+            "a terminated process is not a live driver",
+        )
+        # Exit code 259 (STILL_ACTIVE): sigue vivo — la hora nace de
+        # GetProcessTimes.
+        epoch = windows_pid_check(fake_kernel32(exit_code=259))
+        self.assertIsInstance(epoch, float)
+        self.assertEqual(epoch, expected_epoch)
+        # GetExitCodeProcess falla: incomprobable, la marca lee viva.
+        checked = windows_pid_check(fake_kernel32(exit_code=259, fail_exit_code=True))
+        self.assertIsInstance(checked, local_orchestrator_module._UncheckedPid)
+        self.assertIn("GetExitCodeProcess refused", checked.cause)
+        mark = {"workflow_id": "wf", "outcome": "running", "pid": 4242}
+        with (
+            patch("os.name", "nt"),
+            patch(
+                "ctypes.WinDLL",
+                lambda *args, **kwargs: fake_kernel32(fail_exit_code=True),
+                create=True,
+            ),
+            patch("ctypes.get_last_error", lambda: 0, create=True),
+            patch.dict("sys.modules", {"ctypes.wintypes": fake_wintypes}),
+        ):
+            self.assertTrue(
+                local_orchestrator_module.driver_mark_live(mark),
+                "an uncheckable exit code never reads as a dead driver",
+            )
+
+    # review F6 — un resultado JSON que no es objeto no revienta
+    def test_a_result_file_that_is_not_an_object_proves_no_stop(self):
+        # Review F6: [1], "paused" o 5 son JSON válido y ninguna salida de
+        # driver — leerlos no puede reventar driver_stopped ni close_hint,
+        # y jamás cuenta como evidencia de parada.
+        first = self.paused()
+        result_file = self.root / "goncloud-local" / f"{first['workflow_id']}.json"
+        for payload in ("[1, 2]", '"paused"', "5"):
+            with self.subTest(payload=payload):
+                result_file.write_text(payload, encoding="utf-8")
+                self.assertFalse(
+                    local_orchestrator_module.driver_stopped(json.loads(payload))
+                )
+                self.assertIsNone(
+                    self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+                )
+                with self.assertRaises(WorkflowError):
+                    self.close(first["workflow_id"], reason="no")
+
+    # review F7 — un spawn que falla no deja la marca del lanzador
+    def test_a_failed_spawn_leaves_no_running_mark_of_the_launcher(self):
+        # Review F7: la marca running se escribe antes de Popen; si el
+        # spawn falla, el pid del lanzador (vivo durante días) quedaba como
+        # driver vivo para siempre. El fallo de lanzamiento es la última
+        # palabra del archivo: una salida parada que el siguiente start
+        # cierra y reintenta.
+        first = self.paused()
+
+        with (
+            patch(
+                "local_orchestrator.subprocess.Popen",
+                side_effect=OSError("no hay memoria"),
+            ),
+            self.assertRaises(OSError),
+        ):
+            self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
+
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["outcome"], "error")
+        self.assertIn("launch failed", written["error"])
+        self.assertNotIn("pid", written, "no launcher pid posing as a driver")
+
+        second = self.start(request_key="second-chain")
+
+        self.assertEqual(second["outcome"], "delivered")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
 
 
 class AvisoMailboxTests(_OrchestratorHarness):
@@ -2637,6 +3621,46 @@ class LocalCloseHandlerTests(_OrchestratorHarness):
 
             closed = json.loads(status_handler({"workflow_id": first["workflow_id"]}))
             self.assertIsNone(closed["close_hint"])
+
+    def test_status_reports_the_pid_check_cause(self):
+        # Regla E (review F11): the uncheckable-pid cause rides on what
+        # goncloud_local_status returns — not on a discarded local copy.
+        first = self.paused()
+        results = self.root / "goncloud-local"
+        results.mkdir(exist_ok=True)
+        (results / f"{first['workflow_id']}.json").write_text(
+            json.dumps(
+                {
+                    "workflow_id": first["workflow_id"],
+                    "outcome": "running",
+                    "run_id": "mark-run",
+                    "pid": 99999999,
+                    "started_at": datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def sin_ps(*args, **kwargs):
+            raise OSError("no hay ps")
+
+        registered, _ = self.handlers("claw")
+        status_handler = registered["goncloud_local_status"]["handler"]
+        environment = {
+            "HERMES_KANBAN_DB": str(self.db),
+            "GONCLOUD_SUBSCRIPTION_DB": str(self.root / "routes.db"),
+            "HERMES_HOME": str(self.root),
+        }
+        with patch.dict(os.environ, environment):
+            with patch.object(local_orchestrator_module.subprocess, "run", sin_ps):
+                reported = json.loads(
+                    status_handler({"workflow_id": first["workflow_id"]})
+                )
+
+        self.assertEqual(reported["driver"]["outcome"], "running")
+        self.assertIn("ps unavailable", reported["driver"]["pid_check"])
 
 
 if __name__ == "__main__":

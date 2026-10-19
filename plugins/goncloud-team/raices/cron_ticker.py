@@ -16,10 +16,12 @@ y el argumento es el nombre pelado.
 Convencion de los scripts no_agent (README): nada en la salida si la vuelta
 sale bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la
 ruta de raices cerrada (H4a) el cron avisa CAPACIDAD_INCIERTA una vez por
-cambio de causa y sale 0: no es un fallo. Si la causa es un par (incierto o
-sin certificar) la vuelta corre igual pero cerrada: bloquea y concilia sin
-decidir ni despachar y sin correr la pasada del emisor; si falta una
-capacidad ni siquiera abre el store. El store vive en la RAIZ del home de
+cambio de causa y sale 0: no es un fallo. Si la causa es un par incierto la
+vuelta corre igual pero cerrada: bloquea y concilia sin decidir ni despachar
+y sin correr la pasada del emisor; si falta una capacidad ni siquiera abre
+el store. Una version sin certificar ya no cierra (encargo H punto 3): la
+puerta abre con aviso, el cron imprime AVISO (una vez por cambio de causa)
+y la vuelta corre abierta. El store vive en la RAIZ del home de
 Hermes (raices/hogar.py la resuelve: el home de un perfil sube a su raiz) y
 el kanban, HERMES_KANBAN_DB o <raiz>/kanban.db.
 
@@ -59,14 +61,28 @@ def ruta_de_raices_abierta(home=None):
     return capacidades.abrir_ruta(home=home)
 
 
-def _aviso_por_consola(causa):
+def _aviso_por_consola(causa, etiqueta="CAPACIDAD_INCIERTA"):
     def enviar(_texto):
         # stderr y no stdout: el stdout del no_agent se entrega como salida
         # del agente; el aviso de la puerta cerrada no es salida de agente.
-        print(f"ticker-raices: CAPACIDAD_INCIERTA ({causa})", file=sys.stderr)
+        print(f"ticker-raices: {etiqueta} ({causa})", file=sys.stderr)
         return 1
 
     return enviar
+
+
+def _aviso_advisorio(base, causa):
+    """El aviso sin bloqueo (encargo H punto 3): una versión sin certificar
+    ya no cierra la ruta. Avisa una vez por cambio de causa con el mismo
+    checkpoint de la puerta cerrada — que una vuelta abierta borra (CR1) —
+    y la vuelta corre igual, con su pasada del emisor."""
+    proyeccion = importlib.import_module("raices.proyeccion")
+    proyeccion.avisar_capacidad_incierta(
+        base / "raices" / "capacidad-incierta.json",
+        causa,
+        datetime.now(timezone.utc),
+        _aviso_por_consola(causa, etiqueta="AVISO"),
+    )
 
 
 def ruta_del_kanban(home):
@@ -208,19 +224,26 @@ def correr(home=None, ruta_abierta=None, enviar=None):
     abierta, causa = puerta()
     if not abierta:
         return _vuelta_cerrada(base, causa)
+    if causa is not None:
+        # Encargo H punto 3: la puerta abre con aviso (p. ej. una versión
+        # sin certificar); avisa sin bloquear y sigue la vuelta abierta. El
+        # CR1 de abajo no corre: borraría el checkpoint que el aviso acaba
+        # de dejar, y la misma causa advisory debe avisar una sola vez.
+        _aviso_advisorio(base, causa)
     # CR1: la ruta volvió. Sin borrar el checkpoint, un cierre posterior con
     # la MISMA causa no volvería a avisar (avisar_capacidad_incierta ve la
     # misma causa y se calla) y Hermes sube solo a diario: el dueño se
     # perdería el aviso de la caída nueva. Best-effort: sin el archivo no
     # hay nada que borrar y un fallo de borrado (Windows: archivo en uso,
     # ACL) va a stderr y no tumba la vuelta que sí puede correr.
-    try:
-        (base / "raices" / "capacidad-incierta.json").unlink(missing_ok=True)
-    except OSError as fallo:
-        print(
-            f"ticker-raices: no pude borrar el checkpoint capacidad-incierta: {fallo}",
-            file=sys.stderr,
-        )
+    else:
+        try:
+            (base / "raices" / "capacidad-incierta.json").unlink(missing_ok=True)
+        except OSError as fallo:
+            print(
+                f"ticker-raices: no pude borrar el checkpoint capacidad-incierta: {fallo}",
+                file=sys.stderr,
+            )
     store = importlib.import_module("raices.store")
     ticker = importlib.import_module("raices.ticker")
     kanban = importlib.import_module("raices.kanban")

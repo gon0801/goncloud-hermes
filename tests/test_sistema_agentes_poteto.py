@@ -14,6 +14,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from conexiones import rastrear_conexiones  # noqa: E402
 
@@ -218,7 +219,7 @@ class PuertaDePoteto(unittest.TestCase):
         self.ticker = modulo_ticker
         self.kanban_port = modulo_kanban
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name)
         self.tienda = modulo_store.Store(self.home / "sistema-agentes.db")
         self.addCleanup(self.tienda.cerrar)
