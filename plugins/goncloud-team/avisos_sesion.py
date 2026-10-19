@@ -23,14 +23,21 @@ un reinicio puede llegar un aviso repetido, nunca uno perdido. Los
 avisos SIN origen los deja intactos: siguen por el despertar de hoy, que
 a su vez ignora los que traen origen para no duplicar.
 
-Forma del evento: la notificación de proceso de fondo de
-process_registry (``_publish_finished`` pone
-``{"type": "completion", "session_id", "session_key", "command",
-"exit_code", "output", "started_at", ...}`` en completion_queue), NO
-``async_delegation``: esa forma exige un registro durable conocido
-(claim/completion en tools.async_delegation) y un goal/results que un
-aviso de cadena no tiene; la de proceso es autocontenida y el gateway la
-formatea e inyecta sin buscar ningún registro propio.
+Forma del evento (B1, contra el gateway v0.22.0 de la PC): type
+``watch_match`` con ``pattern``/``output``/``session_id``/``command``/
+``session_key`` y las claves de ruta. NO ``completion``: el watcher del
+gateway (_async_delegation_watcher → _drain_watch_notifications) drena
+la cola con _drain_gateway_watch_events (gateway/run.py:3053-3073), que
+SOLO conserva watch_match/watch_disabled/watch_overflow_*/heartbeat y
+las "completion" las saca y las tira ("handled by the watcher task") —
+ese task es el watcher de procesos de la sesión, no un despertar; el
+aviso nunca llegaba a claw. watch_match sí: run.py:3023-3050
+(_format_gateway_process_notification, rama watch_match) lo formatea y
+_inject_watch_notification lo inyecta como turno interno, re-encolando
+si la inyección falla. NO watch_disabled: diagnostic_process_event
+(agent/notification_presentation.py:24-28) lo marca diagnóstico y la
+presentación cambia. NO async_delegation: exige un registro durable
+conocido que un aviso de cadena no tiene.
 """
 
 from __future__ import annotations
@@ -41,7 +48,6 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 _PLUGIN = Path(__file__).resolve().parent
@@ -61,6 +67,9 @@ _CAMPOS_RUTA = ("platform", "chat_type", "chat_id", "thread_id", "user_id", "use
 
 _bloqueo = threading.Lock()
 _hilo: threading.Thread | None = None
+#: Nombres (.json) de los .encolado que ESTE proceso puso en la cola: son
+#: los únicos cuyo drenaje puede certificarse mirando la cola (B2).
+_encolados_propios: set = set()
 
 
 def _despertar():
@@ -103,16 +112,22 @@ def construir_evento(aviso: dict, *, nombre: str = "") -> dict | None:
     routing = aviso.get("origin_routing")
     routing = routing if isinstance(routing, dict) else {}
     evento = {
-        "type": "completion",
+        # B1: watch_match es el tipo que el watcher del gateway conserva
+        # al drenar la cola y formatea en un turno interno; "completion"
+        # se sacaba y se tiraba (ver docstring del módulo).
+        "type": "watch_match",
+        "pattern": f"cadena {aviso.get('outcome') or ''}".strip(),
         # Identidad estable del productor: el nombre del aviso ya es
         # <workflow>-<run>-<outcome>, único por parada de la cadena.
         "session_id": f"goncloud-{Path(nombre).stem}" if nombre else "goncloud-aviso",
         "session_key": session_key,
         "command": f"goncloud_local_run {aviso.get('workflow_id') or ''}".strip(),
-        "exit_code": 0 if aviso.get("outcome") == "delivered" else 1,
-        "completion_reason": "exited",
         "output": f"{linea} revisa con goncloud_local_status y sigue.",
     }
+    if nombre:
+        # B2: el id con el que este proceso reconoce SU evento en la cola
+        # (el nombre .json, estable tras el renombre a .encolado).
+        evento["goncloud_aviso"] = Path(nombre).with_suffix(".json").name
     # Las claves de ruteo capturadas al lanzar mandan; la session_key las
     # respalda cuando la captura no las trajo.
     for campo in _CAMPOS_RUTA:
@@ -125,14 +140,6 @@ def construir_evento(aviso: dict, *, nombre: str = "") -> dict | None:
         valor = str(routing.get(campo) or "").strip()
         if valor:
             evento[campo] = valor
-    # started_at ancla la identidad de deduplicación del gateway
-    # (_completion_delivery_identity pide session_id + started_at).
-    try:
-        evento["started_at"] = datetime.fromisoformat(
-            str(aviso.get("fecha") or "").replace("Z", "+00:00")
-        ).timestamp()
-    except ValueError:
-        evento["started_at"] = time.time()
     return evento
 
 
@@ -162,6 +169,8 @@ def entregar_avisos(buzon, cola) -> int:
                 continue
             cola.put(evento)
             _renombrar(ruta, ".encolado")
+            if evento.get("goncloud_aviso"):
+                _encolados_propios.add(evento["goncloud_aviso"])
             encolados += 1
     return encolados
 
@@ -190,8 +199,59 @@ def reencolar_encolados(buzon, cola) -> int:
             if evento is None:
                 continue
             cola.put(evento)
+            if evento.get("goncloud_aviso"):
+                _encolados_propios.add(evento["goncloud_aviso"])
             encolados += 1
     return encolados
+
+
+def _ids_en_cola(cola):
+    """Los goncloud_aviso aún en la cola, o None si no se puede saber.
+
+    Una queue.Queue real expone .queue bajo .mutex; una cola que no los
+    expone se juzga solo por empty(): vacía = todo drenado, no vacía sin
+    detalle = None (no se cierra nada, manda la red de 24 h).
+    """
+    try:
+        with cola.mutex:
+            return {
+                evento.get("goncloud_aviso")
+                for evento in cola.queue
+                if isinstance(evento, dict) and evento.get("goncloud_aviso")
+            }
+    except AttributeError:
+        pass
+    try:
+        return set() if cola.empty() else None
+    except Exception:
+        return None
+
+
+def cerrar_encolados_drenados(buzon, cola) -> int:
+    """Los .encolado que ESTE proceso encoló y ya no están en cola: .entregado.
+
+    B2: con solo la purga de 24 h, cada reinicio del gateway re-encolaba
+    también los avisos YA inyectados y claw recibía otra vez el "terminó"
+    de cadenas viejas. Si el id ya no está en la cola, el watcher del
+    gateway lo drenó (lo inyectó o lo re-encola él mismo si falla): el
+    archivo puede cerrarse. Los que este proceso no encoló no se tocan —
+    su drenaje no es certificable desde aquí.
+    """
+    ids = _ids_en_cola(cola)
+    if ids is None:
+        return 0
+    buzon = Path(buzon)
+    if not buzon.is_dir():
+        return 0
+    cerrados = 0
+    with _bloqueo:
+        for ruta in sorted(buzon.glob("*.encolado")):
+            nombre = ruta.with_suffix(".json").name
+            if nombre in _encolados_propios and nombre not in ids:
+                _renombrar(ruta, ".entregado")
+                _encolados_propios.discard(nombre)
+                cerrados += 1
+    return cerrados
 
 
 def purgar_encolados(buzon, *, ahora=None, max_segundos=ENCOLADO_MAX_SEGUNDOS) -> int:
@@ -213,6 +273,7 @@ def purgar_encolados(buzon, *, ahora=None, max_segundos=ENCOLADO_MAX_SEGUNDOS) -
             continue
         if edad > max_segundos:
             _renombrar(ruta, ".entregado")
+            _encolados_propios.discard(ruta.with_suffix(".json").name)
             cerrados += 1
     return cerrados
 
@@ -302,6 +363,7 @@ def iniciar_vigilante(
         while not alto.is_set():
             try:
                 entregar_avisos(buzon, cola)
+                cerrar_encolados_drenados(buzon, cola)
                 purgar_encolados(buzon)
             except Exception:
                 pass  # el buzón es durable: la próxima vuelta reintenta

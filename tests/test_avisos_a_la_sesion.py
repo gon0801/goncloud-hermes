@@ -36,6 +36,7 @@ from test_local_orchestrator import (  # noqa: E402
 
 avisos_sesion = importlib.import_module("avisos_sesion")
 despertar = importlib.import_module("raices.despertar")
+gateway_doble = importlib.import_module("gateway_watch_doble")
 
 SESSION_KEY = "agent:claw:telegram:dm:6470689715"
 ROUTING = {"user_id": "6470689715", "user_name": "David", "scope_id": "scope-1"}
@@ -106,7 +107,8 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         self.assertEqual(entregados, 1)
         self.assertEqual(len(cola.eventos), 1)
         evento = cola.eventos[0]
-        self.assertEqual(evento["type"], "completion")
+        self.assertEqual(evento["type"], "watch_match")
+        self.assertEqual(evento["pattern"], "cadena blocked")
         self.assertEqual(evento["session_key"], SESSION_KEY)
         self.assertEqual(evento["platform"], "telegram")
         self.assertEqual(evento["chat_type"], "dm")
@@ -179,6 +181,26 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(local_orchestrator_module.capturar_origen_sesion(), {})
 
+    # B1: el evento SOBREVIVE el drain real del gateway (v0.22.0 e06df9c)
+    # y el formato watch_match produce el texto con la línea del aviso.
+    # Sobre bc34420 (type=completion) el drain devuelve []: el aviso se
+    # sacaba de la cola y se tiraba, claw nunca despertaba.
+    def test_b1_el_evento_pasa_el_drain_y_el_formato_del_gateway(self):
+        evento = avisos_sesion.construir_evento(
+            AVISO_CON_ORIGEN, nombre="t_abc-run-blocked.json"
+        )
+        self.assertEqual(evento["type"], "watch_match")
+        self.assertEqual(evento["pattern"], "cadena blocked")
+        cola = queue.Queue()
+        cola.put(evento)
+        drenados = gateway_doble._drain_gateway_watch_events(cola)
+        self.assertEqual(drenados, [evento])
+        texto = gateway_doble._format_gateway_process_notification(drenados[0])
+        self.assertIn("se trabó en reviewer", texto)
+        self.assertIn("revisa con goncloud_local_status y sigue", texto)
+        self.assertIn(SESSION_KEY, evento["session_key"])
+        self.assertEqual(evento["goncloud_aviso"], "t_abc-run-blocked.json")
+
     # (b) sin session_key: el vigilante no lo toca; queda para el despertar.
     def test_b_aviso_sin_session_key_queda_para_el_despertar(self):
         ruta = escribir_aviso(
@@ -237,6 +259,42 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         )
         self.assertEqual(viejos, 1)
         self.assertTrue((self.buzon() / "t_abc-run-blocked.entregado").exists())
+
+    # B2: el gateway ya drenó el evento (no está en la cola) → la siguiente
+    # pasada cierra el .encolado a .entregado; si sigue en cola, no se toca.
+    def test_b2_drenado_pasa_a_entregado_y_en_cola_sigue_encolado(self):
+        escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = queue.Queue()
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 1)
+        encolado = self.buzon() / "t_abc-run-blocked.encolado"
+        self.assertTrue(encolado.exists())
+        # Aún en la cola: el gateway no lo drenó, sigue .encolado.
+        self.assertEqual(avisos_sesion.cerrar_encolados_drenados(self.buzon(), cola), 0)
+        self.assertTrue(encolado.exists())
+        # El watcher del gateway lo drena (sale de la cola): se cierra.
+        cola.get_nowait()
+        self.assertEqual(avisos_sesion.cerrar_encolados_drenados(self.buzon(), cola), 1)
+        self.assertFalse(encolado.exists())
+        self.assertTrue((self.buzon() / "t_abc-run-blocked.entregado").exists())
+
+    # B2: al reiniciar solo se re-encola el .encolado NO drenado; el que el
+    # proceso anterior ya vio drenar quedó .entregado y no vuelve a claw.
+    def test_b2_reinicio_reencola_solo_el_no_drenado(self):
+        otro = dict(AVISO_CON_ORIGEN, workflow_id="t_xyz")
+        escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        escribir_aviso(self.buzon(), "t_xyz-run-blocked.json", otro)
+        cola = queue.Queue()
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 2)
+        # El gateway drena solo el primero antes del reinicio.
+        cola.get_nowait()
+        self.assertEqual(avisos_sesion.cerrar_encolados_drenados(self.buzon(), cola), 1)
+        # Reinicio: proceso nuevo (sin memoria de encolados), cola vacía.
+        avisos_sesion._encolados_propios.clear()
+        cola2 = queue.Queue()
+        self.assertEqual(avisos_sesion.reencolar_encolados(self.buzon(), cola2), 1)
+        reencolado = cola2.get_nowait()
+        self.assertEqual(reencolado["goncloud_aviso"], "t_xyz-run-blocked.json")
+        self.assertTrue(cola2.empty())
 
     # F1: register() fuera del gateway NO arranca ningún vigilante.
     def test_register_fuera_del_gateway_no_arranca_vigilante(self):
