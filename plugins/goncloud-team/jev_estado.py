@@ -1,9 +1,11 @@
 """Lo que JEV necesita saber del trabajo en curso, sin gastar un token.
 
-Fuente de solo lectura, kanban.db: tarjetas de especialista y etapas de
-cadenas Goncloud que terminaron (completed/blocked, con su ultimo reporte),
-para que el cierre (jev_auto) las traiga al turno siguiente. Nada abre el
-kanban para escribir.
+Fuente de solo lectura, kanban.db (esquema real de hermes-agent): tarjetas de
+especialista y etapas de cadenas Goncloud que terminaron (completed/blocked,
+con su ultimo reporte), para que el cierre (jev_auto) las traiga al turno
+siguiente. Las consultas siguen el esquema REAL: el payload del evento vive
+en task_events.payload_json, el resultado en tasks.result y el resumen de la
+corrida en task_runs.metadata. Nada abre el kanban para escribir.
 """
 
 from __future__ import annotations
@@ -50,19 +52,38 @@ def ultimo_evento(conn) -> int:
     )
 
 
+def _json_de(bruto):
+    """El payload_json de la referencia parseado; None si no trae o no es JSON."""
+    try:
+        return json.loads(bruto) if bruto else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _es_etapa_de_cadena(conn, tarea) -> bool:
-    # En el kanban real la etapa es PADRE de la raiz (workflow.py encadena
-    # etapa -> ... -> entrega y cada una apunta a la raiz): la raiz es hija.
+    """'etapa' de cadena Goncloud: la raiz, una etapa de ronda 2 o una etapa
+    inicial.
+
+    La raiz y las de ronda 2 llevan la clave en su idempotency_key
+    (goncloud-workflow:...). Las etapas INICIALES no la llevan y NO cuelgan
+    de la raiz en task_links: workflow encadena las etapas entre si
+    (cada una hija de la anterior) y el parentesco raiz->etapas solo queda
+    en el evento "decomposed" de la raiz (payload_json.child_ids), que es
+    donde lo mira workflow._decomposed_child_ids.
+    """
     if str(tarea["idempotency_key"] or "").startswith(PREFIJO_CADENA):
         return True
-    return (
-        conn.execute(
-            "SELECT 1 FROM task_links l JOIN tasks r ON r.id = l.child_id "
-            "WHERE l.parent_id = ? AND r.idempotency_key LIKE ? LIMIT 1",
-            (tarea["id"], PREFIJO_CADENA + "%"),
-        ).fetchone()
-        is not None
-    )
+    filas = conn.execute(
+        "SELECT e.payload_json FROM task_events e JOIN tasks r ON r.id = e.task_id "
+        "WHERE e.kind = 'decomposed' AND r.idempotency_key LIKE ?",
+        (PREFIJO_CADENA + "%",),
+    ).fetchall()
+    for fila in filas:
+        datos = _json_de(fila["payload_json"])
+        hijos = datos.get("child_ids") if isinstance(datos, dict) else None
+        if isinstance(hijos, list) and tarea["id"] in hijos:
+            return True
+    return False
 
 
 def _relevante(conn, tarea) -> str | None:
@@ -75,29 +96,30 @@ def _relevante(conn, tarea) -> str | None:
 
 
 def _reporte(conn, tarea_id: str, payload) -> str:
-    """Lo que la tarjeta dijo al terminar: resumen de su ultima corrida."""
-    fila = conn.execute(
-        "SELECT summary, error FROM task_runs WHERE task_id = ? "
-        "ORDER BY id DESC LIMIT 1",
+    """Lo que la tarjeta dijo al terminar, segun el kanban real.
+
+    No hay columnas summary/error en task_runs: el resultado queda en
+    tasks.result, la corrida cierra con su metadata (el "terminal" de
+    goncloud_local) y el evento trae payload_json ({"result": ...} al
+    completar, {"reason": ..., "kind": ...} al bloquear).
+    """
+    partes = []
+    fila = conn.execute("SELECT result FROM tasks WHERE id = ?", (tarea_id,)).fetchone()
+    if fila is not None and fila["result"]:
+        partes.append(fila["result"])
+    corrida = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
         (tarea_id,),
     ).fetchone()
-    partes = []
-    if fila is not None:
-        partes += [fila["summary"], fila["error"]]
-    if not any(partes):
-        partes.append(
-            conn.execute(
-                "SELECT result FROM tasks WHERE id = ?", (tarea_id,)
-            ).fetchone()[0]
-        )
-    razon = None
-    try:
-        datos = json.loads(payload) if payload else None
-        if isinstance(datos, dict):
-            razon = datos.get("reason")
-    except ValueError:
-        pass
-    partes.append(razon)
+    if corrida is not None:
+        datos = _json_de(corrida["metadata"])
+        local = datos.get("goncloud_local") if isinstance(datos, dict) else None
+        terminal = local.get("terminal") if isinstance(local, dict) else None
+        if terminal:
+            partes.append(terminal)
+    datos = payload if isinstance(payload, dict) else _json_de(payload)
+    if isinstance(datos, dict):
+        partes.append(datos.get("reason") or datos.get("result"))
     return _acotar(" | ".join(str(p) for p in partes if p), 600)
 
 
@@ -112,7 +134,7 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
     cierres: list[dict] = []
     cursor = desde
     filas = conn.execute(
-        "SELECT id, task_id, kind, payload FROM task_events "
+        "SELECT id, task_id, kind, payload_json FROM task_events "
         "WHERE id > ? AND kind IN ('completed', 'blocked') ORDER BY id LIMIT 200",
         (desde,),
     ).fetchall()
@@ -137,7 +159,7 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
                 "assignee": tarea["assignee"],
                 "titulo": _acotar(tarea["title"], 100),
                 "desenlace": fila["kind"],
-                "reporte": _reporte(conn, tarea["id"], fila["payload"]),
+                "reporte": _reporte(conn, tarea["id"], _json_de(fila["payload_json"])),
             }
         )
     return cierres, cursor

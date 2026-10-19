@@ -20,6 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jev_apoyo  # noqa: E402
 
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 import jev_auto  # noqa: E402
 import jev_decisiones  # noqa: E402
 
@@ -44,7 +46,7 @@ def corredor_ok(texto, hogar):
 class Base(unittest.TestCase):
     def setUp(self):
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         self.raiz = Path(temporal.name)
         self.claw = self.raiz / "profiles" / "claw"
         self.claw.mkdir(parents=True)
@@ -155,6 +157,52 @@ class DecisorTests(Base):
         }
         decision = self.decisor(lambda s, p, t: respuesta).rutear(MENSAJE)
         self.assertEqual(decision.confianza, 0.9)
+
+    def test_la_confianza_nan_o_infinita_no_es_certeza(self):
+        for bruta in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(bruta=bruta):
+                decision = self.decisor(
+                    lambda s, p, t, bruta=bruta: {
+                        "answers": {"ruteo": {"choice": "odoo", "confidence": bruta}}
+                    }
+                ).rutear(MENSAJE)
+                self.assertEqual(decision.error, "respuesta sin confianza")
+                self.assertIsNone(decision.confianza)
+                self.assertFalse(decision.sigue)
+
+    def test_la_llave_y_los_secretos_resueltos_en_el_hilo_del_gancho_se_tachan(self):
+        # F3: los valores resueltos fuera de los hilos viajan ya resueltos.
+        # F4: lo tachado es la llave resuelta y los valores que se le pasan,
+        # no solo el scope.
+        llave = "sk-resuelta-en-el-hilo-1"
+        captura = {}
+
+        def llamar(estado, preguntas, timeout):
+            captura["estado"] = estado
+            return {"answers": {"ruteo": {"choice": "claw", "confidence": 0.9}}}
+
+        self.decisor(llamar).rutear(
+            f"habla con la llave {llave} y con valor-solo-del-env-7",
+            clave=llave,
+            secretos=("valor-solo-del-env-7",),
+        )
+        estado = captura["estado"]
+        self.assertNotIn(llave, estado)
+        self.assertNotIn("valor-solo-del-env-7", estado)
+
+    def test_los_valores_que_solo_viven_en_el_env_del_perfil_se_tachan(self):
+        # F4: sin resolucion previa, el .env del perfil entra al tachado.
+        (self.claw / ".env").write_text(
+            "OTRA_CREDENCIAL=valor-env-sin-forma-9\n", encoding="utf-8"
+        )
+        captura = {}
+
+        def llamar(estado, preguntas, timeout):
+            captura["estado"] = estado
+            return {"answers": {"ruteo": {"choice": "claw", "confidence": 0.9}}}
+
+        self.decisor(llamar).rutear("menciona valor-env-sin-forma-9 y sigue")
+        self.assertNotIn("valor-env-sin-forma-9", captura["estado"])
 
     def test_lo_que_sale_a_jev_va_redactado(self):
         secreto = "sk-prueba-secreta-1234567890"
@@ -278,23 +326,44 @@ class CierreTests(Base):
         self.assertNotIn("Jev cierre", siguiente)
 
     def test_una_etapa_blocked_de_cadena_goncloud_tambien_cierra(self):
-        self.kanban.cadena(etapas=(("scout", "done"), ("implementer", "blocked")))
+        # El grafo lo arma el codigo real del doble: la raiz NO es padre de
+        # las etapas en task_links y las etapas iniciales no llevan
+        # idempotency_key; el parentesco vive en el evento "decomposed".
+        ids = self.kanban.cadena(etapas=(("scout", "done"), ("implementer", "running")))
         auto = self.auto()
         self.primer_turno(auto)
-        self.kanban.evento(
-            "t_raiz_implementer",
-            "blocked",
-            payload=json.dumps({"reason": "falta acceso al repo"}),
+        self.assertTrue(
+            self.kanban.bloquear(ids["implementer"], "falta acceso al repo")
         )
         jev = self.jev
         jev.respuestas["cierre"] = ("bloqueado", 0.9)
         contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
         self.assertIn(
-            "Jev cierre: t_raiz_implementer (implementer, blocked) bloqueado (0.90)",
+            "Jev cierre: "
+            + ids["implementer"]
+            + " (implementer, blocked) bloqueado (0.90)",
             contexto,
         )
         ficha = next(s for s, p, _ in jev.llamadas if "cierre" in p)
         self.assertIn("falta acceso al repo", ficha)
+
+    def test_una_etapa_inicial_completada_tambien_cierra(self):
+        # scout termina con su resultado en tasks.result y corrida con
+        # metadata: el reporte sale del esquema real, no de columnas a mano.
+        ids = self.kanban.cadena(etapas=(("scout", "running"),))
+        auto = self.auto()
+        self.primer_turno(auto)
+        self.kanban.completar(
+            ids["scout"],
+            resultado="relev listo",
+            metadata={"goncloud_local": {"terminal": "handoff del scout"}},
+        )
+        contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
+        self.assertIn("Jev cierre: " + ids["scout"], contexto)
+        # El reporte del esquema real viaja en la ficha a JEV, no en la linea.
+        ficha = next(s for s, p, _ in self.jev.llamadas if "cierre" in p)
+        self.assertIn("relev listo", ficha)
+        self.assertIn("handoff del scout", ficha)
 
     def test_lo_que_no_es_especialista_ni_etapa_se_ignora(self):
         auto = self.auto()

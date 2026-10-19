@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import threading
 import time
@@ -141,6 +142,26 @@ def _clave_en_env_del_perfil(hogar: Path) -> str:
     return ""
 
 
+def _valores_del_env(hogar: Path) -> tuple[str, ...]:
+    """Los values del .env del perfil, solo para tachar.
+
+    Ahi viven credenciales que no llegan ni al entorno del proceso ni al
+    scope del gateway: si salen en un mensaje, salen sin tachar.
+    """
+    try:
+        lineas = (hogar / ".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    valores = []
+    for linea in lineas:
+        if "=" not in linea or linea.lstrip().startswith("#"):
+            continue
+        valor = linea.partition("=")[2].strip().strip("\"'")
+        if valor:
+            valores.append(valor)
+    return tuple(valores)
+
+
 def clave_typesafe(hogar: Path) -> str:
     """Scope del perfil, luego entorno, luego el .env del perfil."""
     try:
@@ -171,15 +192,17 @@ def _cargar_cliente(hogar: Path):
     return modulo
 
 
-def llamada_real(hogar: Path):
-    """La llamada de produccion: (state, preguntas, timeout) -> respuesta."""
+def llamada_real(hogar: Path, clave: str | None = None):
+    """La llamada de produccion: (state, preguntas, timeout) -> respuesta.
+
+    Con `clave` ya resuelta (en el hilo del gancho) no la vuelve a buscar."""
 
     def llamar(state, preguntas, timeout):
         cliente = _cargar_cliente(hogar)
-        clave = clave_typesafe(hogar)
-        if clave:
-            # Solo en NUESTRA copia del modulo: el cron no tiene el scope.
-            cliente._get_key = lambda: clave
+        resuelta = clave if clave is not None else clave_typesafe(hogar)
+        if resuelta:
+            # Solo en NUESTRA copia del modulo.
+            cliente._get_key = lambda: resuelta
         return cliente.call_system_one(
             state=state,
             questions=preguntas,
@@ -217,7 +240,11 @@ def _confianza(respuesta: dict) -> float | None:
         bruta = respuesta["probabilities"].get(respuesta.get("choice"))
     if isinstance(bruta, bool) or not isinstance(bruta, (int, float)):
         return None
-    return max(0.0, min(1.0, float(bruta)))
+    valor = float(bruta)
+    if not math.isfinite(valor):
+        # NaN/inf no es certeza (json.loads acepta NaN): sin decision.
+        return None
+    return max(0.0, min(1.0, valor))
 
 
 class Decisor:
@@ -228,7 +255,19 @@ class Decisor:
         self._llamar = llamar
         self.tope_s = tope_s
 
-    def rutear(self, texto: str) -> Decision:
+    def resuelva(self) -> tuple[str, tuple[str, ...]]:
+        """(clave, secretos) resueltos EN el hilo que llama.
+
+        El scope del gateway y el .env no viajan a los hilos nuevos: la
+        resolucion vive en el hilo del gancho y a los hilos de decision ya
+        solo llegan los valores resueltos (para el cliente y para tachar).
+        """
+        return clave_typesafe(self.hogar), (
+            *secretos_del_scope(),
+            *_valores_del_env(self.hogar),
+        )
+
+    def rutear(self, texto: str, clave=None, secretos=None) -> Decision:
         entrada = {
             "len": len(texto),
             "sha256": hashlib.sha256(texto.encode("utf-8")).hexdigest()[:12],
@@ -241,18 +280,31 @@ class Decisor:
             "elige claw para que el decida el reparto.",
             RUTAS,
             entrada,
+            clave=clave,
+            secretos=secretos,
         )
 
-    def cerrar(self, ficha: str, entrada: dict) -> Decision:
+    def cerrar(self, ficha: str, entrada: dict, clave=None, secretos=None) -> Decision:
         return self._decidir(
             "cierre",
             ficha,
             "Como queda esta tarjeta o etapa, segun lo que reporto?",
             CIERRES,
             entrada,
+            clave=clave,
+            secretos=secretos,
         )
 
-    def _decidir(self, nombre, estado, instrucciones, opciones, entrada) -> Decision:
+    def _decidir(
+        self,
+        nombre,
+        estado,
+        instrucciones,
+        opciones,
+        entrada,
+        clave=None,
+        secretos=None,
+    ) -> Decision:
         inicio = time.monotonic()
         preguntas = {
             nombre: {
@@ -264,8 +316,15 @@ class Decisor:
         decision = Decision(pregunta=nombre)
 
         def llamada():
-            llamar = self._llamar or llamada_real(self.hogar)
-            texto = redact_text(estado, tuple(secretos_del_scope()))[:TOPE_ESTADO]
+            if clave is None or secretos is None:
+                clave_resuelta, secretos_resueltos = self.resuelva()
+            else:
+                clave_resuelta, secretos_resueltos = clave, secretos
+            llamar = self._llamar or llamada_real(self.hogar, clave_resuelta)
+            # Se tacha la llave resuelta y los secretos, no solo el scope.
+            texto = redact_text(estado, (*secretos_resueltos, clave_resuelta))[
+                :TOPE_ESTADO
+            ]
             return llamar(texto, preguntas, self.tope_s)
 
         respuesta, error = _en_hilo(llamada, self.tope_s)

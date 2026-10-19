@@ -376,6 +376,10 @@ class JevAuto:
         """
         if self.decisor is None:
             return [], []
+        # La llave y el scope se resuelven AQUI, en el hilo del gancho: los
+        # hilos de abajo no heredan el contexto del gateway y resolverian
+        # vacio. A ellos ya solo llegan los valores resueltos.
+        clave, secretos = self.decisor.resuelva()
         hilos: list = []
         casillas: list = []
 
@@ -395,12 +399,16 @@ class JevAuto:
             hilos.append(hilo)
             hilo.start()
 
-        lanzar(lambda: linea_ruteo(self.decisor.rutear(texto)))
+        lanzar(
+            lambda: linea_ruteo(
+                self.decisor.rutear(texto, clave=clave, secretos=secretos)
+            )
+        )
         for cierre in self._cierres_nuevos():
-            lanzar(lambda c=cierre: self._linea_de_cierre(c))
+            lanzar(lambda c=cierre: self._linea_de_cierre(c, clave, secretos))
         return hilos, casillas
 
-    def _linea_de_cierre(self, cierre: dict):
+    def _linea_de_cierre(self, cierre: dict, clave: str, secretos: tuple):
         decision = self.decisor.cerrar(
             jev_estado.ficha_de_cierre(cierre),
             {
@@ -408,6 +416,8 @@ class JevAuto:
                 "assignee": cierre["assignee"],
                 "desenlace": cierre["desenlace"],
             },
+            clave=clave,
+            secretos=secretos,
         )
         return linea_cierre(
             f"{cierre['task_id']} ({cierre['assignee']}, {cierre['desenlace']})",
