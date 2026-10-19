@@ -21,6 +21,8 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 # Como tests/test_workflow.py: hermes_cli importa módulos de la raíz del runtime (hermes_yaml).
 sys.path.insert(0, str(Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 kanban_port = importlib.import_module("raices.kanban_port")
 SpecDeTarjeta = kanban_port.SpecDeTarjeta
@@ -41,7 +43,7 @@ class KanbanReal(unittest.TestCase):
         self.kanban_db = importlib.import_module("hermes_cli.kanban_db")
         self.connect = connect
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.ruta_db = Path(self.temporal.name) / "kanban.db"
 
     def adaptador(self):

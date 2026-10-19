@@ -21,6 +21,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 import hermes_falso  # noqa: E402
 
@@ -244,7 +245,7 @@ class ElEjecutableDeVersion(unittest.TestCase):
 class LeerGateway(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name) / "hermes"
 
     def escribir(self, documento, *partes):
@@ -299,7 +300,7 @@ class LeerGateway(unittest.TestCase):
 class LeerCertificadas(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "certificadas.json"
 
     def test_la_ruta_inexistente_da_la_tupla_vacia(self):
@@ -445,7 +446,7 @@ class Decidir(unittest.TestCase):
 class PuertaViva(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir()
         self.certificados = Path(self.directorio.name) / "certificadas.json"

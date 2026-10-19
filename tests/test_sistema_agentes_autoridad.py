@@ -13,6 +13,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 store = importlib.import_module("raices.store")
 ticker = importlib.import_module("raices.ticker")
@@ -211,7 +213,7 @@ class I07SinPermisos(TiendaCerrada, unittest.TestCase):
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta)
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -267,7 +269,7 @@ class I07Efecto(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -350,7 +352,7 @@ class I07UnAvisoPorEfecto(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -448,7 +450,7 @@ class EfectoMalFormado(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -558,7 +560,7 @@ class I07Arranque(TiendaCerrada, unittest.TestCase):
         self.directorio = tempfile.TemporaryDirectory()
         self.tienda = store.Store(Path(self.directorio.name) / "db.sqlite")
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1"), unidad("b", "b1")]))
         self.kanban = kanban_port.DobleKanban()
@@ -660,7 +662,7 @@ class ConcesionDeEfecto(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -778,7 +780,7 @@ class SujetosDeIntentoSinAutorizar(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -894,7 +896,7 @@ class ModoDeLaUnidadEnElArranque(TiendaCerrada, unittest.TestCase):
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta, permisos_h=permisos(acciones=["read"]))
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
 
     def test_una_unidad_read_bajo_autoridad_read_arranca(self):
@@ -937,7 +939,7 @@ class LaConcesionNoCallaLasRazonesDeForma(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -1046,7 +1048,7 @@ class OpcionesPorRazonDeForma(TiendaCerrada, unittest.TestCase):
             permisos_h=permisos(acciones=["read", "implement", "review"]),
         )
         self.addCleanup(self._verificar_cierre)
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.addCleanup(self.tienda.cerrar)
         self.tienda.abrir_raiz(meta_de([unidad("a", "a1")]))
 
@@ -1156,7 +1158,7 @@ class I07Reanudacion(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         permisosa = store.Store(self.ruta, permisos_h=permisos())
         permisosa.abrir_raiz(meta_de([unidad("a", "a1")]))

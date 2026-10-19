@@ -1382,6 +1382,10 @@ class OpenCodeCommandTests(unittest.TestCase):
         self.assertFalse(self.env_for(request(self.workspace)))
 
 
+@unittest.skipUnless(
+    os.name == "nt",
+    "el puente muse necesita rutas Windows (prompt por tempfile y /mnt/c)",
+)
 class MuseCommandTests(unittest.TestCase):
     """A stage invocation still launches Muse."""
 
