@@ -156,6 +156,7 @@ _EJECUTOR_BOOTSTRAP = (
     "except Exception as fallo:\n"
     "    result = {'rootId': root, 'unitId': unit, 'attempt': attempt,\n"
     "              'outcome': 'error', 'reason': str(fallo)[:400]}\n"
+    "result['lanzamientoId'] = lanzamiento\n"
     "tmp = out + '.tmp'\n"
     "with open(tmp, 'w', encoding='utf-8') as handle:\n"
     "    json.dump(result, handle, ensure_ascii=True)\n"
@@ -230,25 +231,42 @@ def _perfil_de(assignment: dict) -> str:
 
 
 def _slug_de_url(url: str) -> str | None:
-    """owner/nombre desde una URL de remoto git (https, ssh, scp-like
-    git@host:owner/name). Los ÚLTIMOS dos segmentos: un grupo anidado de
-    GitLab cae igual en el par que la autoridad lista. Sin dos segmentos no
-    hay identidad — se trata como checkout sin remoto (falla cerrada)."""
+    """owner/nombre desde una URL de remoto GitHub (F9, CR 4310118486): el
+    HOST es parte de la identidad — solo github.com en sus tres formas
+    canónicas (https://github.com/owner/name, ssh://git@github.com/owner/name
+    y scp git@github.com:owner/name) y EXACTAMENTE dos segmentos; un host
+    ajeno (evil.example) o una ruta anidada (grupo/sub/name) NO es el repo
+    autorizado aunque termine igual — no se trunca. Sin puerto ni esquemas
+    raros: lo que no cuadra es None (falla cerrada). La igualdad con la
+    autoridad se juzga sin mayúsculas (GitHub no distingue); el slug se
+    devuelve tal cual."""
     texto = url.strip()
     if "://" in texto:
-        texto = texto.split("://", 1)[1]
-        _host, _, texto = texto.partition("/")
-    elif ":" in texto:
-        texto = texto.split(":", 1)[1]
-    partes = [p for p in texto.split("/") if p]
-    if len(partes) < 2:
+        esquema, _, resto = texto.partition("://")
+        if esquema.lower() not in ("https", "ssh"):
+            return None
+        autoridad_ruta, _, ruta = resto.partition("/")
+        credencial, sep, host = autoridad_ruta.rpartition("@")
+        if sep and not credencial:
+            return None
+        if host.lower() != "github.com" or not ruta:
+            return None
+    else:
+        credencial, sep, resto = texto.rpartition("@")
+        if not sep:
+            return None
+        host, sep_ruta, ruta = resto.partition(":")
+        if not sep_ruta or host.lower() != "github.com" or not credencial:
+            return None
+    partes = [p for p in ruta.split("/") if p]
+    if len(partes) != 2:
         return None
-    nombre = partes[-1]
+    owner, nombre = partes
     if nombre.endswith(".git"):
         nombre = nombre[: -len(".git")]
-    if not partes[-2] or not nombre:
+    if not owner or not nombre:
         return None
-    return f"{partes[-2]}/{nombre}"
+    return f"{owner}/{nombre}"
 
 
 def _origen_de(workspace: Path) -> str | None:
@@ -332,12 +350,18 @@ def _workspace_no_autorizado(workspace, repos_de_autoridad, raices) -> str | Non
     para el dueño, no un volcado del sistema de archivos."""
     if not isinstance(repos_de_autoridad, list) or not repos_de_autoridad:
         return "root authority lists no repos"
-    permitidos = {r.strip() for r in repos_de_autoridad if isinstance(r, str)}
+    permitidos = {
+        r.strip().casefold(): r.strip()
+        for r in repos_de_autoridad
+        if isinstance(r, str)
+    }
     slug = _origen_de(workspace)
     if slug is None:
         return "workspace has no git origin to match against the authority repos"
-    if slug not in permitidos:
-        esperados = ", ".join(sorted(permitidos))[:200]
+    # GitHub no distingue mayúsculas: el checkout clona con las mayúsculas
+    # que tenga y la autoridad lista el mismo repo con las suyas.
+    if slug.casefold() not in permitidos:
+        esperados = ", ".join(sorted(permitidos.values()))[:200]
         return (
             f"workspace origin {slug} is not in the authority repos"
             f" (authority repos: {esperados})"
@@ -544,10 +568,12 @@ def correr_intento(
     store = importlib.import_module("raices.store")
     local = _driver_de_cadena()
     if local is None:
-        # Sin el driver de la cadena no hay parser de sobre ni huella: no se
-        # toca la tarjeta y la vuelta siguiente reintenta tras el TTL, como
-        # cualquier hijo que murió sin decir nada. La reserva (F8) sí vuelve:
-        # tampoco aquí hubo llamada.
+        # Sin el driver de la cadena no hay parser de sobre ni huella: aquí
+        # no se toca la tarjeta. El desenlace sale en el archivo de resultado
+        # y el ticker lo trata como TERMINAL (sin-driver está en sus
+        # OUTCOMES_TERMINALES): bloquea la tarjeta con su causa y NO
+        # relanza — es lo buscado, un entorno sin driver no se arregla con
+        # reintentos. La reserva (F8) sí vuelve: tampoco aquí hubo llamada.
         _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
         return {
             "rootId": root_id,

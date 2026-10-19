@@ -592,7 +592,12 @@ class ElWorkspaceContraLaAutoridad(Escenario):
         self.assertIsNone(doble.peticion())
 
     def test_el_slug_de_una_url_de_remoto(self):
+        # CR 4310118486 (seguridad): la identidad es HOST + EXACTAMENTE dos
+        # segmentos owner/nombre. Un host ajeno no puede hacerse pasar por
+        # el repo autorizado y una ruta anidada no se trunca a los últimos
+        # dos segmentos.
         resolver = ejecutor._slug_de_url
+        # Las formas buenas de un remoto github.com.
         self.assertEqual(
             resolver("https://github.com/owner-01/repo-a.git"), "owner-01/repo-a"
         )
@@ -603,13 +608,30 @@ class ElWorkspaceContraLaAutoridad(Escenario):
             resolver("git@github.com:owner-01/repo-a.git"), "owner-01/repo-a"
         )
         self.assertEqual(
-            resolver("ssh://git@github.com:2222/owner-01/repo-a.git"),
-            "owner-01/repo-a",
+            resolver("ssh://git@github.com/owner-01/repo-a"), "owner-01/repo-a"
         )
-        # Grupo anidado: los ÚLTIMOS dos segmentos.
-        self.assertEqual(resolver("https://gitlab.com/grupo/sub/repo.git"), "sub/repo")
+        # Host ajeno: same owner/name, OTRO dueño.
+        self.assertIsNone(resolver("https://evil.example/owner-01/repo-a.git"))
+        self.assertIsNone(resolver("https://gitlab.com/owner-01/repo-a.git"))
+        self.assertIsNone(resolver("git@evil.example:owner-01/repo-a.git"))
+        # Ruta anidada: no es un slug de GitHub.
+        self.assertIsNone(resolver("https://gitlab.com/attacker/owner-01/repo-a.git"))
+        self.assertIsNone(resolver("https://github.com/grupo/sub/repo.git"))
+        # Formas fuera del canon: un segmento, esquema raro, ssh con puerto.
         self.assertIsNone(resolver("https://github.com/solo"))
-        self.assertIsNone(resolver("gopher://host/x"))
+        self.assertIsNone(resolver("gopher://github.com/x/y"))
+        self.assertIsNone(resolver("ssh://git@github.com:2222/owner-01/repo-a.git"))
+
+    def test_el_origin_en_mayusculas_cuadra_con_la_autoridad(self):
+        # GitHub no distingue mayúsculas: un checkout clonado de
+        # https://github.com/owner-01/Repo-A.git ES el repo que la autoridad
+        # lista como owner-01/repo-a.
+        ruta_repo, sha = self.repositorio(origen="owner-01/Repo-A")
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "completed")
 
 
 class SoloLectura(Escenario):
@@ -673,7 +695,8 @@ class ElLanzamientoDelTicker(Escenario):
     def hijo_que_escribe(self, outcome, reason=None):
         """Un lanzador que simula al hijo REAL en lo que al F3 importa: escribe
         SU archivo de resultado (el mismo nombre determinista del lanzador de
-        producción) y nace. El ticker lo consume la vuelta siguiente."""
+        producción, con el lanzamiento_id que recibió — F13) y nace. El
+        ticker lo consume la vuelta siguiente."""
         resultados = Path(self.directorio.name) / "raices" / "ejecutor"
 
         def lanzar(root_id, unit_id, attempt, card_id, id_lanzamiento=None):
@@ -686,6 +709,7 @@ class ElLanzamientoDelTicker(Escenario):
                 "unitId": unit_id,
                 "attempt": attempt,
                 "outcome": outcome,
+                "lanzamientoId": id_lanzamiento,
             }
             if reason is not None:
                 documento["reason"] = reason
@@ -937,7 +961,8 @@ class ElLanzamientoDelTicker(Escenario):
         )
         primera = self.vuelta(tienda, kanban, lanzador=lanzar)
         self.assertEqual(primera.lanzamientos, 1)
-        # El hijo real: bloquea la tarjeta Y devuelve su reserva.
+        # El hijo real: bloquea la tarjeta Y devuelve su reserva — con SU id,
+        # el mismo que dejó escrito en su archivo (F13).
         tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
         with kanban.write_txn() as escritura:
             escritura.bloquear(
@@ -946,7 +971,10 @@ class ElLanzamientoDelTicker(Escenario):
                     {"outcome": "router-no-configurado", "reason": "sin cadena"}
                 ),
             )
-        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1))
+        id_del_hijo = json.loads(
+            archivo_de_resultado(tienda).read_text(encoding="utf-8")
+        )["lanzamientoId"]
+        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1, id_del_hijo))
         self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
         # La vuelta siguiente: conciliación (tarjeta bloqueada → incidencia
         # de transporte) sin doble devolución ni archivo huérfano.
@@ -958,6 +986,87 @@ class ElLanzamientoDelTicker(Escenario):
             "recovery-transport-failure",
             [i["incident"]["kind"] for i in vista["incidencias"]],
         )
+
+    def test_el_archivo_tardio_no_devuelve_la_reserva_del_lanzamiento_nuevo(self):
+        # F13: un hijo congelado (PC suspendida más que el TTL, sin llegar al
+        # latido) despierta cuando el ticker YA relanzó. Su archivo — nombrado
+        # por intento — es del lanzamiento 0: la devolución va SOLO con el
+        # lanzamiento_id que el hijo dejó escrito, así que el reclamo del
+        # lanzamiento 1 sobrevive y su reserva no baja.
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban)
+        primero = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        id0 = primero.valor
+        tienda._conexion.execute(
+            "UPDATE lanzamientos SET vence_at = '2000-01-01T00:00:00Z'"
+            " WHERE lanzamiento_id = ?",
+            (id0,),
+        )
+        tienda._conexion.commit()
+        tienda.limpiar_lanzamientos()
+        segundo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        id1 = segundo.valor
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 2)
+        # El hijo del lanzamiento 0 despierta y escribe SU resultado, con SU id.
+        archivo = archivo_de_resultado(tienda)
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_text(
+            json.dumps(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "outcome": "workspace-unavailable",
+                    "lanzamientoId": id0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        lanzar, _llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        # El desenlace es terminal y la tarjeta se cierra; la devolución del
+        # hijo 0 NO toca el reclamo del lanzamiento 1 ni su reserva.
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 2)
+        fila = tienda._una_fila("SELECT lanzamiento_id FROM lanzamientos")
+        self.assertIsNotNone(fila)
+        self.assertEqual(fila["lanzamiento_id"], id1)
+        cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(cerrada.estado, "bloqueada")
+        self.assertFalse(archivo.exists())
+
+    def test_el_archivo_sin_identidad_no_devuelve_y_se_registra(self):
+        # F13: un archivo sin lanzamientoId (hijo anterior, corrupto) no
+        # devuelve NADA: el reclamo vivo queda con su reserva, la anomalía
+        # queda registrada como incidencia y el archivo no revive la
+        # validación en cada vuelta.
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban)
+        reclamo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        self.assertFalse(hasattr(reclamo, "codigo"))
+        archivo = archivo_de_resultado(tienda)
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_text(
+            json.dumps(
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "outcome": "workspace-unavailable",
+                }
+            ),
+            encoding="utf-8",
+        )
+        lanzar, _llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertIsNotNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        vista = tienda.leer_vista(RAIZ, hechos_de(tienda))
+        self.assertIn(
+            "invalid-result", [i["incident"]["kind"] for i in vista["incidencias"]]
+        )
+        cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(cerrada.estado, "bloqueada")
+        self.assertFalse(archivo.exists())
 
     def test_sin_driver_devuelve_la_reserva_y_no_toca_la_tarjeta(self):
         # F8: sin el driver de la cadena el hijo no llega ni a tocar la
@@ -997,7 +1106,13 @@ class ElLanzamientoDelTicker(Escenario):
         archivo.parent.mkdir(parents=True, exist_ok=True)
         archivo.write_text(
             json.dumps(
-                {"rootId": RAIZ, "unitId": "a", "attempt": 1, "outcome": "blocked"}
+                {
+                    "rootId": RAIZ,
+                    "unitId": "a",
+                    "attempt": 1,
+                    "outcome": "blocked",
+                    "lanzamientoId": llamadas[0][4],
+                }
             ),
             encoding="utf-8",
         )
@@ -1081,7 +1196,15 @@ class ElLanzamientoDelTicker(Escenario):
         self.assertEqual(tarjeta.estado, "completada")
         archivo = archivo_de_resultado(tienda)
         archivo.parent.mkdir(parents=True, exist_ok=True)
-        archivo.write_text(json.dumps(resultado), encoding="utf-8")
+        archivo.write_text(
+            json.dumps(
+                {
+                    **resultado,
+                    "lanzamientoId": "lanzo-de-prueba",
+                }
+            ),
+            encoding="utf-8",
+        )
         lanzar, _llamadas = self.grabador()
         self.vuelta(tienda, kanban, lanzador=lanzar)
         vista = tienda.leer_vista(RAIZ, hechos_de(tienda))

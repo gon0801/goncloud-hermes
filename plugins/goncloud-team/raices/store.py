@@ -2432,16 +2432,17 @@ class Store:
         entonces no hay reserva que devolver: False y ni un decremento de
         más. Con `id_lanzamiento` (F11) SOLO toca el reclamo de ESE
         lanzamiento — el token que reclamar_lanzamiento entregó al lanzador
-        y el hijo recibió: la devolución tardía de un hijo (que puede
-        despertar tarde, con su reclamo ya podado y el intento relanzado) no
-        borra el reclamo del lanzamiento nuevo. Sin id queda la forma del
-        ticker: consume el archivo de resultado ANTES de reclamar en cada
-        vuelta y, con el gate de tarjeta abierta del despacho, una tarjeta
-        cerrada nunca relanza su intento — no hay un lanzamiento posterior
-        cuyo reclamo pudiera borrar por equivocación. A diferencia de
-        soltar_lanzamiento (que confía en saber que el lanzamiento no nació),
-        esta la invoca el ticker al consumir un resultado que puede ya haberse
-        consumido."""
+        y el hijo recibió. La identidad del archivo de resultado es la que
+        decide (F13): el archivo es nombrado por intento y puede
+        SOBREVIVIR a su lanzamiento — un hijo congelado más que el TTL
+        despierta cuando la vuelta ya relanzó —, así que el ticker valida
+        rootId/unitId/attempt del archivo y devuelve SOLO con el id que el
+        hijo dejó escrito; sin id o ajeno, no devuelve nada y registra la
+        anomalía. La forma sin id SOLO queda para el hijo en corridas
+        directas sin id (pruebas unitarias de correr_intento). A diferencia
+        de soltar_lanzamiento (que confía en saber que el lanzamiento no
+        nació), esta la invoca el ticker al consumir un resultado que puede
+        ya haberse consumido."""
         self._begin()
         try:
             if id_lanzamiento is None:

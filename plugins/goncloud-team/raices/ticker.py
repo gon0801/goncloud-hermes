@@ -389,41 +389,100 @@ def _cerrar_hijo_terminal(tienda, puerto, intento, resultado) -> None:
     después de escribir, o su block_task falló — no vuelve a la cola como si
     nada. Bloquea la tarjeta con la MISMA causa acotada del hijo
     (ejecutor.motivo_de_outcome), devuelve el reclamo y la reserva cuando el
-    desenlace ocurrió ANTES de la llamada al modelo, y consume el archivo para
-    no revivirlo en cada vuelta. Idempotente: el bloqueo repetido no hace nada
-    y la devolución solo toca un reclamo vivo; si el consumo del archivo
-    fallara, la vuelta siguiente re-bloquea y no encuentra reserva que
-    devolver."""
+    desenlace ocurrió ANTES de la llamada al modelo — SOLO con el
+    lanzamiento_id que el hijo dejó escrito y la identidad del archivo
+    validada (F13) — y consume el archivo para no revivirlo en cada vuelta.
+    Idempotente: el bloqueo repetido no hace nada y la devolución solo toca
+    el reclamo de SU lanzamiento; si el consumo del archivo fallara, la
+    vuelta siguiente re-bloquea y no encuentra reserva que devolver."""
     ejecutor = importlib.import_module("raices.ejecutor")
     with puerto.write_txn() as escritura:
         escritura.bloquear(
             intento["cardId"], ejecutor.motivo_de_outcome(resultado)[:1800]
         )
     if str(resultado.get("outcome")) in OUTCOMES_SIN_LLAMADA:
-        tienda.devolver_lanzamiento(
-            intento["rootId"], intento["unitId"], intento["attempt"]
-        )
+        id_lanzamiento = _id_del_hijo(tienda, intento, resultado)
+        if id_lanzamiento is not None:
+            tienda.devolver_lanzamiento(
+                intento["rootId"],
+                intento["unitId"],
+                intento["attempt"],
+                id_lanzamiento,
+            )
     _consumir_archivo_de_hijo(tienda, intento)
+
+
+def _id_del_hijo(tienda, intento, resultado) -> str | None:
+    """El lanzamiento_id del resultado del hijo, si el archivo trae identidad
+    (F13): rootId/unitId/attempt cuadrados con el intento y el id que el hijo
+    recibió por argv. None si no — y la anomalía se registra. El archivo es
+    nombrado por intento y puede SOBREVIVIR a su lanzamiento (un hijo
+    congelado más que el TTL despierta cuando el ticker ya relanzó): sin
+    identidad no hay devolución posible sin riesgo de tocar el reclamo de
+    OTRO lanzamiento."""
+    if (
+        resultado.get("rootId") != intento["rootId"]
+        or resultado.get("unitId") != intento["unitId"]
+        or resultado.get("attempt") != intento["attempt"]
+    ):
+        _registrar_archivo_invalido(tienda, intento, "identidad-ajena")
+        return None
+    id_lanzamiento = resultado.get("lanzamientoId")
+    if not isinstance(id_lanzamiento, str) or not id_lanzamiento:
+        _registrar_archivo_invalido(tienda, intento, "sin-lanzamiento-id")
+        return None
+    return id_lanzamiento
+
+
+def _registrar_archivo_invalido(tienda, intento, motivo) -> None:
+    """La incidencia de un archivo de resultado sin identidad (F13): kind
+    invalid-result con episodeId DETERMINISTA (dedupe en decidir) — queda la
+    evidencia de que el archivo no pudo validarse y la reserva no se
+    devolvió por eso."""
+    identidad = digesto(
+        [
+            "archivo-hijo",
+            motivo,
+            intento["rootId"],
+            intento["unitId"],
+            intento["attempt"],
+        ]
+    )
+    tienda.registrar_incidencia(
+        intento["rootId"],
+        intento["unitId"],
+        intento["attempt"],
+        f"invalid-result:{intento['cardId']}",
+        {
+            "kind": "invalid-result",
+            "episodeId": f"invalid-result:{identidad}",
+            "evidenceRef": intento["cardId"],
+        },
+    )
 
 
 def _consumir_archivo_de_hijo(tienda, intento) -> None:
     """El archivo de resultado del hijo de ESTE intento, consumido (F8): la
     devolución de la reserva si el desenlace fue ANTES de la llamada al
-    modelo — el hijo real ya la hizo él mismo (ejecutor._devolver_reserva);
-    esta es la del camino donde la conciliación cierra el intento ANTES de
-    que _despachar_ejecutores llegue a leer el archivo, más el hijo que
-    murió justo antes de devolverla — y el borrado del archivo para que no
-    quede huérfano en <raiz>/raices/ejecutor/. Idempotente: sin archivo no
-    hay nada y la devolución solo toca un reclamo vivo."""
+    modelo — SOLO con el lanzamiento_id que el hijo dejó escrito y con la
+    identidad del archivo validada contra el intento (F13; el hijo real ya
+    la hizo él mismo con su id), y el borrado del archivo para que no quede
+    huérfano ni reviva la validación en cada vuelta. Idempotente: sin
+    archivo no hay nada y la devolución solo toca el reclamo de SU
+    lanzamiento."""
     ejecutor = importlib.import_module("raices.ejecutor")
     resultado = _resultado_del_hijo(tienda, intento)
-    if (
-        isinstance(resultado, dict)
-        and str(resultado.get("outcome")) in OUTCOMES_SIN_LLAMADA
+    if isinstance(resultado, dict) and str(resultado.get("outcome")) in (
+        OUTCOMES_SIN_LLAMADA
     ):
-        tienda.devolver_lanzamiento(
-            intento["rootId"], intento["unitId"], intento["attempt"]
-        )
+        id_lanzamiento = _id_del_hijo(tienda, intento, resultado)
+        if id_lanzamiento is not None:
+            tienda.devolver_lanzamiento(
+                intento["rootId"],
+                intento["unitId"],
+                intento["attempt"],
+                id_lanzamiento,
+            )
     archivo = ejecutor._archivo_de_resultado(
         Path(tienda.ruta).parent / "raices" / "ejecutor",
         intento["rootId"],
