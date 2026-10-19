@@ -210,7 +210,7 @@ def _reclamar(ruta: Path) -> Path | None:
 
 
 def _soltar_reclamo(reclamado: Path) -> None:
-    """Devuelve un reclamo a .json cuando el aviso resultó no ser nuestro."""
+    """Devuelve un reclamo a .json: no era nuestro o no se pudo encolar."""
     try:
         os.replace(reclamado, reclamado.with_suffix(".json"))
     except OSError:
@@ -236,11 +236,19 @@ def entregar_avisos(buzon, cola) -> int:
             reclamado = _reclamar(ruta)
             if reclamado is None:
                 continue  # otro vigilante ya lo tomó
-            evento = construir_evento(aviso, nombre=ruta.name)
-            if evento is None:
+            try:
+                evento = construir_evento(aviso, nombre=ruta.name)
+                if evento is None:
+                    _soltar_reclamo(reclamado)
+                    continue
+                cola.put(evento)
+            except Exception:
+                # Sin esto el .encolado quedaba sin reintento hasta el
+                # proximo arranque: vuelve a .json y la siguiente pasada
+                # (3 s) lo recoge.
+                logger.exception("aviso %s no encolado; vuelve a .json", ruta.name)
                 _soltar_reclamo(reclamado)
                 continue
-            cola.put(evento)
             if evento.get("goncloud_aviso"):
                 _encolados_propios.add(evento["goncloud_aviso"])
             logger.info(
@@ -436,12 +444,6 @@ def iniciar_vigilante(
         if vivo is not None and vivo.is_alive():
             _hilo = vivo
             return _hilo
-        # Otro centinela pudo guardar el hilo con otro atributo usual.
-        for hilo in threading.enumerate():
-            if hilo.name == "goncloud-avisos-sesion" and hilo.is_alive():
-                _CENTINELA.hilo = hilo
-                _hilo = hilo
-                return _hilo
         if cola is None:
             cola = _cola_del_gateway()
         if cola is None:

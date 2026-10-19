@@ -602,6 +602,7 @@ class CorreccionesTests(Base):
         auto.post_llm_call(
             **turno(turn_id="t2", user_message="MX", assistant_response="Listo.")
         )
+        self.esperar(auto)
         self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
         self.assertNotIn("s1", auto._correcciones)
 

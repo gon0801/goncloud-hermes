@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import local_orchestrator as local_orchestrator_module  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 from test_local_orchestrator import (  # noqa: E402
     DriverBootstrapTests,
     _OrchestratorHarness,
@@ -53,6 +54,36 @@ class ColaFalsa:
 
     def put(self, evento):
         self.eventos.append(evento)
+
+
+class ColaQueFallaAlPrincipio(ColaFalsa):
+    """put lanza hasta que se le quita la falla: el reclamo debe soltarse."""
+
+    def __init__(self):
+        super().__init__()
+        self.falla = True
+
+    def put(self, evento):
+        if self.falla:
+            raise RuntimeError("cola caida")
+        super().put(evento)
+
+
+class ColaQueAnotaElReclamo(ColaFalsa):
+    """Anota si al encolar el .json ya fue reclamado a .encolado."""
+
+    def __init__(self, ruta_json: Path):
+        super().__init__()
+        self._ruta_json = ruta_json
+        self.json_presente_al_put = None
+        self.encolado_presente_al_put = None
+
+    def put(self, evento):
+        self.json_presente_al_put = self._ruta_json.exists()
+        self.encolado_presente_al_put = self._ruta_json.with_suffix(
+            ".encolado"
+        ).exists()
+        super().put(evento)
 
 
 def escribir_aviso(buzon: Path, nombre: str, aviso: dict) -> Path:
@@ -244,6 +275,20 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         self.assertEqual(len(cola.eventos), 1)
         self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
 
+    # M1: si construir/encolar falla tras el reclamo, el aviso vuelve a
+    # .json y la pasada siguiente lo reintenta (no queda .encolado huerfano).
+    def test_m1_put_que_lanza_devuelve_a_json_y_la_siguiente_pasada_encola(self):
+        ruta = escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = ColaQueFallaAlPrincipio()
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 0)
+        self.assertTrue(ruta.exists())
+        self.assertFalse((self.buzon() / "t_abc-run-blocked.encolado").exists())
+        self.assertEqual(cola.eventos, [])
+        cola.falla = False
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 1)
+        self.assertEqual(len(cola.eventos), 1)
+        self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
+
     # (d/F2) reinicio con un .encolado: el arranque lo re-encola una vez,
     # porque la cola en memoria se perdió con el proceso anterior.
     def test_d_reinicio_reencola_el_encolado_una_vez(self):
@@ -414,7 +459,7 @@ class ColaConBarrera(ColaFalsa):
 class VigilanteUnicoTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, self._tmp)
         self.buzon = Path(self._tmp.name) / "avisos"
         self.buzon.mkdir(parents=True)
 
@@ -480,6 +525,26 @@ class VigilanteUnicoTests(unittest.TestCase):
         self.assertEqual(sum(resultados), 1)
         self.assertTrue((self.buzon / "t_abc-run-blocked.encolado").exists())
         self.assertFalse((self.buzon / "t_abc-run-blocked.json").exists())
+
+    # L1: el reclamo directo lo gana uno solo; el otro recibe None.
+    def test_reclamo_directo_dos_sobre_la_misma_ruta_uno_gana(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        primero = avisos_sesion._reclamar(ruta)
+        segundo = avisos_sesion._reclamar(ruta)
+        self.assertIsNotNone(primero)
+        self.assertEqual(primero, self.buzon / "t_abc-run-blocked.encolado")
+        self.assertTrue(primero.exists())
+        self.assertIsNone(segundo)
+        self.assertFalse(ruta.exists())
+
+    # L1: al encolar, el .json ya no existe (reclamo ANTES del put). Con
+    # el orden viejo (put y luego renombrar) esta prueba queda en rojo.
+    def test_put_ve_el_aviso_ya_reclamado(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = ColaQueAnotaElReclamo(ruta)
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon, cola), 1)
+        self.assertFalse(cola.json_presente_al_put)
+        self.assertTrue(cola.encolado_presente_al_put)
 
     def test_reinicio_encolado_una_sola_reencolada_con_dos_copias(self):
         ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
