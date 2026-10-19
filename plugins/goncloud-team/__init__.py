@@ -14,6 +14,7 @@ from .schemas import (
     ENGINEERING_REVIEW,
     ENGINEERING_START,
     ENGINEERING_STATUS,
+    LOCAL_CLOSE,
     LOCAL_RUN,
     LOCAL_STATUS,
     MUSE_DELEGATE,
@@ -107,11 +108,31 @@ def _transport_handlers(ctx):
             driver = getattr(orchestrator, "driver_result", None)
             if driver is not None:
                 result["driver"] = driver(workflow_id)
+            from .local_orchestrator import close_hint
+
+            result["close_hint"] = close_hint(
+                result, (result.get("driver") or {}).get("outcome")
+            )
             return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
 
-    return local_run, local_status
+    def local_close(args: dict, **kwargs) -> str:
+        del kwargs
+        try:
+            if ctx.profile_name != "claw":
+                raise PermissionError("only the claw director may close local work")
+            arguments = dict(args or {})
+            orchestrator = _build_orchestrator(ctx)
+            receipt = orchestrator.close(
+                str(arguments.get("workflow_id", "")),
+                reason=str(arguments.get("reason", "")),
+            )
+            return json.dumps(receipt, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
+
+    return local_run, local_status, local_close
 
 
 def _handler(ctx, method_name: str):
@@ -177,7 +198,7 @@ def register(ctx) -> None:
         emoji="🧠",
     )
 
-    local_run, local_status = _transport_handlers(ctx)
+    local_run, local_status, local_close = _transport_handlers(ctx)
     ctx.register_tool(
         name="goncloud_local_run",
         toolset="goncloud_team",
@@ -191,6 +212,13 @@ def register(ctx) -> None:
         schema=LOCAL_STATUS,
         handler=local_status,
         emoji="📈",
+    )
+    ctx.register_tool(
+        name="goncloud_local_close",
+        toolset="goncloud_team",
+        schema=LOCAL_CLOSE,
+        handler=local_close,
+        emoji="🔒",
     )
 
     for name, schema, funcion, emoji in (

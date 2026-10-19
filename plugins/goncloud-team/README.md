@@ -13,6 +13,10 @@ This native Hermes plugin registers these tools in the `goncloud_team` toolset:
   corrective review chain.
 - `goncloud_muse_delegate` sends a complete specialist assignment to the owner's
   authenticated Muse CLI through WSL, using standard input and Muse's own sandbox.
+- `goncloud_local_close` closes a paused or blocked local chain (archives the
+  director root and the stages that are not done, keeps the done stages as
+  evidence, and records the reason on the root) so the repository accepts new
+  chains again. Claw-only, idempotent, and it refuses a running chain.
 
 The adapter uses `hermes_cli.kanban_db_connect.connect_closing`, public native
 Kanban operations, and the native atomic decomposition builder. The local runner
@@ -211,6 +215,17 @@ review blocks delivery. Other rejected or blocked stages stop the runner.
 External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
 Delivery closes the director root after all stages and review gates finish.
+A chain left paused (a `stop_after` checkpoint) or blocked still holds the
+same-repository mutex: `WorkflowService.start` refuses every new chain in that
+repository until its director root is done or archived. The claw profile
+releases it with `goncloud_local_close` (`workflow_id`, `reason`): the tool
+refuses a running chain (a stage the kernel shows running, or a live
+subscription lease), archives the root and the stages that are not done
+through the native `archive`, keeps the done stages as evidence, records the
+reason as a comment on the root, and returns a receipt derived from the
+resulting durable state, so closing an already-closed chain returns the same
+receipt. `goncloud_local_status` announces the close with a `close_hint` while
+the chain is paused or blocked.
 
 Reviewer envelopes remain available as bounded handoff/status evidence,
 including evidence needed by a corrective implementer. Decisions still come

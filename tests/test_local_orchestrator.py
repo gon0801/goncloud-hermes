@@ -20,19 +20,46 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from hermes_cli.kanban_db import (  # noqa: E402
     complete_task,
+    create_task,
     get_task,
+    list_comments,
     list_runs,
     list_tasks,
 )
 from hermes_cli.kanban_db_connect import connect_closing  # noqa: E402
 from workflow import WorkflowError, WorkflowService  # noqa: E402
 from subscriptions.router import SubscriptionRouter  # noqa: E402
+from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
-from local_orchestrator import LocalOrchestrator, parse_terminal_envelope  # noqa: E402
+from local_orchestrator import (  # noqa: E402
+    LocalOrchestrator,
+    close_hint,
+    parse_terminal_envelope,
+)
 import local_orchestrator as local_orchestrator_module  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SOURCES = [{"reference": "owner-approved local test", "observed_at": "2026-09-14"}]
+
+
+def _plugin_package():
+    """The plugin package, loadable by name (its directory carries a hyphen)."""
+    import importlib.util
+
+    name = "goncloud_team"
+    package = sys.modules.get(name)
+    if package is None:
+        spec = importlib.util.spec_from_file_location(
+            name,
+            str(ROOT / "plugins/goncloud-team/__init__.py"),
+            submodule_search_locations=[str(ROOT / "plugins/goncloud-team")],
+        )
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[name] = package
+        spec.loader.exec_module(package)
+    return package
+
+
 ORDER = [
     "scout",
     "ingenieria",
@@ -574,7 +601,9 @@ class DriverBootstrapTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "completed")
 
 
-class LocalOrchestratorTests(unittest.TestCase):
+class _OrchestratorHarness(unittest.TestCase):
+    """Shared mount: SOURCE table, fake adapter, fake git, patched router."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
@@ -644,6 +673,14 @@ class LocalOrchestratorTests(unittest.TestCase):
             }
         )
 
+    def paused(self, **kwargs):
+        """A chain stopped at its scout checkpoint: outcome paused, root todo."""
+        first = self.start(stop_after="scout", **kwargs)
+        self.assertEqual(len(self.requests), 1)
+        return first
+
+
+class LocalOrchestratorTests(_OrchestratorHarness):
     def test_exact_order_and_durable_delivery_evidence(self):
         result = self.start()
         self.assertEqual([r.role for r in self.requests], ORDER)
@@ -1701,6 +1738,242 @@ class LocalCliTests(unittest.TestCase):
         self.assertEqual(calls[0]["instruction"], "PRIVATE FILE INSTRUCTION")
         self.assertEqual(calls[0]["sources"], SOURCES)
         self.assertNotIn("PRIVATE FILE INSTRUCTION", out.getvalue() + repr(argv))
+
+
+class LocalCloseTests(_OrchestratorHarness):
+    """goncloud_local_close: cierra una cadena paused o blocked; nunca una running.
+
+    Vivo 2026-10-18: un diagnostico stop_after=scout quedo outcome "paused",
+    su raiz en todo, y WorkflowService.start niego toda cadena nueva en el
+    repositorio ("repository already has active Goncloud workflow"); claw no
+    tenia herramienta para cerrarla y el coordinador la archivo a mano con
+    `hermes kanban archive`.
+    """
+
+    def test_closing_a_paused_chain_archives_and_frees_the_repository(self):
+        first = self.paused()
+
+        receipt = self.orchestrator.close(
+            first["workflow_id"], reason="owner closed the paused diagnostic"
+        )
+
+        self.assertEqual(receipt["workflow_id"], first["workflow_id"])
+        self.assertEqual(receipt["outcome"], "closed")
+        self.assertEqual(receipt["root_status"], "archived")
+        self.assertEqual(receipt["done_stages"], ["scout"])
+        self.assertEqual(receipt["archived_stages"], sorted(set(ORDER) - {"scout"}))
+        with connect_closing(self.db) as conn:
+            root = get_task(conn, first["workflow_id"])
+            self.assertEqual(root.status, "archived")
+            self.assertEqual(
+                get_task(conn, first["stages"]["scout"]["id"]).status, "done"
+            )
+            for role in ORDER[1:]:
+                self.assertEqual(
+                    get_task(conn, first["stages"][role]["id"]).status, "archived"
+                )
+            comentarios = list_comments(conn, first["workflow_id"])
+        self.assertEqual(len(comentarios), 1)
+        self.assertIn("owner closed the paused diagnostic", comentarios[0].body)
+        self.assertIn("GONCLOUD_LOCAL_CLOSE_V1", comentarios[0].body)
+        # The same-repository mutex follows the root's lifecycle: a new chain
+        # in the same repository must start without the old refusal.
+        created = self.orchestrator.create(
+            request_key="next-chain",
+            repository=str(self.repo),
+            revision="baseline",
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertNotEqual(created["workflow_id"], first["workflow_id"])
+
+    def test_closing_twice_returns_the_same_receipt_and_one_comment(self):
+        first = self.paused()
+
+        receipt = self.orchestrator.close(
+            first["workflow_id"], reason="cerrar diagnostico"
+        )
+        again = self.orchestrator.close(
+            first["workflow_id"], reason="cerrar diagnostico"
+        )
+
+        self.assertEqual(receipt, again)
+        with connect_closing(self.db) as conn:
+            comentarios = [c.body for c in list_comments(conn, first["workflow_id"])]
+        self.assertEqual(len(comentarios), 1)
+
+    def test_closing_a_running_chain_is_refused(self):
+        first = self.paused()
+        stage_id = first["stages"]["ingenieria"]["id"]
+
+        # (a) The kernel itself shows the stage running: typed refusal, no
+        # durable change at all.
+        with connect_closing(self.db) as conn:
+            conn.execute(
+                "UPDATE tasks SET status='running' WHERE id=?", (stage_id,)
+            ).close()
+            conn.commit()
+        with self.assertRaisesRegex(WorkflowError, "running"):
+            self.orchestrator.close(first["workflow_id"], reason="no")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "todo")
+            self.assertEqual(get_task(conn, stage_id).status, "running")
+
+        # (b) A live driver lease on any stage refuses the close; released,
+        # the same close goes through.
+        with connect_closing(self.db) as conn:
+            conn.execute(
+                "UPDATE tasks SET status='ready' WHERE id=?", (stage_id,)
+            ).close()
+            conn.commit()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"], stage_id, owner="driver-1", lease_seconds=900
+            )
+        )
+        with self.assertRaisesRegex(WorkflowError, "running"):
+            self.orchestrator.close(first["workflow_id"], reason="no", store=store)
+        store.release_stage(first["workflow_id"], stage_id, "driver-1")
+        receipt = self.orchestrator.close(
+            first["workflow_id"], reason="driver stopped", store=store
+        )
+        self.assertEqual(receipt["outcome"], "closed")
+
+    def test_a_blocked_chain_closes_and_keeps_done_evidence(self):
+        self.reviews = [{"decision": "reject", "severity": "medium"}]
+        first = self.start()
+        self.assertEqual(first["outcome"], "blocked")
+
+        receipt = self.orchestrator.close(
+            first["workflow_id"], reason="blocked chain abandoned"
+        )
+
+        self.assertEqual(receipt["done_stages"], sorted(ORDER[:5]))
+        self.assertEqual(receipt["archived_stages"], ["entrega", "reviewer"])
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["stages"]["reviewer"]["id"]).status, "archived"
+            )
+            self.assertEqual(
+                get_task(conn, first["stages"]["scout"]["id"]).status, "done"
+            )
+
+    def test_close_rejects_unknown_malformed_or_foreign_ids(self):
+        self.paused()
+        for workflow_id in ("t_nope", "../escape", "", "t 1", "a" * 200):
+            with self.subTest(workflow_id=workflow_id):
+                with self.assertRaises(WorkflowError):
+                    self.orchestrator.close(workflow_id, reason="x")
+        with connect_closing(self.db) as conn:
+            ajeno = create_task(conn, title="Tarjeta ajena", assignee="operaciones")
+        with self.assertRaises(WorkflowError):
+            self.orchestrator.close(ajeno, reason="x")
+
+    def test_close_requires_a_bounded_reason(self):
+        first = self.paused()
+        for reason in ("", "   ", None, "x" * 1001):
+            with self.subTest(reason=type(reason).__name__):
+                with self.assertRaises(WorkflowError):
+                    self.orchestrator.close(first["workflow_id"], reason=reason)
+
+    def test_status_hint_points_at_goncloud_local_close(self):
+        first = self.paused()
+        estado = self.orchestrator.status(first["workflow_id"])
+
+        hint = close_hint(estado, "paused")
+        self.assertIn("goncloud_local_close", hint)
+        # A running or delivered chain is never advertised as closeable.
+        self.assertIsNone(close_hint(estado, "running"))
+        self.assertIsNone(close_hint(estado, "delivered"))
+        # Durable fallback while the driver file does not exist yet.
+        self.assertIn("goncloud_local_close", close_hint(estado, None))
+        # A stage the kernel shows running is not closeable either.
+        corriendo = json.loads(json.dumps(estado))
+        corriendo["stages"]["ingenieria"]["status"] = "running"
+        self.assertIsNone(close_hint(corriendo, None))
+        # After the close, the archived root needs no hint.
+        self.orchestrator.close(first["workflow_id"], reason="cerrado")
+        cerrado = self.orchestrator.status(first["workflow_id"])
+        self.assertIsNone(close_hint(cerrado, "paused"))
+
+
+class LocalCloseHandlerTests(_OrchestratorHarness):
+    """The tool surface: registration, the claw-only guard, and the receipt."""
+
+    def handlers(self, profile):
+        plugin = _plugin_package()
+        registered = {}
+        hooks = []
+
+        class Ctx:
+            def __init__(self, profile_name):
+                self.profile_name = profile_name
+
+            def register_tool(self, **kwargs):
+                registered[kwargs["name"]] = kwargs
+
+            def register_hook(self, name, hook):
+                hooks.append((name, hook))
+
+        ctx = Ctx(profile)
+        plugin.register(ctx)
+        return registered, hooks
+
+    def test_registration_declares_the_close_tool(self):
+        registered, _ = self.handlers("claw")
+
+        self.assertIn("goncloud_local_close", registered)
+        tool = registered["goncloud_local_close"]
+        self.assertEqual(tool["toolset"], "goncloud_team")
+        self.assertEqual(tool["schema"]["name"], "goncloud_local_close")
+        self.assertEqual(
+            set(tool["schema"]["parameters"]["required"]),
+            {"workflow_id", "reason"},
+        )
+
+    def test_only_the_claw_director_may_close(self):
+        for profile in ("scout", "operaciones", "reviewer", "entrega"):
+            registered, _ = self.handlers(profile)
+            handler = registered["goncloud_local_close"]["handler"]
+            with self.subTest(profile=profile):
+                result = json.loads(handler({"workflow_id": "t_x", "reason": "r"}))
+                self.assertIn("error", result)
+                self.assertIn("claw", result["error"])
+
+    def test_the_claw_handler_closes_and_status_announces_the_close(self):
+        first = self.paused()
+        results = self.root / "goncloud-local"
+        results.mkdir()
+        (results / f"{first['workflow_id']}.json").write_text(
+            json.dumps({"workflow_id": first["workflow_id"], "outcome": "paused"}),
+            encoding="utf-8",
+        )
+        registered, _ = self.handlers("claw")
+        close_handler = registered["goncloud_local_close"]["handler"]
+        status_handler = registered["goncloud_local_status"]["handler"]
+        environment = {
+            "HERMES_KANBAN_DB": str(self.db),
+            "GONCLOUD_SUBSCRIPTION_DB": str(self.root / "routes.db"),
+            "HERMES_HOME": str(self.root),
+        }
+        with patch.dict(os.environ, environment):
+            status = json.loads(status_handler({"workflow_id": first["workflow_id"]}))
+            self.assertIn("goncloud_local_close", status["close_hint"])
+
+            receipt = json.loads(
+                close_handler(
+                    {
+                        "workflow_id": first["workflow_id"],
+                        "reason": "owner closed",
+                    }
+                )
+            )
+            self.assertEqual(receipt["outcome"], "closed")
+
+            closed = json.loads(status_handler({"workflow_id": first["workflow_id"]}))
+            self.assertIsNone(closed["close_hint"])
 
 
 if __name__ == "__main__":

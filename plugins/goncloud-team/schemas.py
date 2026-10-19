@@ -125,6 +125,36 @@ LOCAL_STATUS = {
     },
 }
 
+LOCAL_CLOSE = {
+    "name": "goncloud_local_close",
+    "description": (
+        "Close a finished-but-open local chain (outcome paused after a "
+        "stop_after checkpoint, or blocked) so new work can start again in "
+        "the same repository. Only the claw profile may call this. Archives "
+        "the director root and every stage that is not done with the native "
+        "Kanban archive, keeps the done stages as evidence, and records the "
+        "reason as a comment on the root. A running chain is refused, and "
+        "closing an already-closed chain returns the same receipt."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "Goncloud engineering workflow root id.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Owner-facing reason for closing, recorded on the root "
+                    "(at most 1000 characters)."
+                ),
+            },
+        },
+        "required": ["workflow_id", "reason"],
+    },
+}
+
 ENGINEERING_STATUS = {
     "name": "goncloud_engineering_status",
     "description": "Read the durable native-Kanban status of one Goncloud engineering workflow.",

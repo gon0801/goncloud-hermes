@@ -12,12 +12,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import hermes_cli
-from hermes_cli.kanban_db import block_task, complete_task, list_runs, parent_ids
+from hermes_cli.kanban_db import (
+    add_comment,
+    archive_task,
+    block_task,
+    complete_task,
+    list_comments,
+    list_runs,
+    parent_ids,
+)
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
     from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
-    from .subscriptions.router import GitInspector
+    from .subscriptions.router import GitInspector, default_db_path
+    from .subscriptions.state import SubscriptionStateStore
     from .workflow import (
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
@@ -26,7 +35,8 @@ try:
     )
 except ImportError:
     from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
-    from subscriptions.router import GitInspector
+    from subscriptions.router import GitInspector, default_db_path
+    from subscriptions.state import SubscriptionStateStore
     from workflow import (
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
@@ -39,6 +49,20 @@ MAX_TERMINAL_BYTES = 1800
 #: 2026-09-28, ingenieria wrote and committed the change itself and scout did
 #: the same on another run; instructions alone did not hold.
 _READ_ONLY_STAGES = frozenset({"scout", "ingenieria"})
+
+#: Root statuses a close accepts; anything else is either live work, already
+#: delivered, or not a decidable chain. Live 2026-10-18, a read-only
+#: diagnostic (stop_after=scout) stayed outcome "paused" with its director
+#: root in "todo" and WorkflowService.start refused every new chain in the
+#: repository; claw had no way to release it.
+_CLOSEABLE_ROOT_STATUSES = frozenset({"todo", "ready", "scheduled", "blocked"})
+
+#: Marker of the durable close receipt on the director root; a second close
+#: recognizes it instead of writing another comment.
+_CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
+
+#: The reason is bounded like the other model-supplied texts.
+MAX_CLOSE_REASON_CHARS = 1000
 
 
 def _workspace_fingerprint(repository):
@@ -143,6 +167,34 @@ def check_workflow_id(workflow_id):
     if not isinstance(workflow_id, str) or not _WORKFLOW_ID.match(workflow_id):
         raise WorkflowError("workflow_id is malformed")
     return workflow_id
+
+
+def close_hint(status_output, driver_outcome=None):
+    """What goncloud_local_status tells claw about closing this chain.
+
+    The driver's own outcome is authoritative; without a driver result yet,
+    the durable state decides (a director root that is neither live, nor
+    done, nor archived, with no stage the kernel shows running). An archived
+    root needs no hint: the chain is already closed.
+    """
+    root_status = (status_output.get("root") or {}).get("status")
+    if root_status == "archived":
+        return None
+    paused_or_blocked = driver_outcome in {"paused", "blocked"} or (
+        driver_outcome is None
+        and root_status in _CLOSEABLE_ROOT_STATUSES
+        and not any(
+            stage["status"] == "running"
+            for group in ("stages", "corrective_stages")
+            for stage in (status_output.get(group) or {}).values()
+        )
+    )
+    if not paused_or_blocked:
+        return None
+    return (
+        "paused or blocked chain: close it with goncloud_local_close "
+        "{workflow_id, reason} to free the repository for a new chain"
+    )
 
 
 _ATTEMPT_KEYS = (
@@ -506,6 +558,122 @@ class LocalOrchestrator:
             return json.loads(result_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {"workflow_id": workflow_id, "outcome": "error"}
+
+    def close(self, workflow_id, *, reason, store=None):
+        """Close a paused or blocked chain and free its repository.
+
+        Archives the director root and every stage that is not done with the
+        native Kanban archive (done stages stay as evidence), and leaves the
+        reason as a comment on the root. A running chain is refused: a stage
+        the kernel shows running, or a live subscription lease, means a
+        driver still owns the work. The receipt is derived from the durable
+        post-close state, so closing an already-closed chain returns the
+        same receipt without writing anything twice.
+        """
+        check_workflow_id(workflow_id)
+        if type(reason) is not str or not reason.strip():
+            raise WorkflowError("reason is required")
+        reason = reason.strip()
+        if len(reason) > MAX_CLOSE_REASON_CHARS:
+            raise WorkflowError("reason is oversized")
+        service = self.services("claw")
+        with service._connect() as conn:
+            # Identity and graph first, so an unknown or foreign id is a typed
+            # rejection before anything else is consulted.
+            service._require_workflow_root(conn, workflow_id)
+            initial_ids = service._decomposed_child_ids(conn, workflow_id)
+            if initial_ids is None or len(initial_ids) != len(INITIAL_STAGES):
+                raise WorkflowError("workflow stage graph is incomplete")
+            correction = service._correction_ids(conn, workflow_id)
+        if store is None:
+            path = default_db_path()
+            # No subscription store means no router ever drove this chain.
+            if path.exists():
+                store = SubscriptionStateStore(path)
+        if store is not None and store.active_leases(workflow_id):
+            raise WorkflowError(
+                "workflow is running; goncloud_local_close only closes "
+                "paused or blocked chains"
+            )
+        comment = _CLOSE_COMMENT_MARKER + json.dumps(
+            {"reason": reason, "workflow_id": workflow_id},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with service._connect() as conn, write_txn(conn):
+            root = service._require_workflow_root(conn, workflow_id)
+            if root.status == "running":
+                raise WorkflowError(
+                    "workflow is running; goncloud_local_close only closes "
+                    "paused or blocked chains"
+                )
+            if root.status == "done":
+                raise WorkflowError(
+                    "workflow already delivered; goncloud_local_close only "
+                    "closes paused or blocked chains"
+                )
+            if root.status not in _CLOSEABLE_ROOT_STATUSES | {"archived"}:
+                raise WorkflowError(
+                    f"workflow root status {root.status} is not closeable"
+                )
+            stages = dict(zip(INITIAL_STAGES, initial_ids))
+            stages.update(
+                {f"round2:{role}": task_id for role, task_id in correction.items()}
+            )
+            if any(
+                service._require_task(conn, task_id).status == "running"
+                for task_id in stages.values()
+            ):
+                raise WorkflowError(
+                    "workflow is running; goncloud_local_close only closes "
+                    "paused or blocked chains"
+                )
+            members = [(workflow_id, root.status)] + [
+                (task_id, service._require_task(conn, task_id).status)
+                for task_id in stages.values()
+            ]
+            for member_id, member_status in members:
+                # Done stages are the chain's evidence: they stay exactly as
+                # they are; archived ones are already closed.
+                if member_status in {"archived", "done"}:
+                    continue
+                if not archive_task(conn, member_id):
+                    raise WorkflowError(f"native Kanban refused to archive {member_id}")
+            existing = next(
+                (
+                    item.body
+                    for item in list_comments(conn, workflow_id)
+                    if item.body.startswith(_CLOSE_COMMENT_MARKER)
+                ),
+                None,
+            )
+            if existing is None:
+                add_comment(conn, workflow_id, "claw", comment)
+                recorded_reason = reason
+            else:
+                try:
+                    recorded_reason = json.loads(
+                        existing[len(_CLOSE_COMMENT_MARKER) :]
+                    )["reason"]
+                except (ValueError, KeyError, TypeError):
+                    recorded_reason = reason
+            final = {
+                role: service._require_task(conn, task_id).status
+                for role, task_id in stages.items()
+            }
+        return {
+            "workflow_id": workflow_id,
+            "outcome": "closed",
+            "root_status": "archived",
+            "archived_stages": sorted(
+                role for role, status in final.items() if status == "archived"
+            ),
+            "done_stages": sorted(
+                role for role, status in final.items() if status == "done"
+            ),
+            "reason": recorded_reason,
+        }
 
     def _context(self, workflow_id):
         service = self.services("claw")

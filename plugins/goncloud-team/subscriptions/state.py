@@ -311,6 +311,28 @@ class SubscriptionStateStore:
             )
             conn.commit()
 
+    def active_leases(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Unexpired leases of one workflow: a driver still owns a stage."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT stage_id, owner, expires_at FROM subscription_stage_leases "
+                "WHERE workflow_id = ? ORDER BY stage_id",
+                (workflow_id,),
+            ).fetchall()
+        ahora = _utcnow()
+        vivas = []
+        for row in rows:
+            expiry = _parse_iso(row["expires_at"])
+            if expiry is not None and expiry > ahora:
+                vivas.append(
+                    {
+                        "stage_id": row["stage_id"],
+                        "owner": row["owner"],
+                        "expires_at": row["expires_at"],
+                    }
+                )
+        return vivas
+
     @staticmethod
     def _interrupt_attempts(conn, workflow_id, stage_id, owner):
         conn.execute(
