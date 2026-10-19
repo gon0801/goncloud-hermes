@@ -125,7 +125,7 @@ class GrokAdapter(SubscriptionAdapter):
             "--output-format",
             "streaming-json",
             "--permission-mode",
-            "dontAsk",
+            "bypassPermissions",
             "--sandbox",
             "workspace",
             "--model",
