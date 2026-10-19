@@ -24,8 +24,10 @@ En el MISMO turno, por cada unidad sin dependencias (`dependsOn` vacío):
 El `assignment` lleva: `target` `{kind: "cli", hostId: "gon-pc",
 adapterId: <perfil>}`, `instructionRef` `{ref, digest}` (el del brief),
 `resultContract: "review.v1"`, `inputRevision` con el sha REAL del head
-(`git ls-remote` o `gh`; nunca inventado), `continuation`
-`{kind: "requester"}`.
+(`git ls-remote` o `gh`; nunca inventado) y `workspace`: la ruta ABSOLUTA del
+checkout local del repo en la PC, el directorio donde el hijo corre — sin
+`workspace` (o con una ruta que no existe) la tarjeta se bloquea, no se
+relanza. `continuation` `{kind: "requester"}`.
 
 ## Al despertar por despertar-raices
 

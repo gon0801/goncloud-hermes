@@ -12,9 +12,11 @@ nada sin cupo de maxModelCalls.
 
 import importlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -43,6 +45,14 @@ clave_de_tarjeta = kanban_port.clave_de_tarjeta
 
 RAIZ = "root-h7"
 DIGEST = "sha256:" + "a" * 64
+
+
+def archivo_de_resultado(tienda, unit_id="a", attempt=1):
+    """El archivo de resultado del hijo de un intento, con el mismo nombre
+    determinista del lanzador de producción."""
+    return ejecutor._archivo_de_resultado(
+        Path(tienda.ruta).parent / "raices" / "ejecutor", RAIZ, unit_id, attempt
+    )
 
 
 def permisos_de_prueba(perfil="codex", herramienta="write", modo="implement"):
@@ -362,15 +372,39 @@ class ElResultadoDelCompletado(Escenario):
         self.assertEqual(peticion.start_revision, sha)
         self.assertEqual(peticion.workspace, ruta_repo.resolve())
 
-    def test_sin_workspace_bloquea_sin_llamar_al_router(self):
+    def test_sin_workspace_bloquea_la_tarjeta_sin_llamar_al_router(self):
         tienda, kanban = self.frescar()
         self.encredar(tienda, kanban)  # slug sin workspace: no hay directorio
         doble = RouterDoble()
         resultado = self.corer_intento(tienda, doble)
         self.assertEqual(resultado["outcome"], "workspace-unavailable")
         self.assertIsNone(doble.peticion())
+        # F1: BLOQUEA, como promete el docstring — nunca queda pendiente
+        # quemando la reserva de una llamada por vuelta.
         tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
-        self.assertEqual(tarjeta.estado, "pendiente")
+        self.assertEqual(tarjeta.estado, "bloqueada")
+
+    def test_una_tarjeta_reviewer_completa(self):
+        # F2: el sobre del reviewer se juzga con la vara de verifier (review
+        # obligada a null, como pide la instrucción) — con la regla del
+        # reviewer del parser NINGUNA tarjeta de reviewer completaría jamás.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        self.encredar(
+            tienda,
+            kanban,
+            adapter="reviewer",
+            sha=sha,
+            workspace=ruta_repo,
+            permisos=permisos_de_prueba("reviewer", "write", "review"),
+        )
+        doble = RouterDoble(sobre_json(summary="Sin hallazgos"))
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "completed")
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "completada")
+        # El hijo CORRE como reviewer; solo el sobre se juzga como verifier.
+        self.assertEqual(doble.peticion().role, "reviewer")
 
 
 class LosBloqueos(Escenario):
@@ -414,6 +448,25 @@ class LosBloqueos(Escenario):
         resultado = self.corer_intento(tienda, doble)
         self.assertEqual(resultado["outcome"], "blocked")
         self.assertIn("router failure: auth", resultado["reason"])
+
+    def test_instruccion_ilegible_bloquea_la_tarjeta(self):
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        self.encredar_real(tienda, kanban)
+        # La tarjeta ya existe con su instrucción verificada: ahora el archivo
+        # desaparece y el hijo es quien se encuentra con la ausencia.
+        asignacion = tienda.intentos_lanzables()[0]["assignment"]
+        hex64 = asignacion["instructionRef"]["ref"].split(":", 1)[1]
+        ruta_brief = Path(tienda.dir_de_instrucciones) / hex64
+        os.chmod(ruta_brief, 0o644)
+        ruta_brief.unlink()
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "instruccion-ilegible")
+        self.assertIn("instruccion-ausente", resultado["reason"])
+        self.assertIsNone(doble.peticion())
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
 
     def test_router_ocupado_no_toca_la_tarjeta(self):
         tienda, kanban = self.frescar()
@@ -482,6 +535,30 @@ class ElLanzamientoDelTicker(Escenario):
             return {"pid": 1} if nace else None
 
         return lanzar, llamadas
+
+    def hijo_que_escribe(self, outcome, reason=None):
+        """Un lanzador que simula al hijo REAL en lo que al F3 importa: escribe
+        SU archivo de resultado (el mismo nombre determinista del lanzador de
+        producción) y nace. El ticker lo consume la vuelta siguiente."""
+        resultados = Path(self.directorio.name) / "raices" / "ejecutor"
+
+        def lanzar(root_id, unit_id, attempt, card_id):
+            resultados.mkdir(parents=True, exist_ok=True)
+            archivo = ejecutor._archivo_de_resultado(
+                resultados, root_id, unit_id, attempt
+            )
+            documento = {
+                "rootId": root_id,
+                "unitId": unit_id,
+                "attempt": attempt,
+                "outcome": outcome,
+            }
+            if reason is not None:
+                documento["reason"] = reason
+            archivo.write_text(json.dumps(documento), encoding="utf-8")
+            return {"pid": 1, "resultFile": str(archivo)}
+
+        return lanzar
 
     def test_dos_vueltas_seguidas_un_solo_lanzamiento(self):
         tienda, kanban = self.frescar()
@@ -645,6 +722,153 @@ class ElLanzamientoDelTicker(Escenario):
         informe = self.vuelta(tienda, kanban, lanzador=None)
         self.assertEqual(informe.lanzamientos, 0)
         self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+
+    def test_hijo_que_falla_determinista_bloquea_y_devuelve_la_reserva(self):
+        # F3: el resultado del hijo se lee en la vuelta siguiente. Un fallo
+        # determinista ANTES de la llamada al modelo (router sin cadena para
+        # el perfil) bloquea la tarjeta con su causa y devuelve reclamo y
+        # reserva: el bucle de relanzar-quemando-presupuesto se corta.
+        tienda, kanban = self.frescar()
+        lanzar = self.hijo_que_escribe(
+            "router-no-configurado",
+            "No model chain configured for profile: codex",
+        )
+        primera = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(primera.lanzamientos, 1)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertIsNotNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        segunda = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(segunda.lanzamientos, 0)
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        # El archivo se consumió: la vuelta siguiente no lo reviviría.
+        self.assertFalse(archivo_de_resultado(tienda).exists())
+
+    def test_hijo_con_error_tras_la_llamada_conserva_la_reserva(self):
+        # "error" puede llegar después de un run: la reserva NO se devuelve
+        # (el suelo cierto del presupuesto), pero la tarjeta sí se cierra con
+        # la causa — el reintento a ciegas se acaba.
+        tienda, kanban = self.frescar()
+        lanzar = self.hijo_que_escribe("error", "RuntimeError: boom")
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertIsNotNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        self.assertFalse(archivo_de_resultado(tienda).exists())
+
+    def test_renovar_extiende_sin_tocar_la_reserva_y_un_podado_no_renace(self):
+        # F5 (store): el latido del hijo extiende el vencimiento; la reserva
+        # se mantiene en UNA y un reclamo ya podado no renace.
+        tienda, kanban = self.frescar()
+        lanzar, _llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        antes = tienda._una_fila("SELECT claimed_at, vence_at FROM lanzamientos")
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        renovado = tienda.renovar_lanzamiento(RAIZ, "a", 1, ttl_s=7200)
+        self.assertFalse(hasattr(renovado, "codigo"))
+        self.assertTrue(renovado.valor)
+        despues = tienda._una_fila("SELECT claimed_at, vence_at FROM lanzamientos")
+        self.assertEqual(despues["claimed_at"], antes["claimed_at"])
+        self.assertGreater(despues["vence_at"], antes["vence_at"])
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        # Devolución idempotente: la primera devuelve, la segunda no toca nada.
+        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertFalse(tienda.devolver_lanzamiento(RAIZ, "a", 1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        # Y un reclamo podado no renace.
+        self.assertFalse(tienda.renovar_lanzamiento(RAIZ, "a", 1, ttl_s=7200).valor)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+
+    def test_el_latido_renueva_el_reclamo_mientras_el_hijo_corre(self):
+        # F5 (hijo): una corrida que supera el TTL del reclamo no pierde el
+        # reclamo — el latido lo renueva durante el run. Con TTL de 1 s, un
+        # router lento espera a ver el vencimiento EXTENDIDO antes de
+        # contestar: sin latido, el run termina con el reclamo vencido.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        with mock.patch.object(store, "TTL_LANZAMIENTO_S", 1):
+            reclamo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, tarjeta.id, ttl_s=1)
+            self.assertFalse(hasattr(reclamo, "codigo"))
+            vence_original = tienda._una_fila("SELECT vence_at FROM lanzamientos")[
+                "vence_at"
+            ]
+
+            class LentoDoble(RouterDoble):
+                def __call__(self):
+                    router, rutas = super().__call__()
+
+                    class Lento:
+                        @staticmethod
+                        def run(peticion, rutas_de):
+                            limite = time.monotonic() + 10
+                            while time.monotonic() < limite:
+                                fila = tienda._una_fila(
+                                    "SELECT vence_at FROM lanzamientos"
+                                )
+                                if fila is not None and fila["vence_at"] > (
+                                    vence_original
+                                ):
+                                    break
+                                time.sleep(0.02)
+                            return router.run(peticion, rutas_de)
+
+                    return Lento(), rutas
+
+            resultado = self.corer_intento(tienda, LentoDoble())
+        self.assertEqual(resultado["outcome"], "completed")
+        fila = tienda._una_fila("SELECT vence_at FROM lanzamientos")
+        self.assertIsNotNone(fila)
+        self.assertGreater(fila["vence_at"], vence_original)
+
+
+class ElLanzadorDeProduccion(Escenario):
+    """F4: el lanzador de producción con un intérprete REAL (sys.executable):
+    el bootstrap descomprime el argv, llega a correr_intento y escribe el JSON
+    de resultado. Los dobles son de ruta: el kanban es una base temporal que
+    lee el MISMO doble hermes_cli (el que hermes_falso instala es el que
+    _runtime_de_hermes resuelve) y el escenario sin workspace no llega a
+    llamar al router."""
+
+    def test_el_bootstrap_llega_a_correr_intento_y_escribe_el_resultado(self):
+        # El lanzador de producción nace apuntando a la disposición real del
+        # home (<base>/sistema-agentes.db), así que el escenario se monta en
+        # esa disposición, no en la de los escenarios unitarios.
+        base = Path(self.directorio.name)
+        tienda = store.Store(str(base / "sistema-agentes.db"))
+        self.addCleanup(tienda.cerrar)
+        tienda.abrir_raiz(meta_de())
+        self.ruta_kanban = base / "kanban.db"
+        kanban = KanbanHermes(self.ruta_kanban)
+        self.addCleanup(kanban.cerrar)
+        tarjeta = self.encredar(tienda, kanban)  # slug sin workspace
+        lanzar = ejecutor.lanzador_de(base, self.ruta_kanban)
+        nacido = lanzar(RAIZ, "a", 1, tarjeta.id)
+        self.assertIsNotNone(nacido)
+        archivo = Path(nacido["resultFile"])
+        self.assertEqual(
+            archivo,
+            ejecutor._archivo_de_resultado(base / "raices" / "ejecutor", RAIZ, "a", 1),
+        )
+        limite = time.monotonic() + 60
+        while not archivo.exists() and time.monotonic() < limite:
+            time.sleep(0.05)
+        self.assertTrue(archivo.exists(), "el hijo no escribió su resultado")
+        documento = json.loads(archivo.read_text(encoding="utf-8"))
+        self.assertEqual(documento["outcome"], "workspace-unavailable")
+        cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(cerrada.estado, "bloqueada")
+        # Cosechar al hijo detached: sin zombie ni ResourceWarning al salir.
+        try:
+            os.waitpid(nacido["pid"], 0)
+        except ChildProcessError:
+            pass
 
 
 class ExtremoAExtremo(Escenario):
@@ -869,12 +1093,16 @@ class WorkspaceYForma(Escenario):
                 Path(base).resolve(),
             )
 
-    def test_perfil_fuera_de_cadena_usa_la_vara_verifier(self):
+    def test_reviewer_y_perfiles_fuera_de_cadena_usan_la_vara_verifier(self):
         from workflow import INITIAL_STAGES
 
         self.assertEqual(ejecutor.perfil_de_sobre("scout", INITIAL_STAGES), "scout")
+        self.assertEqual(ejecutor.perfil_de_sobre("codex", INITIAL_STAGES), "verifier")
         self.assertEqual(
             ejecutor.perfil_de_sobre("operaciones", INITIAL_STAGES), "verifier"
+        )
+        self.assertEqual(
+            ejecutor.perfil_de_sobre("reviewer", INITIAL_STAGES), "verifier"
         )
 
     def test_la_instruccion_no_promete_revision_de_reviewer(self):

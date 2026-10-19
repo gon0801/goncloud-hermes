@@ -93,7 +93,22 @@ herramienta).
 
 El trabajo lo corre el cron de Hermes, no el gateway: cada vuelta del ticker
 concilia las tarjetas con sus intentos, decide y despacha por la bandeja de
-salida. El instalador (H4b3) copia `raices/cron_ticker.py` a
+salida. Las tarjetas de los perfiles de equipo (H7) no se quedan ahí: el
+despacho les levanta un hijo CLI DESACOPLADO por tarjeta
+(`raices/ejecutor.py`). El ticker reclama el intento — reclamo con TTL que
+reserva UNA llamada de `budget.maxModelCalls` — y nace un Python separado
+(`lanzador_de`) que resuelve el brief del store content-addressed, corre la
+asignación por el router de suscripciones (la capa de debajo de
+`subscription_run`) y escribe UN resultado JSON acotado en
+`<raiz>/raices/ejecutor/`; un latido renueva el reclamo mientras corre (una
+corrida más larga que el TTL no recibe un segundo hijo). La vuelta siguiente
+el ticker lee ese archivo: el hijo que completa la tarjeta deja el result con
+la evidencia referida por digest, que el ticker reporta; un desenlace
+terminal de error (hijo muerto, router sin cadena para el perfil, workspace
+que no resuelve, instrucción ilegible) bloquea la tarjeta con su causa y
+devuelve la reserva si no hubo llamada al modelo. Los especialistas de
+`kanban.dispatch_profiles` no lanzan hijo: los corre el despachador nativo.
+El instalador (H4b3) copia `raices/cron_ticker.py` a
 `<home>/scripts/ticker-raices.py` y registra el trabajo sin agente en el perfil
 default (la raíz del home; toda llamada lleva `-p default` porque el CLI usa el
 perfil activo por encima de `HERMES_HOME`):

@@ -2397,6 +2397,60 @@ class Store:
             raise
         return Ok(True)
 
+    def renovar_lanzamiento(self, root_id, unit_id, attempt, ttl_s) -> Ok:
+        """El latido del hijo (F5): extiende el vencimiento del reclamo mientras
+        el hijo corre, para que una corrida más larga que el TTL no reciba un
+        segundo lanzamiento — que el lease del router frenaría con stage_busy,
+        pero cuyo reclamar ya reservó otra llamada que no se devuelve. No toca
+        el contador: la reserva se hizo al reclamar y solo se devuelve una vez.
+        Un reclamo ya podado no renace (UPDATE sin filas)."""
+        self._begin()
+        try:
+            cambio = self._conexion.execute(
+                "UPDATE lanzamientos SET vence_at = ? WHERE root_id = ?"
+                " AND unit_id = ? AND attempt = ?",
+                (self._vence_el_reclamo(int(ttl_s)), root_id, unit_id, attempt),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return Ok(cambio.rowcount == 1)
+
+    def devolver_lanzamiento(self, root_id, unit_id, attempt) -> bool:
+        """La devolución idempotente (F3): quita el reclamo y devuelve la
+        llamada reservada SOLO si el reclamo sigue en la tabla. La poda de
+        limpiar_lanzamientos o una devolución anterior lo dejan fuera y
+        entonces no hay reserva que devolver: False y ni un decremento de
+        más. A diferencia de soltar_lanzamiento (que confía en saber que el
+        lanzamiento no nació), esta la invoca el ticker al consumir un
+        resultado que puede ya haberse consumido."""
+        self._begin()
+        try:
+            vivo = self._una_fila(
+                "SELECT 1 FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            if vivo is None:
+                self._commit()
+                return False
+            self._conexion.execute(
+                "DELETE FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                " AND attempt = ?",
+                (root_id, unit_id, attempt),
+            )
+            self._conexion.execute(
+                "UPDATE contadores SET value = value - 1 WHERE root_id = ?"
+                " AND counter = ? AND value > 0",
+                (root_id, CONTADOR_DE_LLAMADAS),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return True
+
     def bloqueos_pendientes(self) -> list:
         return [
             {"rootId": f["root_id"], "cardId": f["card_id"], "motivo": f["motivo"]}

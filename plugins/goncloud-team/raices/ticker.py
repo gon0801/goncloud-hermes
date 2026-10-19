@@ -8,7 +8,11 @@ en sistema-agentes.db, buscar-o-crear la tarjeta en UN write_txn del kanban y, r
 entonces, marcar la intención cumplida (I03). Las raíces con control != active no
 despachan: sus intenciones quedan cercadas. Con home y sin datos de permisos
 de H, el despacho exige el paquete poteto del perfil (H4b2): sin él se levanta
-NECESITA_DAVID con causa poteto:<perfil> y no se despacha.
+NECESITA_DAVID con causa poteto:<perfil> y no se despacha. El hijo del
+ejecutor (H7) escribe un resultado JSON acotado (<raiz>/raices/ejecutor/
+<id>.json): en la vuelta siguiente el ticker lo lee y un desenlace terminal
+de error cierra la tarjeta con su causa y devuelve la reserva si no hubo
+llamada al modelo — un hijo muerto nunca vuelve a la cola como si nada.
 """
 
 from __future__ import annotations
@@ -41,6 +45,34 @@ LLAVES_DE_DECISION = (
     "respuestas_aplicadas",
     "control",
 )
+
+OUTCOMES_TERMINALES = frozenset(
+    {
+        "error",
+        "sin-driver",
+        "workspace-unavailable",
+        "instruccion-ilegible",
+        "router-no-configurado",
+        "tarjeta-incompletable",
+    }
+)
+#: Desenlaces del hijo que ya no progresan por sí solos (los que bloquean la
+#: tarjeta en ejecutor.correr_intento y el error del bootstrap). "busy",
+#: "completed" y "blocked" NO lo son: el primero se resuelve con el lease del
+#: router y los otros dos dejan la tarjeta cerrada.
+
+OUTCOMES_SIN_LLAMADA = frozenset(
+    {
+        "sin-driver",
+        "workspace-unavailable",
+        "instruccion-ilegible",
+        "router-no-configurado",
+    }
+)
+#: Los terminales que ocurren ANTES de la llamada al modelo: la reserva que
+#: reclamar_lanzamiento hizo no se consumió y se devuelve (store
+#: .devolver_lanzamiento). "error" y "tarjeta-incompletable" pueden llegar
+#: después de un run: conservan la reserva — el suelo cierto del presupuesto.
 
 
 class Informe(NamedTuple):
@@ -213,7 +245,7 @@ def vuelta(
             )
 
     if ruta_abierta:
-        lanzados = _despachar_ejecutores(tienda, lanzador, vistas, conflictos)
+        lanzados = _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos)
 
     return Informe(
         conciliadas,
@@ -225,7 +257,7 @@ def vuelta(
     )
 
 
-def _despachar_ejecutores(tienda, lanzador, vistas, conflictos) -> int:
+def _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos) -> int:
     """La fase H7: por cada intento con tarjeta viva de un perfil de equipo,
     reclamar y lanzar su ejecutor DESACOPLADO. NUNCA dos para la misma
     tarjeta: el reclamo (store.reclamar_lanzamiento) es UNA transacción que
@@ -233,7 +265,10 @@ def _despachar_ejecutores(tienda, lanzador, vistas, conflictos) -> int:
     vivo, no se lanza; vencido (el hijo murió), la poda de limpiar_lanzamientos
     lo libera y la vuelta relanza. Un especialista de dispatch_profiles no se
     lanza (lo corre el despachador nativo) y un lanzamiento que no nace suelta
-    el reclamo con su incidencia launch-failed (decidir la clasifica retry)."""
+    el reclamo con su incidencia launch-failed (decidir la clasifica retry).
+    Antes de reclamar, el resultado que el hijo dejara escrito en la vuelta
+    anterior se consume: un desenlace terminal cierra la tarjeta con su causa
+    (_cerrar_hijo_terminal) en lugar de relanzar a ciegas."""
     if lanzador is None:
         return 0
     despacho_nativo = perfiles_de_despacho_nativo()
@@ -246,6 +281,13 @@ def _despachar_ejecutores(tienda, lanzador, vistas, conflictos) -> int:
             or "sin-perfil"
         )
         if perfil in despacho_nativo:
+            continue
+        resultado = _resultado_del_hijo(tienda, intento)
+        if (
+            isinstance(resultado, dict)
+            and str(resultado.get("outcome")) in OUTCOMES_TERMINALES
+        ):
+            _cerrar_hijo_terminal(tienda, puerto, intento, resultado)
             continue
         reclamo = tienda.reclamar_lanzamiento(
             intento["rootId"],
@@ -282,6 +324,58 @@ def _despachar_ejecutores(tienda, lanzador, vistas, conflictos) -> int:
             continue
         lanzados += 1
     return lanzados
+
+
+def _resultado_del_hijo(tienda, intento):
+    """El JSON que el hijo de ESTE intento escribió en su vuelta anterior
+    (ejecutor.lanzador_de deja <raiz>/raices/ejecutor/<id>.json, escritura
+    atómica), o None si no hay archivo legible: un hijo vivo aún no lo escribe
+    y uno que murió sin decir nada tampoco — ese lo recupera el TTL del
+    reclamo. El nombre es determinista y lo fija el propio ejecutor."""
+    ejecutor = importlib.import_module("raices.ejecutor")
+    archivo = ejecutor._archivo_de_resultado(
+        Path(tienda.ruta).parent / "raices" / "ejecutor",
+        intento["rootId"],
+        intento["unitId"],
+        intento["attempt"],
+    )
+    try:
+        carga = json.loads(archivo.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return carga if isinstance(carga, dict) else None
+
+
+def _cerrar_hijo_terminal(tienda, puerto, intento, resultado) -> None:
+    """El circuito que el archivo de resultado ya implementa (F3): un hijo que
+    reportó un desenlace terminal sin dejar la tarjeta cerrada — murió justo
+    después de escribir, o su block_task falló — no vuelve a la cola como si
+    nada. Bloquea la tarjeta con la MISMA causa acotada del hijo
+    (ejecutor.motivo_de_outcome), devuelve el reclamo y la reserva cuando el
+    desenlace ocurrió ANTES de la llamada al modelo, y consume el archivo para
+    no revivirlo en cada vuelta. Idempotente: el bloqueo repetido no hace nada
+    y la devolución solo toca un reclamo vivo; si el consumo del archivo
+    fallara, la vuelta siguiente re-bloquea y no encuentra reserva que
+    devolver."""
+    ejecutor = importlib.import_module("raices.ejecutor")
+    with puerto.write_txn() as escritura:
+        escritura.bloquear(
+            intento["cardId"], ejecutor.motivo_de_outcome(resultado)[:1800]
+        )
+    if str(resultado.get("outcome")) in OUTCOMES_SIN_LLAMADA:
+        tienda.devolver_lanzamiento(
+            intento["rootId"], intento["unitId"], intento["attempt"]
+        )
+    archivo = ejecutor._archivo_de_resultado(
+        Path(tienda.ruta).parent / "raices" / "ejecutor",
+        intento["rootId"],
+        intento["unitId"],
+        intento["attempt"],
+    )
+    try:
+        archivo.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _levantar_sin_cuota(tienda, vista, intento, conflictos) -> None:

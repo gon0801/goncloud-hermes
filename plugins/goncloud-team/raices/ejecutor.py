@@ -26,16 +26,23 @@ el resultado grabado (router.py:267-269, latest_success sin result_transform).
 La instrucción es el brief referenciado por `instructionRef` — el texto que el
 ticker ya verificó contra su digest antes de crear la tarjeta
 (ticker.py:144-160) — resuelto de nuevo del store content-addressed por este
-hijo, más el bloque de deberes y el formato del sobre terminal de
-LocalOrchestrator._instruction (local_orchestrator.py:761-784): mismo contrato
-de sobre, mismo parser (parse_terminal_envelope). El outcome vuelve al mismo
-canal que los especialistas nativos: la tarjeta se COMPLETA con el result JSON
+hijo, más el formato del sobre terminal de LocalOrchestrator._instruction
+(local_orchestrator.py:761-784) sin el bloque de deberes de etapa ni la rama
+del reviewer: una raíz es la unidad completa del perfil (los deberes los
+aporta el skill de su perfil) y el veredicto de los criterios lo emiten los
+claims de claw, no el hijo. El outcome vuelve al mismo canal que los
+especialistas nativos: la tarjeta se COMPLETA con el result JSON
 que ticker._documento_de_resultado (ticker.py:335-371) pasa tal cual a
 reportar_resultado — la evidencia (summary + evidence del sobre) viaja en el
 store content-addressed de instrucciones (instrucciones.guardar), así claw la
-verifica después por digest. Blocked, sobre inválido, router en fallo o
-workspace que no resuelve: block_task con el motivo acotado — el ticker ya lo
-trata como transporte caído (ticker.py:305-310) y decidir escala.
+verifica después por digest. Blocked, sobre inválido, router en fallo, router
+sin cadena para el perfil, instrucción ilegible o workspace que no resuelve:
+block_task con el motivo acotado (motivo_de_outcome) — NUNCA quedan
+pendientes quemando la reserva de una llamada por vuelta; el ticker ya lo
+trata como transporte caído (ticker.py:305-310) y decidir escala. Y si el
+hijo murió sin llegar a cerrar la tarjeta, el ticker lee su archivo de
+resultado (<raiz>/raices/ejecutor/<id>.json) en la vuelta siguiente y cierra
+con la misma causa (ticker._cerrar_hijo_terminal).
 
 Un rol de solo lectura (_READ_ONLY_STAGES de la cadena: scout, ingenieria —
 live 2026-09-28) que modifique el workspace se trata igual que en la cadena:
@@ -59,6 +66,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 instrucciones = importlib.import_module("raices.instrucciones")
@@ -90,6 +98,17 @@ _PERFILES_FUERA_DE_CADENA = frozenset({"operaciones"})
 #: usa la vara de "verifier", que es exactamente la misma regla del sobre con
 #: review obligada a null (local_orchestrator.py:211-238).
 
+_SIN_VEREDICTO_PROPIO = _PERFILES_FUERA_DE_CADENA | {"reviewer"}
+#: Perfiles cuyo sobre se juzga con la vara de verifier AUNQUE sean etapas de
+#: la cadena. reviewer lo es, pero la regla del reviewer del parser
+#: (local_orchestrator.py:223-238) exige review={decision, severity} para
+#: completed, y esa sentencia no existe en una raíz: en la cadena la aplica
+#: WorkflowService.review, y aquí el veredicto de los criterios lo dan los
+#: claims que claw sube tras verificar (SKILL.md), no el hijo. La instrucción
+#: de este módulo pide review=null; juzgar al hijo con la regla del reviewer
+#: haría inválido TODO sobre completed y ninguna tarjeta de reviewer
+#: completaría jamás (F2).
+
 # El hijo desacoplado: solo rutas e identificadores por argv (nada del
 # assignment viaja en la línea), no imprime nada y escribe UN resultado JSON
 # acotado de forma atómica. Misma forma que el driver de la cadena
@@ -108,9 +127,9 @@ _EJECUTOR_BOOTSTRAP = (
     "    sys.path.insert(0, plugin)\n"
     "    from raices.ejecutor import correr_intento\n"
     "    result = correr_intento(store, kanban, root, unit, int(attempt))\n"
-    "except Exception:\n"
+    "except Exception as fallo:\n"
     "    result = {'rootId': root, 'unitId': unit, 'attempt': attempt,\n"
-    "              'outcome': 'error'}\n"
+    "              'outcome': 'error', 'reason': str(fallo)[:400]}\n"
     "tmp = out + '.tmp'\n"
     "with open(tmp, 'w', encoding='utf-8') as handle:\n"
     "    json.dump(result, handle, ensure_ascii=True)\n"
@@ -119,10 +138,12 @@ _EJECUTOR_BOOTSTRAP = (
 
 
 def instruccion_de_raiz(cuerpo: str) -> str:
-    """El brief de la tarjeta + deberes + formato del sobre terminal. El
-    formato es el de LocalOrchestrator._instruction (local_orchestrator.py:770-783)
-    sin la rama del reviewer: en una raíz, el veredicto de los criterios no lo
-    emite el hijo sino los claims que claw sube tras verificar."""
+    """El brief de la tarjeta + el formato del sobre terminal. El formato es
+    el de LocalOrchestrator._instruction (local_orchestrator.py:770-783) sin
+    el bloque de deberes de etapa — una raíz es la unidad completa del perfil,
+    los deberes los aporta el skill de su perfil — y sin la rama del reviewer:
+    en una raíz, el veredicto de los criterios no lo emite el hijo sino los
+    claims que claw sube tras verificar."""
     return (
         f"{cuerpo}\n\n"
         "This assignment is the whole unit; carry it out within your duties. "
@@ -142,9 +163,9 @@ def instruccion_de_raiz(cuerpo: str) -> str:
 
 def perfil_de_sobre(perfil: str, stages_iniciales) -> str:
     """El rol con el que se juzga el sobre. Los perfiles de la cadena usan su
-    rol (el reviewer con su regla de review); los de fuera (operaciones) la
-    vara de verifier: mismo sobre, review obligada a null."""
-    if perfil in _PERFILES_FUERA_DE_CADENA or perfil not in stages_iniciales:
+    rol; reviewer y los de fuera (operaciones) la vara de verifier: mismo
+    sobre, review obligada a null — la razón de reviewer en _SIN_VEREDICTO_PROPIO."""
+    if perfil in _SIN_VEREDICTO_PROPIO or perfil not in stages_iniciales:
         return "verifier"
     return perfil
 
@@ -204,6 +225,31 @@ def _completar(conexion, card_id, carga: dict) -> bool:
             result=json.dumps(carga, sort_keys=True, separators=(",", ":")),
         )
     )
+
+
+_MOTIVOS_TERMINALES = {
+    "workspace-unavailable": "workspace unavailable; owner review required",
+    "instruccion-ilegible": "instruction unreadable; owner review required",
+    "sin-driver": "executor sin driver de cadena; owner review required",
+    "router-no-configurado": (
+        "router has no chain for the profile; owner review required"
+    ),
+    "tarjeta-incompletable": "executor could not complete the card",
+    "error": "executor crashed before reporting a terminal outcome",
+}
+
+
+def motivo_de_outcome(resultado: dict) -> str:
+    """El motivo acotado para block_task a partir del JSON de resultado del
+    hijo. Es la MISMA voz con la que el hijo bloquea (así el ticker, cuando el
+    hijo murió sin cerrar la tarjeta, escribe exactamente el motivo que el
+    hijo habría escrito); la razón, si viene, acota la causa."""
+    outcome = str(resultado.get("outcome") or "error")
+    motivo = _MOTIVOS_TERMINALES.get(outcome, f"executor outcome: {outcome}")
+    razon = resultado.get("reason")
+    if isinstance(razon, str) and razon.strip():
+        return f"{motivo} ({razon.strip()[:400]})"
+    return motivo
 
 
 def _rutas_del_router(fabrica_router, perfil):
@@ -270,6 +316,45 @@ def _driver_de_cadena():
         return None
 
 
+class _LatidoDeReclamo:
+    """Renueva el reclamo del lanzamiento MIENTRAS el hijo corre (F5). El TTL
+    del reclamo (store.TTL_LANZAMIENTO_S) es mayor que el lease del router
+    (_STAGE_LEASE_SECONDS), pero una corrida que sola dure más que el TTL
+    vencería el reclamo y la vuelta siguiente relanzaría: el lease del router
+    frena el doble run con stage_busy, pero el relanzamiento ya reservó otra
+    llamada que no se devuelve. El latido extiende el vencimiento cada tercio
+    de TTL con UN store nuevo por latido (ninguna conexión prestada entre
+    hilos) y JAMÁS tumba al hijo: un error de renovación deja que el TTL
+    decida. parar() pide el alto y une el hilo."""
+
+    def __init__(self, ruta_store, root_id, unit_id, attempt):
+        store = importlib.import_module("raices.store")
+        self._ruta_store = str(ruta_store)
+        self._ids = (root_id, unit_id, attempt)
+        self._cada_s = max(1.0, store.TTL_LANZAMIENTO_S / 3.0)
+        self._hecho = threading.Event()
+        self._hilo = threading.Thread(target=self._latir, daemon=True)
+        self._hilo.start()
+
+    def _latir(self):
+        store = importlib.import_module("raices.store")
+        while not self._hecho.wait(self._cada_s):
+            try:
+                tienda = store.Store(self._ruta_store)
+                try:
+                    tienda.renovar_lanzamiento(
+                        *self._ids, ttl_s=int(store.TTL_LANZAMIENTO_S)
+                    )
+                finally:
+                    tienda.cerrar()
+            except Exception:
+                pass
+
+    def parar(self):
+        self._hecho.set()
+        self._hilo.join(timeout=5.0)
+
+
 def correr_intento(
     ruta_store,
     ruta_kanban,
@@ -322,34 +407,60 @@ def correr_intento(
     assignment = json.loads(fila["assignment_json"])
     perfil = _perfil_de(assignment)
     revision = assignment.get("inputRevision") or {}
-    workspace = workspace_de(revision)
-    if workspace is None:
-        return {
-            "rootId": root_id,
-            "unitId": unit_id,
-            "attempt": attempt,
-            "outcome": "workspace-unavailable",
-        }
-    referencia = assignment.get("instructionRef") or {}
-    cuerpo, motivo_ref = instrucciones.resolver(
-        Path(ruta_store).parent / "raices" / "instrucciones",
-        str(referencia.get("ref") or ""),
-        str(referencia.get("digest") or ""),
-    )
-    if cuerpo is None:
-        return {
-            "rootId": root_id,
-            "unitId": unit_id,
-            "attempt": attempt,
-            "outcome": "instruccion-ilegible",
-            "reason": motivo_ref,
-        }
     conexion = _conectar_kanban(ruta_kanban)
+    latido = None
     try:
+        workspace = workspace_de(revision)
+        if workspace is None:
+            # F1: el desenlace documentado es el bloqueo, no la espera. Una
+            # tarjeta que se quedara pendiente se relanzaría en cada vuelta
+            # tras el TTL, quemando la reserva de UNA llamada por lanzamiento
+            # hasta vaciar el presupuesto con una causa ajena.
+            resultado = {
+                "rootId": root_id,
+                "unitId": unit_id,
+                "attempt": attempt,
+                "outcome": "workspace-unavailable",
+            }
+            _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            return resultado
+        referencia = assignment.get("instructionRef") or {}
+        cuerpo, motivo_ref = instrucciones.resolver(
+            Path(ruta_store).parent / "raices" / "instrucciones",
+            str(referencia.get("ref") or ""),
+            str(referencia.get("digest") or ""),
+        )
+        if cuerpo is None:
+            resultado = {
+                "rootId": root_id,
+                "unitId": unit_id,
+                "attempt": attempt,
+                "outcome": "instruccion-ilegible",
+                "reason": motivo_ref,
+            }
+            _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            return resultado
         solo_lectura = perfil in local._READ_ONLY_STAGES
         antes = local._workspace_fingerprint(workspace) if solo_lectura else None
+        try:
+            router, routes = _rutas_del_router(fabrica_router, perfil)
+        except ValueError as fallo:
+            # Sin cadena para el perfil (catalog.compile_profile_routes): fallo
+            # DETERMINISTA. Dejarlo llegar al bootstrap como "error" genérico
+            # sería otro relanzamiento que quema la reserva en cada vuelta.
+            resultado = {
+                "rootId": root_id,
+                "unitId": unit_id,
+                "attempt": attempt,
+                "outcome": "router-no-configurado",
+                "reason": str(fallo)[:400],
+            }
+            _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            return resultado
+        latido = _LatidoDeReclamo(ruta_store, root_id, unit_id, attempt)
         resultado, FailureKind = _resultado_del_router(
-            *_rutas_del_router(fabrica_router, perfil),
+            router,
+            routes,
             perfil,
             instruccion_de_raiz(cuerpo),
             workspace,
@@ -433,6 +544,8 @@ def correr_intento(
             "resultDigest": digest,
         }
     finally:
+        if latido is not None:
+            latido.parar()
         try:
             conexion.close()
         except Exception:
