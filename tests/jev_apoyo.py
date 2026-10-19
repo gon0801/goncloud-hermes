@@ -190,11 +190,27 @@ class JevFalso:
         self.llamadas.append((state, preguntas, timeout))
         if self.falla is not None:
             raise self.falla
-        nombre = next(iter(preguntas))
-        opcion, confianza = self.respuestas[nombre]
+        if len(preguntas) == 1:
+            nombre = next(iter(preguntas))
+            opcion, confianza = self.respuestas[nombre]
+            return {
+                "answers": {
+                    nombre: {
+                        "type": "choice",
+                        "choice": opcion,
+                        "confidence": confianza,
+                    }
+                }
+            }
         return {
             "answers": {
-                nombre: {"type": "choice", "choice": opcion, "confidence": confianza}
+                nombre: {
+                    "type": "choice",
+                    "choice": self.respuestas[nombre][0],
+                    "confidence": self.respuestas[nombre][1],
+                }
+                for nombre in preguntas
+                if nombre in self.respuestas
             }
         }
 
