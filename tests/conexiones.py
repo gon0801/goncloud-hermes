@@ -6,8 +6,15 @@ temporal (WinError 145). El rastreo no depende de la plataforma: detecta la
 conexion sin cerrar aunque el borrado del temporal no falle en la Mac.
 """
 
+import os
 import sqlite3
 from unittest import mock
+
+# JEV apagado en la suite: el ticker bajo prueba no consulta TypeSafe de
+# verdad ni anexa al registro del dueño. Igual que en goncloud_test_support.
+os.environ["GONCLOUD_JEV_ROUTER_CLASIFICACION"] = "0"
+os.environ["GONCLOUD_JEV_MUSE_BRIDGE_CLASIFICACION"] = "0"
+os.environ["GONCLOUD_JEV_TICKER_INCIDENCIA"] = "0"
 
 
 class RastroDeConexiones:

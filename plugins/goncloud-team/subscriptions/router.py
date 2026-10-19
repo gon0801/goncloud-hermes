@@ -92,9 +92,8 @@ _RATE_LIMIT_STAGE_SLEEP_SECONDS = 180
 #: JEV (TypeSafe System One) re-clasifica una falla ejecutada con el estado
 #: concreto; la heurística de classify_failure sigue siendo la regla que gana
 #: bajo el umbral, sin respuesta o con el punto apagado (decisión de David,
-#: 2026-10-18). La pregunta y las opciones viven en jev_cliente: las comparte
-#: muse_bridge.
-_JEV_PUNTO = "router_clasificacion"
+#: 2026-10-18). La clave del punto, la pregunta y las opciones viven en
+#: jev_cliente (una sola fuente; las comparte muse_bridge).
 _JEV_EVIDENCIA_CHARS = 1000
 
 
@@ -865,7 +864,7 @@ class SubscriptionRouter:
         if resuelto is None:
             return result
         jev_cliente, cliente, config = resuelto
-        if not config.punto_activo(_JEV_PUNTO):
+        if not config.punto_activo(jev_cliente.PUNTO_ROUTER_CLASIFICACION):
             return result
         regla = result.failure
         estado = "\n".join(
@@ -882,7 +881,7 @@ class SubscriptionRouter:
         nueva = jev_cliente.reclasificar_falla(
             cliente,
             config,
-            punto=_JEV_PUNTO,
+            punto=jev_cliente.PUNTO_ROUTER_CLASIFICACION,
             regla=regla.value,
             estado=estado,
             contexto={

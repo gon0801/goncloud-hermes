@@ -573,5 +573,240 @@ class TickerJevTests(unittest.TestCase):
         self.assertNotIn(LLAVE_FALSA, self.registro.read_text(encoding="utf-8"))
 
 
+class ConfigJevTests(unittest.TestCase):
+    """F4: config_jev con Mapping, con ctx (get_config) y con entorno."""
+
+    def test_desde_mapping(self):
+        config = jev_cliente.config_jev(
+            {
+                "jev_umbral": 0.7,
+                "jev_timeout_seconds": 2,
+                "jev_router_clasificacion": "false",
+                "jev_muse_bridge_clasificacion": "0",
+                "jev_registro": "/tmp/jev-x/decisiones.jsonl",
+            },
+            env={},
+        )
+        self.assertEqual(config.umbral, 0.7)
+        self.assertEqual(config.timeout_seconds, 2.0)
+        self.assertFalse(config.punto_activo("router_clasificacion"))
+        self.assertFalse(config.punto_activo("muse_bridge_clasificacion"))
+        self.assertTrue(config.punto_activo("ticker_incidencia"))
+        self.assertEqual(config.registro_path, Path("/tmp/jev-x/decisiones.jsonl"))
+
+    def test_desde_ctx_con_get_config(self):
+        class Ctx:
+            def __init__(self):
+                self.valores = {"jev_umbral": 0.66, "jev_ticker_incidencia": False}
+
+            def get_config(self, clave, default=None):
+                return self.valores.get(clave, default)
+
+        config = jev_cliente.config_jev(Ctx(), env={})
+        self.assertEqual(config.umbral, 0.66)
+        self.assertFalse(config.punto_activo("ticker_incidencia"))
+        self.assertTrue(config.punto_activo("router_clasificacion"))
+
+    def test_entorno_pisa_y_clamps(self):
+        config = jev_cliente.config_jev(
+            {"jev_umbral": 5, "jev_timeout_seconds": 999},
+            env={"GONCLOUD_JEV_ROUTER_CLASIFICACION": "0"},
+        )
+        self.assertEqual(config.umbral, 1.0)
+        self.assertEqual(config.timeout_seconds, 30.0)
+        self.assertFalse(config.punto_activo("router_clasificacion"))
+        config = jev_cliente.config_jev(
+            env={"GONCLOUD_JEV_UMBRAL": "0.42", "GONCLOUD_JEV_REGISTRO": "/tmp/r.jsonl"}
+        )
+        self.assertEqual(config.umbral, 0.42)
+        self.assertEqual(config.registro_path, Path("/tmp/r.jsonl"))
+
+    def test_punto_desconocido_es_fail_closed(self):
+        self.assertFalse(
+            jev_cliente.JevConfig(puntos={}).punto_activo("router_clasificacion")
+        )
+        config = jev_cliente.JevConfig()
+        for punto in (
+            "router_clasificacion",
+            "muse_bridge_clasificacion",
+            "ticker_incidencia",
+        ):
+            self.assertTrue(config.punto_activo(punto), punto)
+
+    def test_el_soporte_de_pruebas_apaga_jev_en_la_suite(self):
+        # F2: goncloud_test_support ya se importó arriba; la config por
+        # omisión de la suite no debe consultar ni registrar nada real.
+        with patch.dict(os.environ, {}, clear=False):
+            config = jev_cliente.config_jev()
+        for punto in (
+            "router_clasificacion",
+            "muse_bridge_clasificacion",
+            "ticker_incidencia",
+        ):
+            self.assertFalse(config.punto_activo(punto), punto)
+
+
+class CadenaDesacopladaTests(unittest.TestCase):
+    """F1: la config efectiva viaja al proceso desacoplado por entorno."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.workspace = Path(self.tmp.name).resolve()
+        self.adapters = {
+            name: ScriptedAdapter(name)
+            for name in ("opencode_go", "claude", "muse", "grok")
+        }
+        self.adapters["opencode_go"].result = failed(
+            FailureKind.RATE_LIMIT,
+            adapter="opencode_go",
+            text="429 Output token rate limit exceeded. Please retry after a brief wait.",
+        )
+        self.adapters["claude"].result = completed()
+        routes = compile_profile_routes("claw", SOURCE)
+        self.routes = [routes[0], routes[1]]
+        self.request = InvocationRequest(
+            workflow_id="wf-hijo",
+            stage_id="st-hijo",
+            role="implementer",
+            prompt="Do it once.",
+            workspace=self.workspace,
+            start_revision="",
+            current_revision="",
+        )
+
+    def correr_como_hijo(self, env):
+        # El proceso desacoplado hereda el entorno y ahí resuelve su config:
+        # crear el router y correrlo bajo ese entorno es la cadena real.
+        with patch.dict(os.environ, env, clear=False):
+            router = SubscriptionRouter(
+                adapters=self.adapters,
+                db_path=self.workspace / "router.db",
+                routing_source=SOURCE,
+                sleep=lambda segundos: None,
+            )
+            return router.run(self.request, self.routes)
+
+    def test_entorno_jev_serializa_la_config_efectiva(self):
+        config = jev_cliente.JevConfig(
+            umbral=0.5,
+            timeout_seconds=2.0,
+            puntos={"router_clasificacion": False},
+            registro_path=Path("/tmp/hijo/decisiones.jsonl"),
+        )
+        env = jev_cliente.entorno_jev(config)
+        self.assertEqual(env["GONCLOUD_JEV_UMBRAL"], "0.5")
+        self.assertEqual(env["GONCLOUD_JEV_ROUTER_CLASIFICACION"], "0")
+        self.assertEqual(env["GONCLOUD_JEV_REGISTRO"], "/tmp/hijo/decisiones.jsonl")
+
+    def test_hijo_con_interruptor_apagado_nunca_llama(self):
+        registro = self.workspace / "jev" / "decisiones.jsonl"
+        config = jev_cliente.JevConfig(
+            puntos={"router_clasificacion": False}, registro_path=registro
+        )
+        llamadas = []
+        with patch.object(
+            jev_cliente,
+            "_transporte_urllib",
+            lambda *a, **k: llamadas.append(1) or (200, {}),
+        ):
+            env = {
+                **jev_cliente.entorno_jev(config),
+                "TYPESAFE_API_KEY": LLAVE_FALSA,
+            }
+            resultado = self.correr_como_hijo(env)
+        self.assertTrue(resultado.success)
+        self.assertEqual(llamadas, [])
+
+    def test_hijo_con_umbral_distinto_actua_donde_el_default_no(self):
+        registro = self.workspace / "jev" / "decisiones.jsonl"
+        answers = answers_choice("quota", 0.6)
+
+        def transporte(url, payload, headers, timeout):
+            return 200, {"model": "jev-latest", "answers": answers}
+
+        with patch.object(jev_cliente, "_transporte_urllib", transporte):
+            env = {
+                **jev_cliente.entorno_jev(
+                    jev_cliente.JevConfig(umbral=0.5, registro_path=registro)
+                ),
+                "TYPESAFE_API_KEY": LLAVE_FALSA,
+            }
+            resultado = self.correr_como_hijo(env)
+        self.assertTrue(resultado.success)
+        decisiones = [
+            json.loads(linea)
+            for linea in registro.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(decisiones[-1]["actuo"], "jev")
+        self.assertEqual(decisiones[-1]["umbral"], 0.5)
+
+    def test_launch_detached_lleva_la_config_en_el_entorno_del_hijo(self):
+        fake = str(ROOT / "tests" / "fake_hermes_cli")
+        if fake not in sys.path:
+            sys.path.insert(0, fake)
+        import local_orchestrator
+
+        config = jev_cliente.JevConfig(
+            umbral=0.5, puntos={"router_clasificacion": False}
+        )
+        orquestador = local_orchestrator.LocalOrchestrator(jev_config=config)
+        capturado = {}
+
+        class PopenFalso:
+            pid = 4321
+
+            def __init__(self, argv, **kwargs):
+                capturado.update(kwargs)
+
+        with patch.object(local_orchestrator.subprocess, "Popen", PopenFalso):
+            resultado = orquestador.launch_detached("wf_hijo", home=self.workspace)
+        self.assertEqual(resultado["driver_pid"], 4321)
+        env = capturado["env"]
+        self.assertEqual(env["GONCLOUD_JEV_UMBRAL"], "0.5")
+        self.assertEqual(env["GONCLOUD_JEV_ROUTER_CLASIFICACION"], "0")
+        self.assertNotIn("TYPESAFE_API_KEY", jev_cliente.entorno_jev(config))
+
+
+class TransporteRedirectTests(unittest.TestCase):
+    """CodeRabbit: un 3xx nunca reenvía la llave a otro host."""
+
+    def test_redirect_no_se_sigue_y_es_sin_respuesta(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        destino = {"visitado": False, "authorization": None}
+
+        class Manejador(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path == "/redir":
+                    self.send_response(302)
+                    self.send_header("Location", "/destino")
+                    self.end_headers()
+                else:
+                    destino["visitado"] = True
+                    destino["authorization"] = self.headers.get("Authorization")
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        servidor = ThreadingHTTPServer(("127.0.0.1", 0), Manejador)
+        hilo = threading.Thread(target=servidor.serve_forever, daemon=True)
+        hilo.start()
+        try:
+            url = f"http://127.0.0.1:{servidor.server_port}/redir"
+            with patch.object(jev_cliente, "API_URL", url):
+                cliente = jev_cliente.ClienteJev(obtener_llave=lambda: LLAVE_FALSA)
+                self.assertIsNone(cliente.check("estado", "¿pasa?"))
+                self.assertEqual(cliente.ultimo_error, "http_302")
+        finally:
+            servidor.shutdown()
+        self.assertFalse(destino["visitado"])
+        self.assertIsNone(destino["authorization"])
+
+
 if __name__ == "__main__":
     unittest.main()

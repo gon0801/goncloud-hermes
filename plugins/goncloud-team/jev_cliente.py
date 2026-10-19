@@ -82,6 +82,14 @@ class RespuestaScore:
     leyenda: Any = None
 
 
+def _puntos_por_defecto() -> dict:
+    return {
+        PUNTO_ROUTER_CLASIFICACION: True,
+        PUNTO_MUSE_BRIDGE_CLASIFICACION: True,
+        PUNTO_TICKER_INCIDENCIA: True,
+    }
+
+
 @dataclass(frozen=True)
 class JevConfig:
     """Umbral, tope y interruptores por punto de decisión."""
@@ -89,11 +97,13 @@ class JevConfig:
     umbral: float = DEFAULT_UMBRAL
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     modelo: str = DEFAULT_MODEL
-    puntos: Mapping[str, bool] = field(default_factory=dict)
+    puntos: Mapping[str, bool] = field(default_factory=_puntos_por_defecto)
     registro_path: Path | None = None
 
     def punto_activo(self, punto: str) -> bool:
-        return bool(self.puntos.get(punto, True))
+        # Fail-closed: una clave ausente (p. ej. un renombrado) apaga el
+        # punto en vez de dejarlo encendido en silencio.
+        return bool(self.puntos.get(punto, False))
 
 
 def _es_probabilidad(valor: Any) -> bool:
@@ -222,6 +232,32 @@ def config_jev(fuente: Any = None, env: Mapping[str, str] | None = None) -> JevC
     )
 
 
+_ENV_POR_PUNTO = (
+    (PUNTO_ROUTER_CLASIFICACION, "GONCLOUD_JEV_ROUTER_CLASIFICACION"),
+    (PUNTO_MUSE_BRIDGE_CLASIFICACION, "GONCLOUD_JEV_MUSE_BRIDGE_CLASIFICACION"),
+    (PUNTO_TICKER_INCIDENCIA, "GONCLOUD_JEV_TICKER_INCIDENCIA"),
+)
+
+
+def entorno_jev(config: JevConfig) -> dict:
+    """La config efectiva como entorno, para procesos que la resuelven ahí.
+
+    Es el portador hacia el driver desacoplado de local_orchestrator: el
+    hijo arranca sin ctx del gateway, hereda este entorno y su
+    config_jev() reconstruye la misma config (umbral, tope, interruptores
+    y registro). Nunca lleva la llave.
+    """
+    env = {
+        "GONCLOUD_JEV_UMBRAL": str(config.umbral),
+        "GONCLOUD_JEV_TIMEOUT_SEGUNDOS": str(config.timeout_seconds),
+    }
+    for punto, clave in _ENV_POR_PUNTO:
+        env[clave] = "1" if config.punto_activo(punto) else "0"
+    if config.registro_path is not None:
+        env["GONCLOUD_JEV_REGISTRO"] = str(config.registro_path)
+    return env
+
+
 def registrar_decision(config: JevConfig | None, entrada: Mapping[str, Any]) -> None:
     """Una línea JSONL por decisión; nunca levanta ni deja secretos."""
     try:
@@ -234,11 +270,21 @@ def registrar_decision(config: JevConfig | None, entrada: Mapping[str, Any]) -> 
         pass
 
 
+class _SinRedireccion(urllib.request.HTTPRedirectHandler):
+    """Un 3xx es "sin respuesta": seguirlo reenviaría Authorization a otro host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_SinRedireccion)
+
+
 def _transporte_urllib(url: str, payload: dict, headers: dict, timeout: float):
     datos = json.dumps(payload).encode("utf-8")
     peticion = urllib.request.Request(url, data=datos, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(peticion, timeout=timeout) as respuesta:
+        with _OPENER.open(peticion, timeout=timeout) as respuesta:
             cuerpo = respuesta.read(1_000_000).decode("utf-8", "replace")
             return respuesta.status, json.loads(cuerpo) if cuerpo else {}
     except urllib.error.HTTPError as error:

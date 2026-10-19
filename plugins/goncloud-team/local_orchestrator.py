@@ -308,9 +308,14 @@ def _terminal_transform(role, instruction):
 class LocalOrchestrator:
     """Resume from Kanban state; route all executable stages through its service."""
 
-    def __init__(self, *, service_factory=None, stage_runner=None):
+    def __init__(self, *, service_factory=None, stage_runner=None, jev_config=None):
+        # jev_config es la config JEV efectiva del gateway (puede ser None).
+        # El driver desacoplado no recibe este objeto: launch_detached la
+        # lleva serializada en el entorno (jev_cliente.entorno_jev) y el
+        # hijo la resuelve ahí con config_jev(), donde corre el router.
+        self.jev_config = jev_config
         self.services = service_factory or (
-            lambda role: WorkflowService(actor_role=role)
+            lambda role: WorkflowService(actor_role=role, jev_config=jev_config)
         )
         self.stage_runner = stage_runner or (
             lambda service, **assignment: service.subscription_run(**assignment)
@@ -479,10 +484,23 @@ class LocalOrchestrator:
             if os.name == "nt"
             else {"start_new_session": True}
         )
+        env = dict(os.environ)
+        if self.jev_config is not None:
+            # El hijo no tiene ctx: la config JEV efectiva viaja en el
+            # entorno y el router la resuelve ahí (jev_cliente.config_jev).
+            try:
+                try:
+                    from . import jev_cliente
+                except ImportError:
+                    import jev_cliente  # type: ignore
+
+                env.update(jev_cliente.entorno_jev(self.jev_config))
+            except Exception:
+                pass
         process = subprocess.Popen(
             argv,
             cwd=str(home),
-            env=dict(os.environ),
+            env=env,
             stdin=None,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

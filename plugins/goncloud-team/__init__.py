@@ -68,10 +68,15 @@ def _build_service(ctx):
 
 def _build_orchestrator(ctx):
     """The proven local entry point a messaging transport submits to; test seam."""
-    del ctx
     from .local_orchestrator import LocalOrchestrator
 
-    return LocalOrchestrator()
+    jev_config = _jev_config(ctx)
+    return LocalOrchestrator(
+        service_factory=lambda role: WorkflowService(
+            actor_role=role, jev_config=jev_config
+        ),
+        jev_config=jev_config,
+    )
 
 
 def _transport_handlers(ctx):
