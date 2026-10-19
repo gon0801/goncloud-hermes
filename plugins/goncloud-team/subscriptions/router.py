@@ -92,26 +92,9 @@ _RATE_LIMIT_STAGE_SLEEP_SECONDS = 180
 #: JEV (TypeSafe System One) re-clasifica una falla ejecutada con el estado
 #: concreto; la heurística de classify_failure sigue siendo la regla que gana
 #: bajo el umbral, sin respuesta o con el punto apagado (decisión de David,
-#: 2026-10-18). Las opciones son los FailureKind del router.
+#: 2026-10-18). La pregunta y las opciones viven en jev_cliente: las comparte
+#: muse_bridge.
 _JEV_PUNTO = "router_clasificacion"
-_JEV_PREGUNTA = (
-    "Classify this subscription vendor failure into exactly one kind. "
-    "A short throttle that clears in seconds is rate_limit; a spent plan "
-    "window that returns hours later is quota; rejected credentials are "
-    "auth; a failure of the task itself with a healthy account is "
-    "task_failure."
-)
-_JEV_OPCIONES = {
-    FailureKind.AUTH.value: "credentials rejected, expired or not logged in",
-    FailureKind.QUOTA.value: "the plan usage window is spent for hours or days",
-    FailureKind.RATE_LIMIT.value: "a short throttle; the same route works again in seconds",
-    FailureKind.MODEL_UNAVAILABLE.value: "the model is disabled, unknown or not enabled for the plan",
-    FailureKind.TIMEOUT.value: "the vendor did not answer before its deadline",
-    FailureKind.TRANSPORT.value: "a connection or network failure before an answer",
-    FailureKind.INVALID_REQUEST.value: "the request itself was malformed or refused as invalid",
-    FailureKind.INVALID_TERMINAL.value: "the vendor answered outside the terminal contract",
-    FailureKind.TASK_FAILURE.value: "the task failed; the account and route are healthy",
-}
 _JEV_EVIDENCIA_CHARS = 1000
 
 
@@ -896,51 +879,21 @@ class SubscriptionRouter:
                 redact_text(result.text)[-_JEV_EVIDENCIA_CHARS:],
             )
         )
-        inicio = time.monotonic()
-        error = None
-        respuesta = None
-        try:
-            respuesta = cliente.route(estado, _JEV_PREGUNTA, _JEV_OPCIONES)
-        except Exception as exc:  # noqa: BLE001 - JEV nunca rompe el router
-            error = type(exc).__name__
-        ms = round((time.monotonic() - inicio) * 1000)
-        if respuesta is None and error is None:
-            error = getattr(cliente, "ultimo_error", None) or "sin_respuesta"
-        opcion = getattr(respuesta, "opcion", None)
-        probabilidad = getattr(respuesta, "probabilidad", None)
-        actuo = "regla"
-        salida = result
-        if (
-            isinstance(opcion, str)
-            and opcion in _JEV_OPCIONES
-            and isinstance(probabilidad, (int, float))
-            and float(probabilidad) >= config.umbral
-        ):
-            actuo = "jev"
-            salida = replace(result, failure=FailureKind(opcion))
-        jev_cliente.registrar_decision(
+        nueva = jev_cliente.reclasificar_falla(
+            cliente,
             config,
-            {
-                "at": jev_cliente.ahora_iso(),
-                "punto": _JEV_PUNTO,
-                "pregunta": "choice",
-                "respuesta": opcion if isinstance(opcion, str) else None,
-                "probabilidad": (
-                    float(probabilidad)
-                    if isinstance(probabilidad, (int, float))
-                    else None
-                ),
-                "umbral": config.umbral,
-                "actuo": actuo,
-                "resultado_regla": regla.value,
-                "ms": ms,
-                "error": error,
+            punto=_JEV_PUNTO,
+            regla=regla.value,
+            estado=estado,
+            contexto={
                 "adapter": route.adapter,
                 "modelo": route.model,
                 "intento": attempt_no,
             },
         )
-        return salida
+        if nueva == regla.value:
+            return result
+        return replace(result, failure=FailureKind(nueva))
 
     def _record_health(self, adapter: str, result: InvocationResult) -> None:
         if result.success:

@@ -39,6 +39,29 @@ DEFAULT_UMBRAL = 0.85
 _MAX_STATE_CHARS = 8000
 
 PUNTO_ROUTER_CLASIFICACION = "router_clasificacion"
+PUNTO_MUSE_BRIDGE_CLASIFICACION = "muse_bridge_clasificacion"
+PUNTO_TICKER_INCIDENCIA = "ticker_incidencia"
+
+#: La clasificación de una falla de vendor, compartida por el router de
+#: suscripciones y por muse_bridge: las opciones son los FailureKind.
+PREGUNTA_CLASIFICACION_FALLA = (
+    "Classify this subscription vendor failure into exactly one kind. "
+    "A short throttle that clears in seconds is rate_limit; a spent plan "
+    "window that returns hours later is quota; rejected credentials are "
+    "auth; a failure of the task itself with a healthy account is "
+    "task_failure."
+)
+OPCIONES_CLASIFICACION_FALLA = {
+    "auth": "credentials rejected, expired or not logged in",
+    "quota": "the plan usage window is spent for hours or days",
+    "rate_limit": "a short throttle; the same route works again in seconds",
+    "model_unavailable": "the model is disabled, unknown or not enabled for the plan",
+    "timeout": "the vendor did not answer before its deadline",
+    "transport": "a connection or network failure before an answer",
+    "invalid_request": "the request itself was malformed or refused as invalid",
+    "invalid_terminal": "the vendor answered outside the terminal contract",
+    "task_failure": "the task failed; the account and route are healthy",
+}
 
 
 class JevError(Exception):
@@ -170,20 +193,31 @@ def config_jev(fuente: Any = None, env: Mapping[str, str] | None = None) -> JevC
     if "GONCLOUD_JEV_TIMEOUT_SEGUNDOS" in entorno:
         timeout = _a_float(entorno["GONCLOUD_JEV_TIMEOUT_SEGUNDOS"], timeout)
     timeout = min(max(timeout, 0.1), 30.0)
-    router_activo = _a_bool(
-        _valor_fuente(fuente, "jev_router_clasificacion", True), True
-    )
-    if "GONCLOUD_JEV_ROUTER_CLASIFICACION" in entorno:
-        router_activo = _a_bool(
-            entorno["GONCLOUD_JEV_ROUTER_CLASIFICACION"], router_activo
-        )
+
+    def interruptor(clave_fuente: str, clave_env: str) -> bool:
+        activo = _a_bool(_valor_fuente(fuente, clave_fuente, True), True)
+        if clave_env in entorno:
+            activo = _a_bool(entorno[clave_env], activo)
+        return activo
+
     registro = _valor_fuente(fuente, "jev_registro", None)
     if "GONCLOUD_JEV_REGISTRO" in entorno:
         registro = entorno["GONCLOUD_JEV_REGISTRO"]
     return JevConfig(
         umbral=umbral,
         timeout_seconds=timeout,
-        puntos={PUNTO_ROUTER_CLASIFICACION: router_activo},
+        puntos={
+            PUNTO_ROUTER_CLASIFICACION: interruptor(
+                "jev_router_clasificacion", "GONCLOUD_JEV_ROUTER_CLASIFICACION"
+            ),
+            PUNTO_MUSE_BRIDGE_CLASIFICACION: interruptor(
+                "jev_muse_bridge_clasificacion",
+                "GONCLOUD_JEV_MUSE_BRIDGE_CLASIFICACION",
+            ),
+            PUNTO_TICKER_INCIDENCIA: interruptor(
+                "jev_ticker_incidencia", "GONCLOUD_JEV_TICKER_INCIDENCIA"
+            ),
+        },
         registro_path=Path(str(registro)) if registro else None,
     )
 
@@ -345,3 +379,121 @@ class ClienteJev:
 
 def ahora_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def reclasificar_falla(
+    cliente: ClienteJev | None,
+    config: JevConfig | None,
+    *,
+    punto: str,
+    regla: str,
+    estado: str,
+    contexto: Mapping[str, Any] | None = None,
+) -> str:
+    """La re-clasificación compartida (router y muse_bridge).
+
+    Con la probabilidad de la opción >= umbral manda JEV; abajo, sin
+    respuesta, con error o con el punto apagado gana ``regla`` (la
+    heurística de hoy). Toda consulta queda registrada.
+    """
+    if cliente is None or config is None or not config.punto_activo(punto):
+        return regla
+    inicio = time.monotonic()
+    error = None
+    respuesta = None
+    try:
+        respuesta = cliente.route(
+            estado, PREGUNTA_CLASIFICACION_FALLA, OPCIONES_CLASIFICACION_FALLA
+        )
+    except Exception as exc:  # noqa: BLE001 - JEV nunca rompe al llamador
+        error = type(exc).__name__
+    ms = round((time.monotonic() - inicio) * 1000)
+    if respuesta is None and error is None:
+        error = getattr(cliente, "ultimo_error", None) or "sin_respuesta"
+    opcion = getattr(respuesta, "opcion", None)
+    probabilidad = getattr(respuesta, "probabilidad", None)
+    actuo = "regla"
+    salida = regla
+    if (
+        isinstance(opcion, str)
+        and opcion in OPCIONES_CLASIFICACION_FALLA
+        and _es_probabilidad(probabilidad)
+        and float(probabilidad) >= config.umbral
+    ):
+        actuo = "jev"
+        salida = opcion
+    registrar_decision(
+        config,
+        {
+            "at": ahora_iso(),
+            "punto": punto,
+            "pregunta": "choice",
+            "respuesta": opcion if isinstance(opcion, str) else None,
+            "probabilidad": (
+                float(probabilidad) if _es_probabilidad(probabilidad) else None
+            ),
+            "umbral": config.umbral,
+            "actuo": actuo,
+            "resultado_regla": regla,
+            "ms": ms,
+            "error": error,
+            **dict(contexto or {}),
+        },
+    )
+    return salida
+
+
+def confirmar(
+    cliente: ClienteJev | None,
+    config: JevConfig | None,
+    *,
+    punto: str,
+    estado: str,
+    pregunta: str,
+    regla: str,
+    contexto: Mapping[str, Any] | None = None,
+) -> bool | None:
+    """jev_check con umbral: True/False solo cuando JEV manda; None = la regla.
+
+    La respuesta "no" manda con la misma fuerza: probabilidad <= 1-umbral.
+    En la zona ambigua, sin respuesta, con error o con el punto apagado
+    devuelve None y el llamador aplica su regla de hoy.
+    """
+    if cliente is None or config is None or not config.punto_activo(punto):
+        return None
+    inicio = time.monotonic()
+    error = None
+    probabilidad = None
+    try:
+        probabilidad = cliente.check(estado, pregunta)
+    except Exception as exc:  # noqa: BLE001 - JEV nunca rompe al llamador
+        error = type(exc).__name__
+    ms = round((time.monotonic() - inicio) * 1000)
+    if probabilidad is None and error is None:
+        error = getattr(cliente, "ultimo_error", None) or "sin_respuesta"
+    actuo = "regla"
+    decision: bool | None = None
+    if _es_probabilidad(probabilidad):
+        if float(probabilidad) >= config.umbral:
+            decision, actuo = True, "jev"
+        elif float(probabilidad) <= 1.0 - config.umbral:
+            decision, actuo = False, "jev"
+    registrar_decision(
+        config,
+        {
+            "at": ahora_iso(),
+            "punto": punto,
+            "pregunta": "noul",
+            "respuesta": decision,
+            "probabilidad": (
+                float(probabilidad) if _es_probabilidad(probabilidad) else None
+            ),
+            "umbral": config.umbral,
+            "actuo": actuo,
+            "resultado_regla": regla,
+            "ms": ms,
+            "error": error,
+            **dict(contexto or {}),
+        },
+    )
+    return decision

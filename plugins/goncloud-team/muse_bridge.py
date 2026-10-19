@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,40 @@ except ImportError:
     from subscriptions.adapters import classify_failure
     from subscriptions.types import FailureKind
     from subscriptions.redaction import redact_data
+
+
+_jev_resuelto = None
+
+
+def _jev_muse(jev_cliente_inyectado=None, jev_config_inyectada=None):
+    """(módulo, cliente, config) de JEV, o None si no se pudo cargar."""
+    global _jev_resuelto
+    if jev_cliente_inyectado is not None or jev_config_inyectada is not None:
+        try:
+            import jev_cliente as modulo
+        except Exception:
+            return None
+        config = jev_config_inyectada
+        cliente = jev_cliente_inyectado
+        if cliente is None:
+            if config is None:
+                config = modulo.config_jev()
+            cliente = modulo.ClienteJev(config=config)
+        elif config is None:
+            config = getattr(cliente, "config", None) or modulo.config_jev()
+        return modulo, cliente, config
+    if _jev_resuelto is None:
+        try:
+            plugin_dir = Path(__file__).resolve().parent
+            if str(plugin_dir) not in sys.path:
+                sys.path.insert(0, str(plugin_dir))
+            import jev_cliente as modulo
+
+            config = modulo.config_jev()
+            _jev_resuelto = (modulo, modulo.ClienteJev(config=config), config)
+        except Exception:
+            _jev_resuelto = False
+    return _jev_resuelto or None
 
 
 class MuseBridgeError(RuntimeError):
@@ -118,6 +153,8 @@ def delegate_to_muse(
     runner: Callable[..., Any] = subprocess.run,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    jev_cliente=None,
+    jev_config=None,
 ) -> dict:
     """Delegate one task to Muse without interpolating user input into a shell."""
     if not prompt.strip():
@@ -160,9 +197,33 @@ def delegate_to_muse(
             prompt_path.unlink(missing_ok=True)
 
     if completed.returncode != 0:
-        failure = classify_failure(
+        regla = classify_failure(
             completed.returncode, completed.stream, completed.stderr
         )
+        failure = regla
+        resuelto = _jev_muse(jev_cliente, jev_config)
+        if resuelto is not None:
+            modulo, cliente, config = resuelto
+            estado = "\n".join(
+                (
+                    "adapter: muse",
+                    f"model: {model or ''}",
+                    f"returncode: {completed.returncode}",
+                    f"heuristic_classification: {regla.value}",
+                    "evidence (tail, already redacted):",
+                    (completed.stderr or "")[-1000:],
+                    (completed.stream or "")[-1000:],
+                )
+            )
+            nueva = modulo.reclasificar_falla(
+                cliente,
+                config,
+                punto=modulo.PUNTO_MUSE_BRIDGE_CLASIFICACION,
+                regla=regla.value,
+                estado=estado,
+                contexto={"adapter": "muse", "modelo": model or ""},
+            )
+            failure = FailureKind(nueva)
         raise MuseBridgeError(f"Muse delegation failed ({failure.value})", failure)
 
     result = parse_muse_jsonl(completed.stream)

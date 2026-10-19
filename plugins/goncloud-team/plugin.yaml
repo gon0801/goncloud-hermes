@@ -36,6 +36,14 @@ config_schema:
     type: bool
     default: true
     description: Interruptor del punto router_clasificacion (clasificación de fallas del router de suscripciones)
+  jev_muse_bridge_clasificacion:
+    type: bool
+    default: true
+    description: Interruptor del punto muse_bridge_clasificacion (clasificación de fallas de la delegación a Muse)
+  jev_ticker_incidencia:
+    type: bool
+    default: true
+    description: Interruptor del punto ticker_incidencia (transporte caído vs resultado inválido en el ticker de raíces)
   jev_registro:
     type: str
     default: ""

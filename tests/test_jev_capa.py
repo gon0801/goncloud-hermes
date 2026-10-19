@@ -373,5 +373,205 @@ class RouterJevTests(unittest.TestCase):
         self.assertEqual(transporte.llamadas, [])
 
 
+class MuseBridgeJevTests(unittest.TestCase):
+    """Punto r2-1: la falla de la delegación a Muse pasa por JEV."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.registro = Path(self.tmp.name) / "jev" / "decisiones.jsonl"
+
+    def delegar(self, transporte, stderr, **config_extra):
+        import muse_bridge
+        from types import SimpleNamespace
+
+        config = jev_cliente.JevConfig(registro_path=self.registro, **config_extra)
+        cliente = jev_cliente.ClienteJev(
+            transporte=transporte, obtener_llave=lambda: LLAVE_FALSA, config=config
+        )
+        completado = SimpleNamespace(
+            returncode=1, stream="salida rara del proceso", stderr=stderr
+        )
+        with (
+            patch.object(muse_bridge, "build_muse_command", lambda *a, **k: ["muse"]),
+            patch.object(muse_bridge, "run_cli", lambda *a, **k: completado),
+            self.assertRaises(muse_bridge.MuseBridgeError) as ctx,
+        ):
+            muse_bridge.delegate_to_muse(
+                "haz la tarea",
+                Path(r"C:\dev\repo"),
+                actor_role="implementer",
+                jev_cliente=cliente,
+                jev_config=config,
+            )
+        return ctx.exception
+
+    def decisiones(self):
+        if not self.registro.is_file():
+            return []
+        return [
+            json.loads(linea)
+            for linea in self.registro.read_text(encoding="utf-8").splitlines()
+            if linea.strip()
+        ]
+
+    def test_jev_sobre_umbral_reclasifica_la_falla_de_muse(self):
+        transporte = TransporteFalso(answers_choice("quota", 0.92))
+        error = self.delegar(
+            transporte,
+            "429 Output token rate limit exceeded. Please retry after a brief wait.",
+        )
+        self.assertEqual(error.failure, FailureKind.QUOTA)
+        (decision,) = self.decisiones()
+        self.assertEqual(decision["punto"], "muse_bridge_clasificacion")
+        self.assertEqual(decision["actuo"], "jev")
+        self.assertEqual(decision["resultado_regla"], "rate_limit")
+
+    def test_jev_bajo_umbral_o_caido_gana_classify_failure(self):
+        stderr = (
+            "429 Output token rate limit exceeded. Please retry after a brief wait."
+        )
+        transporte = TransporteFalso(answers_choice("quota", 0.4))
+        self.assertEqual(
+            self.delegar(transporte, stderr).failure, FailureKind.RATE_LIMIT
+        )
+        caido = TransporteFalso(error=TimeoutError("tope"))
+        self.assertEqual(self.delegar(caido, stderr).failure, FailureKind.RATE_LIMIT)
+        self.assertEqual(self.decisiones()[-1]["actuo"], "regla")
+
+    def test_interruptor_apagado_nunca_llama_y_secreto_fuera(self):
+        transporte = TransporteFalso(answers_choice("quota", 0.99))
+        error = self.delegar(
+            transporte,
+            f"fallo con {LLAVE_FALSA} dentro",
+            puntos={"muse_bridge_clasificacion": False},
+        )
+        self.assertEqual(error.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(transporte.llamadas, [])
+
+    def test_secreto_no_llega_a_la_peticion_ni_al_registro(self):
+        transporte = TransporteFalso(answers_choice("quota", 0.95))
+        self.delegar(transporte, f"vendor explotó con {LLAVE_FALSA}")
+        self.assertNotIn(LLAVE_FALSA, json.dumps(transporte.llamadas[0]["payload"]))
+        self.assertNotIn(LLAVE_FALSA, self.registro.read_text(encoding="utf-8"))
+
+
+class TiendaFalsa:
+    def __init__(self):
+        self.incidencias = []
+
+    def registrar_incidencia(self, root_id, unit_id, attempt, clave, evidencia):
+        self.incidencias.append((clave, evidencia))
+
+
+class TarjetaFalsa:
+    def __init__(self, estado, resultado=None):
+        self.id = "tarjeta-1"
+        self.estado = estado
+        self.resultado = resultado
+
+
+class TickerJevTests(unittest.TestCase):
+    """Punto r2-4: transporte caído vs resultado inválido con evidencia ambigua."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.registro = Path(self.tmp.name) / "jev" / "decisiones.jsonl"
+        import importlib
+
+        self.ticker = importlib.import_module("raices.ticker")
+        self.intento = {
+            "rootId": "root-1",
+            "unitId": "unit-1",
+            "attempt": 1,
+            "state": "running",
+        }
+
+    def con_jev(self, transporte, **config_extra):
+        config = jev_cliente.JevConfig(registro_path=self.registro, **config_extra)
+        cliente = jev_cliente.ClienteJev(
+            transporte=transporte, obtener_llave=lambda: LLAVE_FALSA, config=config
+        )
+        return patch.object(
+            self.ticker, "_jev_ticker", lambda: (jev_cliente, cliente, config)
+        )
+
+    def decisiones(self):
+        if not self.registro.is_file():
+            return []
+        return [
+            json.loads(linea)
+            for linea in self.registro.read_text(encoding="utf-8").splitlines()
+            if linea.strip()
+        ]
+
+    @staticmethod
+    def check_answers(p):
+        return {"jev_check": {"type": "noul", "noul": p}}
+
+    def test_transporte_caido_que_jev_desmiente_es_incidencia_invalida(self):
+        tienda = TiendaFalsa()
+        tarjeta = TarjetaFalsa("bloqueada", None)
+        with self.con_jev(TransporteFalso(self.check_answers(0.03))):
+            self.ticker._transporte_caido(tienda, self.intento, tarjeta)
+        ((clave, evidencia),) = tienda.incidencias
+        self.assertEqual(evidencia["kind"], "result-missing")
+        (decision,) = self.decisiones()
+        self.assertEqual(decision["punto"], "ticker_incidencia")
+        self.assertEqual(decision["pregunta"], "noul")
+        self.assertEqual(decision["actuo"], "jev")
+
+    def test_invalida_que_jev_confirma_transporte_es_reintentable(self):
+        tienda = TiendaFalsa()
+        tarjeta = TarjetaFalsa("completada", {"resultContract": 123})
+        with self.con_jev(TransporteFalso(self.check_answers(0.95))):
+            self.ticker._incidencia_invalida(
+                tienda, self.intento, tarjeta, tarjeta.resultado
+            )
+        ((clave, evidencia),) = tienda.incidencias
+        self.assertEqual(evidencia["kind"], "recovery-transport-failure")
+
+    def test_ambiguo_caido_o_apagado_gana_la_regla_de_hoy(self):
+        # Ambiguo (0.5): la regla de hoy manda en ambos sitios.
+        tienda = TiendaFalsa()
+        with self.con_jev(TransporteFalso(self.check_answers(0.5))):
+            self.ticker._transporte_caido(
+                tienda, self.intento, TarjetaFalsa("archivada", None)
+            )
+            self.ticker._incidencia_invalida(
+                tienda, self.intento, TarjetaFalsa("completada", {"x": 1}), {"x": 1}
+            )
+        kinds = [evidencia["kind"] for _, evidencia in tienda.incidencias]
+        self.assertEqual(kinds, ["recovery-transport-failure", "invalid-result"])
+        # Caído: también la regla.
+        tienda = TiendaFalsa()
+        with self.con_jev(TransporteFalso(error=RuntimeError("caido"))):
+            self.ticker._transporte_caido(
+                tienda, self.intento, TarjetaFalsa("bloqueada", None)
+            )
+        self.assertEqual(tienda.incidencias[0][1]["kind"], "recovery-transport-failure")
+        # Apagado: nunca llama.
+        transporte = TransporteFalso(self.check_answers(0.99))
+        tienda = TiendaFalsa()
+        with self.con_jev(transporte, puntos={"ticker_incidencia": False}):
+            self.ticker._incidencia_invalida(
+                tienda, self.intento, TarjetaFalsa("completada", {"x": 1}), {"x": 1}
+            )
+        self.assertEqual(transporte.llamadas, [])
+        self.assertEqual(tienda.incidencias[0][1]["kind"], "invalid-result")
+
+    def test_secreto_de_la_evidencia_no_llega_ni_a_peticion_ni_a_registro(self):
+        tienda = TiendaFalsa()
+        carga = {"detalle": f"murió con {LLAVE_FALSA}"}
+        transporte = TransporteFalso(self.check_answers(0.5))
+        with self.con_jev(transporte):
+            self.ticker._incidencia_invalida(
+                tienda, self.intento, TarjetaFalsa("completada", carga), carga
+            )
+        self.assertNotIn(LLAVE_FALSA, json.dumps(transporte.llamadas[0]["payload"]))
+        self.assertNotIn(LLAVE_FALSA, self.registro.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
