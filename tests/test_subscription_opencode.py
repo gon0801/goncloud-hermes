@@ -575,6 +575,20 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
         self.assertEqual(result.text, "opencode_go invocation failed (task_failure)")
 
+    def test_invalid_terminal_at_exit_zero_keeps_the_stream_evidence(self):
+        stream = '{"type":"step_finish","part":{"type":"step-finish","reason":"error"}}'
+        result = OpenCodeAdapter(
+            runner=FakeCliRunner(stdout=stream, stderr="opencode crashed", returncode=0)
+        ).invoke(request(self.workspace), route(0, "opencode_go", "k3"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+        self.assertEqual(
+            result.text, "opencode_go invocation failed (invalid_terminal)"
+        )
+        self.assertIn("exit 0", result.detail)
+        self.assertIn("opencode crashed", result.detail)
+
     def test_probe_reports_only_credential_classes_it_can_see(self):
         auth_listing = "Credentials\n- OpenCode Zen api\n- Z.AI Coding Plan api\n"
 
