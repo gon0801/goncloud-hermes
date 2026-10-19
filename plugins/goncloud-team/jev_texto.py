@@ -33,8 +33,12 @@ _NOTA_MEDIA = re.compile(r"\[The user sent\b(.*?)\]\s*$", _FLAGS | re.DOTALL)
 _TRANSCRIPCION = re.compile(r'(?:said|transcript)[^"]*"(.*)"\s*$', re.DOTALL | re.I)
 _NOTA_SISTEMA = re.compile(r"\[System note:.*?\]", re.DOTALL | re.I)
 # [Replying to: "..."] con la cita posiblemente multilinea; cierra en `"]`.
+# Tambien [Replying to your previous message: ...] (formato que 10d0d73
+# limpiaba y la anchura a comillas de 5de1a86 perdio): cita libre hasta `]`.
 _CITA = re.compile(
-    r'^[ \t]*\[Replying to:[ \t]*".*?"\][ \t]*$\n?', _FLAGS | re.DOTALL
+    r'^[ \t]*\[(?:Replying to:[ \t]*".*?"|Replying to your previous message:.*?)'
+    r"\][ \t]*$\n?",
+    _FLAGS | re.DOTALL,
 )
 _ENCABEZADO_TELEGRAM = re.compile(r"^[ \t]*\[Telegram\b[^\]\n]*\][ \t]*", _FLAGS)
 _LINEA_NUESTRA = re.compile(

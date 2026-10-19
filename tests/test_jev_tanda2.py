@@ -28,7 +28,7 @@ import local_orchestrator  # noqa: E402
 ENCARGO = "revisa las ordenes flex para hoy y las recolecciones"
 
 TELEGRAM_ENVUELTO = (
-    "[Replying to: \"¿ya quedó lo de las guías?\"]\n"
+    '[Replying to: "¿ya quedó lo de las guías?"]\n'
     "[Gon] revisa las ordenes flex para hoy y las recolecciones\n"
     "JEV skill_select: ninguna\n"
     "Jev sugiere: amazon (0.91)\n"
@@ -145,9 +145,7 @@ class ClasificacionEnCualquierPerfilTests(Base):
         self.assertEqual(
             sorted(jev_decisiones.MODOS), ["aclarar", "directo", "investigar"]
         )
-        self.assertEqual(
-            sorted(jev_decisiones.FINES), ["bloqueado", "quedo", "seguir"]
-        )
+        self.assertEqual(sorted(jev_decisiones.FINES), ["bloqueado", "quedo", "seguir"])
 
     def test_la_misma_pregunta_en_el_mismo_turno_no_se_repite(self):
         jev = Falso({"tipo": ("codigo", 0.9), "modo": ("directo", 0.9)})
@@ -183,8 +181,12 @@ class JevCaidoNoBloqueaTests(Base):
         for perfil in ("claw", "mail"):
             auto = self.auto(perfil, jev)
             auto.pre_llm_call(**turno())
-            self.assertIsNone(auto.pre_tool_call(tool_name="x", args={}, session_id="s1"))
-            self.assertIsNone(auto.pre_tool_call(tool_name="x", args={}, session_id="s1"))
+            self.assertIsNone(
+                auto.pre_tool_call(tool_name="x", args={}, session_id="s1")
+            )
+            self.assertIsNone(
+                auto.pre_tool_call(tool_name="x", args={}, session_id="s1")
+            )
             self.assertIsNone(
                 auto.post_tool_call(tool_name="x", args={}, session_id="s1")
             )
@@ -197,9 +199,7 @@ class JevCaidoNoBloqueaTests(Base):
         auto = self.auto("mail", None)  # sin llamar inyectado: la carga real
         auto.decisor.hogar = self.hogar("mail")
         respuesta = auto.pre_llm_call(**turno())
-        self.assertEqual(
-            respuesta, {"context": "Jev sugiere: no respondió, decide tú"}
-        )
+        self.assertEqual(respuesta, {"context": "Jev sugiere: no respondió, decide tú"})
 
 
 class DetectorDeBucleTests(Base):
@@ -216,7 +216,9 @@ class DetectorDeBucleTests(Base):
         auto.pre_llm_call(**turno())
         self.llamar_dos_veces(auto)
         self.esperar(auto)
-        siguiente = auto.pre_llm_call(**turno(turn_id="t2", user_message=ENCARGO + " ya"))
+        siguiente = auto.pre_llm_call(
+            **turno(turn_id="t2", user_message=ENCARGO + " ya")
+        )
         self.assertIn("Jev advierte: read_file", siguiente["context"])
         # se entrega una sola vez
         otro = auto.pre_llm_call(**turno(turn_id="t3", user_message=ENCARGO + " otra"))
@@ -276,9 +278,7 @@ class BucleFueraDeChatTests(Base):
     def test_los_libros_de_bucle_no_crecen_sin_tope(self):
         auto = self.auto("claw", Falso({"bucle": ("avanza", 0.99)}))
         for n in range(40):
-            auto.pre_tool_call(
-                tool_name="x", args={}, session_id=f"s{n}", turn_id="t"
-            )
+            auto.pre_tool_call(tool_name="x", args={}, session_id=f"s{n}", turn_id="t")
         self.esperar(auto)
         self.assertLessEqual(len(auto._ultima), 16)
         self.assertLessEqual(len(auto._bucles_turno), 16)
@@ -304,7 +304,7 @@ class TextoLimpioTests(unittest.TestCase):
 
     def test_una_nota_de_voz_conserva_la_transcripcion(self):
         bruto = (
-            '[The user sent a voice message~ Here\'s what they said: '
+            "[The user sent a voice message~ Here's what they said: "
             '"revisa el server por ssh"]'
         )
         self.assertEqual(jev_texto.limpiar(bruto), "revisa el server por ssh")
@@ -356,9 +356,7 @@ class TextoNoVaciaMensajesRealesTests(unittest.TestCase):
             "Conversation info (untrusted metadata):\n```json\n"
             '{"chat_id": "1"}\n```\nrevisa el reporte de ventas de hoy'
         )
-        self.assertEqual(
-            jev_texto.limpiar(bruto), "revisa el reporte de ventas de hoy"
-        )
+        self.assertEqual(jev_texto.limpiar(bruto), "revisa el reporte de ventas de hoy")
 
     def test_replying_to_multilinea_se_quita_completo(self):
         bruto = (
@@ -373,6 +371,16 @@ class TextoNoVaciaMensajesRealesTests(unittest.TestCase):
         self.assertEqual(
             jev_texto.limpiar("JEV skill_select: ninguna"),
             "JEV skill_select: ninguna",
+        )
+
+    def test_replying_to_your_previous_message_se_quita(self):
+        bruto = (
+            "[Replying to your previous message: ¿ya quedó lo de las guías?]\n"
+            "[Gon] revisa las ordenes flex para hoy y las recolecciones"
+        )
+        self.assertEqual(
+            jev_texto.limpiar(bruto),
+            "revisa las ordenes flex para hoy y las recolecciones",
         )
 
     def test_mensaje_real_con_fecha_y_envoltorio_conserva_la_fecha(self):
@@ -408,7 +416,7 @@ class CorreccionesTests(Base):
         jev = Falso({"ruteo": ruteo})
         return self.auto("claw", jev), jev
 
-    def test_jev_sugirio_amazon_y_claw_despacho_a_meli_se_guarda_y_sirve_de_ejemplo(
+    def test_jev_sugirio_amazon_y_claw_despacho_a_meli_se_guarda_sin_inyectar(
         self,
     ):
         auto, jev = self.claw()
@@ -426,11 +434,119 @@ class CorreccionesTests(Base):
             (correccion["sugerido"], correccion["correcto"]), ("amazon", "meli")
         )
         self.assertEqual(correccion["texto"], ENCARGO)
-        # la siguiente ruteada lleva el ejemplo en sus instructions
+        self.assertFalse(correccion["confirmada"])
+        # Registrada si, inyectada no: sin senal explicita de David no es
+        # ejemplo en la siguiente ruteada.
         auto.pre_llm_call(**turno(turn_id="t2", user_message=ENCARGO + " otra vez"))
+        instrucciones = jev.llamadas[-1][1]["ruteo"]["instructions"]
+        self.assertNotIn("Ejemplos de correcciones", instrucciones)
+        self.assertNotIn("-> meli (no amazon)", instrucciones)
+
+    def _no_inyecta(self, auto, jev):
+        """La correccion automatica quedo registrada pero fuera del prompt."""
+        (correccion,) = self.filas("claw", "correcciones.jsonl")
+        self.assertFalse(correccion["confirmada"])
+        self.assertEqual(jev_decisiones.ejemplos_de(self.hogar("claw")), "")
+        auto.pre_llm_call(**turno(turn_id="tx", user_message=ENCARGO + " otra vez"))
+        instrucciones = jev.llamadas[-1][1]["ruteo"]["instructions"]
+        self.assertNotIn("Ejemplos de correcciones", instrucciones)
+
+    def test_falso_turno_cortado_se_registra_pero_no_inyecta(self):
+        auto, jev = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={"command": "ls"}, session_id="s1", status="ok"
+        )
+        # Respuesta cortada a mitad, sin '?': parece "lo resolvio solo".
+        auto.post_llm_call(
+            **turno(
+                assistant_response="Ya revise las ordenes y las guias quedaron a mit"
+            )
+        )
+        self._no_inyecta(auto, jev)
+
+    def test_falsa_aclaracion_sin_signo_se_registra_pero_no_inyecta(self):
+        auto, jev = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={"command": "ls"}, session_id="s1", status="ok"
+        )
+        auto.post_llm_call(
+            **turno(assistant_response="Necesito el pais antes de seguir con esto")
+        )
+        self._no_inyecta(auto, jev)
+
+    def test_falsa_marca_heredada_de_otro_turno_no_inyecta(self):
+        auto, jev = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={"command": "ls"}, session_id="s1", status="ok"
+        )
+        auto.post_llm_call(**turno(assistant_response="Para que pais lo reviso?"))
+        # Turno siguiente sin herramientas: la marca de trabajo es heredada.
+        auto.post_llm_call(
+            **turno(
+                turn_id="t2",
+                assistant_response="Listo, ya quedo revisado todo el encargo.",
+            )
+        )
+        self._no_inyecta(auto, jev)
+
+    def test_falso_send_message_no_inyecta(self):
+        auto, jev = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="send_message", args={}, session_id="s1", status="ok"
+        )
+        auto.post_llm_call(
+            **turno(assistant_response="Ya avise por el canal lo que encontre hoy")
+        )
+        self._no_inyecta(auto, jev)
+
+    def test_con_senal_explicita_de_david_si_inyecta_y_conserva_el_texto(self):
+        auto, jev = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_llm_call(**turno(assistant_response="Para que pais lo reviso?"))
+        auto.pre_llm_call(**turno(turn_id="t2", user_message="no, eso va con meli"))
+        self.assertNotIn("s1", auto._correcciones)
+        (correccion,) = self.filas("claw", "correcciones.jsonl")
+        self.assertTrue(correccion["confirmada"])
+        self.assertEqual(correccion["texto"], ENCARGO)
+        self.assertEqual(
+            (correccion["sugerido"], correccion["correcto"]), ("amazon", "meli")
+        )
+        auto.pre_llm_call(**turno(turn_id="t3", user_message=ENCARGO + " otra vez"))
         instrucciones = jev.llamadas[-1][1]["ruteo"]["instructions"]
         self.assertIn(ENCARGO, instrucciones)
         self.assertIn("-> meli (no amazon)", instrucciones)
+
+    def test_la_senal_explicita_solo_acepta_destinos_reales(self):
+        self.assertEqual(
+            jev_decisiones.confirmacion_explicita("eso era para amazon"), "amazon"
+        )
+        self.assertEqual(
+            jev_decisiones.confirmacion_explicita("no, eso va con meli"), "meli"
+        )
+        self.assertEqual(
+            jev_decisiones.confirmacion_explicita("eso era para ingeniería"),
+            "ingenieria",
+        )
+        self.assertIsNone(jev_decisiones.confirmacion_explicita("eso era para nadie"))
+        self.assertIsNone(
+            jev_decisiones.confirmacion_explicita("revisa eso era para amazon hoy")
+        )
+        self.assertIsNone(jev_decisiones.confirmacion_explicita(ENCARGO))
+
+    def test_una_correccion_vieja_sin_marca_de_confirmada_no_inyecta(self):
+        casa = self.hogar("claw")
+        ruta = casa / "jev" / "correcciones.jsonl"
+        ruta.parent.mkdir(parents=True)
+        ruta.write_text(
+            json.dumps({"texto": ENCARGO, "sugerido": "amazon", "correcto": "meli"})
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(jev_decisiones.ejemplos_de(casa), "")
 
     def test_la_cadena_de_ingenieria_es_la_correcta_cuando_se_despacha_con_local_run(
         self,
@@ -462,18 +578,14 @@ class CorreccionesTests(Base):
     def test_un_turno_cortado_sin_respuesta_ni_despacho_no_guarda(self):
         auto, _ = self.claw()
         auto.pre_llm_call(**turno())
-        auto.post_tool_call(
-            tool_name="terminal", args={}, session_id="s1", status="ok"
-        )
+        auto.post_tool_call(tool_name="terminal", args={}, session_id="s1", status="ok")
         auto.post_llm_call(**turno(assistant_response=""))
         self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
 
     def test_trabajo_con_una_pregunta_final_no_es_resolverlo_solo(self):
         auto, _ = self.claw()
         auto.pre_llm_call(**turno())
-        auto.post_tool_call(
-            tool_name="terminal", args={}, session_id="s1", status="ok"
-        )
+        auto.post_tool_call(tool_name="terminal", args={}, session_id="s1", status="ok")
         auto.post_llm_call(**turno(assistant_response="Encontre dos, cual uso?"))
         self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
 
@@ -516,16 +628,27 @@ class CorreccionesTests(Base):
             auto.post_llm_call(**turno(turn_id=f"c{n}", assistant_response="Y?"))
         self.assertNotIn("s1", auto._correcciones)
 
-    def test_un_encargo_nuevo_reemplaza_la_sugerencia_pendiente(self):
+    def test_una_respuesta_larga_a_la_aclaracion_conserva_el_texto_original(self):
         auto, _ = self.claw()
         auto.pre_llm_call(**turno())
         auto.post_llm_call(**turno(assistant_response="Para que pais?"))
         auto.pre_llm_call(
-            **turno(turn_id="t2", user_message="otro encargo distinto, largo")
+            **turno(
+                turn_id="t2",
+                user_message=(
+                    "Es para Mexico, las guias de Seller Flex de esta manana "
+                    "y tambien las recolecciones del almacen"
+                ),
+            )
         )
-        self.assertEqual(
-            auto._correcciones["s1"]["texto"], "otro encargo distinto, largo"
+        self.assertEqual(auto._correcciones["s1"]["texto"], ENCARGO)
+        auto.post_tool_call(
+            tool_name="kanban_create", args={"assignee": "meli"}, session_id="s1"
         )
+        auto.post_llm_call(**turno(turn_id="t2", assistant_response="Se lo di a meli."))
+        (c,) = self.filas("claw", "correcciones.jsonl")
+        self.assertEqual(c["texto"], ENCARGO)
+        self.assertEqual((c["sugerido"], c["correcto"]), ("amazon", "meli"))
 
     def test_el_archivo_de_correcciones_se_rota_en_vez_de_crecer_sin_tope(self):
         casa = self.hogar("claw")
@@ -560,19 +683,24 @@ class CorreccionesTests(Base):
         )
         self.assertEqual(auto._correcciones["s1"]["despachos"], [])
 
-    def test_solo_las_ultimas_15_son_ejemplos(self):
+    def test_solo_las_ultimas_15_confirmadas_son_ejemplos(self):
         casa = self.hogar("claw")
         for i in range(20):
-            jev_decisiones.guardar_correccion(casa, f"encargo numero {i}", "claw", "odoo")
+            jev_decisiones.guardar_correccion(
+                casa, f"encargo numero {i}", "claw", "odoo", confirmada=True
+            )
         ejemplos = jev_decisiones.ejemplos_de(casa)
         self.assertEqual(ejemplos.count("-> odoo"), 15)
         self.assertIn("encargo numero 19", ejemplos)
-        self.assertNotIn("encargo numero 4\"", ejemplos)
+        self.assertNotIn('encargo numero 4"', ejemplos)
 
     def test_la_correccion_taja_las_llaves(self):
         casa = self.hogar("claw")
         jev_decisiones.guardar_correccion(
-            casa, "usa la llave sk-super-secreta-123 en odoo", "claw", "odoo",
+            casa,
+            "usa la llave sk-super-secreta-123 en odoo",
+            "claw",
+            "odoo",
             secretos=("sk-super-secreta-123",),
         )
         crudo = (casa / "jev" / "correcciones.jsonl").read_text(encoding="utf-8")

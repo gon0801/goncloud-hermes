@@ -195,7 +195,11 @@ class JevFalso:
             opcion, confianza = self.respuestas[nombre]
             return {
                 "answers": {
-                    nombre: {"type": "choice", "choice": opcion, "confidence": confianza}
+                    nombre: {
+                        "type": "choice",
+                        "choice": opcion,
+                        "confidence": confianza,
+                    }
                 }
             }
         return {

@@ -31,8 +31,10 @@ import importlib.util
 import json
 import math
 import os
+import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -551,9 +553,22 @@ def _ruta_correcciones(hogar) -> Path:
 
 
 def guardar_correccion(
-    hogar, texto: str, sugerido: str, correcto: str, secretos=()
+    hogar,
+    texto: str,
+    sugerido: str,
+    correcto: str,
+    secretos=(),
+    *,
+    confirmada: bool = False,
 ) -> bool:
-    """Una linea {texto, sugerido, correcto}; el texto va acotado y tachado."""
+    """Una linea {texto, sugerido, correcto}; el texto va acotado y tachado.
+
+    ``confirmada`` es la compuerta del pendiente del reviewer (H-jev-tanda2):
+    la deteccion automatica (despacho distinto, trabajo sin despachar) da
+    falsos positivos, asi que registra con confirmada=False y SOLO la señal
+    explicita de David ("eso era para X") guarda confirmada=True — y solo
+    las confirmadas se inyectan como ejemplos.
+    """
     try:
         visto = " ".join(redact_text(texto, tuple(secretos))[:TOPE_INPUT].split())
         linea = {
@@ -561,6 +576,7 @@ def guardar_correccion(
             "texto": visto,
             "sugerido": sugerido,
             "correcto": correcto,
+            "confirmada": confirmada,
         }
         ruta = _ruta_correcciones(hogar)
         ruta.parent.mkdir(parents=True, exist_ok=True)
@@ -586,7 +602,7 @@ def _acotar_archivo(ruta: Path) -> None:
             os.replace(temporal, ruta)
 
 
-def leer_correcciones(hogar, n: int = N_EJEMPLOS) -> list:
+def leer_correcciones(hogar, n: int | None = N_EJEMPLOS) -> list:
     try:
         lineas = _ruta_correcciones(hogar).read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -604,12 +620,44 @@ def leer_correcciones(hogar, n: int = N_EJEMPLOS) -> list:
             and dato.get("sugerido") in RUTAS
         ):
             salida.append(dato)
-    return salida[-n:]
+    return salida if n is None else salida[-n:]
+
+
+# La senal explicita de David: el mensaje ENTERO es la confirmacion, anclado
+# de punta a punta para que un encargo que la menciona de paso no confirme
+# nada. El destino tiene que ser una ruta real.
+_CONFIRMACION = re.compile(
+    r"^\s*(?:no[,.]?\s+)?eso\s+(?:era\s+para|va\s+con|iba\s+con|era\s+con)"
+    r"\s+([a-záéíóúñ]+)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def confirmacion_explicita(texto) -> str | None:
+    """Destino de "eso era para X" / "no, eso va con X"; None si no es senal."""
+    if not isinstance(texto, str):
+        return None
+    coincidencia = _CONFIRMACION.match(texto)
+    if not coincidencia:
+        return None
+    destino = "".join(
+        letra
+        for letra in unicodedata.normalize("NFD", coincidencia.group(1).lower())
+        if unicodedata.category(letra) != "Mn"
+    )
+    return destino if destino in RUTAS else None
 
 
 def ejemplos_de(hogar) -> str:
-    """Las ultimas 15 correcciones como ejemplos para las instructions del ruteo."""
-    corregidas = leer_correcciones(hogar)
+    """Las ultimas 15 correcciones CONFIRMADAS como ejemplos del ruteo.
+
+    Compuerta del reviewer: la deteccion automatica registra correcciones
+    que pueden ser falsas; sin la marca confirmada (senal explicita de
+    David) ninguna entra al prompt. Las lineas viejas sin marca tampoco.
+    """
+    corregidas = [
+        c for c in leer_correcciones(hogar, n=None) if c.get("confirmada") is True
+    ][-N_EJEMPLOS:]
     if not corregidas:
         return ""
     lineas = [

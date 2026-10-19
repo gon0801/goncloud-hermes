@@ -60,6 +60,7 @@ try:
         ESPECIALISTAS,
         TOPE_JEV_S,
         Decisor,
+        confirmacion_explicita,
         guardar_correccion,
         linea_bucle,
         linea_cierre,
@@ -74,6 +75,7 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
         ESPECIALISTAS,
         TOPE_JEV_S,
         Decisor,
+        confirmacion_explicita,
         guardar_correccion,
         linea_bucle,
         linea_cierre,
@@ -98,8 +100,16 @@ HERRAMIENTA_TARJETA = "kanban_create"
 # Trabajo real hecho por claw sin despachar: unica senal verificable de que "lo
 # resolvio solo". Una aclaracion o un turno cortado no cuentan.
 HERRAMIENTAS_TRABAJO = frozenset(
-    {"terminal", "execute_code", "write_file", "patch", "process", "send_message",
-     "web_search", "web_extract"}
+    {
+        "terminal",
+        "execute_code",
+        "write_file",
+        "patch",
+        "process",
+        "send_message",
+        "web_search",
+        "web_extract",
+    }
 )
 PREFIJO_TRABAJO = "browser_"
 TURNOS_PENDIENTE = 3  # turnos que una sugerencia sin desenlace espera el despacho
@@ -405,6 +415,10 @@ class JevAuto:
         self._nuevo_turno(sesion)
         avisos = self._avisos.pop(sesion, [])
         texto = jev_texto.limpiar(mensaje)
+        # La senal explicita de David se consume antes del corte de ahorro:
+        # confirma el pendiente (con su texto original) y este mensaje ya no
+        # abre un pendiente nuevo.
+        solo_confirmacion = director and self._confirmar_explicita(sesion, texto)
         if jev_texto.es_corto(texto):
             # Ahorro: un "ya?" no vale una consulta. Las advertencias pendientes si salen.
             return {"context": "\n".join(avisos)} if avisos else None
@@ -413,7 +427,9 @@ class JevAuto:
             self._clasificados[llave] = [*avisos, *([linea] if linea else [])]
             self._podar()
             return self._contexto_clasificado(llave)
-        hilos, casillas = self._lanzar_decisiones(texto, len(mensaje), llave)
+        hilos, casillas = self._lanzar_decisiones(
+            texto, len(mensaje), llave, aprender=not solo_confirmacion
+        )
         veredicto = self.consultar(texto)
         for hilo in hilos:
             hilo.join(TOPE_JEV_S + 1)
@@ -447,7 +463,31 @@ class JevAuto:
     def _contexto(self, llave, veredicto) -> str:
         return "\n".join([_linea_contexto(veredicto), *self._lineas.get(llave, [])])
 
-    def _lanzar_decisiones(self, texto: str, crudo: int = 0, llave=None):
+    def _confirmar_explicita(self, sesion: str, texto: str) -> bool:
+        """David dijo "eso era para X": el pendiente se guarda confirmado.
+
+        Se guarda con el texto ORIGINAL del pendiente, no con el mensaje de
+        confirmacion. Sin pendiente (o si X era justo lo sugerido) no hay
+        correccion que guardar, pero la senal igual se consume.
+        """
+        destino = confirmacion_explicita(texto)
+        if destino is None:
+            return False
+        registro = self._correcciones.pop(sesion, None)
+        if registro is None:
+            return True  # senal reconocida; sin pendiente no hay que guardar
+        if destino != registro["sugerido"]:
+            guardar_correccion(
+                self._casa(),
+                registro["texto"],
+                registro["sugerido"],
+                destino,
+                registro["secretos"],
+                confirmada=True,
+            )
+        return True
+
+    def _lanzar_decisiones(self, texto: str, crudo: int = 0, llave=None, aprender=True):
         """Ruteo y cierres de JEV en hilos paralelos al skill_select.
 
         Devuelve (hilos, casillas): cada hilo llena su casilla con a lo mas
@@ -462,10 +502,10 @@ class JevAuto:
         clave, secretos = self.decisor.resuelva()
         hilos: list = []
         casillas: list = []
-        if llave:
-            # Un encargo nuevo reemplaza a la sugerencia pendiente: el trabajo
-            # de ahora no se le atribuye a un texto anterior.
-            self._correcciones.pop(llave[0], None)
+        # Un pendiente vivo NO se reemplaza: el mensaje de ahora puede ser la
+        # respuesta (corta o larga) a una aclaracion, y su texto original es
+        # el que la correccion debe conservar. Solo expira por TURNOS_PENDIENTE
+        # o se cierra con un desenlace.
 
         def lanzar(tarea):
             casilla: list = []
@@ -487,7 +527,13 @@ class JevAuto:
             decision = self.decisor.rutear(
                 texto, clave=clave, secretos=secretos, crudo=crudo
             )
-            if llave and decision.opcion and not decision.error:
+            if (
+                llave
+                and aprender
+                and llave[0] not in self._correcciones
+                and decision.opcion
+                and not decision.error
+            ):
                 self._correcciones[llave[0]] = {
                     "texto": texto,
                     "sugerido": decision.opcion,
@@ -673,7 +719,11 @@ class JevAuto:
         self._correcciones.pop(sesion, None)
         if correcto != sugerido:
             guardar_correccion(
-                self._casa(), registro["texto"], sugerido, correcto, registro["secretos"]
+                self._casa(),
+                registro["texto"],
+                sugerido,
+                correcto,
+                registro["secretos"],
             )
 
     def _evaluar_fin(self, kwargs: dict) -> None:
@@ -692,9 +742,9 @@ class JevAuto:
         while len(self._cierres_fin) > 64:
             self._cierres_fin.pop()
         clave, secretos = self.decisor.resuelva()
-        ficha = (
-            f"Encargo:\n{texto[:600]}\n\nRespuesta:\n{respuesta.strip()[:900]}"
-        )[:TOPE_FICHA]
+        ficha = (f"Encargo:\n{texto[:600]}\n\nRespuesta:\n{respuesta.strip()[:900]}")[
+            :TOPE_FICHA
+        ]
 
         def evalua():
             self.decisor.fin(
