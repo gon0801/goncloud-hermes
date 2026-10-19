@@ -17,6 +17,7 @@ nunca se registra ni se imprime.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import time
@@ -31,6 +32,8 @@ try:  # Cargado con el directorio del plugin en sys.path.
     from subscriptions.redaction import redact_data, redact_text
 except ImportError:  # Cargado como paquete de Hermes.
     from .subscriptions.redaction import redact_data, redact_text  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_MODEL = "jev-latest"
@@ -154,17 +157,35 @@ def default_registro_path(env: Mapping[str, str] | None = None) -> Path:
 
 
 def _valor_fuente(fuente: Any, clave: str, defecto: Any) -> Any:
+    """Lee una clave de la fuente de config del plugin.
+
+    La firma real del ctx (Hermes 0.22, hermes_cli/plugins.py) es
+    get_config(key, default=None), que lee plugins.entries.<plugin>.settings
+    y devuelve el default que pasa el código. Si la fuente es un Mapping se
+    lee directo. Si no hay get_config o este falla, el valor queda en el
+    default documentado de config_jev Y se registra un aviso: nunca se cae
+    a "encendido" en silencio creyendo que se leyó la config del dueño.
+    """
     if fuente is None:
         return defecto
     if isinstance(fuente, Mapping):
         return fuente.get(clave, defecto)
     get_config = getattr(fuente, "get_config", None)
-    if callable(get_config):
-        try:
-            return get_config(clave, default=defecto)
-        except Exception:
-            return defecto
-    return getattr(fuente, clave, defecto)
+    if not callable(get_config):
+        logger.warning(
+            "jev: la fuente de config no expone get_config(key, default); "
+            "%s queda con su valor por omisión documentado",
+            clave,
+        )
+        return defecto
+    try:
+        return get_config(clave, defecto)
+    except Exception:
+        logger.warning(
+            "jev: get_config(%s) falló; queda con su valor por omisión documentado",
+            clave,
+        )
+        return defecto
 
 
 def _a_bool(valor: Any, defecto: bool) -> bool:
@@ -256,6 +277,30 @@ def entorno_jev(config: JevConfig) -> dict:
     if config.registro_path is not None:
         env["GONCLOUD_JEV_REGISTRO"] = str(config.registro_path)
     return env
+
+
+def fuente_desde_config_yaml(ruta: Path, plugin_id: str = "goncloud-team"):
+    """El settings de plugins.entries.<plugin_id> de un config.yaml, o None.
+
+    Para procesos sin ctx del gateway (el cron del ticker): leen la misma
+    ruta que resuelve ctx.get_config en Hermes (settings, con respaldo al
+    subárbol legacy config). Sin archivo, sin YAML o sin la entrada,
+    devuelve None y config_jev cae a entorno/defaults.
+    """
+    try:
+        import yaml
+
+        datos = yaml.safe_load(Path(ruta).read_text(encoding="utf-8"))
+        entradas = datos["plugins"]["entries"][plugin_id]
+        if not isinstance(entradas, dict):
+            return None
+        for subarbol in ("settings", "config"):
+            valor = entradas.get(subarbol)
+            if isinstance(valor, dict):
+                return valor
+        return None
+    except Exception:
+        return None
 
 
 def registrar_decision(config: JevConfig | None, entrada: Mapping[str, Any]) -> None:

@@ -181,6 +181,7 @@ def register(ctx) -> None:
                 workspace=Path(str(arguments.get("workspace", ""))),
                 actor_role=ctx.profile_name,
                 max_steps=int(arguments.get("max_steps", 80)),
+                jev_config=_jev_config(ctx),
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except Exception as exc:

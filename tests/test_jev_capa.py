@@ -457,11 +457,31 @@ class MuseBridgeJevTests(unittest.TestCase):
 
 
 class TiendaFalsa:
+    """Doble del store: INSERT OR IGNORE por clave, como incidencias reales."""
+
     def __init__(self):
         self.incidencias = []
+        self._claves = set()
+        self.veredictos = {}
 
     def registrar_incidencia(self, root_id, unit_id, attempt, clave, evidencia):
+        llave = (root_id, unit_id, attempt, clave)
+        if llave in self._claves:
+            return
+        self._claves.add(llave)
         self.incidencias.append((clave, evidencia))
+
+    def veredicto_jev(self, root_id, unit_id, attempt):
+        return self.veredictos.get((root_id, unit_id, attempt))
+
+    def asentar_veredicto_jev(self, root_id, unit_id, attempt, tarjeta_id, transporte):
+        llave = (root_id, unit_id, attempt)
+        if llave not in self.veredictos:
+            self.veredictos[llave] = {
+                "tarjeta": tarjeta_id,
+                "transporte": bool(transporte),
+            }
+        return self.veredictos[llave]
 
 
 class TarjetaFalsa:
@@ -533,14 +553,16 @@ class TickerJevTests(unittest.TestCase):
         self.assertEqual(evidencia["kind"], "recovery-transport-failure")
 
     def test_ambiguo_caido_o_apagado_gana_la_regla_de_hoy(self):
-        # Ambiguo (0.5): la regla de hoy manda en ambos sitios.
+        # Ambiguo (0.5): la regla de hoy manda en ambos sitios. Cada sitio es
+        # un intento distinto: el veredicto se asienta por intento (F7).
         tienda = TiendaFalsa()
+        otro = {**self.intento, "unitId": "unit-2"}
         with self.con_jev(TransporteFalso(self.check_answers(0.5))):
             self.ticker._transporte_caido(
                 tienda, self.intento, TarjetaFalsa("archivada", None)
             )
             self.ticker._incidencia_invalida(
-                tienda, self.intento, TarjetaFalsa("completada", {"x": 1}), {"x": 1}
+                tienda, otro, TarjetaFalsa("completada", {"x": 1}), {"x": 1}
             )
         kinds = [evidencia["kind"] for _, evidencia in tienda.incidencias]
         self.assertEqual(kinds, ["recovery-transport-failure", "invalid-result"])
@@ -806,6 +828,199 @@ class TransporteRedirectTests(unittest.TestCase):
             servidor.shutdown()
         self.assertFalse(destino["visitado"])
         self.assertIsNone(destino["authorization"])
+
+
+class CtxHermesReal:
+    """Doble con la firma real de Hermes 0.22 (hermes_cli/plugins.py:266).
+
+    get_config(key, default=None) lee plugins.entries.<plugin>.settings.<key>
+    y devuelve el default que pasa el código si no existe; aquí el settings
+    ya viene extraído, como lo entrega Hermes al plugin.
+    """
+
+    def __init__(self, settings=None, profile_name="claw"):
+        self._settings = dict(settings or {})
+        self.profile_name = profile_name
+
+    def get_config(self, key, default=None):
+        return self._settings.get(key, default)
+
+
+def cargar_plugin():
+    """El paquete goncloud_team cargado como en Hermes, con su fake de cli."""
+    if "goncloud_team_r4" in sys.modules:
+        return sys.modules["goncloud_team_r4"]
+    fake = str(ROOT / "tests" / "fake_hermes_cli")
+    if fake not in sys.path:
+        sys.path.insert(0, fake)
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "goncloud_team_r4",
+        PLUGIN_DIR / "__init__.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    modulo = importlib.util.module_from_spec(spec)
+    sys.modules["goncloud_team_r4"] = modulo
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+class ConfigCtxRealTests(unittest.TestCase):
+    """F4: _valor_fuente contra la firma real; sin get_config hay aviso."""
+
+    def test_ctx_real_lee_settings_y_default_del_codigo(self):
+        ctx = CtxHermesReal({"jev_umbral": 0.42, "jev_ticker_incidencia": False})
+        config = jev_cliente.config_jev(ctx, env={})
+        self.assertEqual(config.umbral, 0.42)
+        self.assertFalse(config.punto_activo("ticker_incidencia"))
+        # Lo que el ctx no trae sale del default que pasa config_jev.
+        self.assertTrue(config.punto_activo("router_clasificacion"))
+
+    def test_ctx_sin_get_config_avisa_y_usa_el_default_documentado(self):
+        class CtxSinConfig:
+            profile_name = "claw"
+
+        with self.assertLogs(level="WARNING") as logs:
+            config = jev_cliente.config_jev(CtxSinConfig(), env={})
+        self.assertEqual(config.umbral, jev_cliente.DEFAULT_UMBRAL)
+        self.assertTrue(any("get_config" in linea for linea in logs.output))
+
+    def test_ctx_con_get_config_roto_avisa_y_usa_el_default(self):
+        class CtxRoto(CtxHermesReal):
+            def get_config(self, key, default=None):
+                raise RuntimeError("config ilegible")
+
+        with self.assertLogs(level="WARNING"):
+            config = jev_cliente.config_jev(CtxRoto(), env={})
+        self.assertEqual(config.umbral, jev_cliente.DEFAULT_UMBRAL)
+
+
+class CadenaGatewayTests(unittest.TestCase):
+    """F8/F6a: _build_service/_build_orchestrator con ctx real hasta el router."""
+
+    def test_la_config_del_ctx_llega_al_router_y_al_orquestador(self):
+        plugin = cargar_plugin()
+        ctx = CtxHermesReal({"jev_umbral": 0.42, "jev_router_clasificacion": False})
+        servicio = plugin._build_service(ctx)
+        self.assertEqual(servicio.jev_config.umbral, 0.42)
+        self.assertFalse(servicio.jev_config.punto_activo("router_clasificacion"))
+
+        import importlib
+
+        workflow = importlib.import_module("goncloud_team_r4.workflow")
+        router = workflow._build_subscription_router(jev_config=servicio.jev_config)
+        self.assertEqual(router._jev_config_inyectada.umbral, 0.42)
+        self.assertFalse(
+            router._jev_config_inyectada.punto_activo("router_clasificacion")
+        )
+
+        orquestador = plugin._build_orchestrator(ctx)
+        self.assertEqual(orquestador.jev_config.umbral, 0.42)
+        servicio_hijo = orquestador.services("claw")
+        self.assertEqual(servicio_hijo.jev_config.umbral, 0.42)
+
+    def test_muse_delegate_recibe_la_config_del_ctx(self):
+        plugin = cargar_plugin()
+        herramientas = {}
+
+        class CtxRegistro(CtxHermesReal):
+            def register_tool(self, name=None, handler=None, **kwargs):
+                herramientas[name] = handler
+
+            def register_hook(self, *args, **kwargs):
+                pass
+
+        registro = CtxRegistro({"jev_umbral": 0.42}, profile_name="claw")
+        capturado = {}
+        original = plugin.delegate_to_muse
+        plugin.delegate_to_muse = lambda **kwargs: (
+            capturado.update(kwargs) or {"text": "ok"}
+        )
+        try:
+            plugin.register(registro)
+            herramientas["goncloud_muse_delegate"](
+                {"prompt": "hazlo", "workspace": r"C:\dev\repo"}
+            )
+        finally:
+            plugin.delegate_to_muse = original
+        self.assertEqual(capturado["jev_config"].umbral, 0.42)
+
+
+class TickerConfigCronTests(unittest.TestCase):
+    """F6b: el ticker (cron, otro proceso) lee la config del root donde corre."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.home = Path(self.tmp.name).resolve()
+        import importlib
+
+        self.ticker = importlib.import_module("raices.ticker")
+        self.addCleanup(setattr, self.ticker, "_jev_ticker_resuelto", None)
+
+    def test_lee_plugins_entries_del_config_yaml_del_root(self):
+        (self.home / "config.yaml").write_text(
+            "plugins:\n"
+            "  entries:\n"
+            "    goncloud-team:\n"
+            "      settings:\n"
+            "        jev_umbral: 0.5\n"
+            "        jev_ticker_incidencia: false\n",
+            encoding="utf-8",
+        )
+        self.ticker._jev_ticker_resuelto = None
+        env = {
+            clave: valor
+            for clave, valor in os.environ.items()
+            if not clave.startswith("GONCLOUD_JEV_")
+        }
+        env["HERMES_HOME"] = str(self.home)
+        with patch.dict(os.environ, env, clear=True):
+            resuelto = self.ticker._jev_ticker()
+        self.assertIsNotNone(resuelto)
+        _, _, config = resuelto
+        self.assertEqual(config.umbral, 0.5)
+        self.assertFalse(config.punto_activo("ticker_incidencia"))
+
+
+class TickerVeredictoPersistidoTests(unittest.TestCase):
+    """F7: una consulta por (intento, tarjeta); la clave sale del persistido."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.registro = Path(self.tmp.name) / "jev" / "decisiones.jsonl"
+        import importlib
+
+        self.ticker = importlib.import_module("raices.ticker")
+        self.intento = {
+            "rootId": "root-1",
+            "unitId": "unit-1",
+            "attempt": 1,
+            "state": "running",
+        }
+
+    def test_dos_vueltas_una_consulta_y_una_sola_incidencia(self):
+        transporte = TransporteFalso({"jev_check": {"type": "noul", "noul": 0.03}})
+        config = jev_cliente.JevConfig(registro_path=self.registro)
+        cliente = jev_cliente.ClienteJev(
+            transporte=transporte, obtener_llave=lambda: LLAVE_FALSA, config=config
+        )
+        tienda = TiendaFalsa()
+        tarjeta = TarjetaFalsa("bloqueada", None)
+        with patch.object(
+            self.ticker, "_jev_ticker", lambda: (jev_cliente, cliente, config)
+        ):
+            self.ticker._transporte_caido(tienda, self.intento, tarjeta)
+            # JEV cambiaría de opinión en la segunda vuelta: no se reconsulta.
+            transporte.answers = {"jev_check": {"type": "noul", "noul": 0.99}}
+            self.ticker._transporte_caido(tienda, self.intento, tarjeta)
+        self.assertEqual(len(transporte.llamadas), 1)
+        self.assertEqual(len(tienda.incidencias), 1)
+        self.assertEqual(tienda.incidencias[0][1]["kind"], "result-missing")
+        persistido = tienda.veredictos[("root-1", "unit-1", 1)]
+        self.assertFalse(persistido["transporte"])
 
 
 if __name__ == "__main__":

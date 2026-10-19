@@ -321,7 +321,13 @@ _JEV_PREGUNTA_TRANSPORTE = (
 
 
 def _jev_ticker():
-    """(módulo, cliente, config) de JEV, o None si no se pudo cargar."""
+    """(módulo, cliente, config) de JEV, o None si no se pudo cargar.
+
+    El ticker corre como cron en otro proceso, sin ctx del gateway: lee la
+    config donde corre, del config.yaml de la raíz de Hermes
+    (plugins.entries.goncloud-team.settings, la misma ruta que resuelve
+    ctx.get_config), con entorno/defaults de respaldo.
+    """
     global _jev_ticker_resuelto
     if _jev_ticker_resuelto is None:
         try:
@@ -332,22 +338,38 @@ def _jev_ticker():
             if str(plugin_dir) not in sys.path:
                 sys.path.insert(0, str(plugin_dir))
             modulo = importlib.import_module("jev_cliente")
-            config = modulo.config_jev()
+            fuente = None
+            try:
+                hogar = importlib.import_module("raices.hogar")
+                fuente = modulo.fuente_desde_config_yaml(
+                    hogar.raiz_del_hogar() / "config.yaml"
+                )
+            except Exception:
+                fuente = None
+            config = modulo.config_jev(fuente)
             _jev_ticker_resuelto = (modulo, modulo.ClienteJev(config=config), config)
         except Exception:
             _jev_ticker_resuelto = False
     return _jev_ticker_resuelto or None
 
 
-def _jev_es_transporte(intento, tarjeta, regla: str) -> bool:
+def _jev_es_transporte(tienda, intento, tarjeta, regla: str) -> bool:
     """JEV decide transporte vs inválido con evidencia ambigua; si no manda, la regla.
 
     `regla` es la lectura de hoy del llamador ("transporte" desde una tarjeta
-    bloqueada/archivada, "invalid_result" desde un resultado ilegible).
+    bloqueada/archivada, "invalid_result" desde un resultado ilegible). Una
+    sola consulta por intento: el veredicto final (de JEV o de la regla) se
+    asienta en la tienda (jev_veredictos) y las vueltas siguientes usan el
+    persistido, así la clave de la incidencia es determinista.
     """
+    leer = getattr(tienda, "veredicto_jev", None)
+    if callable(leer):
+        persistido = leer(intento["rootId"], intento["unitId"], intento["attempt"])
+        if persistido is not None:
+            return bool(persistido["transporte"])
     resuelto = _jev_ticker()
     if resuelto is None:
-        return regla == "transporte"
+        return _asentar_veredicto(tienda, intento, tarjeta, regla == "transporte")
     modulo, cliente, config = resuelto
     carga = tarjeta.resultado if isinstance(tarjeta.resultado, dict) else {}
     claves = sorted(str(clave) for clave in carga)[:20]
@@ -378,12 +400,27 @@ def _jev_es_transporte(intento, tarjeta, regla: str) -> bool:
         },
     )
     if decision is None:
-        return regla == "transporte"
-    return decision
+        decision = regla == "transporte"
+    return _asentar_veredicto(tienda, intento, tarjeta, decision)
+
+
+def _asentar_veredicto(tienda, intento, tarjeta, transporte: bool) -> bool:
+    """El primer veredicto de un intento manda; devuelve el persistido."""
+    asentar = getattr(tienda, "asentar_veredicto_jev", None)
+    if not callable(asentar):
+        return transporte
+    persistido = asentar(
+        intento["rootId"], intento["unitId"], intento["attempt"], tarjeta.id, transporte
+    )
+    if persistido is None:
+        return transporte
+    return bool(persistido["transporte"])
 
 
 def _transporte_caido(tienda, intento, tarjeta, *, _consultar_jev=True) -> None:
-    if _consultar_jev and not _jev_es_transporte(intento, tarjeta, "transporte"):
+    if _consultar_jev and not _jev_es_transporte(
+        tienda, intento, tarjeta, "transporte"
+    ):
         _incidencia_invalida(
             tienda,
             intento,
@@ -460,7 +497,9 @@ def _incidencia_invalida(
     nada: reintenta con el mismo tope que invalid-result y el kind distingue
     la muerte en la evidencia (I18 sigue: sin resultado válido no hay
     veredicto, aceptación ni despacho de dependientes)."""
-    if _consultar_jev and _jev_es_transporte(intento, tarjeta, "invalid_result"):
+    if _consultar_jev and _jev_es_transporte(
+        tienda, intento, tarjeta, "invalid_result"
+    ):
         _transporte_caido(tienda, intento, tarjeta, _consultar_jev=False)
         return
     if not carga:
