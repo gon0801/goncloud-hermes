@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import threading
@@ -49,6 +50,12 @@ class WorkflowTestCase(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.db_path = self.root / "kanban.db"
+        # Review F5: start resolves the subscription store through
+        # default_db_path(); without this pin the race test ran schema
+        # migrations and BEGIN IMMEDIATE against the developer's real
+        # router store — and passed or failed depending on its existence.
+        os.environ["GONCLOUD_SUBSCRIPTION_DB"] = str(self.root / "routes.db")
+        self.addCleanup(os.environ.pop, "GONCLOUD_SUBSCRIPTION_DB", None)
 
     def service(self, role: str = "claw") -> WorkflowService:
         return WorkflowService(db_path=self.db_path, actor_role=role)
@@ -112,8 +119,7 @@ class WorkflowTestCase(unittest.TestCase):
     ) -> None:
         # Encargo H punto 2: the repository no longer refuses a second chain;
         # the atomic root insert still serializes the race (each root exactly
-        # once, no half-created chain), and without a subscription store to
-        # prove lease evidence the loser is queued behind, not closed.
+        # once, no half-created chain).
         with connect_closing(self.db_path):
             pass
         barrier = threading.Barrier(2)
@@ -147,9 +153,22 @@ class WorkflowTestCase(unittest.TestCase):
                 if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
             ]
         self.assertEqual(len(roots), 2)
-        # The race's loser never even had a driver (no mark, no lease): the
-        # winner's start freed it with the automatic close.
-        self.assertEqual(sum(task.status == "archived" for task in roots), 1)
+        # Review F2: neither root carries driver evidence — no mark, no
+        # lease — and since F2 "no evidence" no longer reads as "driver
+        # stopped": the loser stays a chain and queues behind the winner's.
+        self.assertEqual(sum(task.status == "archived" for task in roots), 0)
+        queued = [
+            result
+            for kind, result in outcomes
+            if kind == "ok" and result.get("queued_behind")
+        ]
+        self.assertEqual(len(queued), 1)
+        winner = next(
+            result
+            for kind, result in outcomes
+            if kind == "ok" and not result.get("queued_behind")
+        )
+        self.assertEqual(queued[0]["queued_behind"], winner["workflow_id"])
 
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")

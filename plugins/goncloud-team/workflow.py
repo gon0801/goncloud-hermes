@@ -92,6 +92,12 @@ AUTO_CLOSE_REASON = (
     "auto-closed by WorkflowService.start: the chain's driver had stopped "
     "and the repository was freed for a new chain"
 )
+#: Marker of the durable queue record a ``start`` leaves on a root that
+#: must wait behind a live chain (review F2). The queued state used to
+#: live only in the in-memory response, so a later start archived the
+#: waiting chain as if its driver had stopped. Nothing closes on this
+#: marker alone; it records why the chain carries no driver mark yet.
+QUEUED_COMMENT_MARKER = "GONCLOUD_LOCAL_QUEUED_V1\n"
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
 
@@ -100,17 +106,29 @@ def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
     """(alive, stopped) according to the local driver's own result-file mark.
 
     The mark is the local driver's lifecycle record — local_orchestrator
-    owns it, so the import stays deferred and one-directional. A running
-    mark whose pid is alive is live work; anything else (a stopped outcome,
-    a dead or recycled pid, no mark at all) proves nothing is running. A
-    helper that cannot even load answers alive: fail closed, never archive
-    on missing evidence.
+    owns it, so the import stays deferred and one-directional. Three
+    answers, never two collapsed into one: a running mark whose pid is
+    alive is live work; a stopped outcome, or a running mark whose pid is
+    gone, is positive evidence the driver stopped; anything else — no mark
+    at all, an unreadable or non-object file — proves nothing (review F2:
+    a chain sitting in the queue never wrote a mark, and "no evidence"
+    read as "stopped" had start archiving it with a lying close reason).
+    A helper that cannot even load answers alive: fail closed, never
+    archive on missing evidence.
     """
     try:
         try:
-            from .local_orchestrator import driver_mark_live, read_driver_mark
+            from .local_orchestrator import (
+                driver_mark_live,
+                driver_stopped,
+                read_driver_mark,
+            )
         except ImportError:
-            from local_orchestrator import driver_mark_live, read_driver_mark
+            from local_orchestrator import (
+                driver_mark_live,
+                driver_stopped,
+                read_driver_mark,
+            )
     except ImportError:
         return True, False
     mark = read_driver_mark(workflow_id)
@@ -120,7 +138,7 @@ def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
         and driver_mark_live(mark)
     ):
         return True, False
-    return False, True
+    return False, driver_stopped(mark)
 
 
 _SUBSCRIPTION_EVIDENCE_KEYS = (
@@ -437,11 +455,36 @@ class WorkflowService:
                     triage=True,
                     idempotency_key=idempotency_key,
                 )
-            closed_chains = [
-                old_id
-                for old_id in stopped_chains
-                if self._auto_close_stopped_chain(old_id, store=store)
-            ]
+            closed_chains = []
+            for old_id in stopped_chains:
+                if self._auto_close_stopped_chain(old_id, store=store):
+                    closed_chains.append(old_id)
+                else:
+                    # Review F3: the automatic close did not free the old
+                    # chain — its driver started, a lease appeared, or the
+                    # store is unchecked ground. The detached driver never
+                    # runs a repository guard of its own, so the new chain
+                    # queues here instead of launching over it.
+                    queued_behind = queued_behind or old_id
+            if queued_behind is not None:
+                # Review F2: the queue is a durable state, not a footnote
+                # in the response — this comment is why the chain carries
+                # no driver mark, so no later start can mistake the
+                # absence for a stopped driver. It rides the final answer,
+                # after the close attempt above could still queue the new
+                # chain behind a chain it could not free.
+                add_comment(
+                    conn,
+                    root_id,
+                    self.actor_role,
+                    QUEUED_COMMENT_MARKER
+                    + json.dumps(
+                        {"queued_behind": queued_behind, "workflow_id": root_id},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
 
             root = get_task(conn, root_id)
             if root is None:
@@ -504,8 +547,17 @@ class WorkflowService:
             return True
         if store is not None and store.active_leases(active.id):
             return True
-        alive, _stopped = _driver_signals(active.id)
-        return alive
+        if active.status == "triage" and not initial_ids and not correction:
+            # A triage root without its stage graph never had a driver: the
+            # graph is complete before any launch, and a queued chain
+            # always carries the full graph (review F2). Provably
+            # driverless, so it never queues the new chain.
+            return False
+        alive, stopped = _driver_signals(active.id)
+        # Review F2: no mark is not a stopped driver — a queued chain has
+        # none. "Not proven stopped" counts as alive: the queue, not the
+        # archive, is the answer.
+        return alive or not stopped
 
     def _auto_close_stopped_chain(self, workflow_id: str, *, store: Any) -> bool:
         """Free a chain whose driver already stopped; True when this call did.
@@ -515,7 +567,10 @@ class WorkflowService:
         stay as evidence), and the close comment with the reason on the
         root. Every guard runs fresh right before the writes: a chain that
         turned alive in the meantime is left alone, and the new chain then
-        queues behind it through the driver's own repository guard.
+        queues behind it (review F3 — the detached driver runs no
+        repository guard of its own). The stop evidence must be positive —
+        a stopped outcome, or a running mark whose pid is gone (review F2:
+        a chain in the queue has no mark at all and is never archived).
         """
         if isinstance(store, _StoreUnavailable) or store is None:
             return False
@@ -533,9 +588,20 @@ class WorkflowService:
                 return False
         if store.active_leases(workflow_id):
             return False
-        alive, _stopped = _driver_signals(workflow_id)
-        if alive:
+        if root.status == "triage" and not members[1:]:
+            # A triage root without its stage graph never had a driver: the
+            # graph is complete before any launch can happen, and a queued
+            # chain always carries the full graph (review F2). This is the
+            # one case where "no mark" is itself the evidence — the same
+            # rule goncloud_local_close applies.
+            return self._archive_chain_members(workflow_id, members)
+        alive, stopped = _driver_signals(workflow_id)
+        if alive or not stopped:
             return False
+        return self._archive_chain_members(workflow_id, members)
+
+    def _archive_chain_members(self, workflow_id: str, members: list) -> bool:
+        """The write half of the automatic close: archive, leave the reason."""
         with self._connect() as conn:
             for member_id, member_status in members:
                 if member_status in {"archived", "done"}:

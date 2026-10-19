@@ -2304,6 +2304,16 @@ class RetryAndQueueTests(_OrchestratorHarness):
         self.addCleanup(process.wait)
         return process
 
+    def queued_behind_of(self, workflow_id):
+        """The durable queue record on a root (review F2), or None."""
+        with connect_closing(self.db) as conn:
+            for comment in list_comments(conn, workflow_id):
+                if comment.body.startswith("GONCLOUD_LOCAL_QUEUED_V1"):
+                    return json.loads(comment.body[len("GONCLOUD_LOCAL_QUEUED_V1") :])[
+                        "queued_behind"
+                    ]
+        return None
+
     # (a) — encargo H punto 1
     def test_a_relaunched_blocked_stage_calls_the_model_again_and_advances(self):
         self.responses["scout"] = fenced(envelope(status="blocked"))
@@ -2531,6 +2541,258 @@ class RetryAndQueueTests(_OrchestratorHarness):
         result = self.orchestrator.resume(first["workflow_id"], home=self.root)
         self.assertEqual(result["outcome"], "delivered")
         self.assertEqual([r.role for r in self.requests], ["scout"] + ORDER[1:])
+
+    # review F1 — el run_id en su propia posición del argv del lanzador real
+    def test_launch_detached_without_stop_after_runs_the_driver(self):
+        # Review F1 (Critical): stop_after es opcional, su hueco en argv no.
+        # El run_id caía en ese hueco y todo lanzamiento sin checkpoint
+        # moría en check_stop_after antes de correr una sola etapa. El
+        # argv del lanzador REAL — capturado, nunca rearmado — debe llevar
+        # el hueco vacío de stop_after y el run_id al final, y ese argv
+        # exacto debe manejar un intérprete real por el bootstrap real.
+        first = self.paused()
+        eco_plugin = self.root / "eco-plugin"
+        eco_hermes = self.root / "eco-hermes"
+        eco_plugin.mkdir()
+        eco_hermes.mkdir()
+        (eco_plugin / "local_orchestrator.py").write_text(
+            "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
+            "        return {'workflow_id': workflow_id, 'outcome': 'completed',\n"
+            "                'stop_after': stop_after, 'launch_run_id': launch_run_id}\n",
+            encoding="utf-8",
+        )
+        captured = {}
+
+        def capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            return type("Spawned", (), {"pid": 424242})()
+
+        with patch("local_orchestrator.subprocess.Popen", capture):
+            launched = self.orchestrator.launch_detached(
+                first["workflow_id"], home=self.root
+            )
+
+        argv = captured["argv"]
+        self.assertEqual(argv[0], sys.executable, "the real launcher boots python")
+        self.assertEqual(argv[1:3], ["-I", "-c"])
+        self.assertEqual(len(argv), 10, "fixed positions: no spliced slots")
+        self.assertEqual(argv[8], "", "stop_after's own slot stays empty")
+        self.assertEqual(argv[9], launched["run_id"])
+        # The driver side is the echo double; the launch under test is the
+        # launcher's own argv product.
+        argv[4], argv[5] = str(eco_plugin), str(eco_hermes)
+        subprocess.run(
+            argv, cwd=str(self.root), capture_output=True, timeout=60, check=True
+        )
+        result = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(result["outcome"], "completed")
+        self.assertIsNone(result["stop_after"], "no stop_after, no run_id leaking in")
+        self.assertEqual(result["launch_run_id"], launched["run_id"])
+
+    # review F2 — una cadena en cola nunca se cierra sola
+    def test_a_queued_chain_is_never_auto_closed_by_a_later_start(self):
+        # Review F2: la cadena en cola nunca escribió marca de driver, y
+        # "sin marca" dejaba de leerse como "driver parado" — se archivaba
+        # con el motivo de cierre mentiroso justo después de responderle
+        # "en cola" a claw. El estado de cola queda durable en la raíz.
+        first = self.paused()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"],
+                first["stages"]["ingenieria"]["id"],
+                owner="driver-live",
+                lease_seconds=900,
+            )
+        )
+        queued = self.start(request_key="second-chain")
+        self.assertEqual(queued["outcome"], "queued")
+        self.assertEqual(
+            self.queued_behind_of(queued["workflow_id"]), first["workflow_id"]
+        )
+        with connect_closing(self.db) as conn:
+            self.assertTrue(
+                any(
+                    comment.body.startswith("GONCLOUD_LOCAL_QUEUED_V1")
+                    for comment in list_comments(conn, queued["workflow_id"])
+                ),
+                "the queue is a durable state on the waiting root",
+            )
+
+        store.release_stage(
+            first["workflow_id"], first["stages"]["ingenieria"]["id"], "driver-live"
+        )
+        third = self.start(request_key="third-chain")
+
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            self.assertNotEqual(
+                get_task(conn, queued["workflow_id"]).status,
+                "archived",
+                "the queued chain stays; no mark is no stop evidence",
+            )
+            comentarios = [
+                comment.body for comment in list_comments(conn, queued["workflow_id"])
+            ]
+        self.assertTrue(
+            all("GONCLOUD_LOCAL_CLOSE_V1" not in body for body in comentarios),
+            "no lying close reason on the queued chain",
+        )
+        self.assertEqual(
+            self.queued_behind_of(third["workflow_id"]), queued["workflow_id"]
+        )
+
+    # review F3 — si el cierre automático no cierra, la nueva se encola
+    def test_a_chain_that_turns_alive_keeps_the_new_chain_queued(self):
+        # Review F3: el cierre automático re-comprueba todo justo antes de
+        # escribir; si la vieja giró a viva en ese intervalo, el cierre
+        # devuelve False y la nueva cola detrás de ella — el driver
+        # detached nunca corre un guard de repositorio propio.
+        first = self.paused()
+        signals = iter([(False, True), (True, False)])
+        with patch("workflow._driver_signals", side_effect=lambda _id: next(signals)):
+            second = self.start(request_key="second-chain")
+
+        self.assertEqual(
+            self.queued_behind_of(second["workflow_id"]), first["workflow_id"]
+        )
+        with connect_closing(self.db) as conn:
+            self.assertNotEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            comentarios = [
+                comment.body for comment in list_comments(conn, first["workflow_id"])
+            ]
+        self.assertTrue(
+            all("GONCLOUD_LOCAL_CLOSE_V1" not in body for body in comentarios)
+        )
+
+    def test_even_an_own_launch_queues_behind_a_live_chain(self):
+        # Review F3: todo driver detached lleva su launch_run_id, así que
+        # saltarse el guard de cola para lanzamientos propios era saltárselo
+        # siempre — dos drivers podían trabajar el mismo checkout.
+        first = self.paused()
+        store = SubscriptionStateStore(self.root / "routes.db")
+        self.assertTrue(
+            store.claim_stage(
+                first["workflow_id"],
+                first["stages"]["ingenieria"]["id"],
+                owner="driver-live",
+                lease_seconds=900,
+            )
+        )
+        second = self.start(request_key="second-chain")
+        self.assertEqual(second["outcome"], "queued")
+        self.write_mark(
+            second["workflow_id"],
+            {**self.running_mark(os.getpid()), "run_id": "own-run"},
+        )
+
+        result = self.orchestrator.resume(
+            second["workflow_id"], home=self.root, launch_run_id="own-run"
+        )
+
+        self.assertEqual(result["outcome"], "queued")
+        self.assertEqual(
+            [r.role for r in self.requests],
+            ["scout"],
+            "no model runs over a busy repository, own launch or not",
+        )
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{second['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["run_id"], "own-run", "the mark stays untouched")
+
+    # review F4 — un pid incomprobable no es un pid muerto
+    def test_an_uncheckable_pid_reads_alive_and_records_the_cause(self):
+        # Review F4: sin ps, con timeout o con acceso denegado, la marca
+        # lee VIVA — no se cierra ni se reintenta — y la causa queda
+        # registrada en la propia marca. Solo un pid comprobadamente muerto
+        # o reciclado cuenta como driver parado.
+        first = self.paused()
+        self.write_mark(first["workflow_id"], self.running_mark(99999999))
+
+        def sin_ps(*args, **kwargs):
+            raise OSError("no hay ps")
+
+        with patch.object(local_orchestrator_module.subprocess, "run", sin_ps):
+            checked = local_orchestrator_module._process_start_epoch(99999999)
+            self.assertIsInstance(checked, local_orchestrator_module._UncheckedPid)
+            self.assertIn("no hay ps", checked.cause)
+            mark = local_orchestrator_module.read_driver_mark(
+                first["workflow_id"], home=self.root
+            )
+            self.assertTrue(
+                local_orchestrator_module.driver_mark_live(mark),
+                "an uncheckable pid is not a dead driver",
+            )
+            self.assertIn("ps unavailable", mark["pid_check"])
+            self.assertIsNone(
+                self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+            )
+            with self.assertRaises(WorkflowError):
+                self.close(first["workflow_id"], reason="pid incomprobable")
+            result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+
+        self.assertEqual(
+            result["outcome"], "queued", "no retry over a possibly live driver"
+        )
+        self.assertEqual([r.role for r in self.requests], ["scout"])
+
+    # review F6 — un resultado JSON que no es objeto no revienta
+    def test_a_result_file_that_is_not_an_object_proves_no_stop(self):
+        # Review F6: [1], "paused" o 5 son JSON válido y ninguna salida de
+        # driver — leerlos no puede reventar driver_stopped ni close_hint,
+        # y jamás cuenta como evidencia de parada.
+        first = self.paused()
+        result_file = self.root / "goncloud-local" / f"{first['workflow_id']}.json"
+        for payload in ("[1, 2]", '"paused"', "5"):
+            with self.subTest(payload=payload):
+                result_file.write_text(payload, encoding="utf-8")
+                self.assertFalse(
+                    local_orchestrator_module.driver_stopped(json.loads(payload))
+                )
+                self.assertIsNone(
+                    self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+                )
+                with self.assertRaises(WorkflowError):
+                    self.close(first["workflow_id"], reason="no")
+
+    # review F7 — un spawn que falla no deja la marca del lanzador
+    def test_a_failed_spawn_leaves_no_running_mark_of_the_launcher(self):
+        # Review F7: la marca running se escribe antes de Popen; si el
+        # spawn falla, el pid del lanzador (vivo durante días) quedaba como
+        # driver vivo para siempre. El fallo de lanzamiento es la última
+        # palabra del archivo: una salida parada que el siguiente start
+        # cierra y reintenta.
+        first = self.paused()
+
+        with patch(
+            "local_orchestrator.subprocess.Popen",
+            side_effect=OSError("no hay memoria"),
+        ):
+            with self.assertRaises(OSError):
+                self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
+
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["outcome"], "error")
+        self.assertIn("launch failed", written["error"])
+        self.assertNotIn("pid", written, "no launcher pid posing as a driver")
+
+        second = self.start(request_key="second-chain")
+
+        self.assertEqual(second["outcome"], "delivered")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
 
 
 class LocalCloseHandlerTests(_OrchestratorHarness):

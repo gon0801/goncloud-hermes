@@ -257,7 +257,8 @@
    "ensayo": "I10",
    "clausula": "I10.2",
    "texto": "un par sin certificar cierra la ruta",
-   "prueba": "test_sistema_agentes_capacidades.Decidir.test_capacidades_presentas_con_par_sin_certificar_no_abre",
+   "prueba": "test_sistema_agentes_capacidades.Decidir.test_capacidades_presentes_con_par_sin_certificar_abre_con_aviso",
+   "razon": "desde el encargo H punto 3 la certificación solo avisa: el par sin certificar ya no cierra la ruta, abre con la causa version-no-certificada; la prueba citada antes (test_capacidades_presentas_con_par_sin_certificar_no_abre) ya no existe porque su conducta cambió",
    "rebanada": "H4"
   },
   {

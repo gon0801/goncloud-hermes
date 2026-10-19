@@ -202,25 +202,51 @@ def _running_mark(workflow_id, run_id):
     }
 
 
+class _UncheckedPid:
+    """``_process_start_epoch``'s answer for a pid it could not check.
+
+    Review F4: "the check failed" is not "the process is gone". The cause
+    rides on the instance so the reader can record it (driver_mark_live
+    leaves it on the mark, where goncloud_local_status shows it).
+    """
+
+    def __init__(self, cause: str):
+        self.cause = cause
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_UncheckedPid({self.cause!r})"
+
+
 def _process_start_epoch(pid):
-    """Epoch seconds when the process started, or None if it is gone.
+    """Epoch seconds when the process started, or how the check failed.
 
     POSIX asks ps for the elapsed time (both macOS and Linux serve it; macOS
-    has no /proc and no etimes keyword) and derives the start from it. Windows
-    asks for the creation time through OpenProcess/GetExitCodeProcess-grade
-    handles. A dead or unanswerable pid returns None.
+    has no /proc and no etimes keyword) and derives the start from it.
+    Windows asks for the creation time through OpenProcess/GetExitCodeProcess-grade
+    handles. Three answers (review F4): the epoch float for a live process,
+    None only for a pid proven gone (ps reports no such process, Windows
+    ERROR_INVALID_PARAMETER), and an ``_UncheckedPid`` with the cause for
+    everything unanswerable — a missing ps, a timed-out query, an access
+    denied, an unparsable elapsed time. Only a proven-dead answer may read
+    as a stopped driver.
     """
     if type(pid) is not int or pid <= 0:
-        return None
+        return _UncheckedPid("malformed pid")
     if os.name == "nt":
         try:
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.windll.kernel32
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             handle = kernel32.OpenProcess(0x1000, False, pid)
             if not handle:
-                return None
+                # 87 = ERROR_INVALID_PARAMETER: no such process. Anything
+                # else (5 = ERROR_ACCESS_DENIED, ...) is unchecked ground.
+                if ctypes.get_last_error() == 87:
+                    return None
+                return _UncheckedPid(
+                    f"OpenProcess refused (error {ctypes.get_last_error()})"
+                )
             try:
                 creation, exit_time, kernel_time, user_time = (
                     wintypes.FILETIME(),
@@ -235,13 +261,15 @@ def _process_start_epoch(pid):
                     ctypes.byref(kernel_time),
                     ctypes.byref(user_time),
                 ):
-                    return None
+                    return _UncheckedPid(
+                        f"GetProcessTimes refused (error {ctypes.get_last_error()})"
+                    )
             finally:
                 kernel32.CloseHandle(handle)
             stamp = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
             return stamp / 10_000_000 - 11644473600
-        except (OSError, AttributeError, ValueError):
-            return None
+        except (OSError, AttributeError, ValueError) as exc:
+            return _UncheckedPid(f"windows pid check failed ({exc})")
     try:
         finished = subprocess.run(
             ["ps", "-o", "etime=", "-p", str(pid)],
@@ -249,9 +277,12 @@ def _process_start_epoch(pid):
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except subprocess.TimeoutExpired:
+        return _UncheckedPid("ps timed out")
+    except OSError as exc:
+        return _UncheckedPid(f"ps unavailable ({exc})")
     if finished.returncode != 0:
+        # ps answers for existing pids only: this one is gone.
         return None
     elapsed = finished.stdout.strip()
     try:
@@ -267,7 +298,7 @@ def _process_start_epoch(pid):
         elif len(values) == 2:
             hours, minutes, seconds = 0, values[0], values[1]
         else:
-            return None
+            raise ValueError(f"unparsable etime {elapsed!r}")
         lived = (
             (int(day_text) if has_days else 0) * 86400
             + hours * 3600
@@ -275,7 +306,9 @@ def _process_start_epoch(pid):
             + seconds
         )
     except ValueError:
-        return None
+        # ps served the pid but not a usable elapsed time: it exists, its
+        # start is simply unknown.
+        return _UncheckedPid(f"unparsable ps etime {elapsed!r}")
     return time.time() - max(lived, 0)
 
 
@@ -289,6 +322,11 @@ def driver_mark_live(mark, *, process_start=None):
     process: the marked driver is gone, so the mark reads as dead. A
     long-lived launcher (the gateway) predates its marks by hours and reads
     as live, exactly like the short-lived driver that starts with its mark.
+
+    Review F4: a pid the platform refuses to answer about is not a dead
+    one. The mark then reads as live — no close, no retry — and the cause
+    is recorded on the mark under ``pid_check``, where goncloud_local_status
+    shows it.
     """
     if not isinstance(mark, dict):
         return True
@@ -296,6 +334,9 @@ def driver_mark_live(mark, *, process_start=None):
     if type(pid) is not int or pid <= 0:
         return True
     started = (process_start or _process_start_epoch)(pid)
+    if isinstance(started, _UncheckedPid):
+        mark["pid_check"] = f"unchecked ({started.cause})"
+        return True
     if started is None:
         return False
     try:
@@ -314,7 +355,7 @@ def driver_stopped(mark):
     the file's last write, or a running mark whose process is gone (a dead
     or recycled pid — encargo H punto 4). Anything else reads as a driver
     that may still be running."""
-    outcome = (mark or {}).get("outcome")
+    outcome = mark.get("outcome") if isinstance(mark, dict) else None
     if outcome in _STOPPED_DRIVER_OUTCOMES:
         return True
     return outcome == "running" and not driver_mark_live(mark)
@@ -740,7 +781,11 @@ class LocalOrchestrator:
             str(Path(hermes_cli.__file__).resolve().parent.parent),
             str(workflow_id),
             str(result_file),
-            *([str(stop_after)] if stop_after else []),
+            # Fixed positions (review F1): stop_after is optional but its
+            # slot is not — splicing the run_id into the empty slot made
+            # every launch without a checkpoint die on check_stop_after
+            # before running a single stage. The bootstrap maps "" to None.
+            str(stop_after or ""),
             str(mark["run_id"]),
         ]
         detach = (
@@ -751,16 +796,34 @@ class LocalOrchestrator:
             if os.name == "nt"
             else {"start_new_session": True}
         )
-        process = subprocess.Popen(
-            argv,
-            cwd=str(home),
-            env=dict(os.environ),
-            stdin=None,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            **detach,
-        )
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=str(home),
+                env=dict(os.environ),
+                stdin=None,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                **detach,
+            )
+        except Exception as exc:
+            # Review F7: no driver was spawned, so no running mark may
+            # survive pointing at this launcher's pid — a close would be
+            # refused and the chain read as live until the gateway
+            # restarts. The launch failure becomes the file's last word: a
+            # stopped outcome a later start can close and retry over.
+            _write_result(
+                workflow_id,
+                {
+                    "workflow_id": workflow_id,
+                    "outcome": "error",
+                    "error": f"launch failed: {exc}",
+                    "run_id": mark["run_id"],
+                },
+                home=home,
+            )
+            raise
         # The pre-spawn mark carries the launcher's pid, which outlives the
         # driver (the gateway stays up for days): a driver dead before its
         # own entry-mark would read as live forever. With the driver's real
@@ -938,8 +1001,10 @@ class LocalOrchestrator:
             state = self.status(workflow_id)
         except WorkflowError:
             return None
-        driver = read_driver_mark(workflow_id, home=home) or {}
-        outcome = driver.get("outcome")
+        driver = read_driver_mark(workflow_id, home=home)
+        # A result file holding valid JSON that is not an object proves
+        # nothing (review F6): no outcome to speak of, never a crash.
+        outcome = driver.get("outcome") if isinstance(driver, dict) else None
         pid_live = driver_mark_live(driver) if outcome == "running" else None
         if store is None:
             path = default_db_path()
@@ -1185,21 +1250,25 @@ class LocalOrchestrator:
         # Encargo H punto 2: a driver never runs stages over another live
         # driver in the same repository — it queues instead, without
         # touching the result file (the live mark stays the life signal).
+        # The guard runs for every entry, the detached driver included
+        # (review F3): own_launch only means the mark is this launch's,
+        # and the own chain is excluded by id — skipping the guard skipped
+        # it for every detached driver, and two of them could work one
+        # checkout.
         mark = read_driver_mark(workflow_id, home=home)
         own_launch = (
             launch_run_id is not None
             and isinstance(mark, dict)
             and mark.get("run_id") == launch_run_id
         )
-        if not own_launch:
-            behind = self._queued_behind(
-                workflow_id,
-                contract["repository"],
-                home=home,
-                own_mark=None if own_launch else mark,
-            )
-            if behind is not None:
-                return {**self.status(workflow_id), "outcome": "queued"}
+        behind = self._queued_behind(
+            workflow_id,
+            contract["repository"],
+            home=home,
+            own_mark=None if own_launch else mark,
+        )
+        if behind is not None:
+            return {**self.status(workflow_id), "outcome": "queued"}
         # Every driver enters here — the detached one the bootstrap spawns
         # and the CLI resume alike — so this is the one place a run marks
         # the result file running before its first stage (live review F8).
