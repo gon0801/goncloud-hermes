@@ -76,6 +76,20 @@ _CLOSEABLE_ROOT_STATUSES = frozenset(
 #: stopped outcome is only evidence while it is the file's last write.
 _STOPPED_DRIVER_OUTCOMES = frozenset({"paused", "blocked", "waiting", "error"})
 
+#: Outcomes that leave a mailbox event for claw (encargo H): every outcome a
+#: run's last write can carry. "running" rides along for exactly one case
+#: (live review F3): the router's task_failure quit, where the driver process
+#: ENDS while a stage stays live and nothing else announces it — close
+#: refuses the chain, close_hint stays silent, so claw must hear the jam and
+#: relaunch. The running mark a start writes goes through _write_result,
+#: never through this event.
+_AVISO_OUTCOMES = frozenset(
+    {"delivered", "blocked", "waiting", "paused", "error", "running"}
+)
+#: The mailbox event is a headline, not a report: bounded like the summary
+#: fields the terminal envelope already carries.
+MAX_AVISO_CHARS = 200
+
 #: Marker of the durable close receipt on the director root; a second close
 #: recognizes it instead of writing another comment.
 _CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
@@ -129,7 +143,9 @@ MAX_INSTRUCTION_CHARS = 32768
 
 #: The detached driver: only paths and identifiers reach it through argv, it
 #: prints nothing (vendor diagnostics are not a public channel) and writes one
-#: bounded JSON result atomically for goncloud_local_status to read.
+#: bounded JSON result atomically for goncloud_local_status to read; when it
+#: dies before the run starts it also drops the mailbox error event so claw
+#: still hears about the stop (encargo H).
 # The driver runs isolated (-I), so it sees none of the launcher's packages.
 # Hermes now selects its third-party dependencies at boot (hermes_bootstrap ->
 # pm.environments.activate_dependencies); without that step the plugin import
@@ -137,10 +153,11 @@ MAX_INSTRUCTION_CHARS = 32768
 # attempts (live 2026-10-17, t_220bd43c). The imports sit inside the try so an
 # unloadable driver still leaves a bounded error result instead of vanishing.
 _DRIVER_BOOTSTRAP = (
-    "import json, os, sys\n"
+    "import json, os, sys, time\n"
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "sys.path.insert(0, hermes)\n"
+    "fallo = False\n"
     "try:\n"
     "    try:\n"
     "        import hermes_bootstrap\n"
@@ -151,12 +168,41 @@ _DRIVER_BOOTSTRAP = (
     "    from local_orchestrator import LocalOrchestrator\n"
     "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after)\n"
     "except Exception:\n"
+    "    fallo = True\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
     "              'error': 'local driver failed; check durable status'}\n"
     "tmp = out + '.%d.tmp' % os.getpid()\n"
     "with open(tmp, 'w', encoding='utf-8') as handle:\n"
     "    json.dump(result, handle, ensure_ascii=True)\n"
     "os.replace(tmp, out)\n"
+    "# The mailbox event only rides a bootstrap that actually died (encargo\n"
+    "# H, live F1): a resume that ends publishes its own outcome, which has\n"
+    "# no 'error' key — reading one here raised KeyError on every healthy\n"
+    "# run, after the result file was already written. The run_id segment\n"
+    "# stays the fixed 'boot' because the run never started. The only brake\n"
+    "# is an event still waiting unread, which a repeat launch overwrites\n"
+    "# in place instead of piling up — a delivered one brakes nothing: every\n"
+    "# relaunch IS claw's ask, so a later broken launch must speak up again\n"
+    "# (lead r3, reversing cr 4312376346). Best effort only — the result\n"
+    "# file above is the evidence that must survive.\n"
+    "if fallo:\n"
+    "    try:\n"
+    "        hogar = os.path.dirname(os.path.dirname(out))\n"
+    "        if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
+    "            hogar = os.path.dirname(os.path.dirname(hogar))\n"
+    "        avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
+    "        os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
+    "        nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
+    "        if not os.path.exists(nombre):\n"
+    "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
+    "            evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
+    "                      'motivo': result['error'],\n"
+    "                      'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+    "            with open(parcial, 'w', encoding='utf-8') as handle:\n"
+    "                json.dump(evento, handle, ensure_ascii=True)\n"
+    "            os.replace(parcial, nombre)\n"
+    "    except OSError:\n"
+    "        pass\n"
 )
 
 
@@ -195,6 +241,100 @@ def _running_mark(workflow_id, run_id):
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def _home_raiz(home):
+    """One mailbox for every profile: a profile home climbs to the root.
+
+    Same rule the raices store applies (raices.hogar, hermes_constants): the
+    driver runs under whichever profile launched the chain while the cron
+    despertar-raices runs under default, so writer and reader meet only at
+    the Hermes root.
+    """
+    return home.parent.parent if home.parent.name == "profiles" else home
+
+
+def _etapa_y_motivo(report):
+    """The stage that explains a stopped chain, in its own words when it has.
+
+    Every model-supplied word here went through the terminal envelope's
+    sanitizer inside status(); the fixed fallbacks are constants.
+    """
+    outcome = report["outcome"]
+    if outcome == "delivered":
+        entrega = report.get("stages", {}).get("entrega") or {}
+        return None, (entrega.get("terminal") or {}).get("summary") or ""
+    if outcome == "blocked":
+        for group in ("stages", "corrective_stages"):
+            for role, stage in report.get(group, {}).items():
+                if stage.get("status") == "blocked":
+                    terminal = (stage.get("terminal") or {}).get("summary") or ""
+                    return role, terminal or "stage blocked; owner review required."
+        return None, "the chain stopped blocked; owner review required."
+    pending = next(
+        (
+            role
+            for group in ("stages", "corrective_stages")
+            for role, stage in report.get(group, {}).items()
+            if stage.get("status") not in {"done", "blocked"}
+        ),
+        None,
+    )
+    if outcome == "running":
+        # The one quit that happens with a stage still live (live review
+        # F3): the event is the only announcement the jam gets.
+        return pending, "the driver quit with the stage still unfinished."
+    if outcome == "waiting":
+        return pending, "a stage waits on its parents."
+    if outcome == "paused":
+        return pending, "paused at its stop_after checkpoint."
+    return None, "the driver failed; check the durable status."
+
+
+def _aviso_evento(report, *, repo, instruction):
+    """One bounded mailbox event: what stopped, where, why, and the ask."""
+    etapa, motivo = _etapa_y_motivo(report)
+    return {
+        "workflow_id": report["workflow_id"],
+        "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
+        "outcome": report["outcome"],
+        "etapa": etapa,
+        "motivo": _trimmed(_sanitize(motivo), MAX_AVISO_CHARS),
+        "instruccion": _trimmed(_sanitize(instruction), MAX_AVISO_CHARS),
+        "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _write_aviso(
+    workflow_id, run_id, outcome, report, *, home, repo="", instruction=""
+):
+    """Drop the run's mailbox event for the cron despertar-raices to drain.
+
+    Same atomic publish as the result file, and idempotent by name: the run
+    id in the file name makes a rewrite of the same stop overwrite itself,
+    never pile up. Best effort (live F2, cr 4312376366): the event rides a
+    stop the result file already published, so a full disk, a permission
+    slip or a Windows lock is noted on stderr and swallowed — it must never
+    reach the detached bootstrap, whose catch would overwrite the real
+    outcome with its generic error.
+    """
+    if outcome not in _AVISO_OUTCOMES:
+        return
+    try:
+        event = _aviso_evento(
+            {**report, "outcome": outcome, "workflow_id": workflow_id},
+            repo=repo,
+            instruction=instruction,
+        )
+        avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
+        avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = f"{workflow_id}-{run_id}-{outcome}.json"
+        tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
+        tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
+        os.replace(tmp, avisos / name)
+    except OSError as exc:
+        # The detached driver discards stderr; the CLI resume shows the note.
+        print(f"goncloud-local: mailbox event not written: {exc}", file=sys.stderr)
 
 
 # Vendors differ on whether they break the line before the opening fence, so the
@@ -879,7 +1019,7 @@ class LocalOrchestrator:
         )
         return output
 
-    def _report(self, workflow_id, outcome, *, home=None, run_id=None):
+    def _report(self, workflow_id, outcome, *, home=None, run_id=None, contract=None):
         report = {**self.status(workflow_id), "outcome": outcome}
         if run_id is None:
             return report
@@ -888,6 +1028,18 @@ class LocalOrchestrator:
         # reads (live review F8).
         report["run_id"] = run_id
         _write_result(workflow_id, report, home=home)
+        # The mailbox event rides the same stop the result file records, so
+        # the cron despertar-raices can tell claw with zero model calls —
+        # nobody polls, nobody watches a model (encargo H).
+        _write_aviso(
+            workflow_id,
+            run_id,
+            outcome,
+            report,
+            home=home,
+            repo=(contract or {}).get("repository", ""),
+            instruction=(contract or {}).get("instruction", ""),
+        )
         return report
 
     def _approved(self, state):
@@ -915,7 +1067,9 @@ class LocalOrchestrator:
         _write_result(workflow_id, _running_mark(workflow_id, run_id), home=home)
 
         def report(outcome):
-            return self._report(workflow_id, outcome, home=home, run_id=run_id)
+            return self._report(
+                workflow_id, outcome, home=home, run_id=run_id, contract=contract
+            )
 
         while True:
             state = service.status(workflow_id=workflow_id)
