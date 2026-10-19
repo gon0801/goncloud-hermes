@@ -28,10 +28,14 @@ _PERMISSION_MODE = "dontAsk"
 
 #: Roles that mutate the workspace: the implementer (initial and corrective
 #: runs; the corrective loop in CORRECTIVE_STAGES, workflow.py, writes only
-#: through its implementer turn) and the delivery stage. Every other role
-#: reads and runs tests; local_orchestrator's _READ_ONLY_STAGES guard is the
-#: second line against a read-only role that mutates the workspace anyway.
-_WRITING_ROLES = frozenset({"implementer", "entrega"})
+#: through its implementer turn) and the delivery stage. Adversary also
+#: writes: roles/adversary.md requires its evidence and reproductions to be
+#: saved into the assignment's scratch, which dontAsk would deny without
+#: Write/Edit. The tool list narrows each role's normal path; it is not
+#: isolation -- Bash can still write -- and the workspace fingerprint is
+#: only checked for scout and ingenieria (local_orchestrator's
+#: _READ_ONLY_STAGES).
+_WRITING_ROLES = frozenset({"implementer", "entrega", "adversary"})
 
 #: Bare tool names in Claude Code permission-rule syntax allow every use of
 #: the tool. One comma-joined argv value: the flag also accepts space-
