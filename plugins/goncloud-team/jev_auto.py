@@ -44,9 +44,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from .subscriptions.redaction import redact_text
+    from .subscriptions.redaction import redact_text, sensitive_values
 except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
-    from subscriptions.redaction import redact_text
+    from subscriptions.redaction import redact_text, sensitive_values
 
 DIRECTOR = "claw"
 PLATAFORMAS = frozenset({"telegram", "cli"})
@@ -184,9 +184,11 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
         if not url_adapter:
             return fallo("sin JEV_TYPESAFE_API_KEY")
     comando, env = _comando_y_ambiente(raiz, casa, clave)
-    # Lo que sale a TypeSafe: redactado con el mismo filtro del router y
-    # acotado; David autorizo datos del trabajo, nunca credenciales.
-    pedido = redact_text(texto)[:TOPE_MENSAJE]
+    # Lo que sale a TypeSafe: redactado contra los valores sensibles REALES
+    # (los del entorno del hijo y la llave que solo vive en secret_scope) y
+    # acotado. Datos del trabajo si, credenciales nunca; jamas se imprimen
+    # ni registran los valores, solo se usan para tachar.
+    pedido = redact_text(texto, (*sensitive_values(env), clave))[:TOPE_MENSAJE]
     try:
         proceso = _popen(
             comando,

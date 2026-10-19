@@ -644,6 +644,19 @@ class CorredorRealTests(Base):
         self.correr("x" * 3999)
         self.assertEqual(len(self.ultimo_proceso().entrada), 3999)
 
+    def test_el_secreto_del_scope_sale_redactado_sin_forma_de_llave(self):
+        # F7: en el gateway multiplexado la llave vive en agent.secret_scope,
+        # no en os.environ; redact_text necesita el valor resuelto explicito.
+        # El secreto no tiene forma de llave conocida: sin el valor, el filtro
+        # de formas no lo ve.
+        secreto = "mjs-privado-scope-9931"
+        with _agente_fake(get_secret=lambda nombre, defecto="": secreto):
+            with mock.patch.dict(os.environ, {"JEV_TYPESAFE_API_KEY": ""}):
+                self.correr(f"usa el token interno {secreto} del panel")
+        entrada = self.ultimo_proceso().entrada.decode("utf-8")
+        self.assertNotIn(secreto, entrada)
+        self.assertIn("[redacted]", entrada)
+
     def test_el_tope_mata_el_arbol_y_da_el_motivo(self):
         class PopenLento(self.PopenFalso):
             def communicate(self, input=None, timeout=None):
@@ -694,6 +707,91 @@ class CorredorRealTests(Base):
         )
         veredicto = self.correr(popen=lambda *a, **k: hijo)
         self.assertEqual(veredicto["estado"], "vacio")
+
+
+class HijoRealTests(Base):
+    """F6: el programa _HIJO de verdad, sin dobles en el subproceso."""
+
+    ROUTER_OK = (
+        "def load_roster():\n"
+        "    return [{'name': 'web-navigation', 'description': 'd',"
+        " 'path': 'x', 'body': 'b'}]\n"
+        "\n"
+        "def suggest(request, roster):\n"
+        "    return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': 0.9}\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        paquete = self.hogar / "paquete" / "jev_skill_router"
+        paquete.mkdir(parents=True)
+        (paquete / "__init__.py").write_text("", encoding="utf-8")
+        self.paquete = paquete
+        self.raiz_router = self.hogar / "plugins" / "jev-skill-router-mcp"
+        self.raiz_router.mkdir(parents=True, exist_ok=True)
+        (self.raiz_router / "pyproject.toml").write_text(
+            "[project]\n", encoding="utf-8"
+        )
+
+    def escribir_router(self, cuerpo):
+        (self.paquete / "mcp_server.py").write_text(cuerpo, encoding="utf-8")
+
+    def con_respaldo(self):
+        """La rama sin uv de _comando_y_ambiente: sys.executable y el
+        paquete de mentira viajando en PYTHONPATH del entorno del hijo."""
+        contexto = mock.patch.dict(os.environ, {"PYTHONPATH": str(self.paquete.parent)})
+        contexto.start()
+        self.addCleanup(contexto.stop)
+        return mock.patch("shutil.which", return_value=None)
+
+    def test_el_hijo_real_responde_y_el_padre_lee_el_json(self):
+        self.escribir_router(self.ROUTER_OK)
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual(veredicto["skill"], "web-navigation")
+        self.assertEqual(veredicto["motivo"], None)
+
+    def test_el_hijo_real_abstiene_y_el_padre_lo_entiende(self):
+        self.escribir_router(
+            "def load_roster():\n"
+            "    return []\n"
+            "\n"
+            "def suggest(request, roster):\n"
+            "    return {'suggested': None, 'decision': 'abstain'}\n"
+        )
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "vacio")
+
+    def test_claves_inesperadas_del_hijo_son_vacio(self):
+        self.escribir_router(
+            "def load_roster():\n"
+            "    return []\n"
+            "\n"
+            "def suggest(request, roster):\n"
+            "    return {'foo': 'bar'}\n"
+        )
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "vacio")
+
+    def test_suggest_que_explota_es_fail_open_sin_excepcion(self):
+        self.escribir_router(
+            "def load_roster():\n"
+            "    return []\n"
+            "\n"
+            "def suggest(request, roster):\n"
+            "    raise RuntimeError('backend HTTP 500: kaboom')\n"
+        )
+        auto = self.modulo.JevAuto("claw", hogar=self.hogar)  # corredor real
+        with self.con_respaldo():
+            respuesta = auto.pre_llm_call(**turno())
+        self.assertIn("JEV skill_select no respondió", respuesta["context"])
+        self.assertIn("kaboom", respuesta["context"])
+        self.assertEqual(len(self.registro()), 1)
+        self.assertFalse(self.registro()[0]["consultado"])
 
 
 class LlaveTests(Base):
