@@ -279,7 +279,14 @@ def _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos) -> int:
     (_cerrar_hijo_terminal) en lugar de relanzar a ciegas. Y si el team.json
     no se puede leer (fail closed, 4309610867), NO se lanza nada: con la
     lista de dispatch_profiles ausente no se sabe a quién corre el despachador
-    nativo y lanzar sería arriesgar el doble run y la doble reserva."""
+    nativo y lanzar sería arriesgar el doble run y la doble reserva.
+    SOLO TARJETAS ABIERTAS (F11): un intento cuya tarjeta ya no está abierta
+    (bloqueada, completada o archivada — o sin fila) no se lanza NUNCA, ni
+    aunque su reclamo venza y lo pode el TTL: la tarjeta cerrada la maneja
+    decidir (reintento = intento nuevo con tarjeta nueva); relanzar el mismo
+    intento sería un hijo por vuelta para una tarjeta muerta. El resultado
+    del hijo que dejó archivo lo consume antes la conciliación (_transporte_
+    caido) o aquí mismo _cerrar_hijo_terminal."""
     if lanzador is None:
         return 0
     despacho_nativo = perfiles_de_despacho_nativo()
@@ -298,6 +305,16 @@ def _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos) -> int:
             or "sin-perfil"
         )
         if perfil in despacho_nativo:
+            continue
+        tarjeta_viva = puerto.leer_estado(
+            kanban_port.clave_de_tarjeta(
+                intento["rootId"], intento["unitId"], intento["attempt"]
+            )
+        )
+        if tarjeta_viva is None or tarjeta_viva.estado not in (
+            "pendiente",
+            "corriendo",
+        ):
             continue
         resultado = _resultado_del_hijo(tienda, intento)
         if (
@@ -323,6 +340,9 @@ def _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos) -> int:
             intento["unitId"],
             intento["attempt"],
             intento["cardId"],
+            # El id de ESTE lanzamiento (F11): viaja al hijo en el argv del
+            # lanzador de producción y su devolución compara contra él.
+            reclamo.valor,
         )
         if nacido is None:
             tienda.soltar_lanzamiento(
@@ -596,10 +616,18 @@ def _reportar(tienda, intento, tarjeta, ahora) -> None:
     documento = _documento_de_resultado(carga, intento, tarjeta, ahora)
     if documento is None:
         _incidencia_invalida(tienda, intento, tarjeta, carga)
+        _consumir_archivo_de_hijo(tienda, intento)
         return
     respuesta = tienda.reportar_resultado(documento)
     if hasattr(respuesta, "codigo"):
         _incidencia_invalida(tienda, intento, tarjeta, carga)
+    # F12: el hijo que completó la tarjeta también escribe SU archivo de
+    # resultado al salir; la rama completada no pasa ni por
+    # _cerrar_hijo_terminal ni por _transporte_caido — consumirlo aquí para
+    # que <raiz>/raices/ejecutor/ no acumule un JSON por intento completado.
+    # El outcome del archivo es "completed": la devolución condicional del
+    # consumidor no toca la reserva.
+    _consumir_archivo_de_hijo(tienda, intento)
 
 
 def _documento_de_resultado(carga, intento, tarjeta, ahora):

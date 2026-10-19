@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import secrets
 import sqlite3
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -254,6 +255,7 @@ CREATE TABLE IF NOT EXISTS lanzamientos (
   card_id    TEXT NOT NULL,
   claimed_at TEXT NOT NULL,
   vence_at   TEXT NOT NULL,
+  lanzamiento_id TEXT NOT NULL,
   PRIMARY KEY (root_id, unit_id, attempt)
 );
 """
@@ -2316,7 +2318,10 @@ class Store:
         y reserva UNA llamada. Dos tickers sobre la misma tarjeta: el segundo
         se lleva reclamo-vivo; sin cupo, sin-cuota y sin reserva. El
         incrementado del contador dentro de la MISMA transacción es lo que
-        hace al presupuesto exacto en carrera."""
+        hace al presupuesto exacto en carrera. Devuelve Ok(id del
+        lanzamiento) — un token por reclamo (F11): el ticker lo entrega al
+        hijo y la devolución compara, para que la de un hijo tardío no borre
+        el reclamo de un lanzamiento posterior del mismo intento."""
         self._begin()
         try:
             fila = self._una_fila(
@@ -2359,9 +2364,10 @@ class Store:
                 self._rollback()
                 return Conflicto("sin-cuota", {"usadas": usadas, "tope": tope})
             vence = self._vence_el_reclamo(ttl_s)
+            id_lanzamiento = secrets.token_hex(8)
             self._conexion.execute(
-                "INSERT OR REPLACE INTO lanzamientos VALUES (?,?,?,?,?,?)",
-                (root_id, unit_id, attempt, card_id, ahora, vence),
+                "INSERT OR REPLACE INTO lanzamientos VALUES (?,?,?,?,?,?,?)",
+                (root_id, unit_id, attempt, card_id, ahora, vence, id_lanzamiento),
             )
             self._conexion.execute(
                 "INSERT INTO contadores VALUES (?,?,1)"
@@ -2373,7 +2379,7 @@ class Store:
         except Exception:
             self._rollback()
             raise
-        return Ok(True)
+        return Ok(id_lanzamiento)
 
     def soltar_lanzamiento(self, root_id, unit_id, attempt) -> Ok:
         """La contrapartida de un lanzamiento que no llegó a nacer: quita el
@@ -2417,29 +2423,55 @@ class Store:
             raise
         return Ok(cambio.rowcount == 1)
 
-    def devolver_lanzamiento(self, root_id, unit_id, attempt) -> bool:
+    def devolver_lanzamiento(
+        self, root_id, unit_id, attempt, id_lanzamiento=None
+    ) -> bool:
         """La devolución idempotente (F3): quita el reclamo y devuelve la
         llamada reservada SOLO si el reclamo sigue en la tabla. La poda de
         limpiar_lanzamientos o una devolución anterior lo dejan fuera y
         entonces no hay reserva que devolver: False y ni un decremento de
-        más. A diferencia de soltar_lanzamiento (que confía en saber que el
-        lanzamiento no nació), esta la invoca el ticker al consumir un
-        resultado que puede ya haberse consumido."""
+        más. Con `id_lanzamiento` (F11) SOLO toca el reclamo de ESE
+        lanzamiento — el token que reclamar_lanzamiento entregó al lanzador
+        y el hijo recibió: la devolución tardía de un hijo (que puede
+        despertar tarde, con su reclamo ya podado y el intento relanzado) no
+        borra el reclamo del lanzamiento nuevo. Sin id queda la forma del
+        ticker: consume el archivo de resultado ANTES de reclamar en cada
+        vuelta y, con el gate de tarjeta abierta del despacho, una tarjeta
+        cerrada nunca relanza su intento — no hay un lanzamiento posterior
+        cuyo reclamo pudiera borrar por equivocación. A diferencia de
+        soltar_lanzamiento (que confía en saber que el lanzamiento no nació),
+        esta la invoca el ticker al consumir un resultado que puede ya haberse
+        consumido."""
         self._begin()
         try:
-            vivo = self._una_fila(
-                "SELECT 1 FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
-                " AND attempt = ?",
-                (root_id, unit_id, attempt),
-            )
-            if vivo is None:
-                self._commit()
-                return False
-            self._conexion.execute(
-                "DELETE FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
-                " AND attempt = ?",
-                (root_id, unit_id, attempt),
-            )
+            if id_lanzamiento is None:
+                vivo = self._una_fila(
+                    "SELECT 1 FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                    " AND attempt = ?",
+                    (root_id, unit_id, attempt),
+                )
+                if vivo is None:
+                    self._commit()
+                    return False
+                self._conexion.execute(
+                    "DELETE FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                    " AND attempt = ?",
+                    (root_id, unit_id, attempt),
+                )
+            else:
+                vivo = self._una_fila(
+                    "SELECT 1 FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                    " AND attempt = ? AND lanzamiento_id = ?",
+                    (root_id, unit_id, attempt, id_lanzamiento),
+                )
+                if vivo is None:
+                    self._commit()
+                    return False
+                self._conexion.execute(
+                    "DELETE FROM lanzamientos WHERE root_id = ? AND unit_id = ?"
+                    " AND attempt = ? AND lanzamiento_id = ?",
+                    (root_id, unit_id, attempt, id_lanzamiento),
+                )
             self._conexion.execute(
                 "UPDATE contadores SET value = value - 1 WHERE root_id = ?"
                 " AND counter = ? AND value > 0",

@@ -140,7 +140,8 @@ _SIN_VEREDICTO_PROPIO = _PERFILES_FUERA_DE_CADENA | {"reviewer"}
 # plugin muera acotado y deje resultado aunque no cargue (live 2026-10-17).
 _EJECUTOR_BOOTSTRAP = (
     "import json, os, sys\n"
-    "plugin, hermes, store, kanban, root, unit, attempt, out = sys.argv[1:9]\n"
+    "plugin, hermes, store, kanban, root, unit, attempt, lanzamiento, out ="
+    " sys.argv[1:10]\n"
     "sys.path.insert(0, hermes)\n"
     "try:\n"
     "    try:\n"
@@ -150,7 +151,8 @@ _EJECUTOR_BOOTSTRAP = (
     "            raise\n"
     "    sys.path.insert(0, plugin)\n"
     "    from raices.ejecutor import correr_intento\n"
-    "    result = correr_intento(store, kanban, root, unit, int(attempt))\n"
+    "    result = correr_intento(store, kanban, root, unit, int(attempt),\n"
+    "                            id_lanzamiento=lanzamiento or None)\n"
     "except Exception as fallo:\n"
     "    result = {'rootId': root, 'unitId': unit, 'attempt': attempt,\n"
     "              'outcome': 'error', 'reason': str(fallo)[:400]}\n"
@@ -345,21 +347,24 @@ def _workspace_no_autorizado(workspace, repos_de_autoridad, raices) -> str | Non
     return None
 
 
-def _devolver_reserva(ruta_store, ids) -> None:
+def _devolver_reserva(ruta_store, ids, id_lanzamiento=None) -> None:
     """La devolución de la reserva en el hijo (F8): un desenlace ANTES de la
     llamada al modelo no la consumió. Store nuevo y cerrado — el principal
     de correr_intento ya está cerrado cuando se bloquea la tarjeta, y una
-    conexión prestada entre ramas no: la misma forma del latido. Idempotente
-    por store.devolver_lanzamiento: si el reclamo ya se fue (poda del TTL,
-    devolución del ticker), no toca el contador. BEST-EFFORT: un fallo aquí
-    no puede tumbar el cierre de la tarjeta — el desenlace terminal manda —
-    y la misma devolución idempotente la reintentan el ticker al consumir el
-    archivo (_cerrar_hijo_terminal) y al conciliar la tarjeta bloqueada."""
+    conexión prestada entre ramas no: la misma forma del latido. Con el id
+    del lanzamiento que el hijo recibió del ticker (F11) SOLO toca el
+    reclamo de SU lanzamiento: un hijo que despierta tarde (pasado el TTL,
+    su reclamo ya podado y el intento relanzado) no borra el reclamo del
+    lanzamiento nuevo ni descuenta su reserva. Idempotente por
+    store.devolver_lanzamiento. BEST-EFFORT: un fallo aquí no puede tumbar
+    el cierre de la tarjeta — el desenlace terminal manda — y la misma
+    devolución idempotente la reintentan el ticker al consumir el archivo
+    (_cerrar_hijo_terminal) y al conciliar la tarjeta bloqueada."""
     try:
         store = importlib.import_module("raices.store")
         tienda = store.Store(ruta_store)
         try:
-            tienda.devolver_lanzamiento(*ids)
+            tienda.devolver_lanzamiento(*ids, id_lanzamiento)
         finally:
             tienda.cerrar()
     except Exception:
@@ -529,10 +534,13 @@ def correr_intento(
     attempt,
     *,
     fabrica_router=None,
+    id_lanzamiento=None,
 ) -> dict:
     """Una tarjeta de raíz, de punta a punta. Devuelve el outcome acotado del
     hijo (el documento del archivo de resultado); jamás lanza excepción hacia
-    el bootstrap — todo desenlace es un dict."""
+    el bootstrap — todo desenlace es un dict. `id_lanzamiento` es el token
+    del reclamo que el ticker entregó al lanzador (F11): acota la devolución
+    de la reserva al reclamo de ESTE lanzamiento."""
     store = importlib.import_module("raices.store")
     local = _driver_de_cadena()
     if local is None:
@@ -540,7 +548,7 @@ def correr_intento(
         # toca la tarjeta y la vuelta siguiente reintenta tras el TTL, como
         # cualquier hijo que murió sin decir nada. La reserva (F8) sí vuelve:
         # tampoco aquí hubo llamada.
-        _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+        _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
         return {
             "rootId": root_id,
             "unitId": unit_id,
@@ -598,7 +606,7 @@ def correr_intento(
                 "outcome": "workspace-unavailable",
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
-            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
             return resultado
         # F9: la ruta del checkout no se confía — el slug del assignment ya
         # lo validó la autoridad, pero el directorio viaja en una llave libre
@@ -619,7 +627,7 @@ def correr_intento(
                 "reason": razon,
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
-            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
             return resultado
         referencia = assignment.get("instructionRef") or {}
         cuerpo, motivo_ref = instrucciones.resolver(
@@ -636,7 +644,7 @@ def correr_intento(
                 "reason": motivo_ref,
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
-            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
             return resultado
         solo_lectura = perfil in local._READ_ONLY_STAGES
         antes = local._workspace_fingerprint(workspace) if solo_lectura else None
@@ -654,7 +662,7 @@ def correr_intento(
                 "reason": str(fallo)[:400],
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
-            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt), id_lanzamiento)
             return resultado
         latido = _LatidoDeReclamo(ruta_store, root_id, unit_id, attempt)
         resultado, FailureKind = _resultado_del_router(
@@ -782,11 +790,12 @@ def _archivo_de_resultado(resultados: Path, root_id, unit_id, attempt) -> Path:
 def lanzador_de(base, ruta_kanban):
     """El lanzador de producción: un hijo Python desacoplado por tarjeta, la
     misma forma que LocalOrchestrator.launch_detached (local_orchestrator.py:449-496):
-    argv con rutas e identificadores, sin salida, start_new_session para que la
+    argv con rutas e identificadores —incluido el id del lanzamiento que el
+    ticker tomó al reclamar (F11)—, sin salida, start_new_session para que la
     vuelta del cron no espere ni herede señales. Devuelve None si no pudo
     nacer — el ticker suelta el reclamo y la vuelta siguiente reintenta."""
 
-    def lanzar(root_id, unit_id, attempt, card_id):
+    def lanzar(root_id, unit_id, attempt, card_id, id_lanzamiento=None):
         del card_id  # el hijo relee todo de las bases; nada de datos por argv
         base_ruta = Path(base)
         resultados = base_ruta / "raices" / "ejecutor"
@@ -804,6 +813,9 @@ def lanzador_de(base, ruta_kanban):
             str(root_id),
             str(unit_id),
             str(attempt),
+            # El id del lanzamiento (F11): el hijo solo puede devolver el
+            # reclamo de ESTE lanzamiento, nunca el de uno posterior.
+            str(id_lanzamiento or ""),
             str(archivo),
         ]
         desacople = (

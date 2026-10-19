@@ -664,8 +664,8 @@ class ElLanzamientoDelTicker(Escenario):
     def grabador(self, nace=True):
         llamadas = []
 
-        def lanzar(root_id, unit_id, attempt, card_id):
-            llamadas.append((root_id, unit_id, attempt, card_id))
+        def lanzar(root_id, unit_id, attempt, card_id, id_lanzamiento=None):
+            llamadas.append((root_id, unit_id, attempt, card_id, id_lanzamiento))
             return {"pid": 1} if nace else None
 
         return lanzar, llamadas
@@ -676,7 +676,7 @@ class ElLanzamientoDelTicker(Escenario):
         producción) y nace. El ticker lo consume la vuelta siguiente."""
         resultados = Path(self.directorio.name) / "raices" / "ejecutor"
 
-        def lanzar(root_id, unit_id, attempt, card_id):
+        def lanzar(root_id, unit_id, attempt, card_id, id_lanzamiento=None):
             resultados.mkdir(parents=True, exist_ok=True)
             archivo = ejecutor._archivo_de_resultado(
                 resultados, root_id, unit_id, attempt
@@ -700,7 +700,10 @@ class ElLanzamientoDelTicker(Escenario):
         primera = self.vuelta(tienda, kanban, lanzador=lanzar)
         self.assertEqual(primera.lanzamientos, 1)
         tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
-        self.assertEqual(llamadas, [(RAIZ, "a", 1, tarjeta.id)])
+        # El id del reclamo viaja al lanzador: el hijo lo usa para devolver
+        # SU reclamo y ninguno posterior (F11).
+        fila = tienda._una_fila("SELECT lanzamiento_id FROM lanzamientos")
+        self.assertEqual(llamadas, [(RAIZ, "a", 1, tarjeta.id, fila["lanzamiento_id"])])
         segunda = self.vuelta(tienda, kanban, lanzador=lanzar)
         self.assertEqual(segunda.lanzamientos, 0)
         self.assertEqual(len(llamadas), 1)
@@ -976,6 +979,115 @@ class ElLanzamientoDelTicker(Escenario):
         tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
         self.assertEqual(tarjeta.estado, "pendiente")
 
+    def test_desenlace_tras_la_llamada_tras_podar_el_ttl_no_se_relanza(self):
+        # F11 (b): una tarjeta YA BLOQUEADA (desenlace posterior a la llamada)
+        # no se relanza aunque el reclamo venza y lo pode el TTL: la tarjeta
+        # cerrada la maneja decidir (reintento = intento nuevo con tarjeta
+        # nueva), nunca un relanzamiento del mismo intento.
+        tienda, kanban = self.frescar()
+        lanzar, llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        # El hijo real: desenlace "blocked" (POSTERIOR a la llamada: conserva
+        # la reserva) + bloquea la tarjeta él mismo.
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        with kanban.write_txn() as escritura:
+            escritura.bloquear(tarjeta.id, "unit blocked by codex: no puedo")
+        archivo = archivo_de_resultado(tienda)
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_text(
+            json.dumps(
+                {"rootId": RAIZ, "unitId": "a", "attempt": 1, "outcome": "blocked"}
+            ),
+            encoding="utf-8",
+        )
+        # Con el tope de reintentos agotado, decidir NO crea un intento nuevo:
+        # el intento 1 queda vivo (admitted) con su tarjeta bloqueada — el
+        # caso del churn real.
+        tienda._conexion.execute(
+            "INSERT INTO contadores VALUES (?, 'reintentos:a', 1)", (RAIZ,)
+        )
+        tienda._conexion.commit()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        estado = tienda._una_fila("SELECT state FROM intentos WHERE unit_id = 'a'")
+        self.assertEqual(estado["state"], "admitted")
+        # El TTL vence y lo poda: sin el gate de tarjeta abierta, aqui
+        # renaceria un hijo para una tarjeta ya bloqueada.
+        tienda._conexion.execute(
+            "UPDATE lanzamientos SET vence_at = '2000-01-01T00:00:00Z'"
+        )
+        tienda._conexion.commit()
+        tercera = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(tercera.lanzamientos, 0)
+        self.assertEqual(len(llamadas), 1)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(cerrada.estado, "bloqueada")
+
+    def test_la_devolucion_tardia_no_borra_el_reclamo_de_otro_lanzamiento(self):
+        # F11 (c): el reclamo es de UN lanzamiento. La devolución tardía del
+        # hijo del lanzamiento 0 (con el id que recibio) no toca el reclamo
+        # del lanzamiento 1, y la del lanzamiento 1 sí. La ruta sin id queda
+        # para el ticker, que consume el archivo ANTES de reclamar.
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban)  # el intento admitted que se reclama
+        primero = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        self.assertFalse(hasattr(primero, "codigo"))
+        id0 = primero.valor
+        # El lanzamiento 0 vence, lo poda el TTL y nace el lanzamiento 1.
+        tienda._conexion.execute(
+            "UPDATE lanzamientos SET vence_at = '2000-01-01T00:00:00Z'"
+            " WHERE lanzamiento_id = ?",
+            (id0,),
+        )
+        tienda._conexion.commit()
+        tienda.limpiar_lanzamientos()
+        segundo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        self.assertFalse(hasattr(segundo, "codigo"))
+        id1 = segundo.valor
+        self.assertNotEqual(id0, id1)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 2)
+        # La devolución TARDÍA del hijo 0: ni borra el reclamo 1 ni toca el
+        # contador de él.
+        self.assertFalse(tienda.devolver_lanzamiento(RAIZ, "a", 1, id0))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 2)
+        fila = tienda._una_fila("SELECT lanzamiento_id FROM lanzamientos")
+        self.assertEqual(fila["lanzamiento_id"], id1)
+        # La devolución del lanzamiento 1, sí; e idempotente.
+        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1, id1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        self.assertFalse(tienda.devolver_lanzamiento(RAIZ, "a", 1, id1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        # La ruta sin id (el ticker: consume el archivo antes de reclamar)
+        # sigue devolviendo el reclamo que haya.
+        tercero = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        self.assertFalse(hasattr(tercero, "codigo"))
+
+    def test_la_tarjeta_completada_consume_el_archivo_del_hijo(self):
+        # F12: el hijo que completa la tarjeta también escribe SU archivo de
+        # resultado al salir; la rama completada pasa por _reportar, no por
+        # _cerrar_hijo_terminal — sin consumo, <raiz>/raices/ejecutor/
+        # acumula un JSON por intento completado.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        resultado = self.corer_intento(tienda, RouterDoble())
+        self.assertEqual(resultado["outcome"], "completed")
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "completada")
+        archivo = archivo_de_resultado(tienda)
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_text(json.dumps(resultado), encoding="utf-8")
+        lanzar, _llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        vista = tienda.leer_vista(RAIZ, hechos_de(tienda))
+        self.assertEqual([d["state"] for d in vista["unidades"]], ["reported"])
+        self.assertFalse(archivo.exists(), "el archivo del hijo completado queda")
+
     def test_hijo_con_error_tras_la_llamada_conserva_la_reserva(self):
         # "error" puede llegar después de un run: la reserva NO se devuelve
         # (el suelo cierto del presupuesto), pero la tarjeta sí se cierra con
@@ -1086,7 +1198,7 @@ class ElLanzadorDeProduccion(Escenario):
         self.assertFalse(hasattr(reclamo, "codigo"))
         self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
         lanzar = ejecutor.lanzador_de(base, self.ruta_kanban)
-        nacido = lanzar(RAIZ, "a", 1, tarjeta.id)
+        nacido = lanzar(RAIZ, "a", 1, tarjeta.id, reclamo.valor)
         self.assertIsNotNone(nacido)
         archivo = Path(nacido["resultFile"])
         self.assertEqual(
@@ -1111,6 +1223,72 @@ class ElLanzadorDeProduccion(Escenario):
             os.waitpid(nacido["pid"], 0)
         except ChildProcessError:
             pass
+
+    def test_tres_vueltas_con_el_hijo_real_un_solo_hijo_y_presupuesto_cuadrado(self):
+        # F11 (a): el churn que el bloqueo del hijo quería cortar. Con el
+        # lanzador de PRODUCCIÓN (sys.executable, sin dobles) y el hijo que
+        # bloquea su tarjeta (workspace ausente, desenlace previo a la
+        # llamada), tres vueltas del ticker tienen que dejar UN solo hijo
+        # lanzado, UN solo reclamo (devuelto por el propio hijo) y el
+        # presupuesto cuadrado: la tarjeta cerrada no relanza el intento.
+        base = Path(self.directorio.name)
+        tienda = store.Store(str(base / "sistema-agentes.db"))
+        self.addCleanup(tienda.cerrar)
+        tienda.abrir_raiz(meta_de())
+        self.ruta_kanban = base / "kanban.db"
+        kanban = KanbanHermes(self.ruta_kanban)
+        self.addCleanup(kanban.cerrar)
+        self.encredar(tienda, kanban)  # slug sin workspace
+        # Con el tope de reintentos agotado, decidir no crea un intento nuevo
+        # (solo levanta INESPERADO): el intento queda vivo con su tarjeta
+        # bloqueada — exactamente el caso del churn que F11 corta.
+        tienda._conexion.execute(
+            "INSERT INTO contadores VALUES (?, 'reintentos:a', 1)", (RAIZ,)
+        )
+        tienda._conexion.commit()
+        lanzar = ejecutor.lanzador_de(base, self.ruta_kanban)
+        archivo = ejecutor._archivo_de_resultado(
+            base / "raices" / "ejecutor", RAIZ, "a", 1
+        )
+        primera = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(primera.lanzamientos, 1)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        # El hijo real trabaja desacoplado: esperar a que bloquee la tarjeta
+        # y devuelva su reserva antes de la vuelta siguiente.
+        limite = time.monotonic() + 60
+        while time.monotonic() < limite:
+            cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+            if (
+                cerrada is not None
+                and cerrada.estado == "bloqueada"
+                and tienda.llamadas_modelo(RAIZ) == 0
+                and archivo.exists()
+            ):
+                break
+            time.sleep(0.05)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.cosechar_hijos()
+        segunda = self.vuelta(tienda, kanban, lanzador=lanzar)
+        tercera = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual((segunda.lanzamientos, tercera.lanzamientos), (0, 0))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(cerrada.estado, "bloqueada")
+        # El archivo del hijo bloqueado lo consumió la conciliación.
+        self.assertFalse(archivo.exists())
+        self.cosechar_hijos()
+
+    def cosechar_hijos(self):
+        """Recolecta los hijos detached que ya salieron (sin zombies)."""
+        limite = time.monotonic() + 10
+        while time.monotonic() < limite:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if pid == 0:
+                time.sleep(0.05)
 
 
 class ExtremoAExtremo(Escenario):
@@ -1233,7 +1411,7 @@ class ExtremoAExtremo(Escenario):
         doble = RouterDoble(sobre_json(summary="Mapa levantado"))
         permisos = permisos_de_prueba("scout", "read", "read")
 
-        def lanzar(root, unit, attempt, card):
+        def lanzar(root, unit, attempt, card, id_lanzamiento=None):
             return {
                 "outcome": ejecutor.correr_intento(
                     str(base / "sistema-agentes.db"),
@@ -1242,6 +1420,7 @@ class ExtremoAExtremo(Escenario):
                     unit,
                     attempt,
                     fabrica_router=doble,
+                    id_lanzamiento=id_lanzamiento,
                 )["outcome"]
             }
 

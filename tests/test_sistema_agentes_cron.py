@@ -249,7 +249,7 @@ class Script(Base):
         def lanzador_falso(base, ruta_kanban):
             fabricados.append((str(base), str(ruta_kanban)))
 
-            def lanzar(root_id, unit_id, attempt, card_id):
+            def lanzar(root_id, unit_id, attempt, card_id, id_lanzamiento=None):
                 return {"pid": 7}
 
             return lanzar
