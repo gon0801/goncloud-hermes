@@ -208,8 +208,9 @@ ENGINEERING_REVIEW = {
     "name": "goncloud_engineering_review",
     "description": (
         "Record the reviewer decision. Approval releases entrega through native dependencies. "
-        "Only a first-round high/critical rejection creates one corrective round; a second "
-        "rejection or lower-severity unresolved finding blocks delivery. No third round exists."
+        "Only a first-round high/critical rejection creates one corrective round; a low/medium "
+        "rejection with no security, data or credential finding does not block: it releases "
+        "entrega with the findings as non-blocking pending. No third round exists."
     ),
     "parameters": {
         "type": "object",

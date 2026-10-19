@@ -21,7 +21,6 @@ from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
-    claim_task,
     complete_task,
     get_task,
     list_events,
@@ -237,7 +236,7 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertFalse(complete_task(conn, engineer_id, summary="ran ahead"))
             self.assertEqual(get_task(conn, engineer_id).status, "todo")
 
-    def test_non_high_first_review_rejection_blocks_delivery(self) -> None:
+    def test_medium_first_review_rejection_delivers_with_pending(self) -> None:
         started = self.start()
         self.complete_initial_before_review(started)
 
@@ -249,13 +248,56 @@ class WorkflowTestCase(unittest.TestCase):
             severity="medium",
         )
 
-        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["outcome"], "approved_with_pending")
         self.assertEqual(
-            self.service("reviewer").guard_native_completion(
-                started["stages"]["reviewer"]
-            )["action"],
-            "block",
+            result["pendientes_no_bloqueantes"],
+            [
+                {
+                    "severity": "medium",
+                    "summary": "A material medium finding remains.",
+                    "round": 1,
+                }
+            ],
         )
+        status = self.service("operaciones").status(workflow_id=started["workflow_id"])
+        self.assertFalse(status["delivery_blocked"])
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(
+                get_task(conn, started["stages"]["reviewer"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "ready"
+            )
+            self.assertEqual(len(list_tasks(conn)), 8)
+
+    def test_low_first_review_rejection_also_delivers_with_pending(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        result = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="A minor low finding remains.",
+            severity="low",
+        )
+
+        self.assertEqual(result["outcome"], "approved_with_pending")
+        self.assertEqual(result["pendientes_no_bloqueantes"][0]["severity"], "low")
+
+    def test_medium_rejection_marked_security_still_blocks(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        result = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="Medium pero de seguridad: credenciales expuestas.",
+            severity="medium",
+        )
+
+        self.assertEqual(result["outcome"], "blocked")
         with connect_closing(self.db_path) as conn:
             self.assertEqual(
                 get_task(conn, started["stages"]["reviewer"]).status, "blocked"
@@ -263,10 +305,25 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(
                 get_task(conn, started["stages"]["entrega"]).status, "todo"
             )
-            self.assertIsNone(
-                claim_task(conn, started["stages"]["entrega"], claimer="test")
+
+    def test_rejection_without_severity_keeps_old_failsafe(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        with self.assertRaisesRegex(WorkflowError, "a rejection requires severity"):
+            self.service("reviewer").review(
+                workflow_id=started["workflow_id"],
+                task_id=started["stages"]["reviewer"],
+                decision="reject",
+                summary="A finding remains.",
             )
-            self.assertEqual(len(list_tasks(conn)), 8)
+        with connect_closing(self.db_path) as conn:
+            self.assertNotEqual(
+                get_task(conn, started["stages"]["reviewer"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "todo"
+            )
 
     def test_approved_review_releases_entrega_and_status_reports_it(self) -> None:
         started = self.start()
@@ -359,6 +416,39 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(get_task(conn, correction["reviewer"]).status, "blocked")
             self.assertEqual(
                 get_task(conn, started["stages"]["entrega"]).status, "todo"
+            )
+
+    def test_second_round_medium_rejection_delivers_with_pending(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+        first = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="High severity defect.",
+            severity="high",
+        )
+        correction = first["corrective_stages"]
+        with connect_closing(self.db_path) as conn:
+            for stage in ("implementer", "verifier", "adversary"):
+                self.assertTrue(
+                    complete_task(conn, correction[stage], summary=f"{stage} complete")
+                )
+
+        rejected = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=correction["reviewer"],
+            decision="reject",
+            summary="Only a medium finding remains.",
+            severity="medium",
+        )
+
+        self.assertEqual(rejected["outcome"], "approved_with_pending")
+        self.assertEqual(rejected["round"], 2)
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(get_task(conn, correction["reviewer"]).status, "done")
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "ready"
             )
 
     def test_role_checks_use_bound_profile_identity(self) -> None:
