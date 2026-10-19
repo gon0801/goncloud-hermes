@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import local_orchestrator as local_orchestrator_module  # noqa: E402
 from test_local_orchestrator import (  # noqa: E402
+    DriverBootstrapTests,
     _OrchestratorHarness,
     _plugin_package,
     envelope,
@@ -114,9 +115,16 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         self.assertIn("se trabó en implementer", evento["output"])
         self.assertIn("revisa con goncloud_local_status y sigue", evento["output"])
         self.assertFalse((self.buzon() / nombre).exists())
-        self.assertTrue((self.buzon() / nombre.replace(".json", ".entregado")).exists())
+        # F2: al encolar queda .encolado, NO .entregado — el evento solo
+        # vive en la cola en memoria y el gateway aún no lo inyectó.
+        self.assertTrue((self.buzon() / nombre.replace(".json", ".encolado")).exists())
+        self.assertFalse(
+            (self.buzon() / nombre.replace(".json", ".entregado")).exists()
+        )
 
     # (a, handler) goncloud_local_run captura la sesión que lo llama.
+    # F4: register() se llama con el vigilante DOBLADO — arrancar el real
+    # aquí contaminaba la prueba del hilo con un vigilante de otro buzón.
     def test_el_handler_captura_la_sesion_llamante(self):
         plugin = _plugin_package()
         registrado = {}
@@ -130,7 +138,10 @@ class AvisosALaSesionTests(_OrchestratorHarness):
             def register_hook(self, name, hook):
                 pass
 
-        plugin.register(Ctx())
+        avisos_pkg = importlib.import_module("goncloud_team.avisos_sesion")
+        with patch.object(avisos_pkg, "iniciar_vigilante") as vigilante:
+            plugin.register(Ctx())
+        vigilante.assert_called_once_with()
         handler = registrado["goncloud_local_run"]["handler"]
         llamadas = {}
 
@@ -197,19 +208,65 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         )
         self.assertTrue(any("t_vieja" in linea for linea in impresos))
 
-    # (d) reinicio del gateway: el pendiente se encola una sola vez.
+    # (d) reinicio del gateway: el pendiente se encola una sola vez por vida.
     def test_d_reinicio_entrega_el_pendiente_una_sola_vez(self):
         escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
         cola = ColaFalsa()
-        # Primera vida del gateway: entrega el pendiente.
+        # Primera vida del gateway: encola el pendiente y queda .encolado.
         self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 1)
-        # Reinicio: una pasada nueva (otro vigilante, misma cola durable de
-        # archivos) no vuelve a encolar nada.
+        # Otra pasada en la MISMA vida no lo duplica (fuera del glob *.json).
         self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 0)
         self.assertEqual(len(cola.eventos), 1)
+        self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
+
+    # (d/F2) reinicio con un .encolado: el arranque lo re-encola una vez,
+    # porque la cola en memoria se perdió con el proceso anterior.
+    def test_d_reinicio_reencola_el_encolado_una_vez(self):
+        ruta = escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        ruta.replace(ruta.with_suffix(".encolado"))
+        cola = ColaFalsa()
+        self.assertEqual(avisos_sesion.reencolar_encolados(self.buzon(), cola), 1)
+        self.assertEqual(len(cola.eventos), 1)
+        self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
+        # Sigue .encolado: su .entregado llega recién a las 24 h.
+        self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
+        import time as _time
+
+        viejos = avisos_sesion.purgar_encolados(
+            self.buzon(), ahora=_time.time() + 25 * 3600
+        )
+        self.assertEqual(viejos, 1)
         self.assertTrue((self.buzon() / "t_abc-run-blocked.entregado").exists())
 
-    # El vigilante en hilo entrega sin modelo y se detiene limpio.
+    # F1: register() fuera del gateway NO arranca ningún vigilante.
+    def test_register_fuera_del_gateway_no_arranca_vigilante(self):
+        import threading
+
+        plugin = _plugin_package()
+
+        class Ctx:
+            profile_name = "claw"
+
+            def register_tool(self, **kwargs):
+                pass
+
+            def register_hook(self, name, hook):
+                pass
+
+        avisos_pkg = importlib.import_module("goncloud_team.avisos_sesion")
+        self.assertFalse(avisos_sesion.es_proceso_gateway())
+        plugin.register(Ctx())
+        self.assertIsNone(avisos_pkg._hilo)
+        self.assertFalse(
+            any(
+                hilo.name == "goncloud-avisos-sesion"
+                for hilo in threading.enumerate()
+                if hilo.is_alive()
+            )
+        )
+
+    # El vigilante en hilo entrega sin modelo y se detiene limpio
+    # (seam explícito: exigir_gateway=False con la cola del doble).
     def test_el_vigilante_en_hilo_entrega_y_para(self):
         escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
         cola_real = queue.Queue()
@@ -217,7 +274,11 @@ class AvisosALaSesionTests(_OrchestratorHarness):
 
         detener = threading.Event()
         hilo = avisos_sesion.iniciar_vigilante(
-            self.buzon(), cola=cola_real, intervalo=0.05, detener=detener
+            self.buzon(),
+            cola=cola_real,
+            intervalo=0.05,
+            detener=detener,
+            exigir_gateway=False,
         )
         self.assertIsNotNone(hilo)
         evento = cola_real.get(timeout=5)
@@ -226,6 +287,40 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         hilo.join(timeout=5)
         self.assertFalse(hilo.is_alive())
         self.assertTrue(cola_real.empty())
+
+
+class BootErrorOrigenTests(DriverBootstrapTests):
+    """F3: el aviso de boot-error hereda el origen de la marca running."""
+
+    def test_el_aviso_de_boot_error_lleva_el_origen_de_la_marca(self):
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
+        # La marca que launch_detached/resume dejan en el archivo de
+        # resultado, con el origen de la sesión que lanzó la cadena.
+        self.out.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "t_boot",
+                    "outcome": "running",
+                    "run_id": "marca-1",
+                    "origin_session_key": SESSION_KEY,
+                    "origin_routing": ROUTING,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.run_driver()
+        avisos = self.root / "goncloud-local" / "avisos"
+        evento = json.loads(
+            (avisos / "t_boot-boot-error.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(evento["outcome"], "error")
+        self.assertEqual(evento["origin_session_key"], SESSION_KEY)
+        self.assertEqual(evento["origin_routing"], ROUTING)
+        # Y el vigilante lo puede encolar a esa sesión, como cualquier aviso.
+        cola = ColaFalsa()
+        self.assertEqual(avisos_sesion.entregar_avisos(avisos, cola), 1)
+        self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
 
 
 if __name__ == "__main__":

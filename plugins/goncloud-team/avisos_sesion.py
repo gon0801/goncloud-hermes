@@ -14,10 +14,14 @@ sesión como evento interno (``_inject_watch_notification`` /
 
 Aquí, dentro del proceso del gateway y SIN modelo, un hilo revisa cada
 pocos segundos el buzón durable <raíz>/goncloud-local/avisos/*.json. Por
-cada aviso CON origin_session_key encola el evento y lo marca .entregado
-(el mismo rename del despertar). Los avisos SIN origen los deja intactos:
-siguen por el despertar de hoy, que a su vez ignora los que traen origen
-para no duplicar.
+cada aviso CON origin_session_key encola el evento y lo renombra a
+.encolado (fuera del glob *.json: en vida de este proceso no se duplica;
+F2/cr:4319598923). Al arrancar, el vigilante re-encola los .encolado que
+quedaron — la cola vive en memoria y un reinicio la vacía — y un
+.encolado con más de 24 h pasa a .entregado. Es al-menos-una-vez: tras
+un reinicio puede llegar un aviso repetido, nunca uno perdido. Los
+avisos SIN origen los deja intactos: siguen por el despertar de hoy, que
+a su vez ignora los que traen origen para no duplicar.
 
 Forma del evento: la notificación de proceso de fondo de
 process_registry (``_publish_finished`` pone
@@ -32,6 +36,8 @@ formatea e inyecta sin buscar ningún registro propio.
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
 import threading
 import time
@@ -44,6 +50,10 @@ if str(_PLUGIN) not in sys.path:
 
 #: Cada cuántos segundos mira el buzón el hilo del gateway.
 INTERVALO_SEGUNDOS = 3.0
+
+#: Cuánto vive un .encolado antes de darse por entregado: el gateway tuvo
+#: un día entero (y al menos un arranque, que lo re-encola) para inyectarlo.
+ENCOLADO_MAX_SEGUNDOS = 24 * 3600
 
 #: Campos de ruteo que _build_process_event_source lee del evento
 #: (gateway/run_notifications.py, _WATCHER_ROUTE_FIELDS).
@@ -126,26 +136,111 @@ def construir_evento(aviso: dict, *, nombre: str = "") -> dict | None:
     return evento
 
 
+def _renombrar(ruta: Path, sufijo: str) -> None:
+    """El rename del buzón (os.replace, como entregar_aviso del despertar)."""
+    try:
+        os.replace(ruta, ruta.with_suffix(sufijo))
+    except OSError:
+        pass  # otra pasada ya lo movió
+
+
 def entregar_avisos(buzon, cola) -> int:
     """Una pasada del vigilante: encola cada aviso con origen y lo marca.
 
-    Devuelve cuántos eventos encoló. Marcar DESPUÉS de encolar, con el
-    mismo rename del despertar: si el gateway se cae entre medias, la
-    próxima vida lo reencola (a-lo-más-una-vez extra del propio gateway),
-    pero jamás se pierde. El bloqueo serializa las pasadas de este
-    proceso para que dos hilos nunca encolen el mismo archivo.
+    Devuelve cuántos eventos encoló. Al encolar renombra a .encolado
+    (F2): .entregado aquí mentiría — el evento solo vive en la cola en
+    memoria y el gateway aún no lo inyecta; si el proceso muere, el
+    próximo arranque re-encola el .encolado. El bloqueo serializa las
+    pasadas de este proceso para que dos hilos nunca encolen lo mismo.
     """
     despertar = _despertar()
-    entregados = 0
+    encolados = 0
     with _bloqueo:
         for ruta, aviso in despertar.avisos_de_cadenas(Path(buzon)):
             evento = construir_evento(aviso, nombre=ruta.name)
             if evento is None:
                 continue
             cola.put(evento)
-            despertar.entregar_aviso(ruta)
-            entregados += 1
-    return entregados
+            _renombrar(ruta, ".encolado")
+            encolados += 1
+    return encolados
+
+
+def reencolar_encolados(buzon, cola) -> int:
+    """El arranque del vigilante: los .encolado vuelven a la cola, una vez.
+
+    La completion_queue es una queue.Queue en memoria (process_registry):
+    un reinicio del gateway la vacía y los eventos encolados se pierden.
+    Los archivos .encolado son la copia durable: cada arranque los
+    re-encola y quedan .encolado, a la espera de su hora de .entregado.
+    """
+    buzon = Path(buzon)
+    if not buzon.is_dir():
+        return 0
+    encolados = 0
+    with _bloqueo:
+        for ruta in sorted(buzon.glob("*.encolado")):
+            try:
+                aviso = json.loads(ruta.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(aviso, dict):
+                continue
+            evento = construir_evento(aviso, nombre=ruta.name)
+            if evento is None:
+                continue
+            cola.put(evento)
+            encolados += 1
+    return encolados
+
+
+def purgar_encolados(buzon, *, ahora=None, max_segundos=ENCOLADO_MAX_SEGUNDOS) -> int:
+    """Los .encolado viejos pasan a .entregado: ya tuvieron su día.
+
+    La edad se mide por el mtime del archivo. Sin esto, un gateway que
+    nunca logra inyectar (sesión muerta) re-encolaría el mismo aviso en
+    cada arranque para siempre.
+    """
+    buzon = Path(buzon)
+    if not buzon.is_dir():
+        return 0
+    ahora = time.time() if ahora is None else ahora
+    cerrados = 0
+    for ruta in sorted(buzon.glob("*.encolado")):
+        try:
+            edad = ahora - ruta.stat().st_mtime
+        except OSError:
+            continue
+        if edad > max_segundos:
+            _renombrar(ruta, ".entregado")
+            cerrados += 1
+    return cerrados
+
+
+def es_proceso_gateway() -> bool:
+    """Si ESTE proceso es el gateway vivo de Hermes (F1).
+
+    La misma prueba de tools/process_registry._is_supervised_gateway_process:
+    la marca _HERMES_GATEWAY la hereda cualquier descendiente (e importar
+    gateway.run la pone), así que además se exige la propiedad del pidfile
+    del gateway. Sin esa prueba, un CLI, un cron worker o las pruebas —
+    que también cargan el plugin para registrar tools — arrancarían un
+    vigilante que encolaría en una cola que nadie drena.
+    """
+    try:
+        from tools.process_registry import _is_supervised_gateway_process
+
+        return bool(_is_supervised_gateway_process())
+    except Exception:
+        pass
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid(cleanup_stale=False) == os.getpid()
+    except Exception:
+        return False
 
 
 def _cola_del_gateway():
@@ -167,15 +262,25 @@ def _buzon_del_hogar() -> Path | None:
 
 
 def iniciar_vigilante(
-    buzon=None, *, cola=None, intervalo=INTERVALO_SEGUNDOS, detener=None
+    buzon=None,
+    *,
+    cola=None,
+    intervalo=INTERVALO_SEGUNDOS,
+    detener=None,
+    exigir_gateway=True,
 ):
     """Arranca (una sola vez por proceso) el hilo que drena el buzón.
 
-    Sin buzón resoluble o sin completion_queue (el plugin cargó fuera del
-    gateway: un CLI, las pruebas) no arranca nada y devuelve None: los
+    SOLO en el proceso del gateway (F1): con exigir_gateway (el default,
+    el que usa register) un CLI, un cron worker o las pruebas devuelven
+    None sin arrancar nada — encolarían en una cola que nadie drena. Los
+    dobles de prueba pasan exigir_gateway=False con su cola explícita.
+    Sin buzón resoluble o sin completion_queue tampoco arranca: los
     avisos quedan en el buzón para la próxima vida del gateway.
     """
     global _hilo
+    if exigir_gateway and not es_proceso_gateway():
+        return None
     if _hilo is not None and _hilo.is_alive():
         return _hilo
     if cola is None:
@@ -190,9 +295,14 @@ def iniciar_vigilante(
     alto = detener if detener is not None else threading.Event()
 
     def vigilar():
+        try:
+            reencolar_encolados(buzon, cola)
+        except Exception:
+            pass  # el buzón es durable: la vuelta normal lo recoge igual
         while not alto.is_set():
             try:
                 entregar_avisos(buzon, cola)
+                purgar_encolados(buzon)
             except Exception:
                 pass  # el buzón es durable: la próxima vuelta reintenta
             alto.wait(intervalo)

@@ -275,6 +275,19 @@ _DRIVER_BOOTSTRAP = (
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "launch_run_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None\n"
     "sys.path.insert(0, hermes)\n"
+    "# F3: el origen de la cadena vive en la marca running que el lanzador\n"
+    "# dejó en out; se lee ANTES de que resume la sobrescriba, para que el\n"
+    "# aviso de boot-error lo herede y también llegue a la sesión.\n"
+    "origen_boot = {}\n"
+    "try:\n"
+    "    with open(out, encoding='utf-8') as handle:\n"
+    "        marca = json.load(handle)\n"
+    "    if isinstance(marca, dict):\n"
+    "        for clave in ('origin_session_key', 'origin_routing'):\n"
+    "            if marca.get(clave):\n"
+    "                origen_boot[clave] = marca[clave]\n"
+    "except Exception:\n"
+    "    pass\n"
     "fallo = False\n"
     "try:\n"
     "    try:\n"
@@ -318,7 +331,7 @@ _DRIVER_BOOTSTRAP = (
     "        if not os.path.exists(nombre):\n"
     "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
     "            evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
-    "                      'motivo': result['error'],\n"
+    "                      'motivo': result['error'], **origen_boot,\n"
     "                      'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
     "            with open(parcial, 'w', encoding='utf-8') as handle:\n"
     "                json.dump(evento, handle, ensure_ascii=True)\n"
@@ -352,7 +365,7 @@ def _write_result(workflow_id, payload, *, home=None):
     os.replace(tmp, results / f"{workflow_id}.json")
 
 
-def _running_mark(workflow_id, run_id):
+def _running_mark(workflow_id, run_id, origen=None):
     """The mark every driver writes before its first stage (live review F8).
 
     The result file doubles as the running mark: a start overwrites whatever
@@ -361,13 +374,34 @@ def _running_mark(workflow_id, run_id):
     run id, and the same run overwrites the mark with its outcome when it
     quits. The pid stays as evidence for telling a dead driver from a live
     one (encargo H punto 4); nothing acted on it before that check existed.
+
+    The launching session rides on the mark too (F3): the detached
+    bootstrap reads the result file before anything overwrites it, and
+    its boot-error mailbox event inherits the origin from here — the one
+    aviso that never passes through _report.
     """
-    return {
+    marca = {
         "workflow_id": workflow_id,
         "outcome": "running",
         "run_id": run_id,
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    origen = origen or {}
+    if origen.get("origin_session_key"):
+        marca["origin_session_key"] = origen["origin_session_key"]
+        if origen.get("origin_routing"):
+            marca["origin_routing"] = origen["origin_routing"]
+    return marca
+
+
+def _origen_de(contract):
+    """The origin slice of a contract dict, for marks and avisos."""
+    contract = contract or {}
+    return {
+        key: contract[key]
+        for key in ("origin_session_key", "origin_routing")
+        if contract.get(key)
     }
 
 
@@ -1156,7 +1190,15 @@ class LocalOrchestrator:
         # this launch's id, until this run's driver overwrites it with its
         # own outcome — a close can never mistake the old file for proof
         # that the new driver stopped.
-        mark = _running_mark(workflow_id, uuid4().hex)
+        # F3: la marca lleva el origen del contrato para que el aviso de
+        # boot-error del bootstrap lo herede; sin contrato legible, sin
+        # origen (el aviso sigue por el despertar, como siempre).
+        try:
+            contrato, _ = self._context(workflow_id)
+            origen = _origen_de(contrato)
+        except Exception:
+            origen = {}
+        mark = _running_mark(workflow_id, uuid4().hex, origen=origen)
         _write_result(workflow_id, mark, home=home)
         result_file = _result_file(workflow_id, home)
         argv = [
@@ -1599,11 +1641,7 @@ class LocalOrchestrator:
             home=home,
             repo=(contract or {}).get("repository", ""),
             instruction=(contract or {}).get("instruction", ""),
-            origen={
-                key: (contract or {}).get(key)
-                for key in ("origin_session_key", "origin_routing")
-                if (contract or {}).get(key)
-            },
+            origen=_origen_de(contract),
         )
         return report
 
@@ -1830,7 +1868,11 @@ class LocalOrchestrator:
         # From this write on, the previous driver's stopped outcome is no
         # longer the file's last word.
         run_id = uuid4().hex
-        _write_result(workflow_id, _running_mark(workflow_id, run_id), home=home)
+        _write_result(
+            workflow_id,
+            _running_mark(workflow_id, run_id, origen=_origen_de(contract)),
+            home=home,
+        )
         # Encargo H punto 1: relanzar es reintentar.
         self._reopen_blocked_stages(
             workflow_id, service, mark=mark, own_launch=own_launch, home=home
