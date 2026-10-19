@@ -2264,6 +2264,87 @@ class QuarantineExpiryTests(RouterTestCase):
                 self.assertEqual(len(go.probes), 1)
 
 
+class GenerationTests(unittest.TestCase):
+    """Encargo H punto 1: una generación nueva de intentos oculta la vieja
+    al router, de modo que un relanzamiento llama al modelo otra vez en vez
+    de repetir el resultado grabado. Sin tope de reintentos."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.db = Path(self.tmp.name) / "routes.db"
+        self.store = SubscriptionStateStore(self.db)
+
+    def attempt(self, slot=0, attempt=0, **overrides):
+        values = dict(
+            workflow_id="wf",
+            stage_id="st",
+            slot=slot,
+            attempt=attempt,
+            adapter="opencode_go",
+            model="m",
+            billing_mode="subscription",
+            mode="start",
+            success=True,
+            failure=None,
+            session_id="",
+            start_revision="r1",
+            end_revision="r1",
+            changed_files=[],
+            detail="ok",
+        )
+        values.update(overrides)
+        self.store.record_attempt(**values)
+
+    def test_open_generation_hides_the_old_attempts_from_the_router(self):
+        self.attempt(success=True)
+        self.assertEqual(len(self.store.stage_attempts("wf", "st")), 1)
+        self.assertIsNotNone(self.store.latest_success("wf", "st"))
+
+        generation = self.store.open_generation("wf", "st")
+
+        self.assertEqual(generation, 1)
+        self.assertEqual(self.store.current_generation("wf", "st"), 1)
+        self.assertEqual(self.store.stage_attempts("wf", "st"), [])
+        self.assertIsNone(self.store.latest_success("wf", "st"))
+
+    def test_new_attempts_land_in_the_current_generation(self):
+        self.attempt(success=False, failure="task_failure", detail="old")
+        self.store.open_generation("wf", "st")
+        self.attempt(attempt=1, success=True, detail="new")
+
+        rows = self.store.stage_attempts("wf", "st")
+
+        self.assertEqual([row["attempt"] for row in rows], [1])
+        self.assertEqual(rows[0]["generation"], 1)
+        self.assertEqual(rows[0]["detail"], "new")
+
+    def test_attempt_identity_keeps_counting_across_generations(self):
+        # UNIQUE(workflow_id, stage_id, slot, attempt): the counter is
+        # global, so a new generation never collides with a preserved row.
+        self.attempt(slot=0, attempt=0)
+        self.store.open_generation("wf", "st")
+
+        self.assertEqual(self.store.next_attempt("wf", "st", 0), 1)
+        self.attempt(slot=0, attempt=1)
+        self.assertEqual(self.store.next_attempt("wf", "st", 0), 2)
+
+        with closing(sqlite3.connect(self.db)) as conn:
+            total, old = conn.execute(
+                "SELECT COUNT(*), SUM(generation = 0) FROM subscription_attempts "
+                "WHERE workflow_id='wf' AND stage_id='st'"
+            ).fetchone()
+        self.assertEqual((total, old), (2, 1), "the old generation stays as evidence")
+
+    def test_generations_open_without_a_cap(self):
+        self.store.open_generation("wf", "st")
+        self.store.open_generation("wf", "st")
+
+        self.assertEqual(self.store.current_generation("wf", "st"), 2)
+        self.store.open_generation("wf", "st")
+        self.assertEqual(self.store.current_generation("wf", "st"), 3)
+
+
 class StageLeaseHeartbeatTests(RouterTestCase):
     """The lease must outlive any stage: a heartbeat renews it while the
     vendor process runs, and a dead process stops beating so the lease

@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from hermes_cli.kanban_db import (
     add_comment,
@@ -27,14 +29,19 @@ from hermes_cli.kanban_db_graph import decompose_triage_task
 
 try:  # Loaded as the Hermes plugin package.
     from .subscriptions.catalog import compile_profile_routes
-    from .subscriptions.router import SubscriptionRouter
+    from .subscriptions.redaction import redact_data, sanitize_result
+    from .subscriptions.router import SubscriptionRouter, default_db_path
+    from .subscriptions.state import SubscriptionStateStore
     from .subscriptions.types import InvocationRequest
-    from .subscriptions.redaction import sanitize_result, redact_data
 except ImportError:  # Loaded with the plugin directory on sys.path.
     from subscriptions.catalog import compile_profile_routes  # type: ignore
-    from subscriptions.router import SubscriptionRouter  # type: ignore
+    from subscriptions.redaction import redact_data, sanitize_result  # type: ignore
+    from subscriptions.router import (  # type: ignore
+        SubscriptionRouter,
+        default_db_path,
+    )
+    from subscriptions.state import SubscriptionStateStore  # type: ignore
     from subscriptions.types import InvocationRequest  # type: ignore
-    from subscriptions.redaction import sanitize_result, redact_data
 
 
 TEAM_ROLES = (
@@ -73,8 +80,61 @@ HIGH_SEVERITIES = {"high", "critical"}
 
 _WORKFLOW_KEY_PREFIX = "goncloud-workflow:"
 _CONTRACT_MARKER = "GONCLOUD_ENGINEERING_V1\n"
+#: Public alias: local_orchestrator reads workflow contracts through it.
+CONTRACT_MARKER = _CONTRACT_MARKER
+#: Marker of the durable close receipt on the director root; a second close
+#: recognizes it instead of writing another comment. The close tool and the
+#: automatic close of ``start`` write the same receipt (encargo H punto 2).
+CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
+
+#: The reason the automatic close leaves on a chain ``start`` freed for a
+#: new one (encargo H punto 2, the same path goncloud_local_close uses).
+AUTO_CLOSE_REASON = (
+    "auto-closed by WorkflowService.start: the chain's driver had stopped "
+    "and the repository was freed for a new chain"
+)
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
+
+
+def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
+    """(alive, stopped) according to the local driver's own result-file mark.
+
+    The mark is the local driver's lifecycle record — local_orchestrator
+    owns it, so the import stays deferred and one-directional. Three
+    answers, never two collapsed into one: a running mark whose pid is
+    alive is live work; a stopped outcome, or a running mark whose pid is
+    gone, is positive evidence the driver stopped; anything else — no mark
+    at all, an unreadable or non-object file that still reads as running —
+    proves nothing (review F2: "no evidence" read as "stopped" had start
+    archiving chains with a lying close reason). A helper that cannot even
+    load answers alive: fail closed, never archive on missing evidence.
+    """
+    try:
+        try:
+            from .local_orchestrator import (
+                driver_mark_live,
+                driver_stopped,
+                read_driver_mark,
+            )
+        except ImportError:
+            from local_orchestrator import (
+                driver_mark_live,
+                driver_stopped,
+                read_driver_mark,
+            )
+    except ImportError:
+        return True, False
+    mark = read_driver_mark(workflow_id)
+    if (
+        isinstance(mark, dict)
+        and mark.get("outcome") == "running"
+        and driver_mark_live(mark)
+    ):
+        return True, False
+    return False, driver_stopped(mark)
+
+
 _SUBSCRIPTION_EVIDENCE_KEYS = (
     "workflow_id",
     "stage_id",
@@ -92,6 +152,17 @@ _SUBSCRIPTION_EVIDENCE_KEYS = (
 
 class WorkflowError(ValueError):
     """A rejected workflow operation safe to return through a model tool."""
+
+
+class _StoreUnavailable:
+    """Sentinel: the subscription store could not be opened, so lease
+    evidence is unchecked and nothing may be auto-closed on its absence."""
+
+
+#: Root statuses a chain close (the tool and the automatic one) accepts;
+#: anything else is either live work, already delivered, or not a decidable
+#: chain. "triage" covers a root whose decomposition failed after the insert.
+CLOSEABLE_ROOT_STATUSES = frozenset({"todo", "ready", "scheduled", "blocked", "triage"})
 
 
 def _build_subscription_router(**_kwargs):
@@ -132,7 +203,7 @@ class WorkflowService:
     Hermes profile, not OS-level isolation.
     """
 
-    def __init__(self, *, actor_role: str, db_path: Optional[Path] = None) -> None:
+    def __init__(self, *, actor_role: str, db_path: Path | None = None) -> None:
         self.actor_role = str(actor_role or "").strip()
         self.db_path = Path(db_path) if db_path is not None else None
 
@@ -334,13 +405,70 @@ class WorkflowService:
         body = _contract_body(contract)
         idempotency_key = _WORKFLOW_KEY_PREFIX + request_key
 
+        # Encargo H punto 2, contrato r6: una sola cadena viva por repo.
+        # (a) La otra cadena tiene evidencia de parada (regla A de r3 más
+        # F12: outcome final, pid muerto o reciclado, o marca running sin
+        # pid) → se cierra sola, atómica como hoy, y la nueva arranca.
+        # (b) La otra cadena está viva → la nueva NO se crea: la respuesta
+        # es busy, clara y sin error genérico, y no se escribe NADA (ni
+        # Kanban ni archivo de resultado). Cuando la cadena viva termine,
+        # su aviso a claw (encargo H) pide relanzarla.
+        store = self._subscription_store_checked()
         with self._connect() as conn:
-            # BEGIN IMMEDIATE makes the same-repository check and root insert a
-            # single native DB decision across concurrent gateway processes.
-            # create_task explicitly supports nested composition via savepoint.
+            # Fase 1 — veredictos sin candado de escritura (review F15):
+            # estado de Kanban y leases aquí; las marcas de driver (y el ps
+            # que cuesta cada viva) justo después, fuera de transacción.
+            # La relectura que autoriza es la de _auto_close_stopped_chain.
+            live_chain = None
+            stopped_chains = []
+            for active in list_tasks(conn, include_archived=True):
+                if not (active.body or "").startswith(_CONTRACT_MARKER):
+                    continue
+                try:
+                    active_repo = (
+                        Path(active.workspace_path or "").expanduser().resolve()
+                    )
+                except OSError:
+                    continue
+                if active.workspace_kind != "dir" or active_repo != repo:
+                    continue
+                if active.status in {"done", "archived"}:
+                    continue
+                if active.idempotency_key == idempotency_key:
+                    continue
+                if self._foreign_db_alive(conn, active, store=store):
+                    live_chain = live_chain or active.id
+                    continue
+                alive, stopped = _driver_signals(active.id)
+                if alive or not stopped:
+                    live_chain = live_chain or active.id
+                else:
+                    stopped_chains.append(active.id)
+            if live_chain is not None:
+                return self._busy_result(live_chain, str(repo))
+            # Fase 2 — el cierre automático de cada cadena parada: nativo,
+            # uno por cadena, con su propia valla (relectura dentro). Un
+            # False aquí significa que la cadena despertó — el repo está
+            # ocupado y NADA se creó aún.
+            closed_chains = []
+            for old_id in stopped_chains:
+                if self._auto_close_stopped_chain(old_id, store=store):
+                    closed_chains.append(old_id)
+                else:
+                    return self._busy_result(old_id, str(repo))
+            # Fase 3 — BEGIN IMMEDIATE serializa dos starts concurrentes del
+            # mismo repo. Cualquier cadena activa que este start no haya
+            # cerrado él mismo bloquea: o despertó entre fases, o es la
+            # raíz recién insertada por el start ganador — en ambos casos
+            # busy, sin crear nada (la marca la juzgó la fase 1 y la valla
+            # del cierre la releyó la fase 2).
             with write_txn(conn):
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
+                        continue
+                    if active.status in {"done", "archived"}:
+                        continue
+                    if active.idempotency_key == idempotency_key:
                         continue
                     try:
                         active_repo = (
@@ -348,15 +476,8 @@ class WorkflowService:
                         )
                     except OSError:
                         continue
-                    if active.workspace_kind != "dir" or active_repo != repo:
-                        continue
-                    if active.status in {"done", "archived"}:
-                        continue
-                    if active.idempotency_key != idempotency_key:
-                        raise WorkflowError(
-                            f"repository already has active Goncloud workflow {active.id}; "
-                            "wait for its director root to finish"
-                        )
+                    if active.workspace_kind == "dir" and active_repo == repo:
+                        return self._busy_result(active.id, str(repo))
                 root_id = create_task(
                     conn,
                     title=f"Engineering: {instruction[:120]}",
@@ -368,6 +489,7 @@ class WorkflowService:
                     triage=True,
                     idempotency_key=idempotency_key,
                 )
+
             root = get_task(conn, root_id)
             if root is None:
                 raise WorkflowError("native Kanban did not persist the workflow root")
@@ -391,9 +513,163 @@ class WorkflowService:
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
-            return self._start_result(root_id, child_ids)
+            result = self._start_result(root_id, child_ids)
+            result["closed_chains"] = sorted(closed_chains)
+            return result
 
-    def start_contract(self, *, request_key: str) -> Optional[dict]:
+    def _busy_result(self, live_id: str, repo: str) -> dict[str, Any]:
+        """The busy answer (contrato r6): the repository already has a live
+        chain — nothing was created, and the response tells claw which
+        chain to relaunch when its aviso arrives."""
+        return {
+            "busy": True,
+            "repo": repo,
+            "cadena_viva": live_id,
+            "mensaje": (
+                f"El repo ya tiene la cadena {live_id} trabajando; "
+                "cuando termine te llega su aviso y la relanzas"
+            ),
+        }
+
+    @staticmethod
+    def _subscription_store_checked() -> Any:
+        """The subscription store for lease evidence, or a sentinel.
+
+        A missing store file means no router ever leased anything here: that
+        is checked ground, not a failure (None). A store that cannot be
+        opened is unchecked ground — ``_StoreUnavailable`` — and the caller
+        treats every chain as possibly alive instead of archiving without
+        lease evidence.
+        """
+        path = default_db_path()
+        if not path.exists():
+            return None
+        try:
+            return SubscriptionStateStore(path)
+        except Exception:
+            return _StoreUnavailable()
+
+    def _foreign_db_alive(self, conn: Any, active: Any, *, store: Any) -> bool:
+        """The database half of another chain's liveness verdict.
+
+        Decided from Kanban and lease state only — never from a driver
+        mark — so start holds no ps subprocess under the Kanban write lock
+        (review F15). True when the chain is live work on DB evidence
+        alone; False leaves the verdict to the driver mark, which start
+        reads outside the transaction.
+        """
+        if isinstance(store, _StoreUnavailable):
+            return True
+        if active.status == "running":
+            return True
+        initial_ids = self._decomposed_child_ids(conn, active.id) or []
+        correction = self._correction_ids(conn, active.id)
+        if any(
+            self._require_task(conn, task_id).status == "running"
+            for task_id in [*initial_ids, *correction.values()]
+        ):
+            return True
+        if store is not None and store.active_leases(active.id):
+            return True
+        return False
+
+    def _auto_close_stopped_chain(self, workflow_id: str, *, store: Any) -> bool:
+        """Free a chain whose driver already stopped; True when this call did.
+
+        Reglas simples del encargo H (B y D). The stop evidence is only the
+        driver's own: a stopped outcome as the result file's last write, or
+        a running mark whose pid is gone — a triage root without children is
+        a chain being born, never evidence (F8). A missing subscription
+        store is checked ground — no router ever
+        leased here, so the decision rests on the mark alone; only a store
+        that cannot be opened leaves the chain alone. The pid resolution
+        (ps) and the lease check run BEFORE the transaction (review F15);
+        inside it the chain state is re-read and the mark fence compares
+        run_id and outcome against what was judged outside — anything that
+        changed aborts the close before the first archive lands, and the
+        caller then queues the new chain behind it (review F3).
+        ``archive_task`` opens its own transaction and refuses nesting
+        (reference 0.22), so the archive rides this transaction with the
+        same guarded, idempotent UPDATE the native primitive applies.
+        """
+        if isinstance(store, _StoreUnavailable):
+            return False
+        # Outside the transaction (review F15): the mark, the pid it names
+        # (ps) and the lease check — no subprocess under the Kanban write
+        # lock. The fence inside compares this snapshot against the file.
+        try:
+            from .local_orchestrator import read_driver_mark
+        except ImportError:
+            from local_orchestrator import read_driver_mark
+        seen = read_driver_mark(workflow_id)
+        alive, stopped = _driver_signals(workflow_id)
+        if alive or not stopped:
+            return False
+        if store is not None and store.active_leases(workflow_id):
+            return False
+        with self._connect() as conn:
+            with write_txn(conn):
+                root = self._require_workflow_root(conn, workflow_id)
+                if root.status not in CLOSEABLE_ROOT_STATUSES:
+                    return False
+                initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
+                correction = self._correction_ids(conn, workflow_id)
+                members = [(workflow_id, root.status)] + [
+                    (task_id, self._require_task(conn, task_id).status)
+                    for task_id in [*initial_ids, *correction.values()]
+                ]
+                if any(status == "running" for _, status in members):
+                    return False
+                # The fence (review F15): the file's last write is still
+                # the one judged outside. A new write means a driver woke
+                # or the state moved — the verdict is stale, abort.
+                fresh = read_driver_mark(workflow_id)
+                if (fresh or {}).get("outcome") != (seen or {}).get("outcome") or (
+                    fresh or {}
+                ).get("run_id") != (seen or {}).get("run_id"):
+                    return False
+                for member_id, member_status in members:
+                    # Done stages are the chain's evidence: they stay as
+                    # they are; archived ones are already closed — the
+                    # guarded UPDATE makes a re-run a no-op.
+                    if member_status in {"archived", "done"}:
+                        continue
+                    cursor = conn.execute(
+                        "UPDATE tasks SET status = 'archived'"
+                        " WHERE id = ? AND status != 'archived'",
+                        (member_id,),
+                    )
+                    if cursor.rowcount != 1:
+                        raise WorkflowError(
+                            f"native Kanban refused to archive {member_id}"
+                        )
+                    # The same native audit trail archive_task leaves
+                    # (review F14): one "archived" event per member, inside
+                    # this same transaction, so both close paths leave
+                    # identical rastros.
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload_json,"
+                        " created_at) VALUES (?, 'archived', ?, ?)",
+                        (
+                            member_id,
+                            json.dumps({}, sort_keys=True),
+                            int(time.time()),
+                        ),
+                    ).close()
+                comment = CLOSE_COMMENT_MARKER + json.dumps(
+                    {"reason": AUTO_CLOSE_REASON, "workflow_id": workflow_id},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if not any(
+                    item.body.startswith(CLOSE_COMMENT_MARKER)
+                    for item in list_comments(conn, workflow_id)
+                ):
+                    add_comment(conn, workflow_id, "claw", comment)
+            return True
+
+    def start_contract(self, *, request_key: str) -> dict | None:
         """Read the original provenance for an idempotent local start."""
         self._require_actor("claw")
         key = _WORKFLOW_KEY_PREFIX + _required_text(request_key, "request_key")
@@ -482,7 +758,7 @@ class WorkflowService:
         return children
 
     @staticmethod
-    def _decomposed_child_ids(conn: Any, root_id: str) -> Optional[list[str]]:
+    def _decomposed_child_ids(conn: Any, root_id: str) -> list[str] | None:
         for event in list_events(conn, root_id):
             if event.kind != "decomposed" or not isinstance(event.payload, dict):
                 continue
@@ -797,8 +1073,8 @@ class WorkflowService:
     def subscription_status(
         self,
         *,
-        workflow_id: Optional[str] = None,
-        stage_id: Optional[str] = None,
+        workflow_id: str | None = None,
+        stage_id: str | None = None,
     ) -> dict[str, Any]:
         """Non-generative route matrix for the calling profile."""
         self._require_known_actor()
@@ -850,7 +1126,7 @@ class WorkflowService:
                 f"workflow {root.id} has a malformed source contract"
             ) from exc
 
-    def guard_native_completion(self, task_id: str) -> Optional[dict[str, str]]:
+    def guard_native_completion(self, task_id: str) -> dict[str, str] | None:
         """Veto a reviewer card bypassing the durable adjudication tool.
 
         This is consumed by the plugin's ``pre_tool_call`` hook. Other roles
@@ -881,8 +1157,8 @@ class WorkflowService:
         task_id: str,
         decision: str,
         summary: str,
-        severity: Optional[str] = None,
-        local_handoff: Optional[dict] = None,
+        severity: str | None = None,
+        local_handoff: dict | None = None,
     ) -> dict[str, Any]:
         """Adjudicate review and enforce the hard two-round ceiling."""
         self._require_actor("reviewer")
@@ -1007,7 +1283,7 @@ class WorkflowService:
         conn: Any,
         task_id: str,
         record: dict[str, Any],
-        local_handoff: Optional[dict] = None,
+        local_handoff: dict | None = None,
     ) -> None:
         task = get_task(conn, task_id)
         if task is None:
@@ -1088,7 +1364,7 @@ class WorkflowService:
         return ids
 
     @staticmethod
-    def _recorded_review_run(conn: Any, task_id: str) -> Optional[dict[str, Any]]:
+    def _recorded_review_run(conn: Any, task_id: str) -> dict[str, Any] | None:
         """Read plugin-produced native run metadata; comments are audit-only."""
         for run in reversed(list_runs(conn, task_id, include_active=False)):
             metadata = run.metadata
@@ -1123,7 +1399,7 @@ class WorkflowService:
 
     def _workflow_for_reviewer_task(
         self, conn: Any, reviewer_task_id: str
-    ) -> Optional[str]:
+    ) -> str | None:
         for candidate in list_tasks(conn, include_archived=True):
             if not (candidate.idempotency_key or "").startswith(_WORKFLOW_KEY_PREFIX):
                 continue

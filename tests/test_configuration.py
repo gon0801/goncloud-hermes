@@ -13,7 +13,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from goncloud_test_support import FAKE_MUSE_KEY, cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import (  # noqa: E402
+    FAKE_MUSE_KEY,
+    arbol_hermes,
+    cleanup_temp_directory,
+)
 
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
@@ -72,13 +76,11 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "user-managed model conflict"):
             module.remove_owned_native_routing(existing, previous)
 
+    @unittest.skipUnless(
+        arbol_hermes(), "hermes-agent real solo en la PC (no tiene doble)"
+    )
     def test_compatibility_apply_migrates_owned_native_routing_idempotently(self):
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         self.assertTrue((upstream / "hermes_cli/profiles.py").is_file())
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -635,15 +637,13 @@ class DirectorNativeChainTests(unittest.TestCase):
 
             self.assertEqual(target.read_bytes(), b"line one\nline two\n")
 
+    @unittest.skipUnless(
+        arbol_hermes(), "hermes-agent real solo en la PC (no tiene doble)"
+    )
     def test_check_validates_without_writing(self):
         import yaml
 
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         self.assertTrue(
             (upstream / "hermes_cli/profiles.py").is_file(),
             "Run tests with the installed Hermes runtime",
@@ -751,6 +751,9 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertEqual(soul.read_text(encoding="utf-8"), "user edit")
             self.assertEqual(state.read_bytes(), recorded)
 
+    @unittest.skipUnless(
+        arbol_hermes(), "hermes-agent real solo en la PC (no tiene doble)"
+    )
     def test_a_specialist_gets_its_native_chain_and_keeps_everything_else(self):
         # The eleven specialist profiles are the owner's: made and shaped by
         # hand, never created here. Each one owns the native chain compiled
@@ -758,12 +761,7 @@ class DirectorNativeChainTests(unittest.TestCase):
         # SOUL, toolsets and the rest stay untouched.
         import yaml
 
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         self.assertTrue(
             (upstream / "hermes_cli/profiles.py").is_file(),
             "Run tests with the installed Hermes runtime",
@@ -847,16 +845,14 @@ class DirectorNativeChainTests(unittest.TestCase):
             self.assertNotEqual(conflict.returncode, 0)
             self.assertIn("conflict", conflict.stderr)
 
+    @unittest.skipUnless(
+        arbol_hermes(), "hermes-agent real solo en la PC (no tiene doble)"
+    )
     def test_real_profiles_apply_twice_keeping_other_credentials(self):
         import json
         import yaml
 
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         self.assertTrue(
             (upstream / "hermes_cli/profiles.py").is_file(),
             "Run tests with the installed Hermes runtime",
@@ -1179,6 +1175,11 @@ class RootKanbanPolicyTests(unittest.TestCase):
             module.apply_root_kanban("kanban: {review_dispatch: true}\n", self.POLICY)
 
 
+@unittest.skipUnless(
+    arbol_hermes(),
+    "hermes-agent real solo en la PC: los retirados se comprueban contra el"
+    " arbol vivo (no tiene doble)",
+)
 class ManagedFileRetirementTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1186,12 +1187,7 @@ class ManagedFileRetirementTests(unittest.TestCase):
         self.temporary = Path(self.tmp.name)
 
     def deploy(self, runtime=None, extra_args=()):
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         runtime = runtime or self.temporary / "runtime"
         result = subprocess.run(
             [

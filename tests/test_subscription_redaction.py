@@ -138,31 +138,52 @@ class RedactionTests(unittest.TestCase):
         # A minified blob with no "@" used to backtrack from every word
         # boundary (about 20 min per MB), past the 600 s stage lease, which
         # then skipped the health record that re-arms a quarantine. The regex
-        # holds the GIL, so the bound is enforced on a child process.
+        # holds the GIL, so the bound is enforced on a child process. The
+        # assertion is GROWTH (4x the input must not cost ~16x): a fixed
+        # ceiling flattered no one on a cold shared runner.
         probe = (
-            "import sys; sys.path.insert(0, sys.argv[1]); "
-            "import local_orchestrator; from subscriptions.redaction import redact_text; "
-            "blob = 'a.' * 100_000; "
-            "assert redact_text(blob) == blob; "
-            "assert local_orchestrator._sanitize(blob) == blob; print('linear')"
+            "import sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import local_orchestrator\n"
+            "from subscriptions.redaction import redact_text\n"
+            "for n in (25_000, 100_000):\n"
+            "    blob = 'a.' * n\n"
+            "    t0 = time.perf_counter()\n"
+            "    assert redact_text(blob) == blob\n"
+            "    assert local_orchestrator._sanitize(blob) == blob\n"
+            "    print(time.perf_counter() - t0)\n"
         )
         try:
             completed = subprocess.run(
                 [sys.executable, "-c", probe, str(ROOT / "plugins/goncloud-team")],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=120,
                 env={
                     **os.environ,
-                    "PYTHONPATH": str(
-                        Path.home() / "AppData/Local/hermes/hermes-agent"
+                    # El doble de hermes_cli debe llegar al hijo: el hijo
+                    # importa local_orchestrator, que importa hermes_cli.
+                    # Sin el doble el subproceso muere en el import en el
+                    # runner (y en la PC pisaria el doble heredado).
+                    "PYTHONPATH": os.pathsep.join(
+                        [
+                            str(ROOT / "tests" / "fake_hermes_cli"),
+                            str(Path.home() / "AppData/Local/hermes/hermes-agent"),
+                        ]
                     ),
                 },
             )
         except subprocess.TimeoutExpired:
-            self.fail("redaction of a 200 KB single line did not finish in 10 s")
+            self.fail("redaction of a 200 KB single line did not finish in 120 s")
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "linear")
+        t_small, t_big = (float(line) for line in completed.stdout.split())
+        # Lineal: 4x la entrada cuesta ~4x. Cuadratico: ~16x. El corte en 8x
+        # deja ruido de timer para el lineal y condena al cuadratico.
+        self.assertLess(
+            t_big,
+            t_small * 8,
+            f"redaction growth looks quadratic: {t_small=:.4f} {t_big=:.4f}",
+        )
 
     def test_the_orchestrator_shares_the_router_patterns(self):
         # Two copies drifted once (ghp_/xai- reached Telegram); one source now.

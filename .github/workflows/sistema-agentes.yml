@@ -67,10 +67,19 @@ jobs:
           python-version: "3.11"
       - name: Pruebas del espejo, el contrato, derivar y el recorrido de ensayos
         if: steps.reuso.outputs.reusar != 'true'
-        run: python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py" -v
-      - name: Pruebas de JEV (ruteo y cierre) sin Hermes ni red
         run: |
-          python3 -m unittest discover -s tests -p "test_jev_ruteo.py" -v
+          python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py" -v
+          # Mitad 2 (H-ci-completa, orden del dueno 2026-10-19): TODO
+          # tests/test_*.py fuera del patron sistema. La union de ambas
+          # mitades es la bateria completa (contrato: tests/
+          # test_sistema_agentes_ci_completa.py); sin doble recorte. El
+          # doble de hermes_cli va en PYTHONPATH solo aqui para que las
+          # guardias skipUnless de hermes_cli real de la mitad 1 sigan
+          # decidiendo, y sin OPENCODE_CONFIG_CONTENT para que el router no
+          # herede configuracion real del runner.
+          python3 -m pip install --quiet pyyaml
+          env -u OPENCODE_CONFIG_CONTENT PYTHONPATH=tests/fake_hermes_cli \
+            python3 .github/scripts/bateria_resto.py
       - name: El espejo coincide byte a byte con G en el commit fijado
         if: steps.reuso.outputs.reusar != 'true'
         run: |
