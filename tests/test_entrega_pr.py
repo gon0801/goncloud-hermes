@@ -160,6 +160,21 @@ class PublicacionTests(_TableroGit):
         self.assertIn("panel arreglado", post["payload"]["body"])
         self.assertIn("Cadena t_x", post["payload"]["body"])
 
+    def test_la_base_guardada_en_el_contrato_gana_sobre_origin_head(self):
+        # H-entrega-pr r2: la rama guardada al crear el worktree es la base;
+        # el origin/HEAD local (main) solo es respaldo de cadenas viejas.
+        falso, hechas = self.api_falsa(
+            {
+                ("GET", "/repos/acme/repo/pulls"): (200, []),
+                ("POST", "/repos/acme/repo/pulls"): (201, {"html_url": URL_PR}),
+            }
+        )
+
+        resultado = self.publicar(falso, base="feat/x")
+
+        self.assertEqual(resultado, {"pull_request": URL_PR})
+        self.assertEqual(hechas[-1]["payload"]["base"], "feat/x")
+
     def test_un_pr_abierto_de_la_rama_se_reutiliza(self):
         viejo = "https://github.com/acme/repo/pull/4"
         falso, hechas = self.api_falsa(

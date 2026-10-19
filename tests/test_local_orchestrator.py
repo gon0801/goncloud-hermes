@@ -1050,6 +1050,11 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         result = self.start()
         self.assertEqual(result["outcome"], "delivered")
 
+    def _git(self, *args):
+        subprocess.run(
+            ["git", "-C", str(self.repo), *args], check=True, capture_output=True
+        )
+
     def _origen_pelado(self):
         """Un origin pelado local para el repo real: git sin red."""
         origen = self.root / "origin.git"
@@ -1182,6 +1187,67 @@ class LocalOrchestratorTests(_OrchestratorHarness):
             f"rama cadena/{result['workflow_id']} lista, PR no abierto: "
             "sin credencial de GitHub para https://github.com",
         )
+
+    def test_the_pr_base_is_the_branch_the_chain_was_born_from(self):
+        # H-entrega-pr r2: el trabajo no siempre va contra la rama por
+        # defecto. La cadena nace con el checkout en feat/x (el default del
+        # remoto sigue siendo main): la base del POST es feat/x, capturada
+        # al crear el worktree, no main.
+        self._real_git_repo()
+        self._origen_pelado()
+        self._git("checkout", "-b", "feat/x")
+        llamadas = []
+
+        def api(metodo, ruta, token, payload=None):
+            llamadas.append((metodo, ruta, payload))
+            if metodo == "GET":
+                return 200, []
+            return 201, {"html_url": "https://github.com/acme/repo/pull/3"}
+
+        with (
+            patch.object(
+                entrega_pr_module, "_credencial", return_value="ghp_Abc123Def456Ghi789"
+            ),
+            patch.object(entrega_pr_module, "_api", api),
+            patch.object(
+                entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
+            ),
+        ):
+            result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        payload = next(llamada for llamada in llamadas if llamada[0] == "POST")[2]
+        self.assertEqual(payload["base"], "feat/x")
+        self.assertEqual(payload["head"], f"cadena/{result['workflow_id']}")
+
+    def test_a_chain_born_detached_falls_back_to_the_default_branch(self):
+        # Detached no hay rama que guardar: el respaldo es la rama por
+        # defecto del remoto (origin/HEAD -> main), como en r1.
+        self._real_git_repo()
+        self._origen_pelado()
+        self._git("checkout", "--detach")
+        llamadas = []
+
+        def api(metodo, ruta, token, payload=None):
+            llamadas.append((metodo, ruta, payload))
+            if metodo == "GET":
+                return 200, []
+            return 201, {"html_url": "https://github.com/acme/repo/pull/5"}
+
+        with (
+            patch.object(
+                entrega_pr_module, "_credencial", return_value="ghp_Abc123Def456Ghi789"
+            ),
+            patch.object(entrega_pr_module, "_api", api),
+            patch.object(
+                entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
+            ),
+        ):
+            result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        payload = next(llamada for llamada in llamadas if llamada[0] == "POST")[2]
+        self.assertEqual(payload["base"], "main")
 
     def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
         self,

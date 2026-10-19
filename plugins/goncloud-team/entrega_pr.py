@@ -171,9 +171,14 @@ def _rama_base_local(worktree) -> str | None:
     return None
 
 
-def publicar(workflow_id: str, *, worktree, instruction: str = "", summary: str = ""):
+def publicar(
+    workflow_id: str, *, worktree, instruction: str = "", summary: str = "", base=None
+):
     """Sube `cadena/<id>` y abre el PR; ({"pull_request": url}) o el motivo.
 
+    `base` es la rama guardada en el contrato (de donde nacio la cadena,
+    capturada al crear el worktree); sin ella —cadenas viejas— se deduce del
+    origin/HEAD local y, por ultimo, de la rama por defecto del remoto.
     Nunca lanza y nunca devuelve la credencial: lo unico que sale de aqui
     es la URL del PR o un motivo corto y redactado.
     """
@@ -205,7 +210,9 @@ def publicar(workflow_id: str, *, worktree, instruction: str = "", summary: str 
     if codigo != 200:
         return {"pr_no_abierto": _motivo_api(codigo, cuerpo)}
 
-    base = _rama_base_local(worktree)
+    # La base guardada en el contrato manda; origin/HEAD y la rama por
+    # defecto del remoto son el respaldo de las cadenas viejas.
+    base = base or _rama_base_local(worktree)
     if not base:
         codigo, cuerpo = _api("GET", f"/repos/{dueño}/{nombre}", token)
         base = cuerpo.get("default_branch") if codigo == 200 else None

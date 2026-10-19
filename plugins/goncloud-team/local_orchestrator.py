@@ -1378,6 +1378,7 @@ class LocalOrchestrator:
                     worktree=contract["worktree"],
                     instruction=(contract or {}).get("instruction", ""),
                     summary=_etapa_y_motivo(report)[1],
+                    base=(contract or {}).get("base_branch") or None,
                 )
             )
         _write_result(workflow_id, report, home=home)
