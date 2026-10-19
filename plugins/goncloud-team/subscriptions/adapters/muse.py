@@ -33,6 +33,10 @@ class MuseAdapter(SubscriptionAdapter):
     # WSL cold starts can exceed the default probe window by a wide margin.
     max_probe_timeout_seconds = 120
     probe_timeout_seconds = 120
+    #: La config JEV resuelta del router; el router la inyecta antes de
+    #: invoke. Este adaptador no clasifica con JEV: dentro del router
+    #: clasifica solo el router (F6b).
+    jev_config = None
 
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Muse exposes no non-generative auth probe; report install state."""
@@ -69,6 +73,8 @@ class MuseAdapter(SubscriptionAdapter):
                 runner=self.runner,
                 model=route.model,
                 reasoning_effort=route.reasoning_effort,
+                jev_config=self.jev_config,
+                clasificar_con_jev=False,
             )
         except MuseBridgeError as error:
             return self._failed_result(route, error.failure)

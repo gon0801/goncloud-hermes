@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1021,6 +1022,198 @@ class TickerVeredictoPersistidoTests(unittest.TestCase):
         self.assertEqual(tienda.incidencias[0][1]["kind"], "result-missing")
         persistido = tienda.veredictos[("root-1", "unit-1", 1)]
         self.assertFalse(persistido["transporte"])
+
+
+CONFIG_YAML_05 = (
+    "plugins:\n"
+    "  entries:\n"
+    "    goncloud-team:\n"
+    "      settings:\n"
+    "        jev_umbral: 0.5\n"
+)
+
+
+def env_de_home(home):
+    """El entorno de un proceso sin ctx: sin GONCLOUD_JEV_*, con su home."""
+    env = {
+        clave: valor
+        for clave, valor in os.environ.items()
+        if not clave.startswith("GONCLOUD_JEV_")
+    }
+    env["HERMES_HOME"] = str(home)
+    return env
+
+
+class CausaComunSinCtxTests(unittest.TestCase):
+    """Causa común F1/F6: sin ctx, config_jev lee el config.yaml de la raíz."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.home = Path(self.tmp.name).resolve()
+        (self.home / "config.yaml").write_text(CONFIG_YAML_05, encoding="utf-8")
+
+    def test_workflow_sin_ctx_ve_umbral_e_interruptor_del_yaml(self):
+        (self.home / "config.yaml").write_text(
+            CONFIG_YAML_05 + "        jev_router_clasificacion: false\n",
+            encoding="utf-8",
+        )
+        cargar_plugin()
+        import importlib
+
+        workflow = importlib.import_module("goncloud_team_r4.workflow")
+        with patch.dict(os.environ, env_de_home(self.home), clear=True):
+            servicio = workflow.WorkflowService(actor_role="claw")
+            router = workflow._build_subscription_router(jev_config=servicio.jev_config)
+            resuelto = router._jev_resolver()
+        self.assertIsNotNone(resuelto)
+        _, _, config = resuelto
+        self.assertEqual(config.umbral, 0.5)
+        self.assertFalse(config.punto_activo("router_clasificacion"))
+
+    def test_muse_por_el_router_una_consulta_y_una_linea(self):
+        # F6+F6b: la falla de Muse por el router la clasifica solo el router.
+        import muse_bridge
+        from subscriptions.adapters.muse import MuseAdapter
+
+        registro = self.home / "jev" / "decisiones.jsonl"
+
+        def runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, stdout="1.0", stderr="")
+
+        adapter = MuseAdapter(runner=runner)
+        adapters = {"muse": adapter}
+        from subscriptions.types import RouteSpec
+
+        route = RouteSpec(
+            slot=0,
+            label="muse",
+            adapter="muse",
+            model="muse-spark-1.3",
+            billing_mode="subscription",
+        )
+        request = InvocationRequest(
+            workflow_id="wf-muse",
+            stage_id="st-muse",
+            role="implementer",
+            prompt="Do it.",
+            workspace=self.home,
+            start_revision="",
+            current_revision="",
+        )
+        from types import SimpleNamespace
+
+        evidencia = SimpleNamespace(
+            returncode=1,
+            stream="salida rara",
+            stderr="429 Output token rate limit exceeded. Please retry after a brief wait.",
+            stdout="",
+        )
+        llamadas = []
+
+        def transporte(url, payload, headers, timeout):
+            llamadas.append(payload)
+            return 200, {"model": "jev-latest", "answers": answers_choice("quota", 0.6)}
+
+        env = {**env_de_home(self.home), "TYPESAFE_API_KEY": LLAVE_FALSA}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(muse_bridge, "build_muse_command", lambda *a, **k: ["muse"]),
+            patch.object(muse_bridge, "run_cli", lambda *a, **k: evidencia),
+            patch.object(jev_cliente, "_transporte_urllib", transporte),
+        ):
+            router = SubscriptionRouter(
+                adapters=adapters,
+                db_path=self.home / "router.db",
+                routing_source=SOURCE,
+                sleep=lambda segundos: None,
+            )
+            resultado = router.run(request, [route])
+        self.assertFalse(resultado.success)
+        self.assertEqual(resultado.failure, FailureKind.QUOTA)
+        self.assertEqual(len(llamadas), 1)
+        lineas = registro.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lineas), 1)
+        decision = json.loads(lineas[0])
+        self.assertEqual(decision["punto"], "router_clasificacion")
+        self.assertEqual(decision["umbral"], 0.5)
+        # El adaptador recibió la config del router (aunque no clasifica).
+        self.assertIsNotNone(adapter.jev_config)
+        self.assertEqual(adapter.jev_config.umbral, 0.5)
+
+
+class RegistroRaizTests(unittest.TestCase):
+    """F10: el registro deriva de la raíz de Hermes, no de HERMES_HOME."""
+
+    def test_sin_hermes_home_sale_del_override_de_contexto(self):
+        fake = str(ROOT / "tests" / "fake_hermes_cli")
+        if fake not in sys.path:
+            sys.path.insert(0, fake)
+        import hermes_constants
+
+        with tempfile.TemporaryDirectory() as directorio:
+            raiz = Path(directorio).resolve()
+            hermes_constants.set_override(str(raiz / "profiles" / "claw"))
+            try:
+                env = {
+                    clave: valor
+                    for clave, valor in os.environ.items()
+                    if clave != "HERMES_HOME"
+                }
+                with patch.dict(os.environ, env, clear=True):
+                    ruta = jev_cliente.default_registro_path()
+            finally:
+                hermes_constants.set_override(None)
+        self.assertEqual(ruta, raiz / "jev" / "decisiones.jsonl")
+
+
+class MusePaqueteTests(unittest.TestCase):
+    """F9: _jev_muse funciona importando el plugin como paquete, sin sys.path."""
+
+    def test_paquete_sin_directorio_en_syspath_consulta(self):
+        codigo = (
+            "import sys, json, importlib.util\n"
+            f"sys.path.insert(0, {str(ROOT / 'tests' / 'fake_hermes_cli')!r})\n"
+            f"_spec = importlib.util.spec_from_file_location("
+            f"'goncloud_team', {str(PLUGIN_DIR / '__init__.py')!r},"
+            f" submodule_search_locations=[{str(PLUGIN_DIR)!r}])\n"
+            "_pkg = importlib.util.module_from_spec(_spec)\n"
+            "sys.modules['goncloud_team'] = _pkg\n"
+            "_spec.loader.exec_module(_pkg)\n"
+            "import goncloud_team.jev_cliente as jc\n"
+            "import goncloud_team.muse_bridge as mb\n"
+            "def transporte(url, payload, headers, timeout):\n"
+            "    return 200, {'answers': {'jev_route': {'type': 'choice',"
+            " 'choice': 'quota', 'probabilities': {'quota': 0.9, 'auth': 0.1},"
+            " 'confidence': 0.9}}}\n"
+            "cfg = jc.JevConfig()\n"
+            "cliente = jc.ClienteJev(transporte=transporte,"
+            " obtener_llave=lambda: 'sk-falsa-de-prueba', config=cfg)\n"
+            "resuelto = mb._jev_muse(cliente, cfg)\n"
+            "salida = None\n"
+            "if resuelto is not None:\n"
+            "    modulo, cli, config = resuelto\n"
+            "    salida = modulo.reclasificar_falla(cli, config,"
+            " punto=modulo.PUNTO_MUSE_BRIDGE_CLASIFICACION, regla='auth',"
+            " estado='adapter: muse', contexto={})\n"
+            "print(json.dumps({'resuelto': resuelto is not None, 'salida': salida}))\n"
+        )
+        env = {
+            clave: valor
+            for clave, valor in os.environ.items()
+            if clave not in ("PYTHONPATH",)
+        }
+        completado = subprocess.run(
+            [sys.executable, "-c", codigo],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        self.assertEqual(completado.returncode, 0, completado.stderr[-2000:])
+        resultado = json.loads(completado.stdout.strip().splitlines()[-1])
+        self.assertTrue(resultado["resuelto"])
+        self.assertEqual(resultado["salida"], "quota")
 
 
 if __name__ == "__main__":

@@ -657,7 +657,14 @@ class SubscriptionRouter:
             )
 
         try:
-            result = self.adapters[route.adapter].invoke(request, route)
+            adapter = self.adapters[route.adapter]
+            if hasattr(adapter, "jev_config"):
+                # El adaptador (Muse) recibe la config JEV del router;
+                # clasificar sigue siendo solo del router (F6b).
+                resuelto = self._jev_resolver()
+                if resuelto is not None:
+                    adapter.jev_config = resuelto[2]
+            result = adapter.invoke(request, route)
         except Exception:
             return failed("subscription invocation failed", FailureKind.TASK_FAILURE)
         if request.result_transform is not None:

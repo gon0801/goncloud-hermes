@@ -144,12 +144,33 @@ def obtener_llave(getter: Callable | None = None) -> str:
     raise JevError("TYPESAFE_API_KEY no está disponible")
 
 
+def _raiz_hermes() -> Path | None:
+    """La raíz del home de Hermes vía raices.hogar, o None si no se resuelve.
+
+    Es la misma resolución que usa el resto del plugin (el gateway no
+    define HERMES_HOME: cuenta el override de contexto de hermes_constants).
+    """
+    try:
+        try:
+            from raices.hogar import raiz_del_hogar
+        except ImportError:
+            from .raices.hogar import raiz_del_hogar  # type: ignore
+
+        return Path(raiz_del_hogar())
+    except Exception:
+        return None
+
+
 def default_registro_path(env: Mapping[str, str] | None = None) -> Path:
-    """<home del perfil o del root>/jev/decisiones.jsonl."""
+    """<home de Hermes>/jev/decisiones.jsonl, derivado de la raíz (F10)."""
     entorno = os.environ if env is None else env
     configurado = str(entorno.get("GONCLOUD_JEV_REGISTRO", "")).strip()
     if configurado:
         return Path(configurado)
+    if env is None:
+        raiz = _raiz_hermes()
+        if raiz is not None:
+            return raiz / "jev" / "decisiones.jsonl"
     home = str(entorno.get("HERMES_HOME", "")).strip()
     if home:
         return Path(home) / "jev" / "decisiones.jsonl"
@@ -209,8 +230,19 @@ def _a_float(valor: Any, defecto: float) -> float:
 
 
 def config_jev(fuente: Any = None, env: Mapping[str, str] | None = None) -> JevConfig:
-    """Config del plugin (config_schema de plugin.yaml) con respaldo de entorno."""
+    """Config del plugin (config_schema de plugin.yaml) con respaldo de entorno.
+
+    Sin fuente (no hay ctx ni config inyectada), la fuente por omisión es
+    el config.yaml de la raíz de Hermes
+    (plugins.entries.goncloud-team.settings): es la causa común de que el
+    driver desacoplado, el adaptador Muse y el ticker vean la config del
+    dueño sin depender del entorno.
+    """
     entorno = os.environ if env is None else env
+    if fuente is None:
+        raiz = _raiz_hermes()
+        if raiz is not None:
+            fuente = fuente_desde_config_yaml(raiz / "config.yaml")
     umbral = _a_float(
         _valor_fuente(fuente, "jev_umbral", DEFAULT_UMBRAL), DEFAULT_UMBRAL
     )

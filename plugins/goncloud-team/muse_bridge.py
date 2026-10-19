@@ -25,12 +25,27 @@ except ImportError:
 _jev_resuelto = None
 
 
+def _importar_jev_cliente():
+    """jev_cliente como hermano: relativo en modo paquete, absoluto si no."""
+    try:
+        from . import jev_cliente as modulo
+
+        return modulo
+    except ImportError:
+        plugin_dir = Path(__file__).resolve().parent
+        if str(plugin_dir) not in sys.path:
+            sys.path.insert(0, str(plugin_dir))
+        import jev_cliente as modulo
+
+        return modulo
+
+
 def _jev_muse(jev_cliente_inyectado=None, jev_config_inyectada=None):
     """(módulo, cliente, config) de JEV, o None si no se pudo cargar."""
     global _jev_resuelto
     if jev_cliente_inyectado is not None or jev_config_inyectada is not None:
         try:
-            import jev_cliente as modulo
+            modulo = _importar_jev_cliente()
         except Exception:
             return None
         config = jev_config_inyectada
@@ -44,11 +59,7 @@ def _jev_muse(jev_cliente_inyectado=None, jev_config_inyectada=None):
         return modulo, cliente, config
     if _jev_resuelto is None:
         try:
-            plugin_dir = Path(__file__).resolve().parent
-            if str(plugin_dir) not in sys.path:
-                sys.path.insert(0, str(plugin_dir))
-            import jev_cliente as modulo
-
+            modulo = _importar_jev_cliente()
             config = modulo.config_jev()
             _jev_resuelto = (modulo, modulo.ClienteJev(config=config), config)
         except Exception:
@@ -155,6 +166,7 @@ def delegate_to_muse(
     reasoning_effort: str | None = None,
     jev_cliente=None,
     jev_config=None,
+    clasificar_con_jev: bool = True,
 ) -> dict:
     """Delegate one task to Muse without interpolating user input into a shell."""
     if not prompt.strip():
@@ -201,7 +213,11 @@ def delegate_to_muse(
             completed.returncode, completed.stream, completed.stderr
         )
         failure = regla
-        resuelto = _jev_muse(jev_cliente, jev_config)
+        # Dentro del router clasifica solo el router (punto
+        # router_clasificacion): el adaptador Muse pasa
+        # clasificar_con_jev=False y esta delegación devuelve la heurística.
+        # La herramienta directa goncloud_muse_delegate sí clasifica aquí.
+        resuelto = _jev_muse(jev_cliente, jev_config) if clasificar_con_jev else None
         if resuelto is not None:
             modulo, cliente, config = resuelto
             estado = "\n".join(
