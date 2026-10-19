@@ -96,6 +96,11 @@ class InvocationResult:
     skipped_routes: tuple[SkippedRoute, ...] = ()
     #: The vendor's own "retry after N s" on a throttle, when it named one.
     retry_after_seconds: float | None = None
+    #: Redacted diagnostics for the durable attempt record: why an invocation
+    #: failed. Not a public evidence channel — kept out of repr and equality
+    #: like ProcessEvidence.stream — the router writes it to
+    #: subscription_attempts.detail and a recovered attempt reads it back.
+    detail: str = field(default="", repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -104,6 +109,7 @@ class InvocationResult:
             "adapter",
             "model",
             "route_label",
+            "detail",
         ):
             object.__setattr__(self, field_name, redact_text(getattr(self, field_name)))
 
