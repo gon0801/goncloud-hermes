@@ -24,6 +24,7 @@ from subscriptions.process import (  # noqa: E402
 from subscriptions import adapters  # noqa: E402
 from subscriptions.adapters import classify_failure  # noqa: E402
 from subscriptions.adapters.opencode import (  # noqa: E402
+    _VERSION_LINE,
     OpenCodeAdapter,
     parse_opencode_jsonl,
 )
@@ -302,7 +303,17 @@ class OpenCodeAdapterTests(unittest.TestCase):
         sin_texto = "\n".join(
             line for line in fixture.splitlines() if json.loads(line)["type"] != "text"
         )
-        runner = SequencedCliRunner(["opencode v2.0.29", sin_texto])
+        # A step-finish "stop" is present: with major=1 that alone would
+        # validate the terminal, with major=2 it must not (2.x closes
+        # with the final text part, and there is none here).
+        con_stop = (
+            sin_texto
+            + "\n"
+            + '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}'
+        )
+        self.assertTrue(parse_opencode_jsonl(con_stop, major=1)["terminal_valid"])
+        self.assertFalse(parse_opencode_jsonl(con_stop, major=2)["terminal_valid"])
+        runner = SequencedCliRunner(["opencode v2.0.29", con_stop])
 
         result = OpenCodeAdapter(runner=runner).invoke(
             request(self.workspace), route(1, "opencode_zai", "glm-5.3-flash")
@@ -310,6 +321,58 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+
+    def test_opencode_2_stream_que_termina_en_tool_calls_es_invalido(self):
+        texto_previo = '{"type":"text","part":{"type":"text","text":"previo"}}'
+        cierre_tool_calls = (
+            '{"type":"step_finish","part":{"type":"step-finish","reason":"tool-calls"}}'
+        )
+        stream = f"{texto_previo}\n{cierre_tool_calls}"
+
+        self.assertFalse(parse_opencode_jsonl(stream, major=2)["terminal_valid"])
+
+    def test_opencode_2_step_finish_length_es_invalido(self):
+        texto = '{"type":"text","part":{"type":"text","text":"respuesta"}}'
+        length_despues = (
+            '{"type":"step_finish","part":{"type":"step-finish","reason":"length"}}'
+        )
+        self.assertFalse(
+            parse_opencode_jsonl(f"{texto}\n{length_despues}", major=2)[
+                "terminal_valid"
+            ]
+        )
+        self.assertFalse(
+            parse_opencode_jsonl(f"{length_despues}\n{texto}", major=2)[
+                "terminal_valid"
+            ]
+        )
+
+    def test_opencode_2_fixture_real_es_terminal_valido(self):
+        fixture = (ROOT / "tests/fixtures/opencode2_run.jsonl").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertTrue(parse_opencode_jsonl(fixture, major=2)["terminal_valid"])
+
+    def test_major_detecta_las_salidas_reales_de_version(self):
+        casos = [
+            ("opencode_version_mac2.txt", 2),
+            ("opencode_version_mini2.txt", 2),
+            ("opencode_version_pc1.txt", 1),
+        ]
+        for nombre, esperado in casos:
+            with self.subTest(fixture=nombre):
+                salida = (ROOT / "tests/fixtures" / nombre).read_text(encoding="utf-8")
+                adapter = OpenCodeAdapter(runner=FakeCliRunner(stdout=salida))
+                self.assertEqual(adapter._major(), esperado)
+                # The bare PC line must parse as a version, not fall back
+                # to 1 by accident (old _VERSION_LINE returned no match).
+                found = _VERSION_LINE.search(salida)
+                self.assertIsNotNone(found, nombre)
+                self.assertEqual(int(found.group(1)), esperado)
+        # A canned test stream is not a version line.
+        adapter = OpenCodeAdapter(runner=FakeCliRunner(stdout=SUCCESS_JSONL))
+        self.assertEqual(adapter._major(), 1)
 
     def test_opencode_2_classifies_an_auth_error_event(self):
         # El sobre del error es el medido en la 2.0.29 (evento type:error y
@@ -324,6 +387,21 @@ class OpenCodeAdapterTests(unittest.TestCase):
             request(self.workspace), route(1, "opencode_zai", "glm-5.3-flash")
         )
 
+        llamada_version, llamada_run = runner.calls
+        self.assertEqual(llamada_version[0], ["opencode", "--version"])
+        self.assertEqual(
+            llamada_run[0],
+            [
+                "opencode",
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--model",
+                "zai-coding-plan/glm-5.3-flash",
+            ],
+        )
+        self.assertNotIn("--dir", llamada_run[0])
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.AUTH)
 

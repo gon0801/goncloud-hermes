@@ -52,14 +52,17 @@ _CREDENTIAL_NAMES = {
 }
 
 #: The PC runs OpenCode 1.19.3; the Mac moved to 2.x (owner decision,
-#: 2026-10-19). One ``--version`` per adapter picks the invocation. The line
-#: must START with "opencode" so a canned test stream never parses as a
-#: version. 2.x: --dir is gone (the workspace is the process cwd), the model
-#: travels by --model/-m the same way, every attempt needs --standalone to
-#: get a private server instead of the shared background one, and the JSON
-#: stream closes with the final text part — a step-finish only appears
-#: mid-stream after tool calls (reason "tool-calls").
-_VERSION_LINE = re.compile(r"(?m)^\s*opencode\s+v?(\d+)\.")
+#: 2026-10-19). One ``--version`` per adapter picks the invocation. Real
+#: measured outputs: Mac/Mini 2.x print "opencode v2.0.29", the PC 1.x
+#: prints "1.19.3" bare. The line must be a whole version line (optional
+#: "opencode" prefix, then only the version) so a canned test stream
+#: never parses as a version. 2.x: --dir is gone (the workspace is the
+#: process cwd), the model travels by --model/-m the same way, every
+#: attempt needs --standalone to get a private server instead of the
+#: shared background one, and the JSON stream closes with the final
+#: text part — a step-finish only appears mid-stream after tool calls
+#: (reason "tool-calls").
+_VERSION_LINE = re.compile(r"(?m)^\s*(?:opencode\s+)?v?(\d+)\.\d+(?:\.\d+)?\s*$")
 
 
 def parse_opencode_jsonl(output: str, *, major: int = 1) -> dict:
@@ -70,7 +73,10 @@ def parse_opencode_jsonl(output: str, *, major: int = 1) -> dict:
     saw_error = False
     saw_text = False
     malformed = False
-    for line in output.splitlines():
+    last_text_index = -1
+    last_step_finish_index = -1
+    saw_bad_step_finish_reason = False
+    for index, line in enumerate(output.splitlines()):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -102,16 +108,26 @@ def parse_opencode_jsonl(output: str, *, major: int = 1) -> dict:
             if part_type == "text":
                 text_parts.append(str(part.get("text") or ""))
                 saw_text = True
-            if (
-                event_type == "step_finish"
-                and part_type == "step-finish"
-                and reason == "stop"
-            ):
-                terminal_valid = True
+                last_text_index = index
+            if event_type == "step_finish" and part_type == "step-finish":
+                last_step_finish_index = index
+                if reason not in {"stop", "tool-calls"}:
+                    saw_bad_step_finish_reason = True
+                if reason == "stop":
+                    terminal_valid = True
     if major >= 2:
-        # 2.x never closes with a stop-reason step-finish: the terminal
-        # evidence is the final text part itself and a clean exit.
-        terminal_valid = saw_text and not saw_error and not malformed
+        # 2.x never closes with a stop-reason step-finish: it closes with
+        # the final text part after the last step-finish. Any text before
+        # a trailing step-finish (tool-calls included) is a mid-stream
+        # fragment, and a step-finish reason outside stop/tool-calls
+        # (e.g. length) means the stream was cut.
+        terminal_valid = (
+            saw_text
+            and last_text_index > last_step_finish_index
+            and not saw_bad_step_finish_reason
+            and not saw_error
+            and not malformed
+        )
     return {
         "session_id": session_id,
         "text": "".join(text_parts),
