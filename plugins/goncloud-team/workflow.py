@@ -1178,7 +1178,9 @@ class WorkflowService:
                 if contract.get("worktree")
                 else None
             )
-            expected_workspace = contract_worktree or origin
+            allowed = {origin} | (
+                {contract_worktree} if contract_worktree is not None else set()
+            )
             for member in (root, task):
                 if member.workspace_kind != "dir" or not member.workspace_path:
                     raise WorkflowError(
@@ -1192,12 +1194,17 @@ class WorkflowService:
                     ) from exc
                 # La tarjeta raíz apunta al repo original y la cadena
                 # trabaja en su worktree — ambas rutas son legítimas aquí.
-                if task_repo not in (origin, expected_workspace):
+                if task_repo not in allowed:
                     raise WorkflowError(
                         f"task {member.id} workspace does not match repository"
                     )
-            if expected_workspace != repo:
-                raise WorkflowError("repository does not match the workflow contract")
+            # r-H-cadena-worktree: los workspaces legítimos de la asignación
+            # son el original y el worktree de la cadena; cualquier otro es
+            # un error de workspace, como siempre fue (el motivo de hoy).
+            if repo not in allowed:
+                raise WorkflowError(
+                    f"task {task_id} workspace does not match repository"
+                )
             if contract.get("revision") != revision:
                 raise WorkflowError("revision does not match the workflow contract")
             authorization = [
