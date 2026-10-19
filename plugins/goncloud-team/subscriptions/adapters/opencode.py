@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from ..process import SubscriptionProcessError, run_cli
@@ -50,13 +51,24 @@ _CREDENTIAL_NAMES = {
     "opencode_zai": "z.ai coding plan",
 }
 
+#: The PC runs OpenCode 1.19.3; the Mac moved to 2.x (owner decision,
+#: 2026-10-19). One ``--version`` per adapter picks the invocation. The line
+#: must START with "opencode" so a canned test stream never parses as a
+#: version. 2.x: --dir is gone (the workspace is the process cwd), the model
+#: travels by --model/-m the same way, every attempt needs --standalone to
+#: get a private server instead of the shared background one, and the JSON
+#: stream closes with the final text part — a step-finish only appears
+#: mid-stream after tool calls (reason "tool-calls").
+_VERSION_LINE = re.compile(r"(?m)^\s*opencode\s+v?(\d+)\.")
 
-def parse_opencode_jsonl(output: str) -> dict:
+
+def parse_opencode_jsonl(output: str, *, major: int = 1) -> dict:
     """Accumulate text parts and session identity from raw JSON events."""
     text_parts: list[str] = []
     session_id = None
     terminal_valid = False
     saw_error = False
+    saw_text = False
     malformed = False
     for line in output.splitlines():
         try:
@@ -89,12 +101,17 @@ def parse_opencode_jsonl(output: str) -> dict:
                 saw_error = True
             if part_type == "text":
                 text_parts.append(str(part.get("text") or ""))
+                saw_text = True
             if (
                 event_type == "step_finish"
                 and part_type == "step-finish"
                 and reason == "stop"
             ):
                 terminal_valid = True
+    if major >= 2:
+        # 2.x never closes with a stop-reason step-finish: the terminal
+        # evidence is the final text part itself and a clean exit.
+        terminal_valid = saw_text and not saw_error and not malformed
     return {
         "session_id": session_id,
         "text": "".join(text_parts),
@@ -162,17 +179,59 @@ class OpenCodeAdapter(SubscriptionAdapter):
             detail=f"credential class not installed: {expected}",
         )
 
+    def _major(self) -> int:
+        """``opencode --version`` una vez por adaptador: >=2, camino nuevo.
+
+        Cualquier duda (CLI ausente, salida que no es una línea de versión)
+        se resuelve en 1: la PC corre 1.19.3 y no debe romperse aunque el
+        sondeo falle.
+        """
+        cached = getattr(self, "_major_version", None)
+        if cached is not None:
+            return cached
+        major = 1
+        try:
+            evidence = run_cli(
+                ["opencode", "--version"],
+                "",
+                Path.cwd(),
+                self.probe_timeout_seconds,
+                runner=self.runner,
+            )
+            found = _VERSION_LINE.search(evidence.stdout)
+            if found:
+                major = max(1, int(found.group(1)))
+        except SubscriptionProcessError:
+            major = 1
+        self._major_version = major
+        return major
+
     def _run(self, request: InvocationRequest, route: RouteSpec, prompt: str):
-        command = [
-            "opencode",
-            "run",
-            "--format",
-            "json",
-            "--model",
-            f"{self._provider(route)}/{route.model}",
-            "--dir",
-            str(request.workspace),
-        ]
+        if self._major() >= 2:
+            # OpenCode 2: no --dir (the workspace is the process cwd) and
+            # --standalone so the attempt gets a private server instead of
+            # joining the shared background one. The prompt still travels
+            # by stdin, never as an argument.
+            command = [
+                "opencode",
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--model",
+                f"{self._provider(route)}/{route.model}",
+            ]
+        else:
+            command = [
+                "opencode",
+                "run",
+                "--format",
+                "json",
+                "--model",
+                f"{self._provider(route)}/{route.model}",
+                "--dir",
+                str(request.workspace),
+            ]
         return run_cli(
             command,
             prompt,
@@ -202,7 +261,7 @@ class OpenCodeAdapter(SubscriptionAdapter):
                 returncode=evidence.returncode,
             )
 
-        parsed = parse_opencode_jsonl(evidence.stream)
+        parsed = parse_opencode_jsonl(evidence.stream, major=self._major())
         if parsed["terminal_valid"] and parsed["text"].strip():
             return InvocationResult(
                 success=True,
