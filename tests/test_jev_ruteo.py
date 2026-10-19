@@ -9,6 +9,7 @@ texto del mensaje.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import tempfile
@@ -388,6 +389,7 @@ class CierreTests(Base):
         auto = self.auto()
         self.primer_turno(auto)
         self.kanban.tarea("t_m", "meli", "done")
+        self.kanban.corrida("t_m", "2 preguntas respondidas, falta una")
         self.kanban.evento("t_m", "completed")
         contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
         self.assertIn(
@@ -400,6 +402,7 @@ class CierreTests(Base):
         self.primer_turno(auto)
         for n in range(5):
             self.kanban.tarea(f"t_{n}", "odoo", "done")
+            self.kanban.corrida(f"t_{n}", f"reporte {n} de cajas")
             self.kanban.evento(f"t_{n}", "completed")
         primero = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
         segundo = auto.pre_llm_call(**turno(turn_id="t2"))["context"]
@@ -412,6 +415,7 @@ class CierreTests(Base):
         auto = self.auto(jev_apoyo.JevFalso(falla=RuntimeError("caido")))
         self.primer_turno(auto)
         self.kanban.tarea("t_m", "meli", "done")
+        self.kanban.corrida("t_m", "reporte de preguntas de MeLi")
         self.kanban.evento("t_m", "completed")
         contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
         self.assertNotIn("Jev cierre", contexto)
@@ -427,9 +431,252 @@ class CierreTests(Base):
         self.primer_turno(auto)
         self.assertTrue((self.claw / "jev" / "cierre-cursor.json").is_file())
         self.kanban.tarea("t_p", "pers", "done")
+        self.kanban.corrida("t_p", "1 personalizada nueva anotada")
         self.kanban.evento("t_p", "completed")
         contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
         self.assertIn("Jev cierre: t_p (pers, completed)", contexto)
+
+
+class DescripcionesDeRuteoTests(unittest.TestCase):
+    """J1: claw acotada y las frases reales de David en cada destino."""
+
+    def test_claw_solo_cuando_no_nombra_sistema_ni_pide_codigo(self):
+        claw = jev_decisiones.RUTAS["claw"].lower()
+        self.assertIn("solo", claw)
+        self.assertIn("no nombra", claw)
+        self.assertIn("no es claw", claw)
+        self.assertIn("saludos", claw)
+        self.assertIn("decisiones sobre trabajo existente", claw)
+        for sistema in ("meli", "amazon", "odoo", "gmail", "server", "app", "repo"):
+            self.assertIn(sistema, claw, sistema)
+
+    def test_las_frases_reales_estan_en_su_destino(self):
+        self.assertIn("preguntas pendientes de MeLi", jev_decisiones.RUTAS["meli"])
+        self.assertIn(
+            "responder preguntas de compradores", jev_decisiones.RUTAS["meli"]
+        )
+        self.assertIn("llegó una personalizada", jev_decisiones.RUTAS["pers"])
+        self.assertIn("personalizada nueva", jev_decisiones.RUTAS["pers"])
+        ingenieria = jev_decisiones.RUTAS["ingenieria"]
+        self.assertIn("un botón", ingenieria)
+        self.assertIn("una pantalla", ingenieria)
+        self.assertIn("una función", ingenieria)
+        self.assertIn("la app de fotos", ingenieria)
+        self.assertIn("Orbit", ingenieria)
+
+
+class CierreCodigoPrimeroTests(Base):
+    """J3 en tarjetas: sin reporte no hay juicio; el desenlace acota."""
+
+    def primer_turno(self, auto):
+        auto.pre_llm_call(**turno(turn_id="t0"))
+
+    def test_completed_sin_reporte_no_consulta_ni_deja_linea(self):
+        auto = self.auto()
+        self.primer_turno(auto)
+        self.kanban.tarea("t_s", "meli", "done")
+        self.kanban.evento("t_s", "completed")  # sin result, corrida ni payload
+        contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
+        self.assertNotIn("Jev cierre", contexto)
+        self.assertEqual(self.jev.preguntas().count("cierre"), 0)
+
+    def test_completed_con_reporte_solo_elige_entre_quedo_y_corregir(self):
+        auto = self.auto()
+        self.primer_turno(auto)
+        self.kanban.tarea(
+            "t_c", "meli", "done", body="responder las preguntas de compradores"
+        )
+        self.kanban.corrida("t_c", "3 preguntas respondidas con evidencia")
+        self.kanban.evento("t_c", "completed")
+        contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
+        self.assertIn("Jev cierre: t_c (meli, completed) quedo (0.91)", contexto)
+        preguntas = next(p for _, p, _ in self.jev.llamadas if "cierre" in p)
+        self.assertEqual(set(preguntas["cierre"]["criteria"]), {"quedo", "corregir"})
+        ficha = next(s for s, p, _ in self.jev.llamadas if "cierre" in p)
+        self.assertIn("responder las preguntas de compradores", ficha)
+        self.assertIn("3 preguntas respondidas", ficha)
+
+    def test_completed_nunca_sale_bloqueado(self):
+        self.jev.respuestas["cierre"] = ("bloqueado", 0.95)
+        auto = self.auto()
+        self.primer_turno(auto)
+        self.kanban.tarea("t_b", "meli", "done")
+        self.kanban.corrida("t_b", "reporte completo del encargo")
+        self.kanban.evento("t_b", "completed")
+        contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
+        self.assertNotIn("Jev cierre", contexto)
+
+    def test_blocked_solo_elige_entre_corregir_y_bloqueado(self):
+        self.jev.respuestas["cierre"] = ("bloqueado", 0.9)
+        auto = self.auto()
+        self.primer_turno(auto)
+        self.kanban.tarea("t_k", "meli", "done")
+        self.kanban.evento("t_k", "blocked", payload={"reason": "falta acceso"})
+        contexto = auto.pre_llm_call(**turno(turn_id="t1"))["context"]
+        self.assertIn("bloqueado (0.90)", contexto)
+        preguntas = next(p for _, p, _ in self.jev.llamadas if "cierre" in p)
+        self.assertEqual(
+            set(preguntas["cierre"]["criteria"]), {"corregir", "bloqueado"}
+        )
+
+    def test_el_cierre_directo_acota_y_rechaza_lo_prohibido(self):
+        decisor = self.auto().decisor
+        for desenlace, permitidas in (
+            ("completed", {"quedo", "corregir"}),
+            ("blocked", {"corregir", "bloqueado"}),
+        ):
+            decisor.cerrar("ficha", {}, clave="", secretos=(), desenlace=desenlace)
+            preguntas = self.jev.llamadas[-1][1]
+            self.assertEqual(
+                set(preguntas["cierre"]["criteria"]), permitidas, desenlace
+            )
+        jev = jev_apoyo.JevFalso({"cierre": ("bloqueado", 0.95)})
+        prohibida = jev_decisiones.Decisor(self.claw, llamar=jev).cerrar(
+            "ficha", {}, clave="", secretos=(), desenlace="completed"
+        )
+        self.assertIsNone(prohibida.opcion)
+        self.assertIsNotNone(prohibida.error)
+
+    def test_la_ficha_lleva_el_encargo_acotado_y_el_reporte(self):
+        import jev_estado
+
+        ficha = jev_estado.ficha_de_cierre(
+            {
+                "task_id": "t_1",
+                "assignee": "meli",
+                "clase": "especialista",
+                "titulo": "preguntas",
+                "desenlace": "completed",
+                "encargo": "x" * 900,
+                "reporte": "hecho",
+            }
+        )
+        linea = next(x for x in ficha.splitlines() if x.startswith("Encargo:"))
+        self.assertEqual(len(linea), len("Encargo: ") + 600)
+        self.assertIn("Reporte: hecho", ficha)
+
+    def test_fin_de_etapa_acota_por_desenlace(self):
+        jev = jev_apoyo.JevFalso({"fin": ("quedo", 0.9)})
+        decisor = jev_decisiones.Decisor(self.claw, llamar=jev)
+        for desenlace, permitidas in (
+            ("completed", {"quedo", "seguir"}),
+            ("blocked", {"seguir", "bloqueado"}),
+        ):
+            decisor.fin("ficha", {}, clave="", secretos=(), desenlace=desenlace)
+            preguntas = jev.llamadas[-1][1]
+            self.assertEqual(set(preguntas["fin"]["criteria"]), permitidas, desenlace)
+
+
+class EtapaCodigoPrimeroTests(Base):
+    """J3 en etapas: el mismo codigo primero via JevEtapa.cerrar."""
+
+    INSTRUCCION = "Arregla el bridge de OpenClaw que falla en produccion"
+
+    def etapa(self, jev):
+        decisor = jev_decisiones.Decisor(self.claw, llamar=jev, tope_s=2.0)
+        return jev_auto.JevEtapa(decisor)
+
+    def test_etapa_completed_sin_reporte_no_consulta(self):
+        jev = jev_apoyo.JevFalso({"fin": ("quedo", 0.9)})
+        etapa = self.etapa(jev)
+        etapa.cerrar(self.INSTRUCCION, "verifier", {"status": "completed"})
+        etapa.cerrar(
+            self.INSTRUCCION, "verifier", {"status": "completed", "summary": "  "}
+        )
+        self.assertEqual(jev.llamadas, [])
+
+    def test_etapa_completed_y_blocked_acotan_el_fin(self):
+        jev = jev_apoyo.JevFalso({"fin": ("quedo", 0.9)})
+        etapa = self.etapa(jev)
+        etapa.cerrar(
+            self.INSTRUCCION,
+            "verifier",
+            {"status": "completed", "summary": "pruebas verdes"},
+        )
+        self.assertEqual(
+            set(jev.llamadas[-1][1]["fin"]["criteria"]), {"quedo", "seguir"}
+        )
+        etapa.cerrar(
+            self.INSTRUCCION,
+            "verifier",
+            {"status": "blocked", "summary": "falta acceso al repo"},
+        )
+        self.assertEqual(
+            set(jev.llamadas[-1][1]["fin"]["criteria"]), {"seguir", "bloqueado"}
+        )
+
+
+def _cargar_medir():
+    ruta = Path(__file__).resolve().parents[1] / "scripts" / "jev_medir_ruteo.py"
+    spec = importlib.util.spec_from_file_location("jev_medir_ruteo", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+class MedirRuteoTests(Base):
+    """J2: la medicion corre con un llamar doble, sin red ni llave."""
+
+    def test_el_fixture_trae_los_12_casos_con_su_destino(self):
+        medir_mod = _cargar_medir()
+        casos = medir_mod.cargar_casos(
+            Path(__file__).resolve().parent / "fixtures" / "jev_ruteo_etiquetado.jsonl"
+        )
+        self.assertEqual(len(casos), 12)
+        por_mensaje = {c["mensaje"]: c["esperado"] for c in casos}
+        self.assertEqual(por_mensaje["preguntas pendientes de MeLi"], "meli")
+        self.assertEqual(por_mensaje["llegó una personalizada"], "pers")
+        self.assertEqual(
+            por_mensaje["agrega un botón en la app de fotos"], "ingenieria"
+        )
+        self.assertEqual(
+            set(por_mensaje.values()),
+            {
+                "meli",
+                "pers",
+                "ingenieria",
+                "amazon",
+                "mail",
+                "limpia",
+                "odoo",
+                "gonserver",
+                "eggbot",
+                "tinkabot",
+                "claw",
+            },
+        )
+
+    def test_medir_cuenta_aciertos_y_sobre_el_umbral(self):
+        medir_mod = _cargar_medir()
+
+        def llamar(state, preguntas, timeout):
+            if "preguntas pendientes" in state:
+                opcion, confianza = "meli", 0.9
+            elif "personalizada" in state:
+                opcion, confianza = "pers", 0.9
+            elif "botón" in state:
+                opcion, confianza = "ingenieria", 0.5
+            else:
+                opcion, confianza = "claw", 0.9
+            return {"answers": {"ruteo": {"choice": opcion, "confidence": confianza}}}
+
+        decisor = jev_decisiones.Decisor(self.claw, llamar=llamar)
+        resultado = medir_mod.medir(
+            decisor,
+            [
+                {"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"},
+                {"mensaje": "llegó una personalizada", "esperado": "pers"},
+                {
+                    "mensaje": "agrega un botón en la app de fotos",
+                    "esperado": "ingenieria",
+                },
+                {"mensaje": "¿cómo va lo de ayer?", "esperado": "amazon"},
+            ],
+        )
+        self.assertEqual(resultado["total"], 4)
+        self.assertEqual(resultado["aciertos"], 3)
+        self.assertEqual(resultado["sobre_umbral"], 3)
+        self.assertIn("aciertos: 3/4", medir_mod.formatear(resultado))
 
 
 class RegistrarTests(Base):

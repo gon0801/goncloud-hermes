@@ -55,8 +55,9 @@ ESPECIALISTAS = {
     "amazon": "ordenes Amazon MX y US: Seller Flex, flex para hoy, recolecciones, "
     "guias y envios; sin personalizadas",
     "pers": "solo personalizadas nuevas (pedidos personalizados que llegan por "
-    "Amazon o MeLi)",
-    "meli": "MeLi / Mercado Libre: ventas, publicaciones, preguntas y envios de MeLi",
+    "Amazon o MeLi): llegó una personalizada, personalizada nueva",
+    "meli": "MeLi / Mercado Libre: ventas, publicaciones, preguntas y envios de MeLi; "
+    "preguntas pendientes de MeLi, responder preguntas de compradores",
     "mail": "Gmail / correo: leer, clasificar y redactar; no le escribe a David",
     "limpia": "barrer promos de Gmail: promos, newsletters, archivar o limpiar el correo",
     "odoo": "Odoo: cajas, pedidos, inventario y cotizaciones",
@@ -68,15 +69,19 @@ ESPECIALISTAS = {
     "eggbot": "bot nuevo: disenar un bot nuevo",
 }
 RUTAS = {
-    "claw": "claw lo atiende directo: conversacion, dudas, estado, decisiones, "
-    "cosas chicas que no son de un especialista ni cambian codigo",
+    "claw": "claw solo cuando el mensaje no nombra un sistema de especialista "
+    "ni pide cambiar codigo: saludos, cómo va algo ya en curso, decisiones "
+    "sobre trabajo existente; si nombra MeLi, Amazon, Odoo, Gmail, el server, "
+    "una app o un repo, no es claw",
     **{
         nombre: f"especialista {nombre}: {texto}"
         for nombre, texto in ESPECIALISTAS.items()
     },
     "ingenieria": "cadena de ingenieria: cambiar, arreglar o construir codigo "
     "de un repositorio (scout, implementacion, verificacion, review); bugs y "
-    "errores del bridge, de OpenClaw o de un plugin",
+    "errores del bridge, de OpenClaw o de un plugin; agregar o cambiar algo "
+    "en una app o sitio: un botón, una pantalla, una función "
+    "(p. ej. la app de fotos, Orbit)",
 }
 # Tanda 2: en cualquier perfil JEV clasifica el encargo y lo cierra.
 TIPOS = {
@@ -110,6 +115,16 @@ CIERRES = {
     "quedo": "el resultado resuelve lo pedido y la evidencia lo respalda; se da por cerrado",
     "corregir": "el resultado no resuelve lo pedido o le falta evidencia; hay que reintentar o corregir",
     "bloqueado": "falta algo externo (acceso, decision de David, dato); nadie puede avanzar solo",
+}
+# Cierre con codigo primero: el desenlace acota las opciones antes de
+# preguntar; un completed jamas puede salir "bloqueado".
+CIERRE_POR_DESENLACE = {
+    "completed": ("quedo", "corregir"),
+    "blocked": ("corregir", "bloqueado"),
+}
+FIN_POR_DESENLACE = {
+    "completed": ("quedo", "seguir"),
+    "blocked": ("seguir", "bloqueado"),
 }
 
 _clientes: dict = {}
@@ -369,13 +384,21 @@ class Decisor:
         )
         return resultado["tipo"], resultado["modo"]
 
-    def fin(self, ficha: str, entrada: dict, clave=None, secretos=None) -> Decision:
-        """Al terminar un turno o etapa: quedo | seguir | bloqueado."""
+    def fin(
+        self, ficha: str, entrada: dict, clave=None, secretos=None, desenlace=None
+    ) -> Decision:
+        """Al terminar un turno o etapa: quedo | seguir | bloqueado.
+
+        Con `desenlace` el codigo acota primero: completed solo elige entre
+        quedo/seguir y blocked solo entre seguir/bloqueado.
+        """
+        permitidas = FIN_POR_DESENLACE.get(desenlace)
+        opciones = FINES if permitidas is None else {k: FINES[k] for k in permitidas}
         return self._decidir(
             "fin",
             ficha,
             "Como termino este encargo, segun lo que respondio?",
-            FINES,
+            opciones,
             entrada,
             clave=clave,
             secretos=secretos,
@@ -393,12 +416,23 @@ class Decisor:
             secretos=secretos,
         )
 
-    def cerrar(self, ficha: str, entrada: dict, clave=None, secretos=None) -> Decision:
+    def cerrar(
+        self, ficha: str, entrada: dict, clave=None, secretos=None, desenlace=None
+    ) -> Decision:
+        """Cierre de tarjeta: con `desenlace` el codigo acota primero.
+
+        completed solo elige entre quedo/corregir (nunca bloqueado) y
+        blocked solo entre corregir/bloqueado.
+        """
+        permitidas = CIERRE_POR_DESENLACE.get(desenlace)
+        opciones = (
+            CIERRES if permitidas is None else {k: CIERRES[k] for k in permitidas}
+        )
         return self._decidir(
             "cierre",
             ficha,
             "Como queda esta tarjeta o etapa, segun lo que reporto?",
-            CIERRES,
+            opciones,
             entrada,
             clave=clave,
             secretos=secretos,

@@ -550,6 +550,13 @@ class JevAuto:
         return hilos, casillas
 
     def _linea_de_cierre(self, cierre: dict, clave: str, secretos: tuple):
+        # Codigo primero: un completed sin reporte no tiene con que juzgar;
+        # no se consulta a JEV y no hay linea.
+        if (
+            cierre.get("desenlace") == "completed"
+            and not str(cierre.get("reporte") or "").strip()
+        ):
+            return None
         decision = self.decisor.cerrar(
             jev_estado.ficha_de_cierre(cierre),
             {
@@ -559,6 +566,7 @@ class JevAuto:
             },
             clave=clave,
             secretos=secretos,
+            desenlace=cierre["desenlace"],
         )
         return linea_cierre(
             f"{cierre['task_id']} ({cierre['assignee']}, {cierre['desenlace']})",
@@ -917,6 +925,11 @@ class JevEtapa:
             texto = jev_texto.limpiar(instruccion)
             if jev_texto.es_corto(texto) or not isinstance(terminal, dict):
                 return
+            estado = str(terminal.get("status") or "")
+            reporte = str(terminal.get("summary") or "").strip()
+            # Codigo primero: un completed sin reporte no se juzga.
+            if estado == "completed" and not reporte:
+                return
             clave, secretos = self.decisor.resuelva()
             ficha = (
                 f"Etapa {rol}. Encargo:\n{texto[:600]}\n\nReporte: estado "
@@ -927,6 +940,7 @@ class JevEtapa:
                 {"etapa": rol, "estado": str(terminal.get("status"))},
                 clave=clave,
                 secretos=secretos,
+                desenlace=estado if estado in ("completed", "blocked") else None,
             )
         except Exception:
             pass
