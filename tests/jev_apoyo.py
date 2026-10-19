@@ -6,7 +6,7 @@ CODIGO REAL del doble: create_task + decompose_triage_task dejan el grafo
 que arma el workflow de verdad (raiz triage con la clave goncloud-workflow:,
 etapas iniciales encadenadas entre si y sin idempotency_key, evento
 "decomposed" con child_ids en la raiz) y complete_task/block_task dejan los
-eventos y corridas reales (payload_json, metadata). Un JEV falso que
+eventos y corridas reales (payload, metadata). Un JEV falso que
 contesta lo que la prueba le programa (sin red) y la carga del plugin por su
 ruta. Nada importa hermes_cli real ni yaml: corre en el CI de Ubuntu.
 """
@@ -117,7 +117,7 @@ class Kanban:
         conn = self._conn()
         try:
             cursor = conn.execute(
-                "INSERT INTO task_events (task_id, kind, payload_json, created_at)"
+                "INSERT INTO task_events (task_id, kind, payload, created_at)"
                 " VALUES (?, ?, ?, ?)",
                 (
                     task_id,
@@ -160,7 +160,7 @@ class Kanban:
             conn.close()
 
     def bloquear(self, task_id, motivo):
-        """El bloqueo real: evento 'blocked' con payload_json {"reason": ...}."""
+        """El bloqueo real: evento 'blocked' con payload {"reason": ...}."""
         conn = self._conn()
         try:
             return kanban_db.block_task(conn, task_id, reason=motivo)

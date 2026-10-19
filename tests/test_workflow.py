@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 from pathlib import Path
 
 
@@ -23,6 +24,7 @@ from hermes_cli.kanban_db import (  # noqa: E402
     claim_task,
     complete_task,
     get_task,
+    list_events,
     list_tasks,
     parent_ids,
 )
@@ -115,6 +117,22 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(
                 {task.workspace_path for task in stage_tasks},
                 {str(self.repo.resolve())},
+            )
+
+    def test_start_auto_closes_a_stopped_chain_in_the_same_repo(self) -> None:
+        # Regresion H-payload: el INSERT del auto-cierre usa task_events.payload
+        # (la columna real); con payload_json esto tronaba en vivo y la cadena
+        # nueva nunca arrancaba.
+        first = self.start()
+        with mock.patch("workflow._driver_signals", return_value=(False, True)):
+            second = self.start(request_key="second-chain")
+        self.assertNotEqual(second["workflow_id"], first["workflow_id"])
+        self.assertEqual(second["closed_chains"], [first["workflow_id"]])
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            self.assertIn(
+                "archived",
+                [e["kind"] for e in list_events(conn, first["workflow_id"])],
             )
 
     def test_duplicate_key_with_changed_contract_is_rejected(self) -> None:
