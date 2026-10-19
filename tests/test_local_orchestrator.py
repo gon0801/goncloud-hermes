@@ -598,43 +598,55 @@ class DriverBootstrapTests(unittest.TestCase):
 
     def test_an_unloadable_driver_also_leaves_the_mailbox_error_event(self):
         # Encargo H: the error stop reaches claw through the mailbox too.
-        # The run never started, so the run segment is the fixed "boot" and
-        # repeated broken launches never pile up. The out path mirrors the
-        # production shape (nested under goncloud-local) because the
-        # bootstrap derives the mailbox from it.
+        # The run never started, so the run segment is the fixed "boot".
+        # The out path mirrors the production shape (nested under
+        # goncloud-local) because the bootstrap derives the mailbox from it.
         self.out = self.root / "goncloud-local" / "t_boot.json"
         # Production always launches into a directory the running mark
         # already created; the bootstrap never had to make it.
         self.out.parent.mkdir()
-        for _ in range(2):
-            self.out.unlink(missing_ok=True)
-            self.run_driver()
-
         avisos = self.root / "goncloud-local" / "avisos"
+
+        self.run_driver()
+
         self.assertEqual(
             [p.name for p in sorted(avisos.iterdir())],
             ["t_boot-boot-error.json"],
         )
-        # cr 4312376346: one boot-failure notice per workflow, despertar's
-        # delivered mark included. Once the cron drained the event, another
-        # broken launch stays quiet instead of waking claw with the same
-        # news again.
-        (avisos / "t_boot-boot-error.json").rename(
-            avisos / "t_boot-boot-error.entregado"
-        )
-        self.out.unlink(missing_ok=True)
-        self.run_driver()
-        self.assertEqual(
-            [p.name for p in sorted(avisos.iterdir())],
-            ["t_boot-boot-error.entregado"],
-        )
         event = json.loads(
-            (avisos / "t_boot-boot-error.entregado").read_text(encoding="utf-8")
+            (avisos / "t_boot-boot-error.json").read_text(encoding="utf-8")
         )
         self.assertEqual(event["workflow_id"], "t_boot")
         self.assertEqual(event["outcome"], "error")
         self.assertEqual(event["motivo"], "local driver failed; check durable status")
         self.assertTrue(event["fecha"])
+
+        # Lead r3 (blocker): a delivered boot error brakes nothing. claw got
+        # the news and relaunched — every later broken launch of the chain
+        # must speak up again, or it stays silent forever after its first
+        # notice. (Reverses cr 4312376346: the only brake is an event still
+        # waiting unread; despertar delivers through the real
+        # entregar_aviso.)
+        despertar = importlib.import_module("raices.despertar")
+        despertar.entregar_aviso(avisos / "t_boot-boot-error.json")
+        self.out.unlink(missing_ok=True)
+
+        self.run_driver()
+
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
+        )
+
+        # A third broken launch while claw has not read the pending event
+        # stays one event: same name, overwritten in place, no pile-up.
+        self.out.unlink(missing_ok=True)
+        self.run_driver()
+
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
+        )
 
     def test_a_healthy_delivered_run_ends_clean_with_its_result_and_aviso(self):
         # Live F1 (High): the bootstrap read result['error'] after EVERY

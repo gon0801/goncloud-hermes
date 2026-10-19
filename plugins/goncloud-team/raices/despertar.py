@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -122,9 +123,15 @@ def avisos_de_cadenas(buzon: Path) -> list:
 
 
 def entregar_aviso(ruta: Path) -> None:
-    """Marca el aviso entregado: renombrado, la próxima vuelta no lo lee."""
+    """Marca el aviso entregado: renombrado, la próxima vuelta no lo lee.
+
+    os.replace y no rename: si ya queda un .entregado de una vuelta
+    anterior (lead r3: el evento nuevo del mismo arranque roto no frena),
+    hay que pisarlo — con rename en Windows el nombre ocupado falla, el
+    aviso nuevo queda sin marcar y la próxima vuelta lo repite.
+    """
     try:
-        ruta.rename(ruta.with_suffix(".entregado"))
+        os.replace(ruta, ruta.with_suffix(".entregado"))
     except OSError:
         pass  # otra vuelta ya lo marcó
 

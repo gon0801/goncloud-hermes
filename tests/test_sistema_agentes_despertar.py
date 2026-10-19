@@ -507,6 +507,33 @@ class Cadenas(Escenario):
         self.assertNotIn("ghp_Abc123Def456Ghi789", linea)
         self.assertIn("[redacted]", linea)
 
+    def test_entregar_pisa_un_entregado_anterior_sin_fallar(self):
+        # Lead r3: un .entregado de una vuelta anterior no frena nada (cada
+        # relanzamiento lo pide claw). Al entregar el evento nuevo del mismo
+        # arranque roto, despertar lo pisa: os.replace y no rename, porque en
+        # Windows el nombre ocupado falla, el aviso nuevo queda sin marcar y
+        # la próxima vuelta lo repetiría.
+        import json
+
+        buzon = self.buzon()
+        buzon.mkdir(parents=True, exist_ok=True)
+        viejo = buzon / "t_boot-boot-error.entregado"
+        viejo.write_text(
+            json.dumps({"outcome": "error", "vuelta": 1}), encoding="utf-8"
+        )
+        nuevo = buzon / "t_boot-boot-error.json"
+        nuevo.write_text(
+            json.dumps({"outcome": "error", "vuelta": 2}), encoding="utf-8"
+        )
+
+        despertar.entregar_aviso(nuevo)
+
+        self.assertFalse(nuevo.exists())
+        self.assertEqual(
+            json.loads(viejo.read_text(encoding="utf-8")),
+            {"outcome": "error", "vuelta": 2},
+        )
+
     def test_el_aviso_desconocido_no_se_imprime_ni_se_marca(self):
         self.avisar({"workflow_id": "t_raro", "outcome": "surprise"})
         self.assertEqual(self.correr(), 0)
