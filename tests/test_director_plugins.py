@@ -658,7 +658,7 @@ class DespliegueFrescoTests(unittest.TestCase):
         perfiles = self.runtime / "profiles"
         claw = (perfiles / "claw" / "SOUL.md").read_text(encoding="utf-8")
         self.assertIn("# JEV (decisiones rapidas)", claw)
-        self.assertIn("Prohibido parchar a mano", claw)
+        self.assertNotIn("Prohibido parchar a mano", claw)
         self.assertLess(
             claw.index("# JEV (decisiones rapidas)"),
             claw.index("# Especialistas"),

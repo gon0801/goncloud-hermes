@@ -62,6 +62,26 @@ Durably enforced by the database graph:
   `agent.secret_scope.get_secret` and only ever travels to the child
   environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
   with no message text (just its length and a short sha256) and no key.
+- the same hook also routes the message (claw direct, one of the specialists,
+  or the engineering chain) in parallel with `skill_select` and adds
+  `Jev sugiere: X (conf)`; Goncloud stage cards and specialist cards that
+  finished (completed or blocked) since the previous turn add
+  `Jev cierre: X (conf)` (quedo/corregir/bloqueado, cursor in
+  `<claw home>/jev/cierre-cursor.json`). Confidence >= 0.85 is followed, below
+  it claw decides. Every JEV call has a hard 2 s cap, no retries, and fails
+  open; each decision is one line in `<claw home>/jev/decisiones.jsonl` (ids
+  and message length only, output, confidence, latency, error). A
+  `post_llm_call` hook records unanswered messages and "te aviso" promises
+  in `<claw home>/jev/seguimiento.json` for the watcher.
+- `raices/jev_vigilante.py` is a no-agent cron (every 5 min, installed by
+  `scripts/instalar_jev_vigilante.py`): Goncloud chains with a blocked stage
+  or >10 min without progress, specialist cards without progress, owner
+  messages unanswered >10 min and "te aviso" promises unmet >30 min become
+  candidates; only with candidates does it ask JEV (normal/atorado/abandonado)
+  and, at >= 0.8 stuck/abandoned, message the owner through the director's
+  Telegram. No repeat of a case within 30 min (three alerts at most), quiet
+  23:00-08:00 America/Vancouver unless an engineering chain is open. Idle cost
+  is zero.
 
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers
 cannot supply a role argument. This is a trusted-single-user application guard,

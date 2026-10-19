@@ -960,17 +960,22 @@ class CableadoTests(unittest.TestCase):
     def tearDownClass(cls):
         hermes_falso.desinstalar()
 
-    def test_register_deja_los_tres_ganchos(self):
+    def test_register_deja_los_cuatro_ganchos(self):
         ctx = _CtxFalso()
         self.plugin.register(ctx)
         self.assertEqual(
             sorted(ctx.hooks),
-            ["pre_llm_call", "pre_tool_call", "transform_llm_output"],
+            ["post_llm_call", "pre_llm_call", "pre_tool_call", "transform_llm_output"],
         )
 
     def test_el_plugin_yaml_declara_los_ganchos(self):
         manifest = yaml.safe_load((PLUGIN / "plugin.yaml").read_text(encoding="utf-8"))
-        for gancho in ("pre_tool_call", "pre_llm_call", "transform_llm_output"):
+        for gancho in (
+            "pre_tool_call",
+            "pre_llm_call",
+            "post_llm_call",
+            "transform_llm_output",
+        ):
             self.assertIn(gancho, manifest["provides_hooks"])
 
     def test_los_ganchos_cableados_respetan_la_puerta(self):
@@ -978,6 +983,7 @@ class CableadoTests(unittest.TestCase):
         self.plugin.register(ctx)
         pre = ctx.hooks["pre_llm_call"]
         auto = pre.__self__
+        auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
         self.addCleanup(temporal.cleanup)
         auto.hogar = Path(temporal.name)
@@ -997,6 +1003,7 @@ class CableadoTests(unittest.TestCase):
         ctx = _CtxFalso()
         self.plugin.register(ctx)
         auto = ctx.hooks["pre_llm_call"].__self__
+        auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
         self.addCleanup(temporal.cleanup)
         auto.hogar = Path(temporal.name)

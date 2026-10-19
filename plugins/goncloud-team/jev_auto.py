@@ -29,6 +29,17 @@ fail-open: si el router no responde dentro de TOPE_S, no esta instalado o
 falla, sigue sin el y el contexto lo dice. El registro JSONL en
 <home de claw>/jev/consultas.jsonl deja una linea por consulta sin el texto
 del mensaje (a lo mas su largo y un sha256 corto) y sin la llave.
+
+Encargo H-jev-hermes (el esquema de OpenClaw, por codigo y no por SOUL): en el
+mismo gancho, y en paralelo a skill_select, JEV rutea el mensaje (claw directo,
+un especialista o la cadena de ingenieria) y la linea "Jev sugiere: X (conf)"
+entra al contexto; las tarjetas de especialista y las etapas de cadena
+Goncloud que terminaron desde el turno anterior (incluido blocked) traen su
+"Jev cierre: X (conf)". Confianza >= 0.85 se sigue, debajo decide claw; JEV
+con tope de 2 s y fail-open (jev_decisiones.py). pre_llm_call y
+post_llm_call tambien anotan el seguimiento (mensajes sin respuesta,
+promesas "te aviso") que lee el vigilante sin modelo
+(raices/jev_vigilante.py).
 """
 
 from __future__ import annotations
@@ -41,13 +52,18 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 try:
+    from . import jev_estado
+    from .jev_decisiones import TOPE_JEV_S, Decisor, linea_cierre, linea_ruteo
     from .subscriptions.redaction import redact_text, sensitive_values
 except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
+    import jev_estado
+    from jev_decisiones import TOPE_JEV_S, Decisor, linea_cierre, linea_ruteo
     from subscriptions.redaction import redact_text, sensitive_values
 
 DIRECTOR = "claw"
@@ -100,6 +116,15 @@ def _hogar_perfil() -> Path:
     if (candidata / "plugins").is_dir():
         return candidata
     return Path.home() / ".hermes"
+
+
+def _raiz_del_hogar(casa: Path) -> Path:
+    """La raiz de Hermes (donde vive kanban.db): la decide raices/hogar.py."""
+    try:
+        from .raices import hogar
+    except ImportError:
+        from raices import hogar
+    return hogar.raiz_del_hogar(casa)
 
 
 def _clave_typesafe() -> str:
@@ -298,13 +323,18 @@ def _resultado(veredicto: dict):
 class JevAuto:
     """Los dos ganchos: consultar en pre_llm_call, pie en transform_llm_output."""
 
-    def __init__(self, perfil, hogar=None, corredor=None, visible=None):
+    def __init__(
+        self, perfil, hogar=None, corredor=None, visible=None, decisor=None, kanban=None
+    ):
         self.perfil = str(perfil or "")
         self.hogar = hogar
         self.corredor = corredor or _ejecutar_router
         self.visible = visible  # None: decide la variable de entorno por turno
+        self.decisor = decisor  # None: solo skill_select, sin ruteo ni cierre
+        self.kanban = kanban  # ruta del kanban.db; None: la de la raiz del home
         self._pendiente: dict = {}  # (session_id, turn_id) -> veredicto
         self._pieados: dict = {}  # turnos que ya llevaron el pie
+        self._lineas: dict = {}  # (session_id, turn_id) -> lineas de Jev
 
     def pre_llm_call(self, **kwargs):
         """UNA consulta por turno de David al director, en chat con persona."""
@@ -321,13 +351,119 @@ class JevAuto:
         if previo is not None:
             # F3: una sola consulta por turno; el mismo contexto vuelve sin
             # otro subproceso ni otra linea de registro.
-            return {"context": _linea_contexto(previo)}
+            return {"context": self._contexto(llave, previo)}
         texto = mensaje.strip()
+        if self.decisor is not None and plataforma == "telegram":
+            jev_estado.anotar_mensaje(self._casa(), "|".join(llave), int(time.time()))
+        hilos, casillas = self._lanzar_decisiones(texto)
         veredicto = self.consultar(texto)
+        for hilo in hilos:
+            hilo.join(TOPE_JEV_S + 1)
         self._registrar(veredicto, texto, kwargs, plataforma)
         self._pendiente[llave] = veredicto
+        # Orden fijo: primero el ruteo, luego los cierres, sin importar quien acabe antes.
+        self._lineas[llave] = [linea for casilla in casillas for linea in casilla]
         self._podar()
-        return {"context": _linea_contexto(veredicto)}
+        return {"context": self._contexto(llave, veredicto)}
+
+    def post_llm_call(self, **kwargs):
+        """Salio la respuesta: el mensaje se atendio; ¿prometio un aviso?"""
+        if self.perfil != DIRECTOR or self.decisor is None:
+            return None
+        plataforma = str(kwargs.get("platform") or "").strip().lower()
+        if plataforma not in PLATAFORMAS:
+            return None
+        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
+        jev_estado.cerrar_turno(
+            self._casa(),
+            "|".join(llave),
+            kwargs.get("assistant_response"),
+            int(time.time()),
+        )
+        return None
+
+    def _casa(self) -> Path:
+        return Path(self.hogar) if self.hogar else _hogar_perfil()
+
+    def _contexto(self, llave, veredicto) -> str:
+        return "\n".join([_linea_contexto(veredicto), *self._lineas.get(llave, [])])
+
+    def _lanzar_decisiones(self, texto: str):
+        """Ruteo y cierres de JEV en hilos paralelos al skill_select.
+
+        Devuelve (hilos, casillas): cada hilo llena su casilla con a lo mas
+        una linea. Un fallo de cualquiera es fail-open: el turno sigue con
+        lo que haya. Sin decisor no hay nada que lanzar.
+        """
+        if self.decisor is None:
+            return [], []
+        hilos: list = []
+        casillas: list = []
+
+        def lanzar(tarea):
+            casilla: list = []
+            casillas.append(casilla)
+
+            def corre():
+                try:
+                    linea = tarea()
+                except Exception:
+                    linea = None
+                if linea:
+                    casilla.append(linea)
+
+            hilo = threading.Thread(target=corre, name="jev-turno", daemon=True)
+            hilos.append(hilo)
+            hilo.start()
+
+        lanzar(lambda: linea_ruteo(self.decisor.rutear(texto)))
+        for cierre in self._cierres_nuevos():
+            lanzar(lambda c=cierre: self._linea_de_cierre(c))
+        return hilos, casillas
+
+    def _linea_de_cierre(self, cierre: dict):
+        decision = self.decisor.cerrar(
+            jev_estado.ficha_de_cierre(cierre),
+            {
+                "task_id": cierre["task_id"],
+                "assignee": cierre["assignee"],
+                "desenlace": cierre["desenlace"],
+            },
+        )
+        return linea_cierre(
+            f"{cierre['task_id']} ({cierre['assignee']}, {cierre['desenlace']})",
+            decision,
+        )
+
+    def _cierres_nuevos(self) -> list:
+        """Tarjetas de especialista y etapas Goncloud que terminaron desde el ultimo turno."""
+        conn = None
+        try:
+            casa = self._casa()
+            cursor_ruta = casa / "jev" / "cierre-cursor.json"
+            ruta = self.kanban or jev_estado.ruta_del_kanban(_raiz_del_hogar(casa))
+            conn = jev_estado.abrir_kanban(ruta)
+            if conn is None:
+                return []
+            try:
+                desde = int(
+                    json.loads(cursor_ruta.read_text(encoding="utf-8"))["evento"]
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                desde = None
+            if desde is None:
+                # Primer turno: la historia no se cierra de golpe.
+                cierres, nuevo = [], jev_estado.ultimo_evento(conn)
+            else:
+                cierres, nuevo = jev_estado.cierres_nuevos(conn, desde)
+            cursor_ruta.parent.mkdir(parents=True, exist_ok=True)
+            cursor_ruta.write_text(json.dumps({"evento": nuevo}), encoding="utf-8")
+            return cierres
+        except Exception:
+            return []  # el cierre es un apoyo: sin kanban legible el turno sigue
+        finally:
+            if conn is not None:
+                conn.close()
 
     def transform_llm_output(self, **kwargs):
         """El pie de ese turno; una sola vez y solo si hubo consulta."""
@@ -419,7 +555,12 @@ def registrar(ctx):
     visible = None
     if isinstance(config, dict) and CLAVE_VISIBLE in config:
         visible = _visible_de_llave(config[CLAVE_VISIBLE])
-    auto = JevAuto(perfil=str(getattr(ctx, "profile_name", "") or ""), visible=visible)
+    perfil = str(getattr(ctx, "profile_name", "") or "")
+    # El ruteo, el cierre y el seguimiento son del director: otro perfil
+    # carga el plugin sin decisor y sus ganchos ni consultan ni anotan.
+    decisor = Decisor() if perfil == DIRECTOR else None
+    auto = JevAuto(perfil=perfil, visible=visible, decisor=decisor)
     ctx.register_hook("pre_llm_call", auto.pre_llm_call)
+    ctx.register_hook("post_llm_call", auto.post_llm_call)
     ctx.register_hook("transform_llm_output", auto.transform_llm_output)
     return auto
