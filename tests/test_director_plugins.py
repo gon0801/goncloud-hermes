@@ -144,7 +144,12 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
                 if role == team["director"]:
                     self.assertEqual(
                         desired["plugins"]["enabled"],
-                        ["goncloud-team", "jev", "jev-skill-router-mcp"],
+                        [
+                            "goncloud-team",
+                            "jev",
+                            "jev-skill-router-mcp",
+                            "forja-queue-cap",
+                        ],
                     )
                     esperados = [*module._DIRECTOR_TOOLSETS, "jev"]
                     self.assertEqual(desired["platform_toolsets"]["cli"], esperados)
@@ -158,13 +163,23 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
                     self.assertNotIn("jev", desired["platform_toolsets"]["telegram"])
 
     def test_el_config_vivo_de_claw_hoy_mergea_sin_conflicto(self):
-        # El config.yaml vivo de la PC ya declara los plugins del manifiesto y
-        # el toolset con jev al final; el deploy debe leerlo como reconciliado,
-        # sin conflicto y sin diff (encargo H-jev r1, 2026-10-18).
+        # El config.yaml vivo de la PC (H-plugins-locales, 2026-10-19)
+        # declara los plugins del manifiesto y forja-queue-cap, el plugin
+        # LOCAL que Forja instalo a mano en profiles/claw/plugins (sube la
+        # cola busy del gateway de 32 a 128; no tiene repo), mas el toolset
+        # con jev al final. Con la lista "local" del manifiesto, el deploy
+        # debe leerlo como reconciliado, sin conflicto y sin diff.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         con_jev = [*module._DIRECTOR_TOOLSETS, "jev"]
         existing = {
-            "plugins": {"enabled": ["goncloud-team", "jev", "jev-skill-router-mcp"]},
+            "plugins": {
+                "enabled": [
+                    "goncloud-team",
+                    "jev",
+                    "jev-skill-router-mcp",
+                    "forja-queue-cap",
+                ]
+            },
             "platform_toolsets": {"cli": con_jev, "telegram": list(con_jev)},
         }
         previous = {
@@ -180,6 +195,60 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
 
         self.assertEqual(merged["plugins"], existing["plugins"])
         self.assertEqual(merged["platform_toolsets"], existing["platform_toolsets"])
+
+    def test_un_manifiesto_sin_local_mantiene_la_conducta_de_hoy(self):
+        # Caso (b) del encargo: sin la lista "local" el deploy se comporta
+        # como siempre — forja-queue-cap no aparece en enabled y el config
+        # vivo previo a Forja mergea sin conflicto.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto.pop("local", None)
+        con_jev = [*module._DIRECTOR_TOOLSETS, "jev"]
+        existing = {
+            "plugins": {"enabled": ["goncloud-team", "jev", "jev-skill-router-mcp"]},
+            "platform_toolsets": {"cli": con_jev, "telegram": list(con_jev)},
+        }
+        previous = {
+            "plugins": {"enabled": ["goncloud-team"]},
+            "platform_toolsets": {
+                "cli": list(module._DIRECTOR_TOOLSETS),
+                "telegram": list(module._DIRECTOR_TOOLSETS),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                desired = module.desired_profile_config(
+                    team["director"], team, Path("C:/home")
+                )
+                merged = module.merge_profile_config(existing, desired, previous)
+
+        self.assertEqual(
+            desired["plugins"]["enabled"],
+            ["goncloud-team", "jev", "jev-skill-router-mcp"],
+        )
+        self.assertEqual(merged["plugins"], existing["plugins"])
+
+    def test_un_nombre_en_plugins_y_local_es_error_claro(self):
+        # Caso (c): un plugin administrado no puede ser tambien local; el
+        # manifiesto esta mal y se rechaza antes de tocar ningun perfil.
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["jev"]
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                with self.assertRaisesRegex(ValueError, "administrados y locales: jev"):
+                    module.director_plugins_locales()
 
 
 PRISTINA = "def call_adapter():\n    return {}\n"
@@ -630,7 +699,12 @@ class DespliegueFrescoTests(unittest.TestCase):
         )
         self.assertEqual(
             config["plugins"]["enabled"],
-            ["goncloud-team", "jev", "jev-skill-router-mcp"],
+            [
+                "goncloud-team",
+                "jev",
+                "jev-skill-router-mcp",
+                "forja-queue-cap",
+            ],
         )
         self.assertEqual(
             config["platform_toolsets"]["cli"],
