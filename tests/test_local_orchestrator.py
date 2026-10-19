@@ -3663,5 +3663,207 @@ class LocalCloseHandlerTests(_OrchestratorHarness):
         self.assertIn("ps unavailable", reported["driver"]["pid_check"])
 
 
+class ChainWorktreeTests(_OrchestratorHarness):
+    """r-H-cadena-worktree: cada cadena trabaja en SU worktree (rama
+    cadena/<id>), jamás en el checkout que le pasan. Repos git reales
+    temporales."""
+
+    def _git_repo(self):
+        """A real temp git repo with one commit; returns its base sha."""
+        self.responses = {}
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("init", "-q", "-b", "main")
+        (self.repo / "README.md").write_text("base\n", encoding="utf-8")
+        git("add", "README.md")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "init",
+        )
+        sha = git("rev-parse", "HEAD").stdout.strip()
+        self.base_sha = sha
+        return sha
+
+    def worktree_root(self):
+        return self.root / "wt"
+
+    def original_is_untouched(self, sha):
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(
+            git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), "main"
+        )
+        self.assertEqual(git("rev-parse", "HEAD").stdout.strip(), sha)
+        self.assertEqual(git("status", "--porcelain").stdout.strip(), "")
+
+    def committing_invoke(self):
+        """An invoke whose implementer writes and commits inside the
+        workspace the router handed it — and records that workspace."""
+        original = self.invoke
+        worked_in = []
+
+        def invoke(request, route):
+            if request.role != "implementer":
+                return original(request, route)
+            workspace = Path(request.workspace)
+            worked_in.append(str(workspace))
+            (workspace / "cambio.txt").write_text("cambio\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(workspace), "add", "cambio.txt"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@example.invalid",
+                    "commit",
+                    "-qm",
+                    "trabajo de la cadena",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return original(request, route)
+
+        return invoke, worked_in
+
+    # (a) — la cadena crea SU worktree en rama cadena/<id> y el checkout
+    # original no cambia de rama, HEAD ni estado tras etapas que escriben
+    # y commitean.
+    def test_a_chain_works_in_its_own_worktree(self):
+        sha = self._git_repo()
+        invoke, worked_in = self.committing_invoke()
+        self.invoke = invoke
+
+        result = self.start(revision=sha)
+
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = result["worktree"]
+        self.assertEqual(
+            Path(worktree).resolve(),
+            (
+                self.worktree_root() / (f"{self.repo.name}-{result['workflow_id']}")
+            ).resolve(),
+        )
+        branch = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(branch, f"cadena/{result['workflow_id']}")
+        self.assertTrue(worked_in, "the stages ran")
+        for workspace in worked_in:
+            self.assertEqual(
+                Path(workspace).resolve(),
+                Path(worktree).resolve(),
+                f"the stage worked outside the chain worktree: {workspace}",
+            )
+        self.original_is_untouched(sha)
+        status = self.orchestrator.status(result["workflow_id"])
+        self.assertEqual(status["worktree"], worktree)
+        self.assertEqual(status["worktree_branch"], branch)
+
+    # (b) — dos cadenas sobre el mismo repo tienen worktrees distintos.
+    def test_two_chains_on_the_same_repo_get_distinct_worktrees(self):
+        sha = self._git_repo()
+
+        first = self.start(request_key="cadena-1", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        second = self.start(request_key="cadena-2", revision=sha)
+        self.assertEqual(second["outcome"], "delivered")
+
+        self.assertTrue(first["worktree"])
+        self.assertTrue(second["worktree"])
+        self.assertNotEqual(first["worktree"], second["worktree"])
+        self.assertTrue(Path(first["worktree"]).is_dir())
+        self.assertTrue(Path(second["worktree"]).is_dir())
+
+    # (c) — cierre con worktree limpio lo quita; con commits propios lo
+    # conserva.
+    def test_closing_removes_a_clean_worktree_and_keeps_committed_ones(self):
+        sha = self._git_repo()
+
+        clean = self.paused(request_key="limpia", revision=sha)
+        clean_wt = Path(clean["worktree"])
+        self.assertTrue(clean_wt.is_dir())
+        receipt = self.close(clean["workflow_id"], reason="sin trabajo")
+        self.assertTrue(receipt["worktree"]["removed"])
+        self.assertFalse(clean_wt.exists(), "the clean worktree is removed")
+
+        invoke, _worked_in = self.committing_invoke()
+        self.invoke = invoke
+        committed = self.start(
+            request_key="con-commits", revision=sha, stop_after="scout"
+        )
+        self.assertEqual(committed["outcome"], "paused")
+        committed_wt = Path(committed["worktree"])
+        self.assertTrue(committed_wt.is_dir())
+        # El trabajo propio de la cadena: un commit en su rama (lo deja el
+        # implementer cuando corre; aquí se simula duradero).
+        (committed_wt / "trabajo.txt").write_text("trabajo\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(committed_wt), "add", "trabajo.txt"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(committed_wt),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "trabajo de la cadena",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        receipt = self.close(committed["workflow_id"], reason="tiene trabajo")
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "the chain's own commits keep the worktree alive",
+        )
+        self.assertEqual(receipt["worktree"]["reason"], "tiene commits sin publicar")
+        self.assertTrue(committed_wt.is_dir())
+
+    # (d) — un repository que no es git conserva la conducta de hoy.
+    def test_a_non_git_repository_keeps_todays_behavior(self):
+        result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertIsNone(result.get("worktree"))
+        self.assertEqual([r.role for r in self.requests], ORDER)
+        self.assertFalse(self.worktree_root().exists(), "no worktree root is created")
+
+
 if __name__ == "__main__":
     unittest.main()
