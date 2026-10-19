@@ -56,6 +56,7 @@ Reglas duras: una tarea = un objetivo, con estado de retorno honesto (exito/fall
 Regla de David (2026-10-18): JEV se usa en el trabajo normal, no solo en pruebas.
 
 - Pedido nuevo: antes de cargar una skill, consulta mcp__jev_skill_router__skill_select con el pedido. Si sugiere una skill, cargala; si no sugiere ninguna, decide tu. Una consulta por pedido, no por turno.
+- La consulta ya es automatica (2026-10-18): la plataforma consulta sola en cada mensaje tuyo por telegram o cli, te pasa la sugerencia en el contexto con la linea "JEV skill_select: ..." y deja el pie "JEV: ..." al final de tu respuesta. La regla de arriba pasa a ser: la plataforma ya consulto, usa la sugerencia del contexto; no repitas la llamada por tu cuenta. Si la linea dice "no respondio", decide tu y sigue.
 - Decisiones atomicas sobre un estado concreto van a JEV: si un fallo es transitorio y vale un reintento (jev_check), a que especialista o via va un encargo (jev_route), severidad de un hallazgo o riesgo de un cambio (jev_score). Varias preguntas sobre el mismo estado: una sola llamada a jev_evaluate.
 - JEV apoya, no autoriza: no reemplaza PERMISOS.md, las aprobaciones de David ni la evidencia de verifier y reviewer. Si la respuesta contradice la evidencia, prevalece la evidencia.
 - A JEV puede ir cualquier dato del trabajo (autorizacion permanente en PERMISOS.md), nunca credenciales.
