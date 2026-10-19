@@ -443,6 +443,70 @@ class Cadenas(Escenario):
             ],
         )
 
+    def test_la_cadena_corriendo_sin_terminar_tiene_su_linea(self):
+        # Live review F3: el cierre por task_failure deja la cadena trabada
+        # con outcome running, que close rechaza y close_hint no anuncia.
+        self.avisar(
+            {
+                "workflow_id": "t_run",
+                "repo": "owner-01/repo-a",
+                "outcome": "running",
+                "etapa": "implementer",
+                "motivo": "the driver quit with the stage still unfinished",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_run (owner-01/repo-a) quedó corriendo sin terminar:"
+                " the driver quit with the stage still unfinished."
+            ],
+        )
+        # Segunda vuelta: entregado, silencio.
+        self.impresos.clear()
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+
+    def test_el_motivo_multilinea_sale_en_una_sola_linea(self):
+        # cr 4312376374: el resumen de una etapa bloqueada puede traer salto
+        # de línea; la promesa del cron es UNA línea por aviso.
+        self.avisar(
+            {
+                "workflow_id": "t_nl",
+                "repo": "owner-01/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "push refused:\nhttp 402 upstream\nretry as owner",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(len(self.impresos), 1)
+        self.assertNotIn("\n", self.impresos[0])
+        self.assertIn(
+            "push refused: http 402 upstream retry as owner", self.impresos[0]
+        )
+
+    def test_el_repo_con_forma_de_llave_sale_tachado(self):
+        # cr 4312376359: el borde de lectura re-redacta el repo de avisos
+        # escritos por otras manos.
+        self.avisar(
+            {
+                "workflow_id": "t_repo",
+                "repo": "/srv/ghp_Abc123Def456Ghi789/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "Missing credentials for the Odoo login",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        linea = self.impresos[0]
+        self.assertNotIn("ghp_Abc123Def456Ghi789", linea)
+        self.assertIn("[redacted]", linea)
+
     def test_el_aviso_desconocido_no_se_imprime_ni_se_marca(self):
         self.avisar({"workflow_id": "t_raro", "outcome": "surprise"})
         self.assertEqual(self.correr(), 0)

@@ -76,10 +76,16 @@ _CLOSEABLE_ROOT_STATUSES = frozenset(
 #: stopped outcome is only evidence while it is the file's last write.
 _STOPPED_DRIVER_OUTCOMES = frozenset({"paused", "blocked", "waiting", "error"})
 
-#: Outcomes that leave a mailbox event for claw (encargo H): every final or
-#: stop outcome a run can end with. "running" is the live mark, never an
-#: event — nobody wakes claw for a driver that is still talking.
-_AVISO_OUTCOMES = frozenset({"delivered", "blocked", "waiting", "paused", "error"})
+#: Outcomes that leave a mailbox event for claw (encargo H): every outcome a
+#: run's last write can carry. "running" rides along for exactly one case
+#: (live review F3): the router's task_failure quit, where the driver process
+#: ENDS while a stage stays live and nothing else announces it — close
+#: refuses the chain, close_hint stays silent, so claw must hear the jam and
+#: relaunch. The running mark a start writes goes through _write_result,
+#: never through this event.
+_AVISO_OUTCOMES = frozenset(
+    {"delivered", "blocked", "waiting", "paused", "error", "running"}
+)
 #: The mailbox event is a headline, not a report: bounded like the summary
 #: fields the terminal envelope already carries.
 MAX_AVISO_CHARS = 200
@@ -151,6 +157,7 @@ _DRIVER_BOOTSTRAP = (
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "sys.path.insert(0, hermes)\n"
+    "fallo = False\n"
     "try:\n"
     "    try:\n"
     "        import hermes_bootstrap\n"
@@ -161,32 +168,42 @@ _DRIVER_BOOTSTRAP = (
     "    from local_orchestrator import LocalOrchestrator\n"
     "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after)\n"
     "except Exception:\n"
+    "    fallo = True\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
     "              'error': 'local driver failed; check durable status'}\n"
     "tmp = out + '.%d.tmp' % os.getpid()\n"
     "with open(tmp, 'w', encoding='utf-8') as handle:\n"
     "    json.dump(result, handle, ensure_ascii=True)\n"
     "os.replace(tmp, out)\n"
-    "# The error outcome leaves the mailbox event too (encargo H): the run_id\n"
-    "# segment is the fixed 'boot' because the run never started, so repeated\n"
-    "# broken launches overwrite one event instead of spamming claw. Best\n"
-    "# effort only — the result file above is the evidence that must survive.\n"
-    "try:\n"
-    "    hogar = os.path.dirname(os.path.dirname(out))\n"
-    "    if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
-    "        hogar = os.path.dirname(os.path.dirname(hogar))\n"
-    "    avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
-    "    os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
-    "    nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
-    "    parcial = nombre + '.%d.tmp' % os.getpid()\n"
-    "    evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
-    "              'motivo': result['error'],\n"
-    "              'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
-    "    with open(parcial, 'w', encoding='utf-8') as handle:\n"
-    "        json.dump(evento, handle, ensure_ascii=True)\n"
-    "    os.replace(parcial, nombre)\n"
-    "except OSError:\n"
-    "    pass\n"
+    "# The mailbox event only rides a bootstrap that actually died (encargo\n"
+    "# H, live F1): a resume that ends publishes its own outcome, which has\n"
+    "# no 'error' key — reading one here raised KeyError on every healthy\n"
+    "# run, after the result file was already written. The run_id segment\n"
+    "# stays the fixed 'boot' because the run never started, and one event\n"
+    "# per workflow: while it waits or once despertar delivered it\n"
+    "# (.entregado), repeated broken launches stay quiet (cr 4312376346).\n"
+    "# Best effort only — the result file above is the evidence that must\n"
+    "# survive.\n"
+    "if fallo:\n"
+    "    try:\n"
+    "        hogar = os.path.dirname(os.path.dirname(out))\n"
+    "        if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
+    "            hogar = os.path.dirname(os.path.dirname(hogar))\n"
+    "        avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
+    "        os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
+    "        nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
+    "        if not os.path.exists(nombre) and not os.path.exists(\n"
+    "            nombre[:-5] + '.entregado'\n"
+    "        ):\n"
+    "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
+    "            evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
+    "                      'motivo': result['error'],\n"
+    "                      'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+    "            with open(parcial, 'w', encoding='utf-8') as handle:\n"
+    "                json.dump(evento, handle, ensure_ascii=True)\n"
+    "            os.replace(parcial, nombre)\n"
+    "    except OSError:\n"
+    "        pass\n"
 )
 
 
@@ -264,6 +281,10 @@ def _etapa_y_motivo(report):
         ),
         None,
     )
+    if outcome == "running":
+        # The one quit that happens with a stage still live (live review
+        # F3): the event is the only announcement the jam gets.
+        return pending, "the driver quit with the stage still unfinished."
     if outcome == "waiting":
         return pending, "a stage waits on its parents."
     if outcome == "paused":
@@ -276,7 +297,7 @@ def _aviso_evento(report, *, repo, instruction):
     etapa, motivo = _etapa_y_motivo(report)
     return {
         "workflow_id": report["workflow_id"],
-        "repo": repo or None,
+        "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
         "outcome": report["outcome"],
         "etapa": etapa,
         "motivo": _trimmed(_sanitize(motivo), MAX_AVISO_CHARS),
@@ -292,21 +313,29 @@ def _write_aviso(
 
     Same atomic publish as the result file, and idempotent by name: the run
     id in the file name makes a rewrite of the same stop overwrite itself,
-    never pile up.
+    never pile up. Best effort (live F2, cr 4312376366): the event rides a
+    stop the result file already published, so a full disk, a permission
+    slip or a Windows lock is noted on stderr and swallowed — it must never
+    reach the detached bootstrap, whose catch would overwrite the real
+    outcome with its generic error.
     """
     if outcome not in _AVISO_OUTCOMES:
         return
-    event = _aviso_evento(
-        {**report, "outcome": outcome, "workflow_id": workflow_id},
-        repo=repo,
-        instruction=instruction,
-    )
-    avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
-    avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
-    name = f"{workflow_id}-{run_id}-{outcome}.json"
-    tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
-    tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
-    os.replace(tmp, avisos / name)
+    try:
+        event = _aviso_evento(
+            {**report, "outcome": outcome, "workflow_id": workflow_id},
+            repo=repo,
+            instruction=instruction,
+        )
+        avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
+        avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
+        name = f"{workflow_id}-{run_id}-{outcome}.json"
+        tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
+        tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
+        os.replace(tmp, avisos / name)
+    except OSError as exc:
+        # The detached driver discards stderr; the CLI resume shows the note.
+        print(f"goncloud-local: mailbox event not written: {exc}", file=sys.stderr)
 
 
 # Vendors differ on whether they break the line before the opening fence, so the

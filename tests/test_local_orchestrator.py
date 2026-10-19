@@ -561,8 +561,12 @@ class DriverBootstrapTests(unittest.TestCase):
         )
         self.write_plugin("import only_after_bootstrap\n")
 
-        self.run_driver("scout")
+        # Live F1: a healthy run used to die on result['error'] (KeyError)
+        # after publishing its result; the exit must prove it didn't.
+        run = self.run_driver("scout")
 
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual(result["stop_after"], "scout")
@@ -595,9 +599,9 @@ class DriverBootstrapTests(unittest.TestCase):
     def test_an_unloadable_driver_also_leaves_the_mailbox_error_event(self):
         # Encargo H: the error stop reaches claw through the mailbox too.
         # The run never started, so the run segment is the fixed "boot" and
-        # a repeated broken launch overwrites the same event instead of
-        # piling up. The out path mirrors the production shape (nested under
-        # goncloud-local) because the bootstrap derives the mailbox from it.
+        # repeated broken launches never pile up. The out path mirrors the
+        # production shape (nested under goncloud-local) because the
+        # bootstrap derives the mailbox from it.
         self.out = self.root / "goncloud-local" / "t_boot.json"
         # Production always launches into a directory the running mark
         # already created; the bootstrap never had to make it.
@@ -611,21 +615,107 @@ class DriverBootstrapTests(unittest.TestCase):
             [p.name for p in sorted(avisos.iterdir())],
             ["t_boot-boot-error.json"],
         )
+        # cr 4312376346: one boot-failure notice per workflow, despertar's
+        # delivered mark included. Once the cron drained the event, another
+        # broken launch stays quiet instead of waking claw with the same
+        # news again.
+        (avisos / "t_boot-boot-error.json").rename(
+            avisos / "t_boot-boot-error.entregado"
+        )
+        self.out.unlink(missing_ok=True)
+        self.run_driver()
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado"],
+        )
         event = json.loads(
-            (avisos / "t_boot-boot-error.json").read_text(encoding="utf-8")
+            (avisos / "t_boot-boot-error.entregado").read_text(encoding="utf-8")
         )
         self.assertEqual(event["workflow_id"], "t_boot")
         self.assertEqual(event["outcome"], "error")
         self.assertEqual(event["motivo"], "local driver failed; check durable status")
         self.assertTrue(event["fecha"])
 
+    def test_a_healthy_delivered_run_ends_clean_with_its_result_and_aviso(self):
+        # Live F1 (High): the bootstrap read result['error'] after EVERY
+        # run, so the healthy delivered run — whose report carries no
+        # 'error' key — died on KeyError right after publishing its result,
+        # with a traceback and exit code 1. run_driver() discarded the
+        # CompletedProcess, so the crash never showed. The whole real
+        # bootstrap (sys.executable, the same argv launch_detached builds,
+        # #44 style) must end without exception, keep the delivered result,
+        # and keep the mailbox event the run's own write path published —
+        # with no boot-error event, which only a bootstrap that died may
+        # write. The stub resume ends the way the real _report does: the
+        # result file and the event through the real module's writers.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
+        real = ROOT / "plugins" / "goncloud-team"
+        (self.plugin / "local_orchestrator.py").write_text(
+            "import importlib.util\n"
+            "import sys\n"
+            f"sys.path.insert(0, {str(real)!r})\n"
+            "spec = importlib.util.spec_from_file_location(\n"
+            f"    'driver_real', {str(real / 'local_orchestrator.py')!r})\n"
+            "driver = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(driver)\n"
+            "\n"
+            "\n"
+            "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None):\n"
+            "        report = {'workflow_id': workflow_id, 'outcome': 'delivered',\n"
+            "                  'run_id': 'feedc0de', 'stages': {}}\n"
+            "        driver._write_result(workflow_id, report, home="
+            f"{str(self.root)!r})\n"
+            "        driver._write_aviso(\n"
+            "            workflow_id, 'feedc0de', 'delivered', report,\n"
+            f"            home={str(self.root)!r}, repo='', instruction='')\n"
+            "        return report\n",
+            encoding="utf-8",
+        )
+
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                local_orchestrator_module._DRIVER_BOOTSTRAP,
+                str(self.plugin),
+                str(ROOT / "tests" / "fake_hermes_cli"),
+                "t_boot",
+                str(self.out),
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertNotIn("error", result)
+        avisos = self.root / "goncloud-local" / "avisos"
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-feedc0de-delivered.json"],
+        )
+        event = json.loads(
+            (avisos / "t_boot-feedc0de-delivered.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(event["outcome"], "delivered")
+
     def test_a_hermes_tree_without_a_bootstrap_still_drives(self):
         # Older Hermes trees have no hermes_bootstrap; the driver must not
-        # turn its absence into a failure.
+        # turn its absence into a failure. Live F1: the exit must prove the
+        # healthy run ends clean, not crashed on result['error'].
         self.write_plugin("")
 
-        self.run_driver()
+        run = self.run_driver()
 
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
 
@@ -2370,13 +2460,62 @@ class AvisoMailboxTests(_OrchestratorHarness):
         self.assertEqual(event["etapa"], "ingenieria")
         self.assertEqual(event["motivo"], "paused at its stop_after checkpoint.")
 
-    def test_a_running_outcome_never_writes_an_event(self):
+    def test_a_key_shaped_repo_reaches_the_mailbox_redacted(self):
+        # cr 4312376359: the repository path travels into the event under
+        # the same redaction as every other word, never as a place to hide
+        # a token-shaped secret.
+        secret = self.root / "ghp_Abc123Def456Ghi789"
+        secret.mkdir()
+        result = self.start(repository=str(secret))
+        self.assertEqual(result["outcome"], "delivered")
+        name = f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+        raw = (self.avisos() / name).read_text(encoding="utf-8")
+        self.assertNotIn("ghp_Abc123Def456Ghi789", raw)
+        self.assertIn("[redacted]", self.read_event(name)["repo"])
+
+    def test_a_driver_quitting_running_leaves_its_own_event(self):
+        # Live review F3: the router's task_failure path is the one quit
+        # that happens with a stage still live. The process ends, close
+        # refuses the chain and close_hint stays silent, so the mailbox is
+        # the only channel left: claw hears the jam and relaunches. (The
+        # running mark a start writes goes through _write_result, never
+        # through this event.)
         first = self.start(stop_after="scout")
         before = {p.name for p in self.avisos().iterdir()}
         self.assertTrue(any(name.endswith("paused.json") for name in before))
         self.orchestrator._report(
             first["workflow_id"], "running", home=self.root, run_id="liverun"
         )
+        event = self.read_event(f"{first['workflow_id']}-liverun-running.json")
+        self.assertEqual(event["outcome"], "running")
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(
+            event["motivo"], "the driver quit with the stage still unfinished."
+        )
+
+    def test_a_broken_mailbox_keeps_the_real_result(self):
+        # Live F2 + cr 4312376366: the mailbox is best effort. A stop the
+        # result file already published is the truth; a mailbox that cannot
+        # be written (full disk, permission slip, Windows lock) is swallowed
+        # — never propagated, because the detached bootstrap's catch would
+        # overwrite the real outcome with its generic error.
+        first = self.start(stop_after="scout")
+        before = {p.name for p in self.avisos().iterdir()}
+        barrier = self.root / "barrier"
+        barrier.write_text("not a directory", encoding="utf-8")
+        with patch.object(
+            local_orchestrator_module, "_home_raiz", return_value=barrier
+        ):
+            result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "delivered")
+        durable = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(durable["outcome"], "delivered")
+        self.assertEqual(durable["run_id"], result["run_id"])
+        # The broken mailbox published nothing, and the real events stay.
         self.assertEqual({p.name for p in self.avisos().iterdir()}, before)
 
     def test_the_event_is_idempotent_by_name(self):

@@ -20,7 +20,8 @@ al salir.
 Encargo H-cadenas-avisan: antes de las raíces drena también el buzón
 durable de las cadenas locales. Cada corrida que el driver de
 goncloud_local_run deja parada (delivered, blocked, waiting, paused, error)
-escribió un evento en <raiz>/goncloud-local/avisos/
+o deja corriendo sin terminar (running: el cierre por task_failure, live
+review F3) escribió un evento en <raiz>/goncloud-local/avisos/
 <workflow_id>-<run_id>-<outcome>.json, en la raíz del home de Hermes para
 que escritor (el perfil que lanzó la cadena) y lector (este cron, en el
 perfil default) se encuentren. Por cada aviso no entregado imprime UNA
@@ -44,10 +45,23 @@ if str(_PLUGIN) not in sys.path:
 AVISO_MOTIVO_CHARS = 160
 
 
-def _motivo_corto(motivo) -> str:
-    """El motivo acotado y sin secretos: misma redacción que el buzón."""
+def _redacta(texto) -> str:
+    """Redacción en el borde de lectura (cr 4312376359): el aviso pudo
+    escribirlo otra mano, así que el repo se redacta otra vez aquí, y todo
+    blanco de control o relleno de redacción queda como un solo espacio.
+    """
     redaccion = importlib.import_module("subscriptions.redaction")
-    texto = redaccion.redact_text(str(motivo or "")).strip().rstrip(".")
+    return " ".join(redaccion.redact_text(str(texto or "")).split())
+
+
+def _motivo_corto(motivo) -> str:
+    """El motivo acotado y sin secretos: misma redacción que el buzón.
+
+    Una sola línea prometida (cr 4312376374): el resumen de una etapa
+    bloqueada puede traer salto de línea (parse_terminal_envelope no exige
+    una línea), y ningún blanco de control sobrevive al titular.
+    """
+    texto = _redacta(motivo).rstrip(".")
     if len(texto) > AVISO_MOTIVO_CHARS:
         texto = texto[: AVISO_MOTIVO_CHARS - 1].rstrip() + "…"
     return texto
@@ -57,13 +71,14 @@ def linea_de_aviso(aviso: dict) -> str | None:
     """La línea corta para claw; None si el aviso no se sabe contar.
 
     Los tres formatos del encargo: entregada, se trabó en <etapa>, falló.
-    Paused y waiting tienen su propia línea: la cadena paró igual y claw
-    debe saberlo, con el mismo techo de motivo.
+    Paused, waiting y running tienen su propia línea: la cadena paró igual
+    o quedó corriendo sin terminar, y claw debe saberlo, con el mismo techo
+    de motivo.
     """
     cadena = str(aviso.get("workflow_id") or "").strip()
     if not cadena:
         return None
-    repo = str(aviso.get("repo") or "").strip()
+    repo = _redacta(aviso.get("repo"))
     lugar = f"{cadena} ({repo})" if repo else cadena
     motivo = _motivo_corto(aviso.get("motivo"))
     detalle = f": {motivo}" if motivo else ""
@@ -80,6 +95,10 @@ def linea_de_aviso(aviso: dict) -> str | None:
         return f"Cadena {lugar} quedó en pausa{detalle}."
     if outcome == "waiting":
         return f"Cadena {lugar} quedó esperando{detalle}."
+    if outcome == "running":
+        # El cierre por task_failure (live review F3): el proceso del driver
+        # terminó con la etapa viva y nada más lo anuncia.
+        return f"Cadena {lugar} quedó corriendo sin terminar{detalle}."
     return None
 
 
