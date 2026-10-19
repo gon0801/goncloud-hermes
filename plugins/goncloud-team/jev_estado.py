@@ -4,7 +4,7 @@ Fuente de solo lectura, kanban.db (esquema real de hermes-agent): tarjetas de
 especialista y etapas de cadenas Goncloud que terminaron (completed/blocked,
 con su ultimo reporte), para que el cierre (jev_auto) las traiga al turno
 siguiente. Las consultas siguen el esquema REAL: el payload del evento vive
-en task_events.payload_json, el resultado en tasks.result y el resumen de la
+en task_events.payload, el resultado en tasks.result y el resumen de la
 corrida en task_runs.metadata. Nada abre el kanban para escribir.
 """
 
@@ -53,7 +53,7 @@ def ultimo_evento(conn) -> int:
 
 
 def _json_de(bruto):
-    """El payload_json de la referencia parseado; None si no trae o no es JSON."""
+    """El payload del evento parseado; None si no trae o no es JSON."""
     try:
         return json.loads(bruto) if bruto else None
     except (TypeError, ValueError):
@@ -68,18 +68,18 @@ def _es_etapa_de_cadena(conn, tarea) -> bool:
     (goncloud-workflow:...). Las etapas INICIALES no la llevan y NO cuelgan
     de la raiz en task_links: workflow encadena las etapas entre si
     (cada una hija de la anterior) y el parentesco raiz->etapas solo queda
-    en el evento "decomposed" de la raiz (payload_json.child_ids), que es
+    en el evento "decomposed" de la raiz (payload.child_ids), que es
     donde lo mira workflow._decomposed_child_ids.
     """
     if str(tarea["idempotency_key"] or "").startswith(PREFIJO_CADENA):
         return True
     filas = conn.execute(
-        "SELECT e.payload_json FROM task_events e JOIN tasks r ON r.id = e.task_id "
+        "SELECT e.payload FROM task_events e JOIN tasks r ON r.id = e.task_id "
         "WHERE e.kind = 'decomposed' AND r.idempotency_key LIKE ?",
         (PREFIJO_CADENA + "%",),
     ).fetchall()
     for fila in filas:
-        datos = _json_de(fila["payload_json"])
+        datos = _json_de(fila["payload"])
         hijos = datos.get("child_ids") if isinstance(datos, dict) else None
         if isinstance(hijos, list) and tarea["id"] in hijos:
             return True
@@ -100,7 +100,7 @@ def _reporte(conn, tarea_id: str, payload) -> str:
 
     No hay columnas summary/error en task_runs: el resultado queda en
     tasks.result, la corrida cierra con su metadata (el "terminal" de
-    goncloud_local) y el evento trae payload_json ({"result": ...} al
+    goncloud_local) y el evento trae payload ({"result": ...} al
     completar, {"reason": ..., "kind": ...} al bloquear).
     """
     partes = []
@@ -134,7 +134,7 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
     cierres: list[dict] = []
     cursor = desde
     filas = conn.execute(
-        "SELECT id, task_id, kind, payload_json FROM task_events "
+        "SELECT id, task_id, kind, payload FROM task_events "
         "WHERE id > ? AND kind IN ('completed', 'blocked') ORDER BY id LIMIT 200",
         (desde,),
     ).fetchall()
@@ -159,7 +159,7 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
                 "assignee": tarea["assignee"],
                 "titulo": _acotar(tarea["title"], 100),
                 "desenlace": fila["kind"],
-                "reporte": _reporte(conn, tarea["id"], _json_de(fila["payload_json"])),
+                "reporte": _reporte(conn, tarea["id"], _json_de(fila["payload"])),
             }
         )
     return cierres, cursor

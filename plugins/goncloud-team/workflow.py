@@ -914,7 +914,7 @@ class WorkflowService:
                     # this same transaction, so both close paths leave
                     # identical rastros.
                     conn.execute(
-                        "INSERT INTO task_events (task_id, kind, payload_json,"
+                        "INSERT INTO task_events (task_id, kind, payload,"
                         " created_at) VALUES (?, 'archived', ?, ?)",
                         (
                             member_id,
