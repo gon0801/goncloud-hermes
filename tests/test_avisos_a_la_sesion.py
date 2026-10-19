@@ -13,10 +13,13 @@ que la lanzó, no al Bot Chat genérico.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import queue
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -378,6 +381,118 @@ class BootErrorOrigenTests(DriverBootstrapTests):
         # Y el vigilante lo puede encolar a esa sesión, como cualquier aviso.
         cola = ColaFalsa()
         self.assertEqual(avisos_sesion.entregar_avisos(avisos, cola), 1)
+        self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
+
+
+def _cargar_copia(nombre: str):
+    """Otra copia de avisos_sesion, como la que carga cada perfil."""
+    ruta = ROOT / "plugins/goncloud-team/avisos_sesion.py"
+    spec = importlib.util.spec_from_file_location(nombre, ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    sys.modules[nombre] = modulo
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+class ColaConBarrera(ColaFalsa):
+    """put sincroniza a los productores: si dos encolan, se ven."""
+
+    def __init__(self, barrera):
+        super().__init__()
+        self._barrera = barrera
+        self._candado = threading.Lock()
+
+    def put(self, evento):
+        try:
+            self._barrera.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        with self._candado:
+            self.eventos.append(evento)
+
+
+class VigilanteUnicoTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.buzon = Path(self._tmp.name) / "avisos"
+        self.buzon.mkdir(parents=True)
+
+    def _hilos_vivos(self):
+        return [
+            hilo
+            for hilo in threading.enumerate()
+            if hilo.name == "goncloud-avisos-sesion" and hilo.is_alive()
+        ]
+
+    def test_dos_copias_un_solo_vigilante(self):
+        escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        copia1 = _cargar_copia("avisos_copia_uno")
+        copia2 = _cargar_copia("avisos_copia_dos")
+        cola = ColaFalsa()
+        alto1, alto2 = threading.Event(), threading.Event()
+        hilo1 = copia1.iniciar_vigilante(
+            self.buzon,
+            cola=cola,
+            intervalo=0.05,
+            detener=alto1,
+            exigir_gateway=False,
+        )
+        try:
+            hilo2 = copia2.iniciar_vigilante(
+                self.buzon,
+                cola=cola,
+                intervalo=0.05,
+                detener=alto2,
+                exigir_gateway=False,
+            )
+            self.assertIsNotNone(hilo1)
+            self.assertIs(hilo1, hilo2)
+            self.assertEqual(len(self._hilos_vivos()), 1)
+        finally:
+            alto1.set()
+            alto2.set()
+            for hilo in self._hilos_vivos():
+                hilo.join(timeout=5)
+
+    def test_dos_hilos_mismo_buzon_exactamente_un_put(self):
+        escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        copia1 = _cargar_copia("avisos_copia_tres")
+        copia2 = _cargar_copia("avisos_copia_cuatro")
+        cola = ColaConBarrera(threading.Barrier(2))
+        salida = threading.Barrier(3)
+        resultados = []
+
+        def correr(modulo):
+            salida.wait(timeout=5)
+            resultados.append(modulo.entregar_avisos(self.buzon, cola))
+
+        hilos = [
+            threading.Thread(target=correr, args=(copia1,)),
+            threading.Thread(target=correr, args=(copia2,)),
+        ]
+        for hilo in hilos:
+            hilo.start()
+        salida.wait(timeout=5)
+        for hilo in hilos:
+            hilo.join(timeout=10)
+        self.assertEqual(len(cola.eventos), 1)
+        self.assertEqual(sum(resultados), 1)
+        self.assertTrue((self.buzon / "t_abc-run-blocked.encolado").exists())
+        self.assertFalse((self.buzon / "t_abc-run-blocked.json").exists())
+
+    def test_reinicio_encolado_una_sola_reencolada_con_dos_copias(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        ruta.replace(ruta.with_suffix(".encolado"))
+        copia1 = _cargar_copia("avisos_copia_cinco")
+        copia2 = _cargar_copia("avisos_copia_seis")
+        # Simula proceso nuevo: sin memoria de encolados propios.
+        copia1._encolados_propios.clear()
+        cola = ColaFalsa()
+        total = copia1.reencolar_encolados(self.buzon, cola)
+        total += copia2.reencolar_encolados(self.buzon, cola)
+        self.assertEqual(total, 1)
+        self.assertEqual(len(cola.eventos), 1)
         self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
 
 
