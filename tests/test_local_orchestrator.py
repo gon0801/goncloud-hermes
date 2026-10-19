@@ -772,6 +772,7 @@ class _OrchestratorHarness(unittest.TestCase):
                     (),
                     False,
                 ),
+                "tree_fingerprint": lambda _, workspace: ("baseline", ()),
             },
         )()
         self.router = SubscriptionRouter(
