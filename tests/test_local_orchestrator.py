@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path.home() / "AppData/Local/hermes/hermes-agent"))
@@ -531,6 +531,11 @@ class DriverBootstrapTests(unittest.TestCase):
         self.deps = self.root / "deps"
         for directory in (self.hermes, self.plugin, self.deps):
             directory.mkdir()
+        # El buzon de error del bootstrap usa el helper compartido del
+        # plugin; el stub lo lleva junto a su local_orchestrator.
+        (self.plugin / "carpetas.py").write_bytes(
+            (ROOT / "plugins/goncloud-team/carpetas.py").read_bytes()
+        )
         self.out = self.root / "result.json"
 
     def run_driver(self, *extra):
@@ -739,6 +744,79 @@ class DriverBootstrapTests(unittest.TestCase):
         self.assertEqual(run.stderr, "")
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
+
+
+class CarpetasPrivadasTests(unittest.TestCase):
+    """H-carpetas: en Windows, mkdir(mode=0o700) deja la carpeta ilegible
+    para el gateway (DAC protegida sin herencia desde Python 3.13): el cron
+    despertar-raices veia el buzon VACIO y los avisos nunca llegaron a claw.
+    En Windows las carpetas privadas se crean sin mode (heredan la DACL del
+    padre); en POSIX conservan 0o700. Un solo helper para todos los sitios.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.root = Path(self.tmp.name)
+
+    def carpetas(self):
+        import carpetas
+
+        return importlib.reload(carpetas)
+
+    def test_en_windows_la_carpeta_se_crea_sin_mode(self):
+        carpetas = self.carpetas()
+        ruta = self.root / "avisos"
+        stub = Mock()
+        stub.name = "nt"
+        with (
+            patch.object(carpetas, "os", stub),
+            patch.object(Path, "mkdir", autospec=True) as mkdir,
+        ):
+            carpetas.mkdir_privado(ruta)
+
+        # Sin mode: la carpeta hereda la DACL del padre.
+        mkdir.assert_called_once_with(ruta, parents=True, exist_ok=True)
+
+    def test_en_posix_la_carpeta_conserva_0o700(self):
+        carpetas = self.carpetas()
+        ruta = self.root / "avisos"
+        stub = Mock()
+        stub.name = "posix"
+        with (
+            patch.object(carpetas, "os", stub),
+            patch.object(Path, "mkdir", autospec=True) as mkdir,
+        ):
+            carpetas.mkdir_privado(ruta)
+
+        mkdir.assert_called_once_with(ruta, mode=0o700, parents=True, exist_ok=True)
+
+    def test_write_result_y_write_aviso_usan_el_helper(self):
+        with patch.object(
+            local_orchestrator_module,
+            "mkdir_privado",
+            side_effect=local_orchestrator_module.mkdir_privado,
+        ) as carpeta:
+            local_orchestrator_module._write_result(
+                "t_carpetas", {"outcome": "running"}, home=self.root
+            )
+            local_orchestrator_module._write_aviso(
+                "t_carpetas",
+                "run-1",
+                "error",
+                {"outcome": "error", "workflow_id": "t_carpetas"},
+                home=self.root,
+            )
+
+        self.assertEqual(carpeta.call_count, 2)
+        self.assertTrue((self.root / "goncloud-local" / "t_carpetas.json").is_file())
+        self.assertEqual(
+            [
+                p.name
+                for p in sorted((self.root / "goncloud-local" / "avisos").iterdir())
+            ],
+            ["t_carpetas-run-1-error.json"],
+        )
 
 
 class _OrchestratorHarness(unittest.TestCase):
