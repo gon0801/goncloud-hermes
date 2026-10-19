@@ -28,12 +28,19 @@ variables GIT_*: un hook de git exporta GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE
 y, heredadas por los subprocess, el git del repo temporal pegaria contra el
 repo REAL (incidente 2026-10-18 en Orbit: GIT_DIR del hook pre-push
 reinicializo el repo y le puso core.bare=true).
+
+El script se ejecuta con bash y filtra con el jq del sistema, y el doble de
+gh es un ejecutable por shebang: fuera de POSIX (o sin bash o jq en el
+PATH) las clases que lo corren se SALTAN en vez de quedar rojas — en la PC
+Windows esta bateria tambien corre (F5).
 """
 
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -45,9 +52,12 @@ WORKFLOW = REPO / ".github" / "workflows" / "sistema-agentes.yml"
 SCRIPT = REPO / ".github" / "scripts" / "reusar_completa.sh"
 RAMA_POR_DEFECTO = "feat/hermes-team"
 
+# El shebang del doble apunta al MISMO interprete que corre las pruebas:
+# `python3` en el PATH es una apuesta (y fuera de POSIX ni existe). Sin
+# llaves en el cuerpo: el .format de abajo es seguro.
 DOBLE_GH = textwrap.dedent(
     """\
-    #!/usr/bin/env python3
+    #!{python}
     import json
     import os
     import sys
@@ -69,7 +79,7 @@ DOBLE_GH = textwrap.dedent(
         accion = json.dumps(accion)
     sys.stdout.write(accion)
     """
-)
+).format(python=sys.executable)
 
 
 def bloque(texto: str, cabecera: str) -> str:
@@ -303,6 +313,12 @@ class ContratoReuso(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    os.name == "posix" and shutil.which("bash") and shutil.which("jq"),
+    "el escenario corre el .sh con bash y el jq del sistema, y el doble de "
+    "gh es un ejecutable por shebang: fuera de POSIX (o sin bash/jq en el "
+    "PATH) quedaria roja, no saltada",
+)
 class EscenarioReuso(unittest.TestCase):
     """El script real contra un doble de gh, sin red (escenas del reuso)."""
 
@@ -384,6 +400,12 @@ class EscenarioReuso(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    os.name == "posix" and shutil.which("bash") and shutil.which("jq"),
+    "el escenario corre el .sh con bash y el jq del sistema, y el doble de "
+    "gh es un ejecutable por shebang: fuera de POSIX (o sin bash/jq en el "
+    "PATH) quedaria roja, no saltada",
+)
 class CentinelaGitEnv(unittest.TestCase):
     def test_el_git_env_del_hook_deja_intacto_el_repo_ajeno(self) -> None:
         """Regresion 2026-10-18: GIT_* del hook no pegan contra el repo real.
