@@ -1099,7 +1099,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         # abre el PR por la API; el link va al resultado durable y al aviso
         # ("Cadena X entregada: <url>"), y el token jamas sale por ningun
         # lado. Git real sin red; credencial y API con dobles.
-        self._real_git_repo()
+        sha = self._real_git_repo()
         origen = self._origen_pelado()
         llamadas = []
         token = "ghp_Abc123Def456Ghi789"
@@ -1117,7 +1117,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                 entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
             ),
         ):
-            result = self.start()
+            result = self.start(revision=sha)
 
         self.assertEqual(result["outcome"], "delivered")
         self.assertEqual(result["pull_request"], "https://github.com/acme/repo/pull/7")
@@ -1158,7 +1158,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         self.assertNotIn(token, json.dumps(evento))
 
     def test_without_a_credential_the_chain_stays_delivered_and_says_why(self):
-        self._real_git_repo()
+        sha = self._real_git_repo()
         origen = self._origen_pelado()
         with (
             patch.object(entrega_pr_module, "_credencial", return_value=None),
@@ -1166,7 +1166,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                 entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
             ),
         ):
-            result = self.start()
+            result = self.start(revision=sha)
 
         self.assertEqual(result["outcome"], "delivered")
         self.assertEqual(
@@ -1201,6 +1201,12 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         self._real_git_repo()
         self._origen_pelado()
         self._git("checkout", "-b", "feat/x")
+        sha_resuelto = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         llamadas = []
 
         def api(metodo, ruta, token, payload=None):
@@ -1218,7 +1224,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                 entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
             ),
         ):
-            result = self.start()
+            result = self.start(revision=sha_resuelto)
 
         self.assertEqual(result["outcome"], "delivered")
         payload = next(llamada for llamada in llamadas if llamada[0] == "POST")[2]
@@ -1231,6 +1237,12 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         self._real_git_repo()
         self._origen_pelado()
         self._git("checkout", "--detach")
+        sha_resuelto = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         llamadas = []
 
         def api(metodo, ruta, token, payload=None):
@@ -1248,7 +1260,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                 entrega_pr_module, "_dueño_y_repo", return_value=("acme", "repo")
             ),
         ):
-            result = self.start()
+            result = self.start(revision=sha_resuelto)
 
         self.assertEqual(result["outcome"], "delivered")
         payload = next(llamada for llamada in llamadas if llamada[0] == "POST")[2]
