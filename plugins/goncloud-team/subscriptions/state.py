@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS subscription_attempts (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(workflow_id, stage_id, slot, attempt)
 );
+CREATE TABLE IF NOT EXISTS subscription_stage_generations (
+    workflow_id TEXT NOT NULL,
+    stage_id TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(workflow_id, stage_id)
+);
 CREATE TABLE IF NOT EXISTS subscription_stage_leases (
     workflow_id TEXT NOT NULL,
     stage_id TEXT NOT NULL,
@@ -81,6 +87,7 @@ _ATTEMPT_COLUMNS = (
     "status",
     "terminal",
     "disposition",
+    "generation",
     "created_at",
 )
 
@@ -176,6 +183,10 @@ class SubscriptionStateStore:
             if "disposition" not in columns:
                 conn.execute(
                     "ALTER TABLE subscription_attempts ADD COLUMN disposition TEXT NOT NULL DEFAULT 'executed'"
+                )
+            if "generation" not in columns:
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
             health_columns = {
                 row["name"]
@@ -357,6 +368,44 @@ class SubscriptionStateStore:
 
     # -- attempts ---------------------------------------------------------
 
+    def current_generation(self, workflow_id: str, stage_id: str) -> int:
+        """The attempt generation attempt queries see for one stage."""
+        with self._lock, self._connect() as conn:
+            return self._generation_locked(conn, workflow_id, stage_id)
+
+    @staticmethod
+    def _generation_locked(conn, workflow_id: str, stage_id: str) -> int:
+        row = conn.execute(
+            "SELECT generation FROM subscription_stage_generations "
+            "WHERE workflow_id = ? AND stage_id = ?",
+            (workflow_id, stage_id),
+        ).fetchone()
+        return int(row["generation"]) if row is not None else 0
+
+    def open_generation(self, workflow_id: str, stage_id: str) -> int:
+        """Open a new attempt generation for one stage and return its number.
+
+        Encargo H punto 1 (relanzar = reintentar): older attempts stay as
+        durable evidence, but attempt queries only see the current
+        generation, so the router runs the stage's routes from the first
+        slot again instead of replaying a recorded result. There is no
+        retry cap: every relaunch opens another generation. The attempt
+        counter keeps counting across generations (it is the durable
+        UNIQUE identity, not a display value).
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            generation = self._generation_locked(conn, workflow_id, stage_id) + 1
+            conn.execute(
+                "INSERT INTO subscription_stage_generations "
+                "(workflow_id, stage_id, generation) VALUES (?,?,?) "
+                "ON CONFLICT(workflow_id, stage_id) DO UPDATE SET "
+                "generation=excluded.generation",
+                (workflow_id, stage_id, generation),
+            )
+            conn.commit()
+        return generation
+
     def record_attempt(
         self,
         *,
@@ -387,8 +436,8 @@ class SubscriptionStateStore:
                 "INSERT INTO subscription_attempts "
                 "(workflow_id, stage_id, slot, attempt, adapter, model, "
                 "billing_mode, mode, success, failure, session_id, "
-                "start_revision, end_revision, changed_files, detail, status, owner, disposition) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "start_revision, end_revision, changed_files, detail, status, owner, disposition, generation) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     workflow_id,
                     stage_id,
@@ -408,6 +457,7 @@ class SubscriptionStateStore:
                     status,
                     owner,
                     disposition,
+                    self._generation_locked(conn, workflow_id, stage_id),
                 ),
             )
             conn.commit()
@@ -456,23 +506,30 @@ class SubscriptionStateStore:
             return bool(updated)
 
     def stage_attempts(self, workflow_id: str, stage_id: str) -> list[dict[str, Any]]:
+        """The current generation's attempts of one stage.
+
+        Older generations stay in the table as durable evidence; a relaunch
+        opened a new one so the router re-runs instead of replaying.
+        """
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM subscription_attempts "
-                "WHERE workflow_id = ? AND stage_id = ? ORDER BY id",
-                (workflow_id, stage_id),
+                "WHERE workflow_id = ? AND stage_id = ? AND generation = ? ORDER BY id",
+                (workflow_id, stage_id, generation),
             ).fetchall()
         return [_attempt_view(row) for row in rows]
 
     def latest_success(
         self, workflow_id: str, stage_id: str
     ) -> Optional[dict[str, Any]]:
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM subscription_attempts "
-                "WHERE workflow_id = ? AND stage_id = ? AND success = 1 "
+                "WHERE workflow_id = ? AND stage_id = ? AND generation = ? AND success = 1 "
                 "ORDER BY id DESC LIMIT 1",
-                (workflow_id, stage_id),
+                (workflow_id, stage_id, generation),
             ).fetchone()
         return _attempt_view(row) if row is not None else None
 
@@ -511,6 +568,7 @@ class SubscriptionStateStore:
 
     def mark_stage_terminal(self, workflow_id, stage_id, owner) -> bool:
         """Fence a final local result before releasing its execution lease."""
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if not self._owns_stage(conn, workflow_id, stage_id, owner):
@@ -518,8 +576,8 @@ class SubscriptionStateStore:
             conn.execute(
                 "UPDATE subscription_attempts SET terminal=1 WHERE id=("
                 "SELECT id FROM subscription_attempts WHERE workflow_id=? AND stage_id=? "
-                "AND status='completed' ORDER BY id DESC LIMIT 1)",
-                (workflow_id, stage_id),
+                "AND generation=? AND status='completed' ORDER BY id DESC LIMIT 1)",
+                (workflow_id, stage_id, generation),
             )
             conn.commit()
             return True

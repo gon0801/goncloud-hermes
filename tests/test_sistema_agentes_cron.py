@@ -209,6 +209,42 @@ class Script(Base):
         self.addCleanup(puerto.cerrar)
         return puerto.leer_estado(f"sa:{RAIZ}:a:1")
 
+    def test_la_version_sin_certificar_avisa_y_la_vuelta_corre_abierta(self):
+        # Encargo H punto 3: la certificación solo avisa. La puerta abre con
+        # la causa; el cron imprime AVISO una vez y la vuelta corre abierta:
+        # despacha la intención y corre la pasada del emisor.
+        tienda = self.dejar_intencion_pendiente()
+        self.instalar_permisos()
+        tienda.cerrar()
+        permisos = importlib.import_module("raices.permisos")
+        yaml_parche = mock.patch.object(permisos, "yaml", yaml_de_prueba())
+        yaml_parche.start()
+        self.addCleanup(yaml_parche.stop)
+
+        cron = importlib.import_module("raices.cron_ticker")
+        salida, errores = StringIO(), StringIO()
+        with redirect_stdout(salida), redirect_stderr(errores):
+            codigo = cron.correr(
+                ruta_abierta=lambda: (True, "version-no-certificada"),
+                enviar=lambda _texto: 42,
+            )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(salida.getvalue(), "")
+        texto = errores.getvalue()
+        self.assertIn("AVISO (version-no-certificada)", texto)
+        self.assertNotIn("ruta de raices cerrada", texto)
+        checkpoint = self.home / "raices" / "capacidad-incierta.json"
+        self.assertTrue(checkpoint.exists(), "el aviso deja el checkpoint")
+        self.assertEqual(
+            json.loads(checkpoint.read_text(encoding="utf-8"))["causa"],
+            "version-no-certificada",
+        )
+        # La vuelta abierta despachó y la pasada del emisor corrió.
+        self.assertIsNotNone(self.tarjeta_en_el_kanban())
+        self.assertTrue(
+            (self.home / "raices" / "proyecciones" / f"{RAIZ}.json").exists()
+        )
+
     def test_una_vuelta_despacha_la_intencion_pendiente_y_sale_silencioso(self):
         tienda = self.dejar_intencion_pendiente()
         self.instalar_permisos()

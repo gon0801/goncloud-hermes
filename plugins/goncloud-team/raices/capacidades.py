@@ -214,7 +214,12 @@ def _certificado(hechos) -> bool:
 
 def decidir(hechos) -> tuple[bool, str | None]:
     """Pura y total: con hechos malformados cierra. El orden de causas es
-    fijo porque el aviso del cron nombra una sola por vez."""
+    fijo porque el aviso del cron nombra una sola por vez.
+
+    La versión sin certificar ya no cierra (encargo H punto 3): abre con
+    aviso — (True, "version-no-certificada") — y los consumidores avisan
+    sin bloquear. Las causas de capacidad y de par incierto siguen
+    cerrando."""
     vivas = getattr(hechos, "capacidades", None)
     if not isinstance(vivas, (set, frozenset)):
         vivas = frozenset()
@@ -228,7 +233,7 @@ def decidir(hechos) -> tuple[bool, str | None]:
     if causa is not None:
         return False, causa
     if not _certificado(hechos):
-        return False, "version-no-certificada"
+        return True, "version-no-certificada"
     return True, None
 
 

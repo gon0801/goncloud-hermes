@@ -91,6 +91,16 @@ def _transport_handlers(ctx):
                     arguments.get("affects_business_rules", False)
                 ),
             )
+            if created.get("busy"):
+                # Contrato r6: el repo ya tiene una cadena viva — no se
+                # creó nada y la respuesta va clara a claw, que relanza
+                # cuando le llegue el aviso de la cadena viva.
+                return json.dumps(
+                    created,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
             launched = orchestrator.launch_detached(
                 created["workflow_id"], stop_after=stop_after
             )

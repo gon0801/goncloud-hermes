@@ -50,6 +50,27 @@ class WorkflowTestCase(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.db_path = self.root / "kanban.db"
+        # Review F5: start resolves the subscription store through
+        # default_db_path(); without this pin the race test ran schema
+        # migrations and BEGIN IMMEDIATE against the developer's real
+        # router store — and passed or failed depending on its existence.
+        os.environ["GONCLOUD_SUBSCRIPTION_DB"] = str(self.root / "routes.db")
+        self.addCleanup(os.environ.pop, "GONCLOUD_SUBSCRIPTION_DB", None)
+        # The race must decide with the store present (encargo H, pruebas):
+        # an absent store file is checked ground, and the no-store early
+        # return it used to trigger masked exactly the bug this suite
+        # guards. Creating the schema here keeps every test on the
+        # with-store path.
+        from subscriptions.state import SubscriptionStateStore
+
+        SubscriptionStateStore(self.root / "routes.db")
+        # The driver-mark home needs the same pin (regla D removed the
+        # no-store early return that used to mask this): the fake's
+        # sequential ids repeat across runs, so an unpinned HERMES_HOME
+        # let _driver_signals read a stale mark from the real home and
+        # the race archived a birthing chain.
+        os.environ["HERMES_HOME"] = str(self.root / "hermes-home")
+        self.addCleanup(os.environ.pop, "HERMES_HOME", None)
 
     def service(self, role: str = "claw") -> WorkflowService:
         return WorkflowService(db_path=self.db_path, actor_role=role)
@@ -108,8 +129,12 @@ class WorkflowTestCase(unittest.TestCase):
                 sources=SOURCES,
             )
 
-    def test_concurrent_different_requests_cannot_share_one_repository(self) -> None:
-        # Initialize the native schema before racing only the policy decision.
+    def test_concurrent_different_requests_serialize_through_one_repository(
+        self,
+    ) -> None:
+        # Encargo H punto 2: the repository no longer refuses a second chain;
+        # the atomic root insert still serializes the race (each root exactly
+        # once, no half-created chain).
         with connect_closing(self.db_path):
             pass
         barrier = threading.Barrier(2)
@@ -133,14 +158,32 @@ class WorkflowTestCase(unittest.TestCase):
                 except WorkflowError as exc:
                     outcomes.append(("error", str(exc)))
 
-        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 1)
-        self.assertEqual([kind for kind, _ in outcomes].count("error"), 1)
-        self.assertIn(
-            "already has active Goncloud workflow",
-            next(value for kind, value in outcomes if kind == "error"),
-        )
+        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 2)
+        self.assertEqual([kind for kind, _ in outcomes].count("error"), 0)
         with connect_closing(self.db_path) as conn:
-            self.assertEqual(len(list_tasks(conn)), 8)
+            self.assertEqual(len(list_tasks(conn, include_archived=True)), 8)
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 1, "the loser created nothing")
+        # One root is the winner's chain; the loser's busy answer names it.
+        busy = [
+            result for kind, result in outcomes if kind == "ok" and result.get("busy")
+        ]
+        winner = next(
+            result
+            for kind, result in outcomes
+            if kind == "ok" and not result.get("busy")
+        )
+        self.assertEqual(len(busy), 1)
+        self.assertEqual(busy[0]["cadena_viva"], winner["workflow_id"])
+        self.assertEqual(
+            sum(task.status == "archived" for task in roots),
+            0,
+            "nobody archives anybody in the race",
+        )
 
     @unittest.skipUnless(
         os.name == "nt",
@@ -151,16 +194,16 @@ class WorkflowTestCase(unittest.TestCase):
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")
 
-        with self.assertRaisesRegex(
-            WorkflowError, "already has active Goncloud workflow"
-        ):
-            self.service().start(
-                request_key="case-b",
-                repository=str(self.repo).swapcase(),
-                revision="abc123",
-                instruction="Alias of the same repository",
-                sources=SOURCES,
-            )
+        # Encargo H punto 2: the alias of the same repository no longer gets
+        # a refusal — start recognizes the repo through its normalized path.
+        started = self.service().start(
+            request_key="case-b",
+            repository=str(self.repo).swapcase(),
+            revision="abc123",
+            instruction="Alias of the same repository",
+            sources=SOURCES,
+        )
+        self.assertNotIn("already has active Goncloud workflow", repr(started))
 
     def test_native_dependencies_keep_later_stages_from_running_early(self) -> None:
         started = self.start()
