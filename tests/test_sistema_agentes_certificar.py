@@ -17,6 +17,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 capacidades = importlib.import_module("raices.capacidades")
 certificar = importlib.import_module("raices.certificar")
@@ -50,7 +52,7 @@ def entrada_del_par():
 class Certificar(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir()
         self.ruta = Path(self.directorio.name) / "certificadas.json"

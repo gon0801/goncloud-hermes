@@ -14,6 +14,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 store = importlib.import_module("raices.store")
 proyeccion = importlib.import_module("raices.proyeccion")
@@ -85,7 +87,7 @@ def meta_de():
 class Emisor(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.instante_actual = "2026-10-17T12:00:00Z"
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
@@ -286,7 +288,7 @@ class TopeDeDetalle(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
             reloj=lambda: "2026-10-17T12:00:00Z",
@@ -362,7 +364,7 @@ class RecortePorLargo(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
             reloj=lambda: "2026-10-17T12:00:00Z",
@@ -565,7 +567,7 @@ class CapacidadIncierta(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.ruta = Path(self.directorio.name) / "capacidad-incierta.json"
         self.textos: list = []
 

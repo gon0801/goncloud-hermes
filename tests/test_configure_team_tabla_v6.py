@@ -396,6 +396,21 @@ class AdopcionEndToEndTests(unittest.TestCase):
     def deploy(runtime, adopt, expect_ok):
         fresh = not (runtime / "profiles" / "claw").exists()
         if fresh:
+            # La revision desplegada del estado es HEAD de este checkout: el
+            # fixture trae la de la PC del dueno, y en CI el checkout no
+            # contiene ese historial, asi que refuse_regression rechazaria
+            # antes del conflicto que esta prueba ejercita. "Desplegado
+            # desde este arbol" es exactamente HEAD (self-contained: el
+            # adoptado y el rechazado comparten revision y la prueba no
+            # depende del historial del clone).
+            desplegada = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not desplegada:
+                raise unittest.SkipTest("sin git no hay arbol desplegado que verificar")
             for profile, data in VIVO.items():
                 directory = runtime / "profiles" / profile
                 directory.mkdir(parents=True)
@@ -406,7 +421,7 @@ class AdopcionEndToEndTests(unittest.TestCase):
                     json.dumps(
                         {
                             "config": data["gestionado_previo"],
-                            "source_revision": data["source_revision"],
+                            "source_revision": desplegada,
                         },
                         indent=2,
                     )

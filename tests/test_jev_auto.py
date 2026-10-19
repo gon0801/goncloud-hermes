@@ -31,6 +31,8 @@ import yaml
 RAIZ = Path(__file__).resolve().parents[1]
 PLUGIN = RAIZ / "plugins/goncloud-team"
 sys.path.insert(0, str(RAIZ / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 if str(PLUGIN) not in sys.path:
     sys.path.insert(0, str(PLUGIN))
 
@@ -74,7 +76,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.modulo = cargar_jev_auto()
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
         self.hogar = Path(self.temporal.name)
         self.llamadas = []
         entorno = mock.patch.dict(

@@ -14,6 +14,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 store = importlib.import_module("raices.store")
 proyeccion = importlib.import_module("raices.proyeccion")
@@ -122,7 +124,7 @@ def hechos_nulos():
 class Escenario(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.tienda = store.Store(Path(self.directorio.name) / "db.sqlite")
         self.addCleanup(self.tienda.cerrar)
         self.destino = Path(self.directorio.name) / "raices"

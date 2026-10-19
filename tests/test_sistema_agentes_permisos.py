@@ -19,6 +19,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from yaml_doble import YamlDoble, yaml_real  # noqa: E402
 
@@ -40,7 +41,7 @@ def config_con_toolsets(clis):
 class ToolsetsEfectivos(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.home = Path(self.directorio.name)
 
     def instalar(self, datos, configs=None):

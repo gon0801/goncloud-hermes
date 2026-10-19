@@ -22,3 +22,19 @@ def cleanup_temp_directory(directory):
             if os.name != "nt" or error.winerror != 145 or attempt == 19:
                 raise
             time.sleep(0.05)
+
+
+def arbol_hermes():
+    """El hermes-agent REAL donde esté instalado, o None fuera de la PC.
+
+    Los tests que ejercitan el runtime vivo (configure_team contra los
+    perfiles nativos, DeploymentTests) no tienen doble: sin árbol se
+    saltan, con la misma guardia que el kanban real.
+    """
+    instalacion = os.environ.get("HERMES_INSTALL_DIR") or (
+        Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent"
+    )
+    instalacion = Path(instalacion)
+    if (instalacion / "hermes_cli/profiles.py").is_file():
+        return instalacion
+    return None

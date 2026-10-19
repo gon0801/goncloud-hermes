@@ -13,29 +13,17 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from goncloud_test_support import FAKE_MUSE_KEY, cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import (  # noqa: E402
+    FAKE_MUSE_KEY,
+    arbol_hermes,
+    cleanup_temp_directory,
+)
 
 SPEC = importlib.util.spec_from_file_location(
     "configure_team", ROOT / "scripts/configure_team.py"
 )
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
-
-
-def arbol_hermes():
-    """El hermes-agent REAL donde esté instalado, o None fuera de la PC.
-
-    Los tests que ejercitan configure_team contra el árbol vivo (los
-    perfiles nativos de Hermes) no tienen doble: sin árbol se saltan, con
-    la misma guardia que el kanban real.
-    """
-    instalacion = os.environ.get("HERMES_INSTALL_DIR") or (
-        Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent"
-    )
-    instalacion = Path(instalacion)
-    if (instalacion / "hermes_cli/profiles.py").is_file():
-        return instalacion
-    return None
 
 
 class ConfigurationTests(unittest.TestCase):

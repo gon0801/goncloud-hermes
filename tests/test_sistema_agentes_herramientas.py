@@ -17,6 +17,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
@@ -117,7 +118,7 @@ class Base(unittest.TestCase):
         self.plugin = cargar_plugin()
         self.addCleanup(hermes_falso.desinstalar)
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": self.temporal.name})
         parche.start()
         self.addCleanup(parche.stop)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import threading
@@ -141,6 +142,12 @@ class WorkflowTestCase(unittest.TestCase):
         with connect_closing(self.db_path) as conn:
             self.assertEqual(len(list_tasks(conn)), 8)
 
+    @unittest.skipUnless(
+        os.name == "nt",
+        "el alias por mayusculas/minusculas solo unifica en un FS que no"
+        " distingue case (NTFS): en Linux /TMP no existe y resolve(strict)"
+        " falla antes de llegar al lock",
+    )
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")
 

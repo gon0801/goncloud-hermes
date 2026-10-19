@@ -14,6 +14,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from conexiones import rastrear_conexiones  # noqa: E402
 
@@ -251,7 +252,7 @@ class EscenarioBase(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
         self.home = Path(self.directorio.name)
         self.tienda = store.Store(self.home / "sistema-agentes.db")
         self.addCleanup(self.tienda.cerrar)
