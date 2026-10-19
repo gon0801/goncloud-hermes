@@ -635,7 +635,14 @@ class KimiGrokTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertEqual(command[command.index("--max-turns") + 1], "17")
         self.assertIn("Maximum autonomous steps: 17", captured["text"])
-        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        # bypassPermissions (2026-10-19): dontAsk niega lo que querria
+        # preguntar en una corrida headless ("permission required ... was
+        # not run"), y el sandbox workspace sigue confinando archivos y red.
+        # La guarda de solo lectura del orquestador cubre a scout/ingenieria.
+        self.assertEqual(
+            command[command.index("--permission-mode") + 1], "bypassPermissions"
+        )
+        self.assertNotIn("dontAsk", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
         self.assertEqual(
             command[command.index("--output-format") + 1], "streaming-json"

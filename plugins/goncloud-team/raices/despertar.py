@@ -91,7 +91,9 @@ def linea_de_aviso(aviso: dict) -> str | None:
     detalle = f": {motivo}" if motivo else ""
     outcome = aviso.get("outcome")
     if outcome == "delivered":
-        return f"Cadena {lugar} entregada."
+        # H-entrega-pr: el detalle trae el link del PR o el motivo de por qué
+        # no se abrió — sin él, claw se enteraba de la entrega pero no del PR.
+        return f"Cadena {lugar} entregada{detalle}."
     if outcome == "blocked":
         etapa = str(aviso.get("etapa") or "").strip()
         traba = f"se trabó en {etapa}" if etapa else "se trabó"
