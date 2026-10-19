@@ -220,6 +220,25 @@ class BackupTest(unittest.TestCase):
             "(archivos sueltos de hasta 1 MB) y lo que escribio el dueno",
         )
 
+    def test_the_jev_plugins_git_repo_is_dropped_but_its_plugin_yaml_is_kept(self):
+        write(self.home / "profiles/claw/plugins/jev/.git/index", "index")
+        write(self.home / "profiles/claw/plugins/jev/plugin.yaml", "plugin")
+
+        code, line = self.backup()
+
+        self.assertEqual((code, line), (0, ""))
+        names = set(members(self.out / ARCHIVE))
+        self.assertIn("home/profiles/claw/plugins/jev/plugin.yaml", names)
+        self.assertNotIn("home/profiles/claw/plugins/jev/.git/index", names)
+        skipped = {
+            entry["path"]: entry["reason"]
+            for entry in manifest(self.out / ARCHIVE)["skipped"]
+        }
+        self.assertEqual(
+            skipped["home/profiles/claw/plugins/jev/.git"],
+            "repo git del plugin jev; se reclona desde su remoto",
+        )
+
     def test_profile_dirs_drop_what_the_home_drops(self):
         for name in ("backups/a.zip", "lsp/index", "state-snapshots/s.db", "auth.lock"):
             write(self.home / "profiles/claw" / name, "x")
