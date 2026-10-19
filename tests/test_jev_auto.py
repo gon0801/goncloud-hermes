@@ -657,6 +657,22 @@ class CorredorRealTests(Base):
         self.assertNotIn(secreto, entrada)
         self.assertIn("[redacted]", entrada)
 
+    def test_todos_los_secretos_del_scope_del_perfil_se_tachan(self):
+        # F7 completo (Hermes 0.22): el perfil entero guarda sus llaves en
+        # current_secret_scope(), no solo la de TypeSafe; una credencial de
+        # otra llave pegada en el chat tampoco sale a TypeSafe.
+        secreto = "valor-sin-forma-123"
+        with _agente_fake(
+            get_secret=lambda nombre, defecto="": LLAVE_SCOPE,
+            current_secret_scope=lambda: {"OTRA_LLAVE": secreto},
+        ):
+            with mock.patch.dict(os.environ, {"JEV_TYPESAFE_API_KEY": ""}):
+                self.correr(f"la entrada del panel va con {secreto} y sigue")
+        entrada = self.ultimo_proceso().entrada.decode("utf-8")
+        self.assertNotIn(secreto, entrada)
+        self.assertIn("[redacted]", entrada)
+        self.assertNotIn(LLAVE_SCOPE, entrada)
+
     def test_el_tope_mata_el_arbol_y_da_el_motivo(self):
         class PopenLento(self.PopenFalso):
             def communicate(self, input=None, timeout=None):
@@ -814,13 +830,49 @@ class LlaveTests(Base):
                 self.assertEqual(self.modulo._clave_typesafe(), "")
 
 
+class SecretosDelScopeTests(Base):
+    """F7 completo: los values() de current_secret_scope() para tachar."""
+
+    def test_sin_agente_no_hay_secretos(self):
+        self.assertEqual(self.modulo._secretos_del_scope(), ())
+
+    def test_scope_ausente_es_vacio(self):
+        with _agente_fake(
+            get_secret=lambda nombre, defecto="": LLAVE_SCOPE,
+            current_secret_scope=lambda: None,
+        ):
+            self.assertEqual(self.modulo._secretos_del_scope(), ())
+
+    def test_scope_con_valores_los_devuelve(self):
+        alcance = {"OTRA_LLAVE": "valor-sin-forma-123", "VACIA": ""}
+        with _agente_fake(
+            get_secret=lambda nombre, defecto="": LLAVE_SCOPE,
+            current_secret_scope=lambda: alcance,
+        ):
+            self.assertEqual(
+                self.modulo._secretos_del_scope(), ("valor-sin-forma-123",)
+            )
+
+    def test_un_scope_roto_es_vacio_y_no_explota(self):
+        class Roto:
+            pass  # sin .values()
+
+        with _agente_fake(
+            get_secret=lambda nombre, defecto="": LLAVE_SCOPE,
+            current_secret_scope=Roto,
+        ):
+            self.assertEqual(self.modulo._secretos_del_scope(), ())
+
+
 class _agente_fake:
     """Instala un agent.secret_scope de mentira y lo saca al salir."""
 
-    def __init__(self, get_secret):
+    def __init__(self, get_secret, current_secret_scope=None):
         self.modulo_agente = types.ModuleType("agent")
         self.modulo_alcance = types.ModuleType("agent.secret_scope")
         self.modulo_alcance.get_secret = get_secret
+        if current_secret_scope is not None:
+            self.modulo_alcance.current_secret_scope = current_secret_scope
         self.previos = None
 
     def __enter__(self):

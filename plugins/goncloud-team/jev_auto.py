@@ -20,13 +20,15 @@ La llave JEV_TYPESAFE_API_KEY se resuelve en tiempo de ejecucion como hace
 el parche de jev (agent.secret_scope.get_secret con os.environ de respaldo)
 y SOLO viaja al entorno del hijo: jamas a argv, logs ni registro. El texto
 que sale hacia TypeSafe va REDACTADO con subscriptions/redaction.redact_text
-(el mismo filtro de evidencias del plugin) y acotado a TOPE_MENSAJE
-caracteres: David autorizo mandar datos del trabajo a TypeSafe, nunca
-credenciales. El turno es fail-open: si el router no responde dentro de
-TOPE_S, no esta instalado o falla, sigue sin el y el contexto lo dice. El
-registro JSONL en <home de claw>/jev/consultas.jsonl deja una linea por
-consulta sin el texto del mensaje (a lo mas su largo y un sha256 corto) y
-sin la llave.
+(el mismo filtro de evidencias del plugin) contra los valores sensibles
+REALES: los del entorno del hijo, TODO el scope del perfil
+(agent.secret_scope.current_secret_scope, Hermes 0.22) y la llave de
+TypeSafe resuelta; y acotado a TOPE_MENSAJE caracteres. David autorizo
+mandar datos del trabajo a TypeSafe, nunca credenciales. El turno es
+fail-open: si el router no responde dentro de TOPE_S, no esta instalado o
+falla, sigue sin el y el contexto lo dice. El registro JSONL en
+<home de claw>/jev/consultas.jsonl deja una linea por consulta sin el texto
+del mensaje (a lo mas su largo y un sha256 corto) y sin la llave.
 """
 
 from __future__ import annotations
@@ -111,6 +113,30 @@ def _clave_typesafe() -> str:
     return clave or os.environ.get("JEV_TYPESAFE_API_KEY", "").strip()
 
 
+def _secretos_del_scope() -> tuple[str, ...]:
+    """Los values() del scope del perfil (agent.secret_scope, Hermes 0.22).
+
+    En el gateway multiplexado TODAS las llaves del perfil viven ahi, no en
+    os.environ, y cualquiera pegada en el chat tampoco debe salir a
+    TypeSafe. Los valores solo se usan para tachar: jamas a argv, logs ni
+    registro.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope
+
+        alcance = current_secret_scope()
+    except Exception:
+        return ()
+    if alcance is None:
+        return ()
+    try:
+        return tuple(
+            valor for valor in alcance.values() if isinstance(valor, str) and valor
+        )
+    except Exception:
+        return ()
+
+
 def _banderas_del_grupo() -> dict:
     """Grupo de proceso propio para poder matar el arbol uv + python."""
     if os.name == "nt":
@@ -185,10 +211,13 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
             return fallo("sin JEV_TYPESAFE_API_KEY")
     comando, env = _comando_y_ambiente(raiz, casa, clave)
     # Lo que sale a TypeSafe: redactado contra los valores sensibles REALES
-    # (los del entorno del hijo y la llave que solo vive en secret_scope) y
-    # acotado. Datos del trabajo si, credenciales nunca; jamas se imprimen
-    # ni registran los valores, solo se usan para tachar.
-    pedido = redact_text(texto, (*sensitive_values(env), clave))[:TOPE_MENSAJE]
+    # (los del entorno del hijo, TODO el scope del perfil y la llave de
+    # TypeSafe que solo vive en secret_scope) y acotado. Datos del trabajo
+    # si, credenciales nunca; jamas se imprimen ni registran los valores,
+    # solo se usan para tachar.
+    pedido = redact_text(
+        texto, (*sensitive_values(env), *_secretos_del_scope(), clave)
+    )[:TOPE_MENSAJE]
     try:
         proceso = _popen(
             comando,
