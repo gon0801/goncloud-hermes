@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path.home() / "AppData/Local/hermes/hermes-agent"))
@@ -530,6 +530,11 @@ class DriverBootstrapTests(unittest.TestCase):
         self.deps = self.root / "deps"
         for directory in (self.hermes, self.plugin, self.deps):
             directory.mkdir()
+        # El buzon de error del bootstrap usa el helper compartido del
+        # plugin; el stub lo lleva junto a su local_orchestrator.
+        (self.plugin / "carpetas.py").write_bytes(
+            (ROOT / "plugins/goncloud-team/carpetas.py").read_bytes()
+        )
         self.out = self.root / "result.json"
 
     def run_driver(self, *extra):
@@ -740,6 +745,79 @@ class DriverBootstrapTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "completed")
 
 
+class CarpetasPrivadasTests(unittest.TestCase):
+    """H-carpetas: en Windows, mkdir(mode=0o700) deja la carpeta ilegible
+    para el gateway (DAC protegida sin herencia desde Python 3.13): el cron
+    despertar-raices veia el buzon VACIO y los avisos nunca llegaron a claw.
+    En Windows las carpetas privadas se crean sin mode (heredan la DACL del
+    padre); en POSIX conservan 0o700. Un solo helper para todos los sitios.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.root = Path(self.tmp.name)
+
+    def carpetas(self):
+        import carpetas
+
+        return importlib.reload(carpetas)
+
+    def test_en_windows_la_carpeta_se_crea_sin_mode(self):
+        carpetas = self.carpetas()
+        ruta = self.root / "avisos"
+        stub = Mock()
+        stub.name = "nt"
+        with (
+            patch.object(carpetas, "os", stub),
+            patch.object(Path, "mkdir", autospec=True) as mkdir,
+        ):
+            carpetas.mkdir_privado(ruta)
+
+        # Sin mode: la carpeta hereda la DACL del padre.
+        mkdir.assert_called_once_with(ruta, parents=True, exist_ok=True)
+
+    def test_en_posix_la_carpeta_conserva_0o700(self):
+        carpetas = self.carpetas()
+        ruta = self.root / "avisos"
+        stub = Mock()
+        stub.name = "posix"
+        with (
+            patch.object(carpetas, "os", stub),
+            patch.object(Path, "mkdir", autospec=True) as mkdir,
+        ):
+            carpetas.mkdir_privado(ruta)
+
+        mkdir.assert_called_once_with(ruta, mode=0o700, parents=True, exist_ok=True)
+
+    def test_write_result_y_write_aviso_usan_el_helper(self):
+        with patch.object(
+            local_orchestrator_module,
+            "mkdir_privado",
+            side_effect=local_orchestrator_module.mkdir_privado,
+        ) as carpeta:
+            local_orchestrator_module._write_result(
+                "t_carpetas", {"outcome": "running"}, home=self.root
+            )
+            local_orchestrator_module._write_aviso(
+                "t_carpetas",
+                "run-1",
+                "error",
+                {"outcome": "error", "workflow_id": "t_carpetas"},
+                home=self.root,
+            )
+
+        self.assertEqual(carpeta.call_count, 2)
+        self.assertTrue((self.root / "goncloud-local" / "t_carpetas.json").is_file())
+        self.assertEqual(
+            [
+                p.name
+                for p in sorted((self.root / "goncloud-local" / "avisos").iterdir())
+            ],
+            ["t_carpetas-run-1-error.json"],
+        )
+
+
 class _OrchestratorHarness(unittest.TestCase):
     """Shared mount: SOURCE table, fake adapter, fake git, patched router."""
 
@@ -923,10 +1001,11 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
     def _real_git_repo(self):
         def git(*args):
-            subprocess.run(
+            return subprocess.run(
                 ["git", "-C", str(self.repo), *args],
                 check=True,
                 capture_output=True,
+                text=True,
             )
 
         git("init", "-q", "-b", "main")
@@ -941,6 +1020,10 @@ class LocalOrchestratorTests(_OrchestratorHarness):
             "-qm",
             "init",
         )
+        # La cadena arranca en SU worktree desde esta revisión real: con
+        # review F8/F9 una revisión que no resuelve es un error claro, así
+        # que los tests pasan el SHA real, no un símbolo suelto.
+        return git("rev-parse", "HEAD").stdout.strip()
 
     def test_a_planning_stage_that_edits_the_repository_stops_the_chain(self):
         # Live 2026-09-28 (t_2748d636): ingenieria wrote and committed the
@@ -949,7 +1032,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         for role in ("scout", "ingenieria"):
             with self.subTest(role=role):
                 self.setUp()
-                self._real_git_repo()
+                sha = self._real_git_repo()
                 invoke = LocalOrchestratorTests.invoke.__get__(self)
 
                 def editing_invoke(request, route, role=role):
@@ -960,15 +1043,15 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                     return invoke(request, route)
 
                 self.invoke = editing_invoke
-                result = self.start()
+                result = self.start(revision=sha)
 
                 self.assertEqual(result["outcome"], "blocked")
                 self.assertEqual(result["stages"][role]["status"], "blocked")
                 self.assertNotIn("implementer", [r.role for r in self.requests])
 
     def test_a_planning_stage_that_leaves_the_repository_alone_proceeds(self):
-        self._real_git_repo()
-        result = self.start()
+        sha = self._real_git_repo()
+        result = self.start(revision=sha)
         self.assertEqual(result["outcome"], "delivered")
 
     def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
@@ -3661,6 +3744,443 @@ class LocalCloseHandlerTests(_OrchestratorHarness):
 
         self.assertEqual(reported["driver"]["outcome"], "running")
         self.assertIn("ps unavailable", reported["driver"]["pid_check"])
+
+
+class ChainWorktreeTests(_OrchestratorHarness):
+    """r-H-cadena-worktree: cada cadena trabaja en SU worktree (rama
+    cadena/<id>), jamás en el checkout que le pasan. Repos git reales
+    temporales."""
+
+    def _git_repo(self):
+        """A real temp git repo with one commit; returns its base sha."""
+        self.responses = {}
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("init", "-q", "-b", "main")
+        (self.repo / "README.md").write_text("base\n", encoding="utf-8")
+        git("add", "README.md")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "init",
+        )
+        sha = git("rev-parse", "HEAD").stdout.strip()
+        self.base_sha = sha
+        return sha
+
+    def worktree_root(self):
+        return self.root / "wt"
+
+    def original_is_untouched(self, sha):
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(
+            git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), "main"
+        )
+        self.assertEqual(git("rev-parse", "HEAD").stdout.strip(), sha)
+        self.assertEqual(git("status", "--porcelain").stdout.strip(), "")
+
+    def committing_invoke(self):
+        """An invoke whose implementer writes and commits inside the
+        workspace the router handed it — and records that workspace."""
+        original = self.invoke
+        worked_in = []
+
+        def invoke(request, route):
+            if request.role != "implementer":
+                return original(request, route)
+            workspace = Path(request.workspace)
+            worked_in.append(str(workspace))
+            (workspace / "cambio.txt").write_text("cambio\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(workspace), "add", "cambio.txt"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(workspace),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@example.invalid",
+                    "commit",
+                    "-qm",
+                    "trabajo de la cadena",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return original(request, route)
+
+        return invoke, worked_in
+
+    # (a) — la cadena crea SU worktree en rama cadena/<id> y el checkout
+    # original no cambia de rama, HEAD ni estado tras etapas que escriben
+    # y commitean.
+    def test_a_chain_works_in_its_own_worktree(self):
+        sha = self._git_repo()
+        invoke, worked_in = self.committing_invoke()
+        self.invoke = invoke
+
+        result = self.start(revision=sha)
+
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = result["worktree"]
+        self.assertEqual(
+            Path(worktree).resolve(),
+            (
+                self.worktree_root() / (f"{self.repo.name}-{result['workflow_id']}")
+            ).resolve(),
+        )
+        branch = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(branch, f"cadena/{result['workflow_id']}")
+        self.assertTrue(worked_in, "the stages ran")
+        for workspace in worked_in:
+            self.assertEqual(
+                Path(workspace).resolve(),
+                Path(worktree).resolve(),
+                f"the stage worked outside the chain worktree: {workspace}",
+            )
+        self.original_is_untouched(sha)
+        status = self.orchestrator.status(result["workflow_id"])
+        self.assertEqual(status["worktree"], worktree)
+        self.assertEqual(status["worktree_branch"], branch)
+
+    # (b) — dos cadenas sobre el mismo repo tienen worktrees distintos.
+    def test_two_chains_on_the_same_repo_get_distinct_worktrees(self):
+        sha = self._git_repo()
+
+        first = self.start(request_key="cadena-1", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        second = self.start(request_key="cadena-2", revision=sha)
+        self.assertEqual(second["outcome"], "delivered")
+
+        self.assertTrue(first["worktree"])
+        self.assertTrue(second["worktree"])
+        self.assertNotEqual(first["worktree"], second["worktree"])
+        self.assertTrue(Path(first["worktree"]).is_dir())
+        self.assertTrue(Path(second["worktree"]).is_dir())
+
+    # (c) — cierre con worktree limpio lo quita; con commits propios lo
+    # conserva.
+    def test_closing_removes_a_clean_worktree_and_keeps_committed_ones(self):
+        sha = self._git_repo()
+
+        clean = self.paused(request_key="limpia", revision=sha)
+        clean_wt = Path(clean["worktree"])
+        self.assertTrue(clean_wt.is_dir())
+        receipt = self.close(clean["workflow_id"], reason="sin trabajo")
+        self.assertTrue(receipt["worktree"]["removed"])
+        self.assertFalse(clean_wt.exists(), "the clean worktree is removed")
+
+        invoke, _worked_in = self.committing_invoke()
+        self.invoke = invoke
+        committed = self.start(
+            request_key="con-commits", revision=sha, stop_after="scout"
+        )
+        self.assertEqual(committed["outcome"], "paused")
+        committed_wt = Path(committed["worktree"])
+        self.assertTrue(committed_wt.is_dir())
+        # El trabajo propio de la cadena: un commit en su rama (lo deja el
+        # implementer cuando corre; aquí se simula duradero).
+        (committed_wt / "trabajo.txt").write_text("trabajo\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(committed_wt), "add", "trabajo.txt"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(committed_wt),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "trabajo de la cadena",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        receipt = self.close(committed["workflow_id"], reason="tiene trabajo")
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "the chain's own commits keep the worktree alive",
+        )
+        self.assertEqual(receipt["worktree"]["reason"], "tiene commits sin publicar")
+        self.assertTrue(committed_wt.is_dir())
+
+    # F1 — si el worktree no se puede crear, la raíz recién insertada se
+    # archiva: el repo queda libre y el siguiente start arranca (no busy).
+    def test_a_failed_worktree_leaves_no_root_and_the_repo_free(self):
+        sha = self._git_repo()
+        bloqueo = self.root / "bloqueo"
+        bloqueo.write_text("un archivo, no una carpeta\n", encoding="utf-8")
+        started = None
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": str(bloqueo / "wt")}):
+            with self.assertRaises(WorkflowError):
+                started = self.start(request_key="f1", revision=sha)
+
+        self.assertIsNone(started, "nothing is returned for a failed chain")
+        with connect_closing(self.db) as conn:
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 1)
+        self.assertEqual(roots[0].status, "archived", "the fresh root is archived")
+
+        siguiente = self.start(request_key="f1-siguiente", revision=sha)
+        self.assertEqual(
+            siguiente["outcome"],
+            "delivered",
+            "the next start runs: the failed one left no busy jam",
+        )
+
+    # F2 — la ronda correctiva apunta al worktree de la cadena.
+    def test_the_corrective_round_points_at_the_worktree(self):
+        sha = self._git_repo()
+        self.reviews = [
+            {"decision": "reject", "severity": "high"},
+            {"decision": "approve", "severity": None},
+        ]
+        result = self.start(revision=sha)
+
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = result["worktree"]
+        self.assertTrue(result["corrective_stages"], "a corrective round opened")
+        with connect_closing(self.db) as conn:
+            for stage in result["corrective_stages"].values():
+                card = get_task(conn, stage["id"])
+                self.assertEqual(
+                    Path(card.workspace_path).resolve(),
+                    Path(worktree).resolve(),
+                    "the corrective round works in the chain's worktree",
+                )
+                self.assertIn(str(worktree), card.body)
+
+    # F3 — el cierre mide contra el SHA base real: revision="HEAD" con
+    # commits propios en cadena/<id> se CONSERVA.
+    def test_closing_with_head_revision_keeps_committed_worktrees(self):
+        self._git_repo()
+        chain = self.paused(request_key="head-rev", revision="HEAD")
+        worktree = Path(chain["worktree"])
+        (worktree / "trabajo.txt").write_text("trabajo\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", "trabajo.txt"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "trabajo propio",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        head_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        receipt = self.close(chain["workflow_id"], reason="tiene trabajo")
+
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "own commits against the real base SHA keep the worktree",
+        )
+        self.assertEqual(receipt["worktree"]["reason"], "tiene commits sin publicar")
+        self.assertTrue(worktree.is_dir())
+        kept_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(kept_sha, head_sha)
+
+    # F5 — rama cadena/<id> ya creada (restart concurrente o relanzamiento
+    # tras limpiar la ruta): el worktree se añade SIN -b y la cadena corre.
+    def test_a_start_reuses_an_existing_branch_without_minus_b(self):
+        sha = self._git_repo()
+        first = self.start(request_key="relanzada", revision=sha)
+        worktree = Path(first["worktree"])
+        branch = f"cadena/{first['workflow_id']}"
+        # La ruta desaparece (limpieza manual) pero la rama queda: el
+        # relanzamiento debe añadir el worktree SIN -b, no reventar.
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "remove", str(worktree)],
+            check=True,
+            capture_output=True,
+        )
+        self.assertFalse(worktree.exists())
+        branch_alive = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--verify", branch],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(branch_alive.returncode, 0)
+
+        again = self.start(request_key="relanzada", revision=sha)
+
+        self.assertEqual(again["outcome"], "delivered")
+        self.assertTrue(worktree.is_dir(), "the worktree is re-added")
+
+    # F12 — relanzar una cadena viva cuyo worktree falla NO archiva la
+    # raíz preexistente: queda intacta y el error se propaga.
+    def test_relaunch_failure_keeps_the_preexisting_root_alive(self):
+        sha = self._git_repo()
+        first = self.orchestrator.create(
+            request_key="viva",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertTrue(Path(first["worktree"]).is_dir())
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["workflow_id"]).status,
+                "todo",
+                "the chain exists alive: created, never launched",
+            )
+
+        bloqueo = self.root / "bloqueo"
+        bloqueo.write_text("archivo\n", encoding="utf-8")
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": str(bloqueo / "wt")}):
+            with self.assertRaises(WorkflowError):
+                self.orchestrator.create(
+                    request_key="viva",
+                    repository=str(self.repo),
+                    revision=sha,
+                    instruction="Inspect again.",
+                    sources=SOURCES,
+                    max_steps=5,
+                )
+
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["workflow_id"]).status,
+                "todo",
+                "the preexisting live root stays intact",
+            )
+            vivas = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(vivas), 1, "no extra roots, nothing archived")
+
+        # Con la raíz buena, el mismo key corre: el worktree se reutiliza.
+        again = self.orchestrator.start(
+            request_key="viva",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertEqual(again["outcome"], "delivered")
+
+    # F13 — un probe de git que FALLA no degrada al checkout original:
+    # error claro, nada activo se crea, y el repo no queda jamado.
+    def test_a_failing_git_probe_creates_nothing(self):
+        sha = self._git_repo()
+
+        def timed_out(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+
+        with patch("workflow.subprocess.run", timed_out):
+            with self.assertRaises(WorkflowError) as ctx:
+                self.start(request_key="f13", revision=sha)
+        self.assertIn("git probe failed", str(ctx.exception))
+        with connect_closing(self.db) as conn:
+            active = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+                and task.status not in {"done", "archived"}
+            ]
+        self.assertEqual(active, [], "nothing active is created")
+        result = self.start(request_key="f13-despues", revision=sha)
+        self.assertEqual(result["outcome"], "delivered", "the repo is not jammed")
+
+    # F14 — archivos ignorados: el worktree se conserva y el cierre lo
+    # dice (sin commits propios, vía .git/info/exclude).
+    def test_a_worktree_with_ignored_files_is_kept_and_said(self):
+        sha = self._git_repo()
+        chain = self.paused(request_key="ignorados", revision=sha)
+        worktree = Path(chain["worktree"])
+        exclude = self.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("ignorado.txt\n", encoding="utf-8")
+        (worktree / "ignorado.txt").write_text("cache\n", encoding="utf-8")
+        sanity = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--ignored"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("ignorado.txt", sanity.stdout)
+
+        receipt = self.close(chain["workflow_id"], reason="solo ignorados")
+
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "ignored files keep the worktree alive",
+        )
+        self.assertIn("ignorados", receipt["worktree"]["reason"])
+        self.assertTrue(worktree.is_dir())
+
+    # (d) — un repository que no es git conserva la conducta de hoy.
+    def test_a_non_git_repository_keeps_todays_behavior(self):
+        result = self.start()
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertIsNone(result.get("worktree"))
+        self.assertEqual([r.role for r in self.requests], ORDER)
+        self.assertFalse(self.worktree_root().exists(), "no worktree root is created")
 
 
 if __name__ == "__main__":

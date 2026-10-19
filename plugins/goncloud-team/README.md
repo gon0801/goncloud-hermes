@@ -242,6 +242,16 @@ business acceptance direction. Use the same Kanban database and subscription
 database across commands (`HERMES_KANBAN_DB` and `GONCLOUD_SUBSCRIPTION_DB` can
 select isolated local stores).
 
+If the repository is a Git repo, each chain works in its OWN worktree: branch
+`cadena/<workflow_id>`, created from `--revision` at start time, so the
+checkout you pass is never touched (no checkout, no commit, no reset — it is
+only the origin). `GONCLOUD_WORKTREE_ROOT` selects where those worktrees are
+created (expanded and resolved; it must stay outside the repository); the
+default is a `wt` folder next to the repository, e.g. `C:\dev\wt\`. The
+status reports the worktree path and its branch. At close time the worktree
+is preserved when the chain left its own commits, and removed when it is
+clean with none.
+
 Repeated starts with the same request key reuse the original revision and
 source observation time when those flags are omitted. Explicit revision/source
 changes still fail the service's exact contract comparison; invalid source

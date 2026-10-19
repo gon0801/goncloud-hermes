@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
 import time
 from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
@@ -13,6 +15,7 @@ from typing import Any
 
 from hermes_cli.kanban_db import (
     add_comment,
+    archive_task,
     block_task,
     complete_task,
     create_task,
@@ -463,12 +466,16 @@ class WorkflowService:
             # busy, sin crear nada (la marca la juzgó la fase 1 y la valla
             # del cierre la releyó la fase 2).
             with write_txn(conn):
+                own_existing = None
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
                         continue
                     if active.status in {"done", "archived"}:
                         continue
                     if active.idempotency_key == idempotency_key:
+                        # Review F12: la raíz ya existía (relanzamiento) —
+                        # si el worktree falla, esta raíz NO se archiva.
+                        own_existing = active.id
                         continue
                     try:
                         active_repo = (
@@ -478,6 +485,7 @@ class WorkflowService:
                         continue
                     if active.workspace_kind == "dir" and active_repo == repo:
                         return self._busy_result(active.id, str(repo))
+                created_here = own_existing is None
                 root_id = create_task(
                     conn,
                     title=f"Engineering: {instruction[:120]}",
@@ -493,10 +501,65 @@ class WorkflowService:
             root = get_task(conn, root_id)
             if root is None:
                 raise WorkflowError("native Kanban did not persist the workflow root")
-            if root.body != body:
+            # La comparación es a contrato canónico: el worktree de la
+            # cadena (r-H-cadena-worktree) viaja en el cuerpo guardado y no
+            # cuenta como contrato distinto al relanzar la misma clave.
+            stored = self._contract_of(root)
+            canonical = {
+                k: v
+                for k, v in stored.items()
+                if k not in {"worktree", "worktree_base"}
+            }
+            if canonical != contract:
                 raise WorkflowError(
                     "request_key already belongs to a different contract; use a new request_key"
                 )
+
+            # Punto 1: si el repository es un repo git, la cadena trabaja en
+            # SU worktree (rama cadena/<id>), jamás en el checkout original.
+            # Review F1: si el worktree no se puede crear, la raíz recién
+            # insertada se archiva antes de propagar el error — el repo
+            # queda libre y el siguiente start arranca (no busy).
+            try:
+                created = self._ensure_worktree(root_id, str(repo), revision)
+            except (WorkflowError, subprocess.SubprocessError, OSError):
+                # Review F12: archive_task abre su propia transacción (no se
+                # anida); SOLO se archiva la raíz que ESTE start acaba de
+                # crear — una preexistente (relanzamiento de una cadena
+                # viva) queda intacta y el error se propaga.
+                if created_here:
+                    if not archive_task(conn, root_id):
+                        add_comment(
+                            conn,
+                            root_id,
+                            self.actor_role,
+                            "worktree creation failed; archive this root manually",
+                        )
+                raise
+            worktree, worktree_base = created if created else (None, None)
+            if worktree is not None:
+                migrated = "worktree" not in stored
+                stored["worktree"] = worktree
+                stored["worktree_base"] = worktree_base
+                if migrated:
+                    with write_txn(conn):
+                        conn.execute(
+                            "UPDATE tasks SET body = ? WHERE id = ?",
+                            (_contract_body(stored), root_id),
+                        ).close()
+                    # Review F10/F9: las tarjetas hijas de una cadena
+                    # anterior conservaban el workspace original en su
+                    # cuerpo — apuntan al worktree de la cadena.
+                    for child_id in self._decomposed_child_ids(conn, root_id) or []:
+                        child = self._require_task(conn, child_id)
+                        if str(repo) in (child.body or ""):
+                            conn.execute(
+                                "UPDATE tasks SET body = ? WHERE id = ?",
+                                (
+                                    (child.body or "").replace(str(repo), worktree),
+                                    child_id,
+                                ),
+                            ).close()
 
             child_ids = self._decomposed_child_ids(conn, root_id)
             if child_ids is None:
@@ -504,7 +567,7 @@ class WorkflowService:
                     conn,
                     root_id,
                     root_assignee="claw",
-                    children=self._initial_children(root_id, contract),
+                    children=self._initial_children(root_id, stored),
                     author=self.actor_role,
                 )
                 if child_ids is None:
@@ -514,8 +577,168 @@ class WorkflowService:
                     "workflow root exists without a complete native stage graph"
                 )
             result = self._start_result(root_id, child_ids)
+            if worktree is not None:
+                result["worktree"] = worktree
             result["closed_chains"] = sorted(closed_chains)
             return result
+
+    def _ensure_worktree(
+        self, root_id: str, repository: str, revision: str
+    ) -> tuple[str, str] | None:
+        """Create the chain's own worktree (r-H-cadena-worktree punto 1).
+
+        Un repo git recibe una rama propia ``cadena/<workflow_id>`` en un
+        worktree aparte, bajo la raíz configurable GONCLOUD_WORKTREE_ROOT
+        (por defecto la carpeta hermana ``wt`` del repo; expandida y
+        resuelta, y validada FUERA del repo — review F6). El checkout
+        original queda solo como origen: ni checkout, ni commit, ni reset.
+        Si ``repository`` no es un repo git, no hay worktree — conducta de
+        hoy (punto 4).
+
+        Devuelve ``(ruta, sha_base)``: el SHA base se resuelve AHORA
+        (``git rev-parse <revision>^{commit}``) y viaja en el contrato —
+        el cierre mide los commits propios contra él (review F3). Si la
+        revisión del dueño no resuelve, error claro: NUNCA un fallback
+        silencioso a HEAD (review F8/F9). Idempotente: la ruta o la rama
+        ya existentes (relanzamiento, start concurrente) reutilizan lo
+        creado (review F5).
+        """
+        try:
+            probe = subprocess.run(
+                ["git", "-C", repository, "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Review F13: un probe que FALLA (error, timeout) en un
+            # repository que podría ser git no degrada al checkout
+            # original — error claro y la cadena no se crea. Solo un probe
+            # que RESPONDE "no es repo git" (returncode != 0) conserva la
+            # conducta de hoy (punto 4).
+            raise WorkflowError(f"git probe failed for {repository}: {exc}") from exc
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            return None
+        repo_path = Path(repository)
+        configured = os.environ.get("GONCLOUD_WORKTREE_ROOT") or str(
+            repo_path.parent / "wt"
+        )
+        root = Path(configured).expanduser().resolve()
+        wt_path = root / f"{repo_path.name}-{root_id}"
+        if wt_path == repo_path or repo_path in wt_path.parents:
+            raise WorkflowError(
+                f"GONCLOUD_WORKTREE_ROOT ({root}) must stay outside the "
+                f"repository ({repo_path})"
+            )
+        branch = f"cadena/{root_id}"
+
+        def git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", repository, *args],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+
+        resolved = git("rev-parse", f"{revision}^{{commit}}")
+        if resolved.returncode != 0:
+            # Review F8/F9: sin fallback silencioso a HEAD — la cadena
+            # trabajaría en un baseline que el dueño no aprobó.
+            raise WorkflowError(
+                f"revision {revision!r} does not resolve in {repository}: "
+                f"{(resolved.stderr or resolved.stdout).strip()[:200]}"
+            )
+        base_sha = resolved.stdout.strip()
+
+        if wt_path.is_dir() and (wt_path / ".git").exists():
+            # Misma clave (relanzamiento): el worktree ya es suyo.
+            return str(wt_path), base_sha
+        branch_exists = git("rev-parse", "--verify", "--quiet", branch)
+        if branch_exists.returncode == 0:
+            # Review F5: rama sobrante (restart concurrente o relanzamiento
+            # tras limpiar la ruta) — el worktree se añade SIN -b sobre esa
+            # rama, nunca se recrea.
+            attempt = git("worktree", "add", "--end-of-options", str(wt_path), branch)
+        else:
+            attempt = git(
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(wt_path),
+                "--end-of-options",
+                base_sha,
+            )
+        if attempt.returncode != 0:
+            raise WorkflowError(
+                "git worktree add failed for chain "
+                f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
+            )
+        return str(wt_path), base_sha
+
+    def cleanup_chain_worktree(
+        self, contract: dict[str, Any], workflow_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Close-side worktree handling (r-H-cadena-worktree punto 3).
+
+        Con commits propios (revision..HEAD) el worktree se CONSERVA —
+        ahí vive el trabajo de la cadena. Limpio y sin commits propios se
+        quita con git worktree remove. Sucio sin commits propios también
+        se conserva: borrarlo tiraría cambios del dueño.
+        """
+        worktree = contract.get("worktree")
+        if not worktree:
+            return None
+        info: dict[str, Any] = {
+            "path": worktree,
+            "branch": f"cadena/{workflow_id or contract.get('workflow_id', '')}",
+            "removed": False,
+        }
+
+        def git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", worktree, *args],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        if not Path(worktree).is_dir():
+            info["reason"] = "el worktree ya no existe"
+            return info
+        # Review F3: los commits propios se miden contra el SHA BASE real
+        # que la creación resolvió y guardó en el contrato — nunca contra
+        # una revisión simbólica (revision="HEAD", una rama movida, una
+        # etiqueta de contrato), que contaba cero y borraba worktrees con
+        # trabajo. Si el rev-list falla por lo que sea, se CONSERVA:
+        # nunca se borra ante la duda.
+        base = contract.get("worktree_base") or contract.get("revision") or "HEAD"
+        own = git("rev-list", f"{base}..HEAD", "--count")
+        if own.returncode != 0 or not own.stdout.strip().isdigit():
+            info["reason"] = (
+                f"no se pudo medir el trabajo propio contra {base}; se conserva"
+            )
+            return info
+        if int(own.stdout.strip()) > 0:
+            info["reason"] = "tiene commits sin publicar"
+            return info
+        # Review F14: también los ARCHIVOS IGNORADOS cuentan — un worktree
+        # con ellos no se quita (build/, cachés, secretos locales...). Se
+        # conserva y el motivo lo dice.
+        dirty = git("status", "--porcelain", "--ignored")
+        if dirty.stdout.strip():
+            info["reason"] = "tiene cambios sin commit o archivos ignorados"
+            return info
+        removed = subprocess.run(
+            ["git", "-C", str(contract["repository"]), "worktree", "remove", worktree],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        info["removed"] = removed.returncode == 0
+        if not info["removed"]:
+            info["reason"] = (removed.stderr or removed.stdout).strip()[:200]
+        return info
 
     def _busy_result(self, live_id: str, repo: str) -> dict[str, Any]:
         """The busy answer (contrato r6): the repository already has a live
@@ -667,7 +890,19 @@ class WorkflowService:
                     for item in list_comments(conn, workflow_id)
                 ):
                     add_comment(conn, workflow_id, "claw", comment)
-            return True
+            contract = self._contract_of(self._require_workflow_root(conn, workflow_id))
+        # Punto 3: al cerrar la cadena, su worktree se conserva si tiene
+        # commits propios y se quita si está limpio — mejor esfuerzo: un
+        # fallo de limpieza no deshace el cierre.
+        try:
+            self.cleanup_chain_worktree(contract, workflow_id)
+        # Review F4 + cr:4317832614: el cleanup es mejor esfuerzo — puede
+        # lanzar WorkflowError, OSError, subprocess.SubprocessError o
+        # KeyError (contract["repository"]); NINGUNO aborta el start que
+        # va a crear la cadena nueva.
+        except Exception:
+            pass
+        return True
 
     def start_contract(self, *, request_key: str) -> dict | None:
         """Read the original provenance for an idempotent local start."""
@@ -713,9 +948,10 @@ class WorkflowService:
     def _initial_children(
         root_id: str, contract: dict[str, Any]
     ) -> list[dict[str, Any]]:
+        workspace = contract.get("worktree") or contract["repository"]
         common = (
             f"Goncloud engineering workflow {root_id}. Work only in the exact repository "
-            f"{contract['repository']}. The owner-approved baseline revision is "
+            f"{workspace}. The owner-approved baseline revision is "
             f"{contract['revision']}. Preserve the shared workspace and record the exact current "
             "revision (or dirty-tree state) in every native Kanban handoff so downstream roles "
             "verify the artifact actually produced. "
@@ -1013,6 +1249,18 @@ class WorkflowService:
                 raise WorkflowError(
                     f"task {task_id} cannot execute from status {task.status}"
                 )
+            contract = self._contract_of(root)
+            origin = Path(contract["repository"]).expanduser().resolve()
+            # r-H-cadena-worktree: la cadena trabaja en SU worktree; el
+            # repositorio original es el origen y no se toca.
+            contract_worktree = (
+                Path(contract["worktree"]).expanduser().resolve()
+                if contract.get("worktree")
+                else None
+            )
+            allowed = {origin} | (
+                {contract_worktree} if contract_worktree is not None else set()
+            )
             for member in (root, task):
                 if member.workspace_kind != "dir" or not member.workspace_path:
                     raise WorkflowError(
@@ -1024,16 +1272,22 @@ class WorkflowService:
                     raise WorkflowError(
                         f"task {member.id} workspace does not match repository: {exc}"
                     ) from exc
-                if task_repo != repo:
+                # La tarjeta raíz apunta al repo original y la cadena
+                # trabaja en su worktree — ambas rutas son legítimas aquí.
+                if task_repo not in allowed:
                     raise WorkflowError(
                         f"task {member.id} workspace does not match repository"
                     )
-            contract = self._contract_of(root)
-            if (
-                not contract.get("repository")
-                or Path(contract["repository"]).expanduser().resolve() != repo
-            ):
-                raise WorkflowError("repository does not match the workflow contract")
+            # r-H-cadena-worktree, review F7: con worktree presente, la
+            # ASIGNACIÓN exige el worktree — el original solo vale para las
+            # tarjetas (trabajar ahí tocaría el checkout de deploy). Sin
+            # worktree, el original. Cualquier otro workspace: error de
+            # workspace, como siempre.
+            assignable = {contract_worktree} if contract_worktree else {origin}
+            if repo not in assignable:
+                raise WorkflowError(
+                    f"task {task_id} workspace does not match repository"
+                )
             if contract.get("revision") != revision:
                 raise WorkflowError("revision does not match the workflow contract")
             authorization = [
@@ -1329,12 +1583,17 @@ class WorkflowService:
     ) -> dict[str, str]:
         ids: dict[str, str] = {}
         parent = initial["reviewer"]
+        # Review F2: la ronda correctiva trabaja donde la cadena — el
+        # worktree del contrato, no el checkout original (que jamás se
+        # toca).
+        contract = self._contract_of(root)
+        workspace = contract.get("worktree") or contract["repository"]
         for stage in CORRECTIVE_STAGES:
             key = f"{_WORKFLOW_KEY_PREFIX}{root.id}:round2:{stage}"
             body = (
                 f"Corrective review round 2 for workflow {root.id}. Severity: {severity}.\n"
                 f"Finding: {finding}\n"
-                f"Use the exact shared repository {root.workspace_path}, and record the exact current "
+                f"Use the exact shared repository {workspace}, and record the exact current "
                 "revision or dirty-tree state in the handoff. This is the final permitted review "
                 "round; unresolved material findings must block entrega."
             )
@@ -1345,7 +1604,7 @@ class WorkflowService:
                 assignee=stage,
                 created_by="reviewer",
                 workspace_kind=root.workspace_kind,
-                workspace_path=root.workspace_path,
+                workspace_path=workspace,
                 tenant=root.tenant,
                 parents=(parent,),
                 idempotency_key=key,

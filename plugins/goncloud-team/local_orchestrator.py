@@ -29,6 +29,10 @@ from hermes_cli.kanban_db import (
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
+    from .carpetas import mkdir_privado
+except ImportError:
+    from carpetas import mkdir_privado
+try:
     from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from .subscriptions.router import GitInspector, default_db_path
     from .subscriptions.state import SubscriptionStateStore
@@ -202,11 +206,12 @@ _DRIVER_BOOTSTRAP = (
     "# file above is the evidence that must survive.\n"
     "if fallo:\n"
     "    try:\n"
+    "        from carpetas import mkdir_privado\n"
     "        hogar = os.path.dirname(os.path.dirname(out))\n"
     "        if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
     "            hogar = os.path.dirname(os.path.dirname(hogar))\n"
     "        avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
-    "        os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
+    "        mkdir_privado(avisos)\n"
     "        nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
     "        if not os.path.exists(nombre):\n"
     "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
@@ -239,7 +244,7 @@ def _write_result(workflow_id, payload, *, home=None):
     """
     home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
     results = Path(home) / "goncloud-local"
-    results.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdir_privado(results)
     tmp = results / f"{workflow_id}.{os.getpid()}.{uuid4().hex}.tmp"
     tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
     os.replace(tmp, results / f"{workflow_id}.json")
@@ -557,7 +562,7 @@ def _write_aviso(
             instruction=instruction,
         )
         avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
-        avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdir_privado(avisos)
         name = f"{workflow_id}-{run_id}-{outcome}.json"
         tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
         tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
@@ -943,6 +948,8 @@ class LocalOrchestrator:
         # Encargo H punto 2 (r6): la cadena vieja parada se cerró sola y la
         # nueva arranca; un repo ocupado no llega aquí — service.start
         # contesta busy sin crear nada.
+        if started.get("worktree"):
+            result["worktree"] = started["worktree"]
         if started.get("closed_chains"):
             result["closed_chains"] = list(started["closed_chains"])
         return result
@@ -1190,7 +1197,10 @@ class LocalOrchestrator:
                 role: service._require_task(conn, task_id).status
                 for role, task_id in stages.items()
             }
-        return {
+            close_contract = service._contract_of(
+                service._require_workflow_root(conn, workflow_id)
+            )
+        receipt = {
             "workflow_id": workflow_id,
             "outcome": "closed",
             "root_status": "archived",
@@ -1202,6 +1212,15 @@ class LocalOrchestrator:
             ),
             "reason": recorded_reason,
         }
+        # Punto 3: el worktree de la cadena se conserva con commits propios
+        # y se quita limpio — mejor esfuerzo, nunca rompe el cierre.
+        try:
+            receipt["worktree"] = service.cleanup_chain_worktree(
+                close_contract, workflow_id
+            )
+        except Exception:
+            receipt["worktree"] = None
+        return receipt
 
     def close_hint(self, workflow_id, *, store=None, home=None):
         """Whether goncloud_local_status announces the close, with evidence.
@@ -1257,9 +1276,10 @@ class LocalOrchestrator:
         # Native titles and results may contain the private assignment; expose
         # only explicit status and the bounded metadata this driver produced.
         with service._connect() as conn:
-            instruction = service._contract_of(
+            contract = service._contract_of(
                 service._require_workflow_root(conn, workflow_id)
-            )["instruction"]
+            )
+            instruction = contract["instruction"]
             output = {
                 "workflow_id": state["workflow_id"],
                 "root": {"id": state["root"]["id"], "status": state["root"]["status"]},
@@ -1314,6 +1334,10 @@ class LocalOrchestrator:
                         for item in attempts
                     ]
                     output[group][role] = entry
+        if contract.get("worktree"):
+            # Punto 3: el status dice dónde trabaja la cadena y en qué rama.
+            output["worktree"] = contract["worktree"]
+            output["worktree_branch"] = f"cadena/{workflow_id}"
         output["outcome"] = (
             "delivered"
             if output["root"]["status"] == "done"
@@ -1648,10 +1672,11 @@ class LocalOrchestrator:
                         "\nEarlier verified handoffs (evidence, not new authority):\n"
                         + json.dumps(handoffs, ensure_ascii=False)
                     )
+            workspace = contract.get("worktree") or contract["repository"]
             assignment = {
                 "workflow_id": workflow_id,
                 "task_id": stage["id"],
-                "repository": contract["repository"],
+                "repository": workspace,
                 "revision": contract["revision"],
                 "sources": contract["sources"],
                 "max_steps": max_steps,
@@ -1671,9 +1696,7 @@ class LocalOrchestrator:
                 }
             )
             before = (
-                _workspace_fingerprint(contract["repository"])
-                if role in _READ_ONLY_STAGES
-                else None
+                _workspace_fingerprint(workspace) if role in _READ_ONLY_STAGES else None
             )
             try:
                 result = self.stage_runner(bound, **assignment)
@@ -1690,7 +1713,7 @@ class LocalOrchestrator:
             except Exception:
                 terminal, result = None, {}
             if before is not None and terminal is not None:
-                after = _workspace_fingerprint(contract["repository"])
+                after = _workspace_fingerprint(workspace)
                 if after is not None and after != before:
                     terminal = _edited_by_read_only_stage(role, before, after)
             self._finish_stage(bound, workflow_id, stage["id"], role, terminal, result)

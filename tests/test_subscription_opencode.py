@@ -60,7 +60,11 @@ class FakeCliRunner:
 
 
 class SequencedCliRunner:
-    """Answers each successive invocation with the next stdout."""
+    """Answers each successive invocation with the next stdout.
+
+    An entry may be a ``(stdout, returncode)`` tuple for the one call that
+    must fail (the version probe always precedes the run).
+    """
 
     def __init__(self, outputs):
         self.outputs = list(outputs)
@@ -68,8 +72,10 @@ class SequencedCliRunner:
 
     def __call__(self, command, **kwargs):
         self.calls.append((list(command), kwargs))
+        salida = self.outputs.pop(0)
+        stdout, returncode = salida if isinstance(salida, tuple) else (salida, 0)
         return subprocess.CompletedProcess(
-            list(command), 0, stdout=self.outputs.pop(0), stderr=""
+            list(command), returncode, stdout=stdout, stderr=""
         )
 
 
@@ -188,7 +194,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}',
             ]
         )
-        runner = SequencedCliRunner([rejected])
+        runner = SequencedCliRunner(["opencode v1.19.3", rejected])
 
         result = OpenCodeAdapter(runner=runner).invoke(
             request(self.workspace),
@@ -196,7 +202,8 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )
 
         self.assertTrue(result.success)
-        self.assertEqual(len(runner.calls), 1)
+        # Version y run: el sondeo de version no cuenta como intento.
+        self.assertEqual(len([call for call in runner.calls if "run" in call[0]]), 1)
 
     def test_the_zai_coding_plan_slot_is_served_through_the_cli(self):
         """The subscription the HTTP adapter reached without tools, now with them.
@@ -250,6 +257,75 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+
+    def test_opencode_2_runs_standalone_without_dir_and_parses_its_stream(self):
+        # Fixture REAL (redactado) de la 2.0.29 de esta Mac: step_start,
+        # tool_use (lee nota.txt), step_finish tool-calls, step_start y el
+        # texto final — sin step-finish con reason stop. Sin --dir: el
+        # workspace es el cwd del proceso; cada intento lleva --standalone
+        # para no colgarse del servicio de fondo compartido.
+        fixture = (ROOT / "tests/fixtures/opencode2_run.jsonl").read_text(
+            encoding="utf-8"
+        )
+        runner = SequencedCliRunner(["opencode v2.0.29", fixture])
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            request(self.workspace, prompt="Lee nota.txt."),
+            route(1, "opencode_zai", "glm-5.3-flash"),
+        )
+
+        llamada_version, llamada_run = runner.calls
+        self.assertEqual(llamada_version[0], ["opencode", "--version"])
+        self.assertEqual(
+            llamada_run[0],
+            [
+                "opencode",
+                "run",
+                "--standalone",
+                "--format",
+                "json",
+                "--model",
+                "zai-coding-plan/glm-5.3-flash",
+            ],
+        )
+        self.assertNotIn("--dir", llamada_run[0])
+        self.assertEqual(llamada_run[1]["cwd"], self.workspace)
+        self.assertIn("Lee nota.txt.", llamada_run[1]["input"])
+        self.assertTrue(result.success)
+        self.assertIn("secreto: ABC-123", result.text)
+        self.assertEqual(result.session_id, "ses_redactado")
+
+    def test_opencode_2_sin_parte_textual_es_terminal_invalido(self):
+        fixture = (ROOT / "tests/fixtures/opencode2_run.jsonl").read_text(
+            encoding="utf-8"
+        )
+        sin_texto = "\n".join(
+            line for line in fixture.splitlines() if json.loads(line)["type"] != "text"
+        )
+        runner = SequencedCliRunner(["opencode v2.0.29", sin_texto])
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            request(self.workspace), route(1, "opencode_zai", "glm-5.3-flash")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
+
+    def test_opencode_2_classifies_an_auth_error_event(self):
+        # El sobre del error es el medido en la 2.0.29 (evento type:error y
+        # exit 1); el payload de auth es reconstruido — no se toco el login
+        # real de la PC para medirlo.
+        fixture = (ROOT / "tests/fixtures/opencode2_error_auth.jsonl").read_text(
+            encoding="utf-8"
+        )
+        runner = SequencedCliRunner(["opencode v2.0.29", (fixture, 1)])
+
+        result = OpenCodeAdapter(runner=runner).invoke(
+            request(self.workspace), route(1, "opencode_zai", "glm-5.3-flash")
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.AUTH)
 
     def test_parser_exposes_valid_terminal_only_after_step_finish(self):
         parsed = parse_opencode_jsonl(SUCCESS_JSONL)
