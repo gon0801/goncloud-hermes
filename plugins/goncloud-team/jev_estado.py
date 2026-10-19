@@ -32,6 +32,7 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
 PREFIJO_CADENA = "goncloud-workflow:"
 SIN_AVANCE_S = 600
 PROMESA_S = 1800
+VENTANA_S = 24 * 3600  # del tablero: pasado un dia es historia (cubre una noche entera)
 TERMINALES = ("done", "archived")
 EN_CURSO = ("ready", "running", "blocked")
 PROMESA = re.compile(
@@ -72,12 +73,14 @@ def ultimo_evento(conn) -> int:
 
 
 def _es_etapa_de_cadena(conn, tarea) -> bool:
+    # En el kanban real la etapa es PADRE de la raiz (workflow.py encadena
+    # etapa -> ... -> entrega y cada una apunta a la raiz): la raiz es hija.
     if str(tarea["idempotency_key"] or "").startswith(PREFIJO_CADENA):
         return True
     return (
         conn.execute(
-            "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.idempotency_key LIKE ? LIMIT 1",
+            "SELECT 1 FROM task_links l JOIN tasks r ON r.id = l.child_id "
+            "WHERE l.parent_id = ? AND r.idempotency_key LIKE ? LIMIT 1",
             (tarea["id"], PREFIJO_CADENA + "%"),
         ).fetchone()
         is not None
@@ -205,7 +208,7 @@ def ingenieria_abierta(conn) -> bool:
 def _etapas(conn, raiz_id: str):
     return conn.execute(
         "SELECT t.id, t.title, t.assignee, t.status FROM tasks t WHERE t.id IN "
-        "(SELECT child_id FROM task_links WHERE parent_id = ?1) "
+        "(SELECT parent_id FROM task_links WHERE child_id = ?1) "
         "OR t.idempotency_key LIKE ?2",
         (raiz_id, f"{PREFIJO_CADENA}{raiz_id}:round2:%"),
     ).fetchall()
@@ -219,6 +222,8 @@ def candidatos_del_kanban(conn, ahora: int, sin_avance_s: int = SIN_AVANCE_S):
         bloqueadas = [e for e in etapas if e["status"] == "blocked"]
         if bloqueadas:
             etapa = bloqueadas[0]
+            if ahora - _avance(conn, etapa["id"]) > VENTANA_S:
+                continue  # bloqueada de hace horas: historia, no aviso
             candidatos.append(
                 {
                     "clave": f"cadena:{raiz['id']}:blocked",
@@ -235,7 +240,7 @@ def candidatos_del_kanban(conn, ahora: int, sin_avance_s: int = SIN_AVANCE_S):
         if not vivas:
             continue
         ultimo = max(_avance(conn, e["id"]) for e in vivas)
-        if ahora - ultimo > sin_avance_s:
+        if sin_avance_s < ahora - ultimo <= VENTANA_S:
             candidatos.append(
                 {
                     "clave": f"cadena:{raiz['id']}:sin-avance",
@@ -255,7 +260,7 @@ def candidatos_del_kanban(conn, ahora: int, sin_avance_s: int = SIN_AVANCE_S):
     ).fetchall()
     for tarjeta in tarjetas:
         quieta = ahora - _avance(conn, tarjeta["id"])
-        if quieta > sin_avance_s:
+        if sin_avance_s < quieta <= VENTANA_S:
             candidatos.append(
                 {
                     "clave": f"tarjeta:{tarjeta['id']}",

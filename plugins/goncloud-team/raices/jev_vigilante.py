@@ -43,7 +43,8 @@ SILENCIO_DESDE = 23
 SILENCIO_HASTA = 8
 MENSAJE_S = 600
 PROMESA_S = jev_estado.PROMESA_S
-VENTANA_S = 6 * 3600  # pasado esto el caso es historia, no un aviso util
+VENTANA_S = 6 * 3600  # mensajes y promesas: pasado esto es historia, no un aviso util
+RETENCION_S = 7 * 86400  # mas que la ventana: sin re-avisos diarios
 REPETIR_S = 1800
 MAX_AVISOS = 3
 MAX_CONSULTAS = 5
@@ -83,7 +84,7 @@ def _guardar_estado(claw: Path, datos: dict, ahora: int) -> None:
         datos[clave] = {
             k: v
             for k, v in datos[clave].items()
-            if isinstance(v, dict) and ahora - int(v.get("at", 0)) < 86400
+            if isinstance(v, dict) and ahora - int(v.get("at", 0)) < RETENCION_S
         }
     ruta = claw / "jev" / ESTADO
     ruta.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +171,14 @@ def correr(home=None, ahora=None, enviar=None, decisor=None, kanban=None) -> lis
     candidatos = [
         c for c in candidatos if _pendiente_de_revisar(estado, c["clave"], ts)
     ]
-    if not candidatos or (en_silencio(ahora_dt) and not abierta):
+    if candidatos and en_silencio(ahora_dt):
+        # De noche solo habla la ingenieria abierta: lo demas espera a la manana.
+        candidatos = (
+            [c for c in candidatos if c["clave"].startswith("cadena:")]
+            if abierta
+            else []
+        )
+    if not candidatos:
         return []
 
     decisor = decisor or Decisor(claw)

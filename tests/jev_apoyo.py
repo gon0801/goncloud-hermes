@@ -75,14 +75,17 @@ class Kanban:
         etapas=(("scout", "done"), ("implementer", "running")),
         at=None,
     ):
-        """Una cadena Goncloud: raiz con la clave goncloud-workflow y sus etapas."""
+        """Una cadena Goncloud: raiz con la clave goncloud-workflow y sus etapas.
+
+        Como en el kanban real (workflow.py): cada etapa es PADRE de la raiz.
+        """
         self.tarea(
             raiz, "claw", "running", "cadena", at=at, clave="goncloud-workflow:pedido-1"
         )
         for assignee, status in etapas:
             id = f"{raiz}_{assignee}"
             self.tarea(id, assignee, status, f"[{assignee}] cadena", at=at)
-            self._ejecutar("INSERT INTO task_links VALUES (?, ?)", (raiz, id))
+            self._ejecutar("INSERT INTO task_links VALUES (?, ?)", (id, raiz))
 
     def evento(self, task_id, kind, at=None, payload=None):
         return self._ejecutar(

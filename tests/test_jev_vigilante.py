@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jev_apoyo  # noqa: E402
 
 import jev_decisiones  # noqa: E402
+import jev_estado  # noqa: E402
 
 vigilante = importlib.import_module("raices.jev_vigilante")
 RAIZ = jev_apoyo.RAIZ
@@ -92,6 +93,16 @@ class CandidatosTests(Base):
         self.assertIn("etapa bloqueada", texto)
         self.assertIn("implementer", texto)
         self.assertIn("0.93", texto)
+
+    def test_enlaces_como_el_kanban_real_etapa_padre_y_raiz_hija(self):
+        self.cadena_bloqueada()
+        conn = jev_estado.abrir_kanban(self.raiz / "kanban.db")
+        self.addCleanup(conn.close)
+        enlaces = conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+        self.assertIn(("t_raiz_implementer", "t_raiz"), [tuple(e) for e in enlaces])
+        self.assertNotIn("t_raiz", [e[0] for e in enlaces])
+        etapas = {e["id"] for e in jev_estado._etapas(conn, "t_raiz")}
+        self.assertEqual(etapas, {"t_raiz_scout", "t_raiz_implementer"})
 
     def test_cadena_sin_avance_mas_de_diez_minutos(self):
         self.kanban.cadena(at=ts(DIA) - 15 * 60)
@@ -208,6 +219,23 @@ class AntirrepeticionTests(Base):
             self.vuelta(DIA + timedelta(minutes=31 * n))
         self.assertEqual(len(self.enviados), 3)
 
+    def test_un_caso_viejo_no_reavisa_cada_dia(self):
+        # Atorado desde hace 8 h: tres avisos y ya. Al dia siguiente, nada mas.
+        self.tarjeta_quieta(hace_min=8 * 60)
+        for n in range(6):
+            self.vuelta(DIA + timedelta(minutes=31 * n))
+        self.assertEqual(len(self.enviados), 3)
+        self.assertEqual(self.vuelta(DIA + timedelta(hours=26)), [])
+        self.assertEqual(len(self.enviados), 3)
+
+    def test_lo_quieto_de_hace_mas_de_un_dia_es_historia(self):
+        self.tarjeta_quieta(hace_min=25 * 60)
+        self.kanban.cadena(
+            etapas=(("implementer", "blocked"),), at=ts(DIA) - 25 * 3600
+        )
+        self.assertEqual(self.vuelta(), [])
+        self.assertEqual(self.jev.llamadas, [])
+
     def test_casos_distintos_no_se_estorban(self):
         self.tarjeta_quieta(id="t_a")
         self.vuelta(DIA)
@@ -242,6 +270,19 @@ class SilencioTests(Base):
         self.assertFalse(
             vigilante.en_silencio(datetime(2026, 10, 20, 15, 0, tzinfo=timezone.utc))
         )  # 08:00
+
+    def test_con_ingenieria_abierta_de_noche_solo_habla_la_cadena(self):
+        self.kanban.cadena(
+            etapas=(("scout", "done"), ("implementer", "blocked")), at=ts(NOCHE) - 60
+        )
+        self.kanban.tarea("t_q", "amazon", "running", at=ts(NOCHE) - 20 * 60)
+        seguimiento = self.claw / "jev" / "seguimiento.json"
+        seguimiento.parent.mkdir()
+        seguimiento.write_text(
+            json.dumps({"mensajes": {"m": {"at": ts(NOCHE) - 1800}}}), encoding="utf-8"
+        )
+        self.assertEqual(self.vuelta(NOCHE), ["cadena:t_raiz:blocked"])
+        self.assertEqual(len(self.jev.llamadas), 1, "ni consulta lo que callaria")
 
     def test_amanece_y_avisa_lo_que_callo(self):
         self.kanban.tarea("t_n", "amazon", "running", at=ts(NOCHE) - 3600)
