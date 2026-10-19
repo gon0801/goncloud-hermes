@@ -242,15 +242,19 @@ External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
 Every driver start — a detached launch and a CLI `resume` alike — first
 overwrites that result file with a `running` mark (its own `run_id` and pid)
-and writes its outcome under the same `run_id` when it quits, so a stopped
-outcome is only evidence while it is the file's last write: a relaunched
-chain refuses the close until its own driver stops, and an unreadable result
-file fails closed. A driver that dies without writing its outcome leaves the
-mark in `running`; one more `resume` produces a fresh outcome. A `running`
-mark is read through its pid (encargo H punto 4): the marked process must
-predate its own mark, so a dead pid — or one recycled by a process born
-after the mark — reads as a stopped driver, while a live pid keeps the close
-refused and a relaunch queued.
+and writes its outcome under the same `run_id` — signed with the writer's
+pid (review F12) — when it quits, so a stopped outcome is only evidence
+while it is the file's last write: a relaunched chain refuses the close
+until its own driver stops. A driver that dies without writing its outcome
+leaves the mark in `running`; one more `resume` produces a fresh outcome. A
+`running` mark is read through its pid (encargo H punto 4): the marked
+process must predate its own mark, so a dead pid — or one recycled by a
+process born after the mark — reads as a stopped driver, while a live pid
+keeps the close refused and a relaunch queued. A `running` mark without a
+usable pid has no driver behind it — every driver signs its launch and its
+report — so it reads as driverless (review F12): the chain stays closable
+and relaunchable instead of jamming the repository, and an unreadable
+result file reads the same way (a foreign state: every write is atomic).
 Relaunching is retrying (encargo H punto 1): a run whose request key lands
 on a chain with blocked stages and a stopped driver unblocks those stages
 with the native unblock and opens a new attempt generation for each, so the
@@ -269,7 +273,10 @@ queue's head itself (FIFO, one chain) when it writes its final outcome —
 the next run (or `resume`) is only the fallback. Two drivers never edit the
 same checkout at once. A chain sitting in the queue never had a driver: its
 durable queue marker is the close evidence, so `goncloud_local_close` takes
-it out of the queue and `goncloud_local_status` announces it.
+it out of the queue and `goncloud_local_status` announces it. The marker
+retires the moment the chain launches (review F13) — a launched chain has a
+driver, and neither the stale marker nor anything short of the driver's own
+stop evidence lets the close archive it between stages.
 The claw profile can still release a chain with `goncloud_local_close`
 (`workflow_id`, `reason`): the tool requires durable evidence that the
 driver is gone — one

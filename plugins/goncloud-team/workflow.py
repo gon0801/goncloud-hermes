@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -421,8 +422,13 @@ class WorkflowService:
             # BEGIN IMMEDIATE makes the same-repository check and root insert a
             # single native DB decision across concurrent gateway processes.
             # create_task explicitly supports nested composition via savepoint.
+            # Review F15: the scanner decides inside it only from database
+            # state; the driver marks — and the ps each live one costs — are
+            # read after the transaction, with no write lock held. The
+            # authoritative mark re-read stays in _auto_close_stopped_chain.
             queued_behind = None
             stopped_chains = []
+            mark_verdicts = []
             with write_txn(conn):
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
@@ -439,10 +445,10 @@ class WorkflowService:
                         continue
                     if active.idempotency_key == idempotency_key:
                         continue
-                    if self._foreign_chain_alive(conn, active, store=store):
+                    if self._foreign_db_alive(conn, active, store=store):
                         queued_behind = queued_behind or active.id
                     else:
-                        stopped_chains.append(active.id)
+                        mark_verdicts.append(active.id)
                 root_id = create_task(
                     conn,
                     title=f"Engineering: {instruction[:120]}",
@@ -454,6 +460,14 @@ class WorkflowService:
                     triage=True,
                     idempotency_key=idempotency_key,
                 )
+            # The mark half of the verdict (review F15): one file read per
+            # chain, ps only for a running mark, outside the transaction.
+            for chain_id in mark_verdicts:
+                alive, stopped = _driver_signals(chain_id)
+                if alive or not stopped:
+                    queued_behind = queued_behind or chain_id
+                else:
+                    stopped_chains.append(chain_id)
             closed_chains = []
             for old_id in stopped_chains:
                 if self._auto_close_stopped_chain(old_id, store=store):
@@ -531,8 +545,15 @@ class WorkflowService:
         except Exception:
             return _StoreUnavailable()
 
-    def _foreign_chain_alive(self, conn: Any, active: Any, *, store: Any) -> bool:
-        """Whether another chain's driver may still be working its repository."""
+    def _foreign_db_alive(self, conn: Any, active: Any, *, store: Any) -> bool:
+        """The database half of another chain's liveness verdict.
+
+        Decided from Kanban and lease state only — never from a driver
+        mark — so start holds no ps subprocess under the Kanban write lock
+        (review F15). True when the chain is live work on DB evidence
+        alone; False leaves the verdict to the driver mark, which start
+        reads outside the transaction.
+        """
         if isinstance(store, _StoreUnavailable):
             return True
         if active.status == "running":
@@ -546,13 +567,7 @@ class WorkflowService:
             return True
         if store is not None and store.active_leases(active.id):
             return True
-        alive, stopped = _driver_signals(active.id)
-        # Review F2: no mark is not a stopped driver — a queued chain has
-        # none, and a triage root without children is a chain being born
-        # (its decomposition commits after the root insert), not a stopped
-        # driver (F8). "Not proven stopped" counts as alive: the queue,
-        # not the archive, is the answer.
-        return alive or not stopped
+        return False
 
     def _auto_close_stopped_chain(self, workflow_id: str, *, store: Any) -> bool:
         """Free a chain whose driver already stopped; True when this call did.
@@ -608,6 +623,19 @@ class WorkflowService:
                         raise WorkflowError(
                             f"native Kanban refused to archive {member_id}"
                         )
+                    # The same native audit trail archive_task leaves
+                    # (review F14): one "archived" event per member, inside
+                    # this same transaction, so both close paths leave
+                    # identical rastros.
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, kind, payload_json,"
+                        " created_at) VALUES (?, 'archived', ?, ?)",
+                        (
+                            member_id,
+                            json.dumps({}, sort_keys=True),
+                            int(time.time()),
+                        ),
+                    ).close()
                 comment = CLOSE_COMMENT_MARKER + json.dumps(
                     {"reason": AUTO_CLOSE_REASON, "workflow_id": workflow_id},
                     ensure_ascii=False,

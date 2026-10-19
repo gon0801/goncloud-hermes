@@ -325,8 +325,7 @@ def _process_start_epoch(pid):
 def driver_mark_live(mark, *, process_start=None):
     """Whether a running mark's pid belongs to the process that wrote it.
 
-    Encargo H punto 4: a dead driver is not a live one. A missing or
-    unreadable pid fails closed (a driver may be alive). The marked process
+    Encargo H punto 4: a dead driver is not a live one. The marked process
     must predate its own mark — it wrote it while running. A pid that only
     came to exist after the mark was written was recycled by another
     process: the marked driver is gone, so the mark reads as dead. A
@@ -337,12 +336,19 @@ def driver_mark_live(mark, *, process_start=None):
     one. The mark then reads as live — no close, no retry — and the cause
     is recorded on the mark under ``pid_check``, where goncloud_local_status
     shows it.
+
+    Review F12: a running mark without a usable pid does not read as live.
+    Every driver writes its pid when it launches (launch_detached) and
+    signs its final report with the same pid (_report), so a mark without
+    one has no driver behind it — the pidless ``running`` a busy stage
+    used to leave as the last write read as a live driver forever and
+    jammed the repository against every guard.
     """
     if not isinstance(mark, dict):
-        return True
+        return False
     pid = mark.get("pid")
     if type(pid) is not int or pid <= 0:
-        return True
+        return False
     started = (process_start or _process_start_epoch)(pid)
     if isinstance(started, _UncheckedPid):
         mark["pid_check"] = f"unchecked ({started.cause})"
@@ -362,9 +368,11 @@ def driver_mark_live(mark, *, process_start=None):
 
 def driver_stopped(mark):
     """Durable evidence the driver stopped: one of its stopped outcomes as
-    the file's last write, or a running mark whose process is gone (a dead
-    or recycled pid — encargo H punto 4). Anything else reads as a driver
-    that may still be running."""
+    the file's last write, or a running mark whose process is gone — a dead
+    or recycled pid (encargo H punto 4), or no usable pid at all: every
+    driver signs its marks, so a pidless running outcome has no driver
+    behind it (review F12). Anything else reads as a driver that may still
+    be running."""
     outcome = mark.get("outcome") if isinstance(mark, dict) else None
     if outcome in _STOPPED_DRIVER_OUTCOMES:
         return True
@@ -374,8 +382,12 @@ def driver_stopped(mark):
 def read_driver_mark(workflow_id, *, home=None):
     """The result file's last write, or None when there is no file.
 
-    An unreadable file proves nothing about the driver (live review F8):
-    fail closed as a running mark instead of deriving a stopped outcome.
+    An unreadable file is a foreign state — every driver write is atomic
+    (os.replace), so a non-JSON body is not a write in progress — and it
+    must not read as a live driver: the pidless running mark it returns
+    reads as driverless (review F12), so the chain stays recoverable (a
+    close frees it, a relaunch retries it) instead of jamming the
+    repository against every guard.
     """
     check_workflow_id(workflow_id)
     home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
@@ -847,6 +859,11 @@ class LocalOrchestrator:
         # pid, that death is exactly what the pid-liveness check (encargo H
         # punto 4) reads as a stopped driver. The run id stays the launch's.
         _write_result(workflow_id, {**mark, "pid": process.pid}, home=home)
+        # The chain launches, so its durable queue record retires (review
+        # F13): a launched chain has a driver, and a stale marker must not
+        # let a close archive it between stages. _launch_next_queued lands
+        # here through this same launch, so one retirement covers both.
+        self._retire_queue_marker(workflow_id)
         return {
             "workflow_id": workflow_id,
             "driver_pid": process.pid,
@@ -962,11 +979,19 @@ class LocalOrchestrator:
                 # stops. Without it the chain may have a live driver between
                 # stages (nothing marks a stage running), so the close waits.
                 # A running mark whose pid is gone is a dead driver: stop
-                # evidence too (encargo H punto 4). A queued chain never
-                # had a driver — its durable queue marker is the evidence
-                # (encargo H punto 3).
+                # evidence too (encargo H punto 4). The queue marker is
+                # evidence only while the chain has no driver outcome — the
+                # same predicate close_hint applies (review F13): a chain
+                # that already launched has a driver, and a stale marker
+                # must not archive it between stages.
+                driver_mark = self.driver_result(workflow_id, home=home)
+                driver_outcome = (
+                    driver_mark.get("outcome")
+                    if isinstance(driver_mark, dict)
+                    else None
+                )
                 if not (
-                    queued or driver_stopped(self.driver_result(workflow_id, home=home))
+                    driver_stopped(driver_mark) or (queued and driver_outcome is None)
                 ):
                     raise WorkflowError(
                         "no durable driver stop (paused, blocked, waiting or "
@@ -1163,6 +1188,12 @@ class LocalOrchestrator:
         # last write to the result file, so it is the stop evidence a close
         # reads (live review F8).
         report["run_id"] = run_id
+        # The writer's own pid (review F12): while the outcome is a
+        # terminal one the pid is already dead, and a "running" outcome —
+        # the busy-stage exit — reads through it once this process is
+        # gone. Without the signature a pidless running mark read as a
+        # live driver forever and jammed the repository.
+        report["pid"] = os.getpid()
         _write_result(workflow_id, report, home=home)
         # Encargo H punto 3 (review F9): the final outcome frees the
         # repository, so the queue's head launches here — FIFO, one chain,
@@ -1176,6 +1207,24 @@ class LocalOrchestrator:
         if launched is not None:
             report["launched_queued"] = launched
         return report
+
+    def _retire_queue_marker(self, workflow_id):
+        """Drop the durable queue record once the chain launches (review F13).
+
+        The marker is the close evidence for a chain that never had a
+        driver; a launched chain has one, and a stale marker reading as
+        "en cola" let the close archive a live chain between stages. The
+        native comments carry no delete primitive, so the retirement is
+        one guarded DELETE on the same table add_comment writes, under its
+        own transaction.
+        """
+        service = self.services("claw")
+        with service._connect() as conn, write_txn(conn):
+            conn.execute(
+                "DELETE FROM task_comments WHERE task_id = ?"
+                " AND substr(body, 1, ?) = ?",
+                (workflow_id, len(_QUEUED_COMMENT_MARKER), _QUEUED_COMMENT_MARKER),
+            ).close()
 
     def _launch_next_queued(self, finished_id, *, home=None):
         """Launch the repository queue's head (encargo H punto 3, F9).
