@@ -101,8 +101,12 @@ _TRANSPORT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-#: Every vendor process shares this hard ceiling, probes included.
-_ABSOLUTE_DEADLINE_SECONDS = 300
+#: Health probes keep a hard ceiling: they are reachability/auth checks with a
+#: bounded job, and 300 s still covers a cold WSL launch. A stage invocation is
+#: NOT a probe — the vendor process runs without any deadline at all (owner,
+#: 2026-10-19: no model finishes a large design or implementation inside a
+#: fixed window, and Kimi already ran unbounded in the owner's terminal).
+_MAX_PROBE_TIMEOUT_SECONDS = 300
 
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
@@ -257,29 +261,30 @@ class SubscriptionAdapter:
 
     name: str = ""
     billing_mode = "subscription"
-    # An adapter may raise its own ceilings up to the absolute process deadline
-    # when its launch path genuinely needs longer (a WSL cold start outruns the
-    # default probe window); clamping a declared window to the default instead
-    # reports a healthy account as a failed one.
-    max_timeout_seconds = _ABSOLUTE_DEADLINE_SECONDS
+    # A real stage is unbounded: the model process runs until it ends, and the
+    # router's lease heartbeat keeps stage ownership alive while it does. An
+    # adapter may still opt into its own deadline by declaring a number here;
+    # None — the default — is a stage without a time limit.
+    timeout_seconds = None
+    # Probes stay bounded: the default window and default ceiling are 30 s,
+    # and an adapter may raise its own ceiling up to the probe limit when its
+    # launch path genuinely needs longer (a WSL cold start outruns the default
+    # probe window); clamping a declared window to the default instead reports
+    # a healthy account as a failed one.
     max_probe_timeout_seconds = 30
-    timeout_seconds = 300
     probe_timeout_seconds = 30
     probe_is_generative = False
 
     def __init__(self, runner=None) -> None:
         self.runner = runner if runner is not None else subprocess.run
-        # Class-declared values bypass __setattr__, so force them through it.
-        self.max_timeout_seconds = self.max_timeout_seconds
+        # Class-declared probe values bypass __setattr__, so force them through
+        # it; timeout_seconds needs no forcing — a stage is never clamped.
         self.max_probe_timeout_seconds = self.max_probe_timeout_seconds
-        self.timeout_seconds = self.timeout_seconds
         self.probe_timeout_seconds = self.probe_timeout_seconds
 
     def __setattr__(self, name, value) -> None:
-        if name in {"max_timeout_seconds", "max_probe_timeout_seconds"}:
-            value = min(value, _ABSOLUTE_DEADLINE_SECONDS)
-        elif name == "timeout_seconds":
-            value = min(value, self.max_timeout_seconds)
+        if name == "max_probe_timeout_seconds":
+            value = min(value, _MAX_PROBE_TIMEOUT_SECONDS)
         elif name == "probe_timeout_seconds":
             value = min(value, self.max_probe_timeout_seconds)
         super().__setattr__(name, value)

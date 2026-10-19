@@ -294,7 +294,6 @@ class DripEndpoint:
 class BillingModeTests(unittest.TestCase):
     def test_only_deepseek_is_api_billed(self):
         adapters = build_adapter_registry()
-
         self.assertEqual(
             [adapters[name].billing_mode for name in ("kimi", "zai", "grok")],
             ["subscription"] * 3,
@@ -326,6 +325,23 @@ class BillingModeTests(unittest.TestCase):
                 "deepseek",
             },
         )
+
+    def test_no_adapter_binds_a_timeout_to_the_stage(self):
+        """Stages run without a deadline; only health probes keep windows.
+
+        The 300 s stage ceiling starved every large design (2026-09-14);
+        bringing it back — as a default or a clamp — turns this red.
+        """
+        adapters = build_adapter_registry()
+
+        for name, adapter in adapters.items():
+            with self.subTest(adapter=name):
+                self.assertIsNone(adapter.timeout_seconds)
+        # The health probes keep their bounded windows exactly as they were.
+        self.assertEqual(adapters["muse"].probe_timeout_seconds, 120)
+        for name, adapter in adapters.items():
+            if name != "muse":
+                self.assertEqual(adapter.probe_timeout_seconds, 30)
 
 
 class KimiGrokTests(unittest.TestCase):
@@ -1248,15 +1264,13 @@ class ProbeFailureClassificationTests(unittest.TestCase):
         )
 
     def test_a_probe_timeout_is_a_failure_the_router_advances_past(self):
-        from subscriptions.router import _ADVANCING_FAILURES
-
         for name, (adapter, route) in self.probes().items():
             with self.subTest(adapter=name):
                 failure = adapter.probe(route).failure
-                # Exact identity, not membership: task_failure also advances
-                # now, so membership alone cannot catch a regression to it.
+                # Exact identity: the probe hit its own bounded window. Probes
+                # keep their deadlines (they are not stages); the health skip
+                # moves the stage to the next slot without any time bench.
                 self.assertIs(failure, FailureKind.TIMEOUT)
-                self.assertIn(failure, _ADVANCING_FAILURES)
 
 
 class ClaudeCommandTests(unittest.TestCase):

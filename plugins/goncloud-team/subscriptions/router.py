@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections import deque
 from dataclasses import replace
@@ -30,13 +31,14 @@ from .types import (
     SkippedRoute,
 )
 
-#: Failures that may advance to the next slot automatically.
+#: Failures that may advance to the next slot automatically. A stage timeout
+#: is NOT one of them and never can be again: stages have no deadline (owner,
+#: 2026-10-19), so no route may hand the stage to the next model "for time".
 _ADVANCING_FAILURES = {
     FailureKind.AUTH,
     FailureKind.QUOTA,
     FailureKind.RATE_LIMIT,
     FailureKind.MODEL_UNAVAILABLE,
-    FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
     FailureKind.INVALID_TERMINAL,
     # An executed attempt that delivered nothing usable (launch failure,
@@ -53,19 +55,15 @@ _BLOCK_AFTER_MUTATION = {
     FailureKind.TASK_FAILURE,
 }
 _QUOTA_COOLDOWN_MINUTES = 15
-# A hung endpoint (no output to its deadline) stays hung a while; cool it down
-# so a multi-stage workflow skips it instead of hanging the full deadline at
-# slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
-# cooldown, not health, is what bridges it.
-_TIMEOUT_COOLDOWN_MINUTES = 15
 # A throttle clears in seconds to a minute. Benching the primary account for
 # the quota window on one throttle pushed every later stage onto weaker
 # fallbacks until the chain ran out (kanban 2026-09-14..10-12).
 _RATE_LIMIT_COOLDOWN_MINUTES = 2
-#: How long an advancing failure benches the account for later stages.
+#: How long an advancing failure benches the account for later stages. A
+#: timeout has no bench: with no stage deadline there is no hung-at-the-
+#: deadline pattern to protect later stages from, and time never advances.
 _COOLDOWN_MINUTES = {
     FailureKind.QUOTA: _QUOTA_COOLDOWN_MINUTES,
-    FailureKind.TIMEOUT: _TIMEOUT_COOLDOWN_MINUTES,
     FailureKind.RATE_LIMIT: _RATE_LIMIT_COOLDOWN_MINUTES,
 }
 # Quota, connectivity and even credentials come back on their own, so a
@@ -73,9 +71,14 @@ _COOLDOWN_MINUTES = {
 # horizon the router may try the account again; only a successful real
 # inference lifts the quarantine, and a repeated failure re-arms it.
 _QUARANTINE_RETRY_SECONDS = 3600
-# Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
-# cleanup grace, and the bounded Git evidence reads after invocation.
+# Renew before every invoke AND from the lease heartbeat while an invocation
+# runs, so an unbounded stage never loses ownership while its vendor process
+# is alive. Between two synchronous renewals this must still cover the bounded
+# steps (probes, evidence reads, throttle sleeps).
 _STAGE_LEASE_SECONDS = 600
+# The heartbeat renews well inside the lease. If the router process dies, the
+# heartbeat dies with it and the lease expires on its own, exactly as before.
+_STAGE_LEASE_RENEWAL_SECONDS = 120
 #: Waits before each same-route retry of a throttle; their count is the retry
 #: budget. OpenClaw recovers throttles on the same model the same way.
 _RATE_LIMIT_BACKOFF_SECONDS = (20, 60)
@@ -195,6 +198,66 @@ class GitInspector:
         return current, files, bool(files or current != (baseline or revision))
 
 
+class _StageLeaseHeartbeat:
+    """Renew the stage lease in the background while one stage runs.
+
+    A stage without a deadline can outlive any fixed lease, so a daemon thread
+    renews it for as long as the invocation lasts and is stopped when the
+    stage ends (released in ``run``). If the router process dies, the thread
+    dies with it: nothing renews the lease and it expires on its own, so
+    another owner can claim the stage — the same recovery as before.
+    """
+
+    def __init__(
+        self,
+        store: SubscriptionStateStore,
+        workflow_id: str,
+        stage_id: str,
+        owner: str,
+        *,
+        lease_seconds: float,
+        interval: float,
+    ) -> None:
+        self._store = store
+        self._workflow_id = workflow_id
+        self._stage_id = stage_id
+        self._owner = owner
+        self._lease_seconds = lease_seconds
+        self._interval = interval
+        self._stop = threading.Event()
+        self.lost = False
+        self._thread = threading.Thread(
+            target=self._beat, name="stage-lease-heartbeat", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=30)
+
+    def _beat(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                renewed = self._store.renew_stage(
+                    self._workflow_id,
+                    self._stage_id,
+                    self._owner,
+                    self._lease_seconds,
+                )
+            except Exception:  # noqa: BLE001 - a store hiccup is not a lost stage
+                continue
+            if not renewed:
+                # Ownership is gone (the lease lapsed or another owner took
+                # over). Stop beating; every fenced write from here on fails
+                # the owner check, so the stage reports busy instead of
+                # fighting the new owner.
+                self.lost = True
+                return
+
+
 class SubscriptionRouter:
     """Compile the slot table, invoke adapters, and fail over durably."""
 
@@ -234,7 +297,19 @@ class SubscriptionRouter:
             request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
         ):
             return self._stage_busy()
+        heartbeat = _StageLeaseHeartbeat(
+            self.store,
+            request.workflow_id,
+            request.stage_id,
+            owner,
+            lease_seconds=_STAGE_LEASE_SECONDS,
+            interval=_STAGE_LEASE_RENEWAL_SECONDS,
+        )
         try:
+            # Inside the try: a thread that cannot start (a exhausted process
+            # out of threads) must release the stage, not hold the lease for
+            # its whole window with no one running the stage.
+            heartbeat.start()
             result = self._run_owned(request, routes, owner)
             if request.result_transform is not None and not (
                 result.adapter == "router"
@@ -246,6 +321,7 @@ class SubscriptionRouter:
                     return self._stage_busy()
             return sanitize_result(result, (request.prompt,))
         finally:
+            heartbeat.stop()
             self.store.release_stage(request.workflow_id, request.stage_id, owner)
 
     @staticmethod
@@ -824,7 +900,11 @@ class SubscriptionRouter:
         # A rejected envelope advances the slot but says nothing about the
         # account: the vendor answered. Keeping it ready avoids skipping the
         # primary position for the whole health window after one bad answer.
-        account_ready = failure not in _ADVANCING_FAILURES or failure in {
+        # A timeout is the opposite — nothing answered, something may hang —
+        # and it is never an advancing failure anymore (no stage deadline),
+        # so the ready-after-failure kinds are spelled out instead of derived
+        # from the advancing set.
+        account_ready = failure is None or failure in {
             # The vendor answered, so the account is fine: a rejected envelope
             # or a disabled/unknown model says nothing about account health.
             # Marking it unhealthy would skip the account on a later stage that
@@ -837,6 +917,8 @@ class SubscriptionRouter:
             # account either; a health bench here would skip every later
             # position sharing the adapter and undo the advance (2026-10-17).
             FailureKind.TASK_FAILURE,
+            # A refused request is also the vendor answering.
+            FailureKind.INVALID_REQUEST,
         }
         self.store.save_health(
             adapter,
