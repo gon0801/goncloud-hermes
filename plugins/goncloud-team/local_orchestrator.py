@@ -76,6 +76,14 @@ _CLOSEABLE_ROOT_STATUSES = frozenset(
 #: stopped outcome is only evidence while it is the file's last write.
 _STOPPED_DRIVER_OUTCOMES = frozenset({"paused", "blocked", "waiting", "error"})
 
+#: Outcomes that leave a mailbox event for claw (encargo H): every final or
+#: stop outcome a run can end with. "running" is the live mark, never an
+#: event — nobody wakes claw for a driver that is still talking.
+_AVISO_OUTCOMES = frozenset({"delivered", "blocked", "waiting", "paused", "error"})
+#: The mailbox event is a headline, not a report: bounded like the summary
+#: fields the terminal envelope already carries.
+MAX_AVISO_CHARS = 200
+
 #: Marker of the durable close receipt on the director root; a second close
 #: recognizes it instead of writing another comment.
 _CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
@@ -129,7 +137,9 @@ MAX_INSTRUCTION_CHARS = 32768
 
 #: The detached driver: only paths and identifiers reach it through argv, it
 #: prints nothing (vendor diagnostics are not a public channel) and writes one
-#: bounded JSON result atomically for goncloud_local_status to read.
+#: bounded JSON result atomically for goncloud_local_status to read; when it
+#: dies before the run starts it also drops the mailbox error event so claw
+#: still hears about the stop (encargo H).
 # The driver runs isolated (-I), so it sees none of the launcher's packages.
 # Hermes now selects its third-party dependencies at boot (hermes_bootstrap ->
 # pm.environments.activate_dependencies); without that step the plugin import
@@ -137,7 +147,7 @@ MAX_INSTRUCTION_CHARS = 32768
 # attempts (live 2026-10-17, t_220bd43c). The imports sit inside the try so an
 # unloadable driver still leaves a bounded error result instead of vanishing.
 _DRIVER_BOOTSTRAP = (
-    "import json, os, sys\n"
+    "import json, os, sys, time\n"
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "sys.path.insert(0, hermes)\n"
@@ -157,6 +167,26 @@ _DRIVER_BOOTSTRAP = (
     "with open(tmp, 'w', encoding='utf-8') as handle:\n"
     "    json.dump(result, handle, ensure_ascii=True)\n"
     "os.replace(tmp, out)\n"
+    "# The error outcome leaves the mailbox event too (encargo H): the run_id\n"
+    "# segment is the fixed 'boot' because the run never started, so repeated\n"
+    "# broken launches overwrite one event instead of spamming claw. Best\n"
+    "# effort only — the result file above is the evidence that must survive.\n"
+    "try:\n"
+    "    hogar = os.path.dirname(os.path.dirname(out))\n"
+    "    if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
+    "        hogar = os.path.dirname(os.path.dirname(hogar))\n"
+    "    avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
+    "    os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
+    "    nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
+    "    parcial = nombre + '.%d.tmp' % os.getpid()\n"
+    "    evento = {'workflow_id': workflow_id, 'outcome': 'error',\n"
+    "              'motivo': result['error'],\n"
+    "              'fecha': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+    "    with open(parcial, 'w', encoding='utf-8') as handle:\n"
+    "        json.dump(evento, handle, ensure_ascii=True)\n"
+    "    os.replace(parcial, nombre)\n"
+    "except OSError:\n"
+    "    pass\n"
 )
 
 
@@ -195,6 +225,88 @@ def _running_mark(workflow_id, run_id):
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def _home_raiz(home):
+    """One mailbox for every profile: a profile home climbs to the root.
+
+    Same rule the raices store applies (raices.hogar, hermes_constants): the
+    driver runs under whichever profile launched the chain while the cron
+    despertar-raices runs under default, so writer and reader meet only at
+    the Hermes root.
+    """
+    return home.parent.parent if home.parent.name == "profiles" else home
+
+
+def _etapa_y_motivo(report):
+    """The stage that explains a stopped chain, in its own words when it has.
+
+    Every model-supplied word here went through the terminal envelope's
+    sanitizer inside status(); the fixed fallbacks are constants.
+    """
+    outcome = report["outcome"]
+    if outcome == "delivered":
+        entrega = report.get("stages", {}).get("entrega") or {}
+        return None, (entrega.get("terminal") or {}).get("summary") or ""
+    if outcome == "blocked":
+        for group in ("stages", "corrective_stages"):
+            for role, stage in report.get(group, {}).items():
+                if stage.get("status") == "blocked":
+                    terminal = (stage.get("terminal") or {}).get("summary") or ""
+                    return role, terminal or "stage blocked; owner review required."
+        return None, "the chain stopped blocked; owner review required."
+    pending = next(
+        (
+            role
+            for group in ("stages", "corrective_stages")
+            for role, stage in report.get(group, {}).items()
+            if stage.get("status") not in {"done", "blocked"}
+        ),
+        None,
+    )
+    if outcome == "waiting":
+        return pending, "a stage waits on its parents."
+    if outcome == "paused":
+        return pending, "paused at its stop_after checkpoint."
+    return None, "the driver failed; check the durable status."
+
+
+def _aviso_evento(report, *, repo, instruction):
+    """One bounded mailbox event: what stopped, where, why, and the ask."""
+    etapa, motivo = _etapa_y_motivo(report)
+    return {
+        "workflow_id": report["workflow_id"],
+        "repo": repo or None,
+        "outcome": report["outcome"],
+        "etapa": etapa,
+        "motivo": _trimmed(_sanitize(motivo), MAX_AVISO_CHARS),
+        "instruccion": _trimmed(_sanitize(instruction), MAX_AVISO_CHARS),
+        "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _write_aviso(
+    workflow_id, run_id, outcome, report, *, home, repo="", instruction=""
+):
+    """Drop the run's mailbox event for the cron despertar-raices to drain.
+
+    Same atomic publish as the result file, and idempotent by name: the run
+    id in the file name makes a rewrite of the same stop overwrite itself,
+    never pile up.
+    """
+    if outcome not in _AVISO_OUTCOMES:
+        return
+    event = _aviso_evento(
+        {**report, "outcome": outcome, "workflow_id": workflow_id},
+        repo=repo,
+        instruction=instruction,
+    )
+    avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
+    avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
+    name = f"{workflow_id}-{run_id}-{outcome}.json"
+    tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
+    tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
+    os.replace(tmp, avisos / name)
 
 
 # Vendors differ on whether they break the line before the opening fence, so the
@@ -879,7 +991,7 @@ class LocalOrchestrator:
         )
         return output
 
-    def _report(self, workflow_id, outcome, *, home=None, run_id=None):
+    def _report(self, workflow_id, outcome, *, home=None, run_id=None, contract=None):
         report = {**self.status(workflow_id), "outcome": outcome}
         if run_id is None:
             return report
@@ -888,6 +1000,18 @@ class LocalOrchestrator:
         # reads (live review F8).
         report["run_id"] = run_id
         _write_result(workflow_id, report, home=home)
+        # The mailbox event rides the same stop the result file records, so
+        # the cron despertar-raices can tell claw with zero model calls —
+        # nobody polls, nobody watches a model (encargo H).
+        _write_aviso(
+            workflow_id,
+            run_id,
+            outcome,
+            report,
+            home=home,
+            repo=(contract or {}).get("repository", ""),
+            instruction=(contract or {}).get("instruction", ""),
+        )
         return report
 
     def _approved(self, state):
@@ -915,7 +1039,9 @@ class LocalOrchestrator:
         _write_result(workflow_id, _running_mark(workflow_id, run_id), home=home)
 
         def report(outcome):
-            return self._report(workflow_id, outcome, home=home, run_id=run_id)
+            return self._report(
+                workflow_id, outcome, home=home, run_id=run_id, contract=contract
+            )
 
         while True:
             state = service.status(workflow_id=workflow_id)

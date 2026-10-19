@@ -592,6 +592,33 @@ class DriverBootstrapTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "error")
                 self.assertEqual(result["workflow_id"], "t_boot")
 
+    def test_an_unloadable_driver_also_leaves_the_mailbox_error_event(self):
+        # Encargo H: the error stop reaches claw through the mailbox too.
+        # The run never started, so the run segment is the fixed "boot" and
+        # a repeated broken launch overwrites the same event instead of
+        # piling up. The out path mirrors the production shape (nested under
+        # goncloud-local) because the bootstrap derives the mailbox from it.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        # Production always launches into a directory the running mark
+        # already created; the bootstrap never had to make it.
+        self.out.parent.mkdir()
+        for _ in range(2):
+            self.out.unlink(missing_ok=True)
+            self.run_driver()
+
+        avisos = self.root / "goncloud-local" / "avisos"
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.json"],
+        )
+        event = json.loads(
+            (avisos / "t_boot-boot-error.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(event["workflow_id"], "t_boot")
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["motivo"], "local driver failed; check durable status")
+        self.assertTrue(event["fecha"])
+
     def test_a_hermes_tree_without_a_bootstrap_still_drives(self):
         # Older Hermes trees have no hermes_bootstrap; the driver must not
         # turn its absence into a failure.
@@ -622,6 +649,12 @@ class _OrchestratorHarness(unittest.TestCase):
         )
         subscriptions.start()
         self.addCleanup(subscriptions.stop)
+        # The mailbox (encargo H) and the result file follow HERMES_HOME when
+        # resume runs without an explicit home; pin it to the mount so a run
+        # never drops either into the machine's real Hermes home.
+        hermes_home = patch.dict(os.environ, {"HERMES_HOME": str(self.root)})
+        hermes_home.start()
+        self.addCleanup(hermes_home.stop)
         self.requests = []
         self.responses = {}
         self.reviews = []
@@ -2237,6 +2270,149 @@ class LocalCloseTests(_OrchestratorHarness):
             max_steps=5,
         )
         self.assertNotEqual(created["workflow_id"], root_id)
+
+
+class AvisoMailboxTests(_OrchestratorHarness):
+    """Encargo H: every stop a run lands leaves one mailbox event, redacted.
+
+    The cron despertar-raices drains the mailbox and tells claw with zero
+    model calls; these tests pin the writer side: one event per stopped run,
+    bounded and sanitized words, nothing for a live "running" mark.
+    """
+
+    def avisos(self):
+        return self.root / "goncloud-local" / "avisos"
+
+    def read_event(self, name):
+        return json.loads((self.avisos() / name).read_text(encoding="utf-8"))
+
+    def test_a_blocked_run_leaves_one_mailbox_event(self):
+        self.responses["implementer"] = fenced(
+            envelope(
+                status="blocked",
+                summary="Missing credentials for the Odoo login.",
+                evidence=["login step refused: 2fa"],
+            )
+        )
+        result = self.start()
+        self.assertEqual(result["outcome"], "blocked")
+        name = f"{result['workflow_id']}-{result['run_id']}-blocked.json"
+        event = self.read_event(name)
+        self.assertEqual(
+            set(event),
+            {
+                "workflow_id",
+                "repo",
+                "outcome",
+                "etapa",
+                "motivo",
+                "instruccion",
+                "fecha",
+            },
+        )
+        self.assertEqual(event["workflow_id"], result["workflow_id"])
+        self.assertEqual(event["repo"], str(self.repo.resolve()))
+        self.assertEqual(event["outcome"], "blocked")
+        self.assertEqual(event["etapa"], "implementer")
+        self.assertEqual(event["motivo"], "Missing credentials for the Odoo login.")
+        self.assertEqual(
+            event["instruccion"],
+            "Inspect this repository without external actions.",
+        )
+        self.assertTrue(event["fecha"])
+
+    def test_a_key_shaped_reason_reaches_the_mailbox_redacted(self):
+        token = "ghp_Abc123Def456Ghi789"
+        self.responses["implementer"] = fenced(
+            envelope(status="blocked", summary=f"push refused for {token}")
+        )
+        result = self.start()
+        name = f"{result['workflow_id']}-{result['run_id']}-blocked.json"
+        raw = (self.avisos() / name).read_text(encoding="utf-8")
+        self.assertNotIn(token, raw)
+        self.assertIn("[redacted]", self.read_event(name)["motivo"])
+
+    def test_a_delivered_run_leaves_one_mailbox_event(self):
+        result = self.start()
+        self.assertEqual(result["outcome"], "delivered")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+        )
+        self.assertEqual(event["outcome"], "delivered")
+        self.assertIsNone(event["etapa"])
+        self.assertEqual(event["repo"], str(self.repo.resolve()))
+        # One run, one event: resuming the delivered chain writes nothing new.
+        self.assertEqual(len(list(self.avisos().iterdir())), 1)
+
+    def test_a_waiting_run_names_the_pending_stage(self):
+        first = self.start(stop_after="scout")
+        self.service("ingenieria").consult(
+            task_id=first["stages"]["ingenieria"]["id"],
+            target_role="scout",
+            question="Verify dependency evidence.",
+            request_key="peer-1",
+        )
+        result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "waiting")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-waiting.json"
+        )
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(event["motivo"], "a stage waits on its parents.")
+
+    def test_a_paused_checkpoint_leaves_its_own_event(self):
+        result = self.start(stop_after="scout")
+        self.assertEqual(result["outcome"], "paused")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-paused.json"
+        )
+        self.assertEqual(event["outcome"], "paused")
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(event["motivo"], "paused at its stop_after checkpoint.")
+
+    def test_a_running_outcome_never_writes_an_event(self):
+        first = self.start(stop_after="scout")
+        before = {p.name for p in self.avisos().iterdir()}
+        self.assertTrue(any(name.endswith("paused.json") for name in before))
+        self.orchestrator._report(
+            first["workflow_id"], "running", home=self.root, run_id="liverun"
+        )
+        self.assertEqual({p.name for p in self.avisos().iterdir()}, before)
+
+    def test_the_event_is_idempotent_by_name(self):
+        first = self.start(stop_after="scout")
+        report = {"outcome": "paused", "workflow_id": first["workflow_id"]}
+        name = f"{first['workflow_id']}-same-run-paused.json"
+        for _ in range(2):
+            local_orchestrator_module._write_aviso(
+                first["workflow_id"],
+                "same-run",
+                "paused",
+                report,
+                home=self.root,
+                repo="owner/repo",
+                instruction="i",
+            )
+            # The chain's own checkpoint event stays untouched beside it.
+            self.assertEqual(
+                [p.name for p in self.avisos().iterdir() if "same-run" in p.name],
+                [name],
+            )
+
+    def test_a_profile_home_climbs_to_the_root_mailbox(self):
+        first = self.start(stop_after="scout")
+        profile = self.root / "profiles" / "claw"
+        result = self.orchestrator.resume(first["workflow_id"], home=profile)
+        self.assertEqual(result["outcome"], "delivered")
+        # The writer's home is the profile; the event lands at the root,
+        # where the cron in the default profile reads it.
+        self.assertTrue(
+            (
+                self.avisos()
+                / f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+            ).exists()
+        )
+        self.assertFalse((profile / "goncloud-local" / "avisos").exists())
 
 
 class LocalCloseHandlerTests(_OrchestratorHarness):
