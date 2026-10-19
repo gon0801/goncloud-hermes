@@ -95,6 +95,14 @@ TOPE_FICHA = 1500
 # Herramientas de claw cuyo uso es un despacho (correcciones del ruteo).
 HERRAMIENTA_CADENA = "goncloud_local_run"
 HERRAMIENTA_TARJETA = "kanban_create"
+# Trabajo real hecho por claw sin despachar: unica senal verificable de que "lo
+# resolvio solo". Una aclaracion o un turno cortado no cuentan.
+HERRAMIENTAS_TRABAJO = frozenset(
+    {"terminal", "execute_code", "write_file", "patch", "process", "send_message",
+     "web_search", "web_extract"}
+)
+PREFIJO_TRABAJO = "browser_"
+TURNOS_PENDIENTE = 3  # turnos que una sugerencia sin desenlace espera el despacho
 
 # Lo que corre dentro del hijo (venv de uv o PYTHONPATH del respaldo): una
 # sola consulta, salida JSON minima sin roster ni cuerpos de skills.
@@ -361,7 +369,8 @@ class JevAuto:
         self._ultima: dict = {}  # session_id -> (herramienta, repeticiones)
         self._bucles_turno: dict = {}  # session_id -> consultas de bucle del turno
         self._cierres_fin: set = set()  # turnos que ya evaluaron quedo/seguir/bloqueado
-        self._correcciones: dict = {}  # session_id -> {texto, sugerido, despachos}
+        self._correcciones: dict = {}  # session_id -> {texto, sugerido, despachos, ...}
+        self._turno_de: dict = {}  # session_id -> turn_id de la ultima herramienta
         self.hilos: list = []  # hilos de fondo (bucle, fin); las pruebas los esperan
 
     def _nuevo_turno(self, session_id: str) -> None:
@@ -453,6 +462,10 @@ class JevAuto:
         clave, secretos = self.decisor.resuelva()
         hilos: list = []
         casillas: list = []
+        if llave:
+            # Un encargo nuevo reemplaza a la sugerencia pendiente: el trabajo
+            # de ahora no se le atribuye a un texto anterior.
+            self._correcciones.pop(llave[0], None)
 
         def lanzar(tarea):
             casilla: list = []
@@ -479,6 +492,8 @@ class JevAuto:
                     "texto": texto,
                     "sugerido": decision.opcion,
                     "despachos": [],
+                    "trabajo": False,
+                    "turnos": 0,
                     "secretos": (*secretos, clave),
                 }
             return linea_ruteo(decision)
@@ -547,9 +562,16 @@ class JevAuto:
         sesion = str(kwargs.get("session_id") or "")
         if not herramienta or self.decisor is None:
             return
+        turno = str(kwargs.get("turn_id") or "")
+        if turno and self._turno_de.get(sesion) != turno:
+            # Fuera de chat (cron/CLI) no corre _nuevo_turno: el turno nuevo
+            # se detecta aqui y reinicia herramienta previa y tope.
+            self._turno_de[sesion] = turno
+            self._nuevo_turno(sesion)
         previa, veces = self._ultima.get(sesion, (None, 0))
         veces = veces + 1 if previa == herramienta else 1
         self._ultima[sesion] = (herramienta, veces)
+        self._podar()
         if veces < 2:
             return
         if self._bucles_turno.get(sesion, 0) >= TOPE_BUCLES_POR_TURNO:
@@ -593,6 +615,10 @@ class JevAuto:
                 asignado = str(args.get("assignee") or "").strip()
                 if asignado in ESPECIALISTAS:
                     registro["despachos"].append(asignado)
+            elif herramienta in HERRAMIENTAS_TRABAJO or str(herramienta).startswith(
+                PREFIJO_TRABAJO
+            ):
+                registro["trabajo"] = True
         except Exception:
             pass
         return None
@@ -600,24 +626,51 @@ class JevAuto:
     def post_llm_call(self, **kwargs):
         """Fin del turno: aprende de la correccion y evalua quedo/seguir/bloqueado."""
         try:
-            self._cerrar_correccion(str(kwargs.get("session_id") or ""))
+            self._cerrar_correccion(
+                str(kwargs.get("session_id") or ""), kwargs.get("assistant_response")
+            )
             self._evaluar_fin(kwargs)
         except Exception:
             pass
         return None
 
-    def _cerrar_correccion(self, sesion: str) -> None:
-        """JEV sugirio X: si claw despacho a Y, o lo resolvio solo, se guarda."""
-        registro = self._correcciones.pop(sesion, None)
+    @staticmethod
+    def _termino_solo(registro: dict, respuesta) -> bool:
+        """Trabajo comprobable sin despachar: herramienta de trabajo ok y una
+        respuesta final que no pregunta. Aclarar o cortarse no es resolver."""
+        return (
+            bool(registro["trabajo"])
+            and isinstance(respuesta, str)
+            and bool(respuesta.strip())
+            and "?" not in respuesta[-300:]
+        )
+
+    def _cerrar_correccion(self, sesion: str, respuesta=None) -> None:
+        """JEV sugirio X: se guarda solo con evidencia de otro desenlace.
+
+        Despacho distinto -> correcto = ese despacho. Sin despacho: solo si
+        claw termino el trabajo el mismo (`_termino_solo`). Si no hay
+        evidencia (aclaracion, turno cortado) el registro sigue pendiente para
+        enlazar el despacho de un turno posterior, y expira a los
+        TURNOS_PENDIENTE turnos sin desenlace.
+        """
+        registro = self._correcciones.get(sesion)
         if registro is None or self.perfil != DIRECTOR:
             return
         sugerido, despachos = registro["sugerido"], registro["despachos"]
-        if not despachos:
-            correcto = DIRECTOR  # lo resolvio solo
-        elif sugerido in despachos:
-            return
-        else:
+        if despachos:
             correcto = despachos[0]
+            if sugerido in despachos:
+                self._correcciones.pop(sesion, None)
+                return
+        elif self._termino_solo(registro, respuesta):
+            correcto = DIRECTOR
+        else:
+            registro["turnos"] += 1
+            if registro["turnos"] >= TURNOS_PENDIENTE:
+                self._correcciones.pop(sesion, None)
+            return
+        self._correcciones.pop(sesion, None)
         if correcto != sugerido:
             guardar_correccion(
                 self._casa(), registro["texto"], sugerido, correcto, registro["secretos"]
@@ -719,6 +772,15 @@ class JevAuto:
             self._clasificados.pop(next(iter(self._clasificados)))
         while len(self._correcciones) > 16:
             self._correcciones.pop(next(iter(self._correcciones)))
+        for libro in (
+            self._lineas,
+            self._avisos,
+            self._ultima,
+            self._bucles_turno,
+            self._turno_de,
+        ):
+            while len(libro) > 16:
+                libro.pop(next(iter(libro)))
 
     def _registrar(self, veredicto: dict, texto: str, kwargs: dict, plataforma: str):
         """Una linea JSONL por consulta: sin mensaje, sin llave, sin excusas."""
@@ -794,7 +856,9 @@ class JevEtapa:
             tipo, modo = self.decisor.clasificar(
                 texto, clave=clave, secretos=secretos, crudo=len(instruccion)
             )
-            return linea_clasificacion(tipo, modo)
+            linea = linea_clasificacion(tipo, modo)
+            # Etapa sin respuesta de JEV: sin linea (ruido para la etapa).
+            return "" if "no respondió" in linea else linea
         except Exception:
             return ""
 

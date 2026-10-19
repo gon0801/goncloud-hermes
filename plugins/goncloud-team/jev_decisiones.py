@@ -101,6 +101,8 @@ BUCLE = {
 }
 UMBRAL_BUCLE = 0.9
 N_EJEMPLOS = 15
+TOPE_CORRECCIONES = 200  # lineas del archivo; pasado esto se rota
+TOPE_CORRECCIONES_TRAS_ROTAR = 100
 TOPE_INPUT = 200
 CIERRES = {
     "quedo": "el resultado resuelve lo pedido y la evidencia lo respalda; se da por cerrado",
@@ -564,9 +566,24 @@ def guardar_correccion(
         ruta.parent.mkdir(parents=True, exist_ok=True)
         with ruta.open("a", encoding="utf-8", newline="\n") as archivo:
             archivo.write(json.dumps(linea, ensure_ascii=False, sort_keys=True) + "\n")
+        _acotar_archivo(ruta)
         return True
     except Exception:
         return False  # aprender es un apoyo: jamas rompe el turno
+
+
+def _acotar_archivo(ruta: Path) -> None:
+    """El archivo no crece sin fin: pasado el tope se queda con las ultimas."""
+    with contextlib.suppress(Exception):
+        lineas = ruta.read_text(encoding="utf-8").splitlines()
+        if len(lineas) > TOPE_CORRECCIONES:
+            temporal = ruta.with_suffix(".tmp")
+            temporal.write_text(
+                "\n".join(lineas[-TOPE_CORRECCIONES_TRAS_ROTAR:]) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            os.replace(temporal, ruta)
 
 
 def leer_correcciones(hogar, n: int = N_EJEMPLOS) -> list:

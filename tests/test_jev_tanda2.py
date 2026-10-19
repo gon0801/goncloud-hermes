@@ -32,8 +32,6 @@ TELEGRAM_ENVUELTO = (
     "[Gon] revisa las ordenes flex para hoy y las recolecciones\n"
     "JEV skill_select: ninguna\n"
     "Jev sugiere: amazon (0.91)\n"
-    "System: el turno corre en telegram\n"
-    "2026-10-19 08:15 CST\n"
 )
 
 
@@ -263,6 +261,29 @@ class DetectorDeBucleTests(Base):
         self.assertEqual(len(jev.llamadas), jev_auto.TOPE_BUCLES_POR_TURNO)
 
 
+class BucleFueraDeChatTests(Base):
+    def test_un_turno_nuevo_reinicia_el_tope_sin_pre_llm_call(self):
+        jev = Falso({"bucle": ("avanza", 0.99)})
+        auto = self.auto("claw", jev)
+        for turno_id in ("c1", "c2"):
+            for _ in range(10):
+                auto.pre_tool_call(
+                    tool_name="x", args={}, session_id="cron", turn_id=turno_id
+                )
+        self.esperar(auto)
+        self.assertEqual(len(jev.llamadas), 2 * jev_auto.TOPE_BUCLES_POR_TURNO)
+
+    def test_los_libros_de_bucle_no_crecen_sin_tope(self):
+        auto = self.auto("claw", Falso({"bucle": ("avanza", 0.99)}))
+        for n in range(40):
+            auto.pre_tool_call(
+                tool_name="x", args={}, session_id=f"s{n}", turn_id="t"
+            )
+        self.esperar(auto)
+        self.assertLessEqual(len(auto._ultima), 16)
+        self.assertLessEqual(len(auto._bucles_turno), 16)
+
+
 class TextoLimpioTests(unittest.TestCase):
     def test_un_mensaje_de_telegram_envuelto_queda_en_lo_que_escribio_david(self):
         self.assertEqual(
@@ -311,7 +332,58 @@ class TextoLimpioTests(unittest.TestCase):
             self.assertEqual(entrada["input"], ENCARGO)
             self.assertEqual(entrada["rawLen"], len(TELEGRAM_ENVUELTO))
             self.assertNotIn("Replying", jev.llamadas[0][0])
-            self.assertNotIn("System:", jev.llamadas[0][0])
+
+
+class TextoNoVaciaMensajesRealesTests(unittest.TestCase):
+    """Un mensaje real de David jamas se pierde por parecer un envoltorio."""
+
+    def test_mensajes_reales_que_antes_quedaban_vacios_se_conservan(self):
+        for real in (
+            "Fecha de entrega de las recolecciones de Seller Flex: ya salio?",
+            "Date range de la consulta de ordenes: ultimos 30 dias",
+            "Time out al conectar por SSH al server gonserver",
+            "System: el servidor de pagos esta caido, revisalo",
+        ):
+            with self.subTest(real=real):
+                self.assertEqual(jev_texto.limpiar(real), real)
+
+    def test_un_contexto_con_bloque_de_codigo_de_david_se_conserva(self):
+        real = "Te paso el contexto:\n```\nerror 500 en /pagos\n```\nrevisalo"
+        self.assertEqual(jev_texto.limpiar(real), real)
+
+    def test_el_encabezado_exacto_del_gateway_si_se_quita(self):
+        bruto = (
+            "Conversation info (untrusted metadata):\n```json\n"
+            '{"chat_id": "1"}\n```\nrevisa el reporte de ventas de hoy'
+        )
+        self.assertEqual(
+            jev_texto.limpiar(bruto), "revisa el reporte de ventas de hoy"
+        )
+
+    def test_replying_to_multilinea_se_quita_completo(self):
+        bruto = (
+            '[Replying to: "primera linea de la cita\nsegunda linea\ntercera"]\n'
+            "[Gon] manda el reporte de promos de Gmail"
+        )
+        self.assertEqual(
+            jev_texto.limpiar(bruto), "manda el reporte de promos de Gmail"
+        )
+
+    def test_si_solo_hay_envoltorio_se_usa_el_texto_original(self):
+        self.assertEqual(
+            jev_texto.limpiar("JEV skill_select: ninguna"),
+            "JEV skill_select: ninguna",
+        )
+
+    def test_mensaje_real_con_fecha_y_envoltorio_conserva_la_fecha(self):
+        bruto = (
+            '[Replying to: "ya?"]\n'
+            "Fecha de entrega de las recolecciones de Seller Flex: cuando sale?"
+        )
+        self.assertEqual(
+            jev_texto.limpiar(bruto),
+            "Fecha de entrega de las recolecciones de Seller Flex: cuando sale?",
+        )
 
 
 class TextosCortosTests(Base):
@@ -370,12 +442,100 @@ class CorreccionesTests(Base):
         (c,) = self.filas("claw", "correcciones.jsonl")
         self.assertEqual((c["sugerido"], c["correcto"]), ("claw", "ingenieria"))
 
-    def test_lo_resolvio_solo_el_correcto_es_claw(self):
+    def test_lo_resolvio_solo_con_trabajo_comprobable_el_correcto_es_claw(self):
         auto, _ = self.claw()
         auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={"command": "ls"}, session_id="s1", status="ok"
+        )
         auto.post_llm_call(**turno(assistant_response="Ya lo revise yo: todo ok."))
         (c,) = self.filas("claw", "correcciones.jsonl")
         self.assertEqual((c["sugerido"], c["correcto"]), ("amazon", "claw"))
+
+    def test_una_aclaracion_sin_despacho_no_guarda_correccion_falsa(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_llm_call(**turno(assistant_response="Para que pais lo reviso?"))
+        self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
+        self.assertIn("s1", auto._correcciones)  # sigue pendiente
+
+    def test_un_turno_cortado_sin_respuesta_ni_despacho_no_guarda(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={}, session_id="s1", status="ok"
+        )
+        auto.post_llm_call(**turno(assistant_response=""))
+        self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
+
+    def test_trabajo_con_una_pregunta_final_no_es_resolverlo_solo(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_tool_call(
+            tool_name="terminal", args={}, session_id="s1", status="ok"
+        )
+        auto.post_llm_call(**turno(assistant_response="Encontre dos, cual uso?"))
+        self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
+
+    def test_aclaracion_y_despacho_posterior_a_lo_sugerido_no_genera_correccion(self):
+        # "MX" (<15 caracteres) no abre un registro nuevo: el despacho del
+        # turno siguiente se enlaza a la sugerencia original.
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_llm_call(**turno(assistant_response="Para que pais?"))
+        auto.pre_llm_call(**turno(turn_id="t2", user_message="MX"))
+        auto.post_tool_call(
+            tool_name="kanban_create", args={"assignee": "amazon"}, session_id="s1"
+        )
+        auto.post_llm_call(
+            **turno(turn_id="t2", user_message="MX", assistant_response="Listo.")
+        )
+        self.assertEqual(self.filas("claw", "correcciones.jsonl"), [])
+        self.assertNotIn("s1", auto._correcciones)
+
+    def test_aclaracion_y_despacho_posterior_distinto_se_enlaza_al_texto_original(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_llm_call(**turno(assistant_response="Para que pais?"))
+        auto.pre_llm_call(**turno(turn_id="t2", user_message="MX"))
+        auto.post_tool_call(
+            tool_name="kanban_create", args={"assignee": "meli"}, session_id="s1"
+        )
+        auto.post_llm_call(
+            **turno(turn_id="t2", user_message="MX", assistant_response="Listo.")
+        )
+        (c,) = self.filas("claw", "correcciones.jsonl")
+        self.assertEqual(c["texto"], ENCARGO)
+        self.assertEqual((c["sugerido"], c["correcto"]), ("amazon", "meli"))
+
+    def test_la_sugerencia_sin_desenlace_expira_a_los_3_turnos(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        for n in range(jev_auto.TURNOS_PENDIENTE):
+            self.assertIn("s1", auto._correcciones)
+            auto.post_llm_call(**turno(turn_id=f"c{n}", assistant_response="Y?"))
+        self.assertNotIn("s1", auto._correcciones)
+
+    def test_un_encargo_nuevo_reemplaza_la_sugerencia_pendiente(self):
+        auto, _ = self.claw()
+        auto.pre_llm_call(**turno())
+        auto.post_llm_call(**turno(assistant_response="Para que pais?"))
+        auto.pre_llm_call(
+            **turno(turn_id="t2", user_message="otro encargo distinto, largo")
+        )
+        self.assertEqual(
+            auto._correcciones["s1"]["texto"], "otro encargo distinto, largo"
+        )
+
+    def test_el_archivo_de_correcciones_se_rota_en_vez_de_crecer_sin_tope(self):
+        casa = self.hogar("claw")
+        for i in range(jev_decisiones.TOPE_CORRECCIONES + 5):
+            jev_decisiones.guardar_correccion(casa, f"encargo {i}", "claw", "odoo")
+        filas = self.filas("claw", "correcciones.jsonl")
+        self.assertLessEqual(len(filas), jev_decisiones.TOPE_CORRECCIONES)
+        self.assertEqual(
+            filas[-1]["texto"], f"encargo {jev_decisiones.TOPE_CORRECCIONES + 4}"
+        )
 
     def test_si_despacho_a_lo_sugerido_no_hay_correccion(self):
         auto, _ = self.claw()
@@ -476,8 +636,10 @@ class EtapasDeLaCadenaTests(Base):
         etapa = jev_auto.JevEtapa(
             jev_decisiones.Decisor(self.hogar("claw"), llamar=jev)
         )
-        self.assertEqual(etapa.sugerir("Arregla el bridge de OpenClaw que falla", "scout"),
-                         "Jev sugiere: no respondió, decide tú")
+        # sin respuesta de JEV la etapa no recibe ni la linea de "no respondio"
+        self.assertEqual(
+            etapa.sugerir("Arregla el bridge de OpenClaw que falla", "scout"), ""
+        )
         etapa.cerrar("Arregla el bridge", "scout", {"status": "completed"})  # no lanza
 
     def test_el_cierre_de_etapa_se_registra(self):
