@@ -308,6 +308,7 @@ class SubscriptionAdapter:
         *,
         evidence: tuple[str, ...] = (),
         returncode: int | None = None,
+        channel_labels: tuple[str, ...] = ("stderr", "stream"),
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
         # The durable attempt detail keeps the vendor's own answer: the class,
@@ -324,7 +325,7 @@ class SubscriptionAdapter:
             parts.append(detail)
         parts.extend(
             f"{label} tail: {redact_text((channel or '')[-_DETAIL_TAIL_CHARS:])}"
-            for label, channel in zip(("stderr", "stream"), evidence)
+            for label, channel in zip(channel_labels, evidence)
             if channel
         )
         # Diagnostics are not a public evidence channel, even after redaction;

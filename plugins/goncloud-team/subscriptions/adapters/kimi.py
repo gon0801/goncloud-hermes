@@ -264,7 +264,12 @@ class KimiAdapter(SubscriptionAdapter):
                     billing_mode=route.billing_mode,
                     session_id=parsed["session_id"] or "",
                 )
-            return self._failed_result(route, FailureKind.TASK_FAILURE)
+            return self._failed_result(
+                route,
+                FailureKind.TASK_FAILURE,
+                evidence=(evidence.stderr, evidence.stream),
+                returncode=evidence.returncode,
+            )
         failure = classify_failure(
             evidence.returncode, evidence.stream, evidence.stderr
         )

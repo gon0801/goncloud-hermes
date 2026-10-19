@@ -484,8 +484,15 @@ class KimiGrokTests(unittest.TestCase):
 
         self.assertFalse(exit_zero.success)
         self.assertEqual(exit_zero.failure, FailureKind.TASK_FAILURE)
+        # Exit 0 with an invalid terminal keeps the same evidence contract as
+        # a failing exit: the stream line that broke the turn stays in detail.
+        self.assertIn("exit 0", exit_zero.detail)
+        self.assertIn("turn.step.retrying", exit_zero.detail)
+        self.assertIn("APIConnectionError", exit_zero.detail)
         self.assertFalse(exit_one.success)
         self.assertEqual(exit_one.failure, FailureKind.TRANSPORT)
+        self.assertIn("exit 1", exit_one.detail)
+        self.assertIn("turn.step.retrying", exit_one.detail)
 
     def test_kimi_connection_error_is_transport_failure(self):
         result = KimiAdapter(
@@ -1079,6 +1086,26 @@ class HttpAdapterTests(unittest.TestCase):
                 route_for("deepseek", "deepseek-flash", billing="api"),
             )
         self.assertEqual(result.failure, FailureKind.QUOTA)
+
+    def test_http_failure_evidence_names_the_http_response_channel(self):
+        # The single channel is the response body; stderr/stream labels would
+        # describe a process that never ran.
+        with FakeEndpoint(
+            status=429, body='{"error":{"message":"rate limit"}}'
+        ) as endpoint:
+            result = DeepSeekAdapter(
+                api_key=DEEPSEEK_FIXTURE_KEY, base_url=endpoint.url
+            ).invoke(
+                request(self.workspace),
+                route_for("deepseek", "deepseek-flash", billing="api"),
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
+        self.assertIn("http response tail:", result.detail)
+        self.assertIn("rate limit", result.detail)
+        self.assertNotIn("stderr tail:", result.detail)
+        self.assertNotIn("stream tail:", result.detail)
 
     def test_deepseek_probe_uses_non_generative_models_list(self):
         with FakeEndpoint(body='{"data":[{"id":"deepseek-flash"}]}') as endpoint:

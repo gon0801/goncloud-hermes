@@ -771,7 +771,9 @@ class SubscriptionRouter:
             owner=owner,
             success=result.success,
             failure=result.failure.value if result.failure else None,
-            detail=result.text,
+            # Keep the whole record: the public line plus the diagnostics
+            # recovered from the attempt, never the diagnostics alone.
+            detail="\n".join(part for part in (result.text, result.detail) if part),
             session_id=result.session_id,
         ):
             return self._stage_busy()
@@ -970,9 +972,19 @@ class SubscriptionRouter:
 
 
 def _result_from_attempt(attempt: dict) -> InvocationResult:
+    recorded = attempt.get("detail") or ""
+    success = bool(attempt["success"])
+    # A failed attempt's detail opens with the short public text; the rest is
+    # the redacted diagnostics. Recovery keeps the public text the short one
+    # and serves the diagnostics through detail, like a live failed dispatch.
+    if success:
+        text, diagnostic = recorded, ""
+    else:
+        text, _, diagnostic = recorded.partition("\n")
     return InvocationResult(
-        success=bool(attempt["success"]),
-        text=attempt.get("detail") or "",
+        success=success,
+        text=text,
+        detail=diagnostic,
         adapter=attempt["adapter"],
         model=attempt["model"],
         billing_mode=attempt["billing_mode"],

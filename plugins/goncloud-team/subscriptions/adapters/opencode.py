@@ -213,4 +213,9 @@ class OpenCodeAdapter(SubscriptionAdapter):
         # contract: the vendor responded and delivered nothing usable.
         # Nothing here shows the task itself failed, which is exactly
         # invalid_terminal.
-        return self._failed_result(route, FailureKind.INVALID_TERMINAL)
+        return self._failed_result(
+            route,
+            FailureKind.INVALID_TERMINAL,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
+        )

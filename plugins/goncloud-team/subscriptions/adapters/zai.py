@@ -131,7 +131,9 @@ class ZAIAdapter(SubscriptionAdapter):
                 session_id=parsed["id"],
             )
         failure = classify_http_failure(status, body)
-        return self._failed_result(route, failure, evidence=(body,))
+        return self._failed_result(
+            route, failure, evidence=(body,), channel_labels=("http response",)
+        )
 
 
 def _parse_message_body(body: str) -> dict:

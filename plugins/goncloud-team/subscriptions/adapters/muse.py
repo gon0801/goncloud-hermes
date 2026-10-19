@@ -83,7 +83,9 @@ class MuseAdapter(SubscriptionAdapter):
                 str(outcome.get("text") or ""),
             )
             failure = classify_failure(1, detail[1], detail[0])
-            return self._failed_result(route, failure, evidence=detail)
+            return self._failed_result(
+                route, failure, evidence=detail, channel_labels=("terminal", "output")
+            )
         return InvocationResult(
             success=True,
             text=str(outcome.get("text") or ""),
