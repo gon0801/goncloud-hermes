@@ -1,4 +1,4 @@
-"""Doble de kanban_db: las funciones que usan las raices, con la regla de la referencia.
+"""Doble de kanban_db: las funciones que usan las raices y el plugin goncloud.
 
 Reglas copiadas de la referencia 0.21.5:
 - create_task (:1255) deduplica por idempotency_key SOLO contra tareas NO
@@ -6,9 +6,20 @@ Reglas copiadas de la referencia 0.21.5:
   (triage si triage=True, todo si un padre no esta done, ready en otro caso).
 - link_tasks (:1632) rechaza ids desconocidos, auto-enlace y ciclos.
 - complete_task (:2731) solo pasa de running/ready/blocked/review a done con
-  padres satisfechos; deja el resultado en la columna result.
+  padres satisfechos; deja el resultado en la columna result y cierra una
+  corrida con su metadata.
 - block_task (:3216) solo pasa de running/ready a blocked.
 - unblock_task (:3652) devuelve blocked a ready.
+- archive_task (:3884) deja la tarjeta archived y es idempotente.
+- Promocion por dependencias: al completar una tarjeta, sus hijas todo cuyos
+  padres estan done pasan a ready, y sus padres todo/triage cuyas hijas estan
+  done o archived pasan a ready (es lo que deja ejecutable la raiz directora
+  al cierre de la cadena).
+
+Las filas viajan como Fila (dict con acceso por atributo): el plugin lee
+task.body y companyia con atributos y las raices con corchetes; un dict ya no
+alcanza para las dos (55 errores uniformes de la suite del orquestador en la
+Mac antes de este cambio).
 """
 
 from __future__ import annotations
@@ -31,8 +42,19 @@ VALID_STATUSES = {
 }
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+DONE_LIKE = ("done", "archived")
 
 _CONTADORES = {"id": 0}
+
+
+class Fila(dict):
+    """Fila de la referencia: acceso por corchete y por atributo."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 def _append_event(conn, task_id, kind, payload):
@@ -44,7 +66,69 @@ def _append_event(conn, task_id, kind, payload):
 
 
 def _task_row(conn, task_id):
-    return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    fila = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return Fila(fila) if fila is not None else None
+
+
+def _children_ids(conn, task_id):
+    return [
+        f["child_id"]
+        for f in conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ?", (task_id,)
+        ).fetchall()
+    ]
+
+
+def _promote_dependents(conn, task_id):
+    """Promocion por dependencias tras completar task_id (regla de la referencia)."""
+    for child_id in _children_ids(conn, task_id):
+        child = _task_row(conn, child_id)
+        if child["status"] != "todo":
+            continue
+        if all(
+            _task_row(conn, parent)["status"] in DONE_LIKE
+            for parent in parent_ids(conn, child_id)
+        ):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
+                (child_id,),
+            )
+            _append_event(conn, child_id, "promoted", {"by": task_id})
+    _promover_raices_descompuestas(conn)
+
+
+def _promover_raices_descompuestas(conn):
+    """Una raiz descompuesta con todas sus hijas done/archived pasa a ready.
+
+    El parentesco de la descomposicion vive en el evento "decomposed"
+    (child_ids), no en task_links: la raiz no es padre de las etapas y por
+    eso no bloquea su avance; se vuelve ejecutable cuando la cadena cierra.
+    """
+    filas = conn.execute(
+        "SELECT DISTINCT task_id FROM task_events WHERE kind = 'decomposed'"
+    ).fetchall()
+    for fila in filas:
+        raiz = _task_row(conn, fila["task_id"])
+        if raiz is None or raiz["status"] not in ("todo", "triage"):
+            continue
+        child_ids = None
+        for evento in list_events(conn, fila["task_id"]):
+            if evento["kind"] == "decomposed" and isinstance(evento["payload"], dict):
+                child_ids = evento["payload"].get("child_ids")
+        if not child_ids:
+            continue
+        if all(
+            _task_row(conn, hijo)["status"] in DONE_LIKE
+            for hijo in child_ids
+            if _task_row(conn, hijo) is not None
+        ) and all(_task_row(conn, hijo) is not None for hijo in child_ids):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready' WHERE id = ? AND status IN ('todo', 'triage')",
+                (fila["task_id"],),
+            )
+            _append_event(
+                conn, fila["task_id"], "promoted", {"children_done": len(child_ids)}
+            )
 
 
 def initial_task_state(conn, parents, initial_status, triage, tenant):
@@ -55,7 +139,7 @@ def initial_task_state(conn, parents, initial_status, triage, tenant):
         fila = _task_row(conn, pid)
         if fila is None:
             raise ValueError(f"unknown parent task: {pid}")
-        if fila["status"] not in ("done", "archived"):
+        if fila["status"] not in DONE_LIKE:
             return "todo", None
     return "ready", None
 
@@ -93,8 +177,6 @@ def create_task(
 ):
     """Referencia :1255: crea la tarjeta y devuelve su id; deduplica SOLO no archivadas."""
     del (
-        workspace_kind,
-        workspace_path,
         branch_name,
         priority,
         max_runtime_seconds,
@@ -137,8 +219,9 @@ def create_task(
         )
         conn.execute(
             "INSERT INTO tasks (id, title, body, assignee, status, priority,"
-            " created_by, created_at, idempotency_key)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_by, created_at, workspace_kind, workspace_path, tenant,"
+            " idempotency_key)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 title.strip(),
@@ -148,6 +231,9 @@ def create_task(
                 0,
                 created_by,
                 ahora,
+                workspace_kind,
+                workspace_path,
+                tenant,
                 idempotency_key,
             ),
         )
@@ -170,8 +256,7 @@ def _link(conn, parent_id, child_id):
 
 
 def get_task(conn, task_id):
-    fila = _task_row(conn, task_id)
-    return dict(fila) if fila is not None else None
+    return _task_row(conn, task_id)
 
 
 def list_tasks(
@@ -199,53 +284,61 @@ def list_tasks(
     consulta += " ORDER BY created_at ASC"
     if limit:
         consulta += f" LIMIT {int(limit)}"
-    return [dict(f) for f in conn.execute(consulta, parametros).fetchall()]
+    return [Fila(f) for f in conn.execute(consulta, parametros).fetchall()]
 
 
 def _parents_satisfied(conn, task_id):
-    filas = conn.execute(
-        "SELECT t.status FROM task_links l JOIN tasks t ON t.id = l.parent_id"
-        " WHERE l.child_id = ?",
-        (task_id,),
-    ).fetchall()
-    return all(f["status"] in ("done", "archived") for f in filas)
+    return all(
+        _task_row(conn, parent)["status"] in DONE_LIKE
+        for parent in parent_ids(conn, task_id)
+    )
 
 
 def link_tasks(conn, parent_id, child_id, *, expected_child_run_id=None):
-    """Referencia :1632; sin runs en el doble, el gate de running no aplica."""
+    """Referencia :1632: rechaza ids desconocidos, auto-enlace y ciclos.
+
+    Una dependencia nueva deja de nuevo insatisfechos los padres de la hija:
+    una tarjeta ready que gana una dependencia sin done vuelve a todo (el
+    gate de consultas).
+    """
     del expected_child_run_id
     if parent_id == child_id:
-        raise ValueError("a task cannot depend on itself")
-    with write_txn(conn):
-        faltantes = [
-            tid for tid in (parent_id, child_id) if _task_row(conn, tid) is None
-        ]
-        if faltantes:
-            raise ValueError(f"unknown task(s): {', '.join(faltantes)}")
-        if _habria_ciclo(conn, parent_id, child_id):
-            raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
+        raise ValueError("a task cannot be its own parent")
+    if _task_row(conn, parent_id) is None or _task_row(conn, child_id) is None:
+        raise ValueError("unknown task")
+    if _habria_ciclo(conn, parent_id, child_id):
+        raise ValueError("link would create a cycle")
+    with write_txn(conn, allow_nested=True):
         _link(conn, parent_id, child_id)
-        _append_event(
-            conn, child_id, "linked", {"parent": parent_id, "child": child_id}
-        )
-    return False
+        hijo = _task_row(conn, child_id)
+        if hijo["status"] == "ready" and not _parents_satisfied(conn, child_id):
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                (child_id,),
+            )
+            _append_event(conn, child_id, "linked", {"parent": parent_id})
+            return
+        _append_event(conn, child_id, "linked", {"parent": parent_id})
 
 
 def _habria_ciclo(conn, parent_id, child_id):
-    vistos = set()
-    pila = [child_id]
-    while pila:
-        nodo = pila.pop()
-        if nodo == parent_id:
+    """child_id ya alcanza a parent_id -> enlazar cerraria un ciclo."""
+    pendientes, vistos = [child_id], set()
+    while pendientes:
+        actual = pendientes.pop()
+        if actual == parent_id:
             return True
-        if nodo in vistos:
+        if actual in vistos:
             continue
-        vistos.add(nodo)
-        filas = conn.execute(
-            "SELECT child_id FROM task_links WHERE parent_id = ?", (nodo,)
-        ).fetchall()
-        pila.extend(f["child_id"] for f in filas)
+        vistos.add(actual)
+        pendientes.extend(_children_ids(conn, actual))
     return False
+
+
+def _run_json(metadata):
+    if metadata is None:
+        return None
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
 
 def complete_task(
@@ -261,20 +354,27 @@ def complete_task(
     force=False,
 ):
     """Referencia :2731: running/ready/blocked/review -> done, con el resultado."""
-    del summary, metadata, created_cards, expected_run_id, fire_lifecycle_hook, force
+    del summary, created_cards, expected_run_id, fire_lifecycle_hook, force
     if not _parents_satisfied(conn, task_id):
         return False
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         if not _parents_satisfied(conn, task_id):
             return False
+        ahora = int(time.time())
         cursor = conn.execute(
             "UPDATE tasks SET status = 'done', result = ?, completed_at = ?"
             " WHERE id = ? AND status IN ('running', 'ready', 'blocked', 'review')",
-            (result, int(time.time()), task_id),
+            (result, ahora, task_id),
         )
         if cursor.rowcount != 1:
             return False
+        conn.execute(
+            "INSERT INTO task_runs (task_id, started_at, metadata, ended_at)"
+            " VALUES (?, ?, ?, ?)",
+            (task_id, ahora, _run_json(metadata), ahora),
+        )
         _append_event(conn, task_id, "completed", {"result": result})
+        _promote_dependents(conn, task_id)
     return True
 
 
@@ -285,7 +385,7 @@ def block_task(conn, task_id, *, reason=None, kind=None, expected_run_id=None):
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'blocked'"
             " WHERE id = ? AND status IN ('running', 'ready')",
@@ -299,7 +399,7 @@ def block_task(conn, task_id, *, reason=None, kind=None, expected_run_id=None):
 
 def unblock_task(conn, task_id):
     """Referencia :3652: blocked -> ready; False en otro caso."""
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'blocked'",
             (task_id,),
@@ -310,19 +410,48 @@ def unblock_task(conn, task_id):
     return hecho
 
 
+def claim_task(conn, task_id, *, claimer, expected_run_id=None):
+    """Referencia: reclama una tarjeta ready -> running con corrida activa.
+
+    Devuelve el id de la corrida activa, o None si la tarjeta no esta lista
+    para reclamar (padres sin done, estado distinto de ready).
+    """
+    del expected_run_id
+    with write_txn(conn, allow_nested=True):
+        fila = _task_row(conn, task_id)
+        if fila is None or fila["status"] != "ready":
+            return None
+        ahora = int(time.time())
+        cursor = conn.execute(
+            "INSERT INTO task_runs (task_id, started_at, ended_at) VALUES (?, ?, NULL)",
+            (task_id, ahora),
+        )
+        run_id = str(cursor.lastrowid)
+        conn.execute(
+            "UPDATE tasks SET status = 'running', current_run_id = ?, claim_lock = ?"
+            " WHERE id = ? AND status = 'ready'",
+            (run_id, claimer, task_id),
+        )
+        _append_event(conn, task_id, "claimed", {"claimer": claimer})
+    return run_id
+
+
 def archive_task(conn, task_id, *, signal_fn=None):
     """Referencia :3884, reducida a lo observable para el doble: deja archived."""
     del signal_fn
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'archived' WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
-        return cursor.rowcount == 1
+        hecho = cursor.rowcount == 1
+        if hecho:
+            _append_event(conn, task_id, "archived", {})
+    return hecho
 
 
 def add_comment(conn, task_id, author, body):
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=True):
         conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at)"
             " VALUES (?, ?, ?, ?)",
@@ -332,7 +461,7 @@ def add_comment(conn, task_id, author, body):
 
 def list_comments(conn, task_id):
     return [
-        dict(f)
+        Fila(f)
         for f in conn.execute(
             "SELECT * FROM task_comments WHERE task_id = ? ORDER BY id", (task_id,)
         ).fetchall()
@@ -340,18 +469,45 @@ def list_comments(conn, task_id):
 
 
 def list_events(conn, task_id):
-    return [
-        dict(f)
-        for f in conn.execute(
-            "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
-        ).fetchall()
-    ]
+    """Eventos con el payload ya parseado, como la referencia."""
+    eventos = []
+    for f in conn.execute(
+        "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
+    ).fetchall():
+        evento = Fila(f)
+        try:
+            evento["payload"] = (
+                json.loads(evento["payload_json"])
+                if evento["payload_json"] is not None
+                else None
+            )
+        except ValueError:
+            evento["payload"] = evento["payload_json"]
+        eventos.append(evento)
+    return eventos
 
 
-def list_runs(conn, task_id):
-    """El doble no lleva runs: ninguna prueba de raices los mira."""
-    del conn, task_id
-    return []
+def list_runs(conn, task_id, *, include_active=False):
+    """Corridas ordenadas por started_at/id; la metadata ya parseada.
+
+    Sin include_active solo viajan las corridas cerradas, como en la
+    referencia (las activas tienen ended_at NULL).
+    """
+    consulta = "SELECT * FROM task_runs WHERE task_id = ?"
+    if not include_active:
+        consulta += " AND ended_at IS NOT NULL"
+    consulta += " ORDER BY started_at, id"
+    corridas = []
+    for f in conn.execute(consulta, (task_id,)).fetchall():
+        corrida = Fila(f)
+        try:
+            corrida["metadata"] = (
+                json.loads(corrida["metadata"]) if corrida["metadata"] else None
+            )
+        except ValueError:
+            pass
+        corridas.append(corrida)
+    return corridas
 
 
 def parent_ids(conn, task_id):

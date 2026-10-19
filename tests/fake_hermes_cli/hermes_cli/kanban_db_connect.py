@@ -8,6 +8,7 @@ write_txn (:1191) es BEGIN IMMEDIATE, y el anidamiento es opt-in por savepoint
 from __future__ import annotations
 
 import contextlib
+import os
 import secrets
 import sqlite3
 from pathlib import Path
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   branch_name      TEXT,
   project_id       TEXT,
   idempotency_key  TEXT,
+  current_run_id   TEXT,
   completed_at     INTEGER
 );
 CREATE TABLE IF NOT EXISTS task_links (
@@ -52,6 +54,14 @@ CREATE TABLE IF NOT EXISTS task_comments (
   body       TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_runs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    TEXT NOT NULL,
+  status     TEXT,
+  started_at INTEGER NOT NULL,
+  metadata   TEXT,
+  ended_at   INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
   ON tasks (idempotency_key);
 """
@@ -59,9 +69,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
 
 def connect(db_path=None, *, board=None):
     """Abre (e inicializa si hace falta) el kanban. Referencia :668.
-    check_same_thread=False como el Store de H1: un puerto se abre y se cierra
-    donde quiera que su dueño decida, y un cierre entre hilos no deja el
-    archivo agarrado (WinError 32 en Windows)."""
+    Sin ruta explicita resuelve HERMES_KANBAN_DB, como la referencia; sin
+    ninguna de las dos, exige ruta. check_same_thread=False como el Store de
+    H1: un puerto se abre y se cierra donde quiera que su dueño decida, y un
+    cierre entre hilos no deja el archivo agarrado (WinError 32 en Windows)."""
+    if db_path is None:
+        db_path = os.environ.get("HERMES_KANBAN_DB") or None
     if db_path is None:
         raise ValueError("el doble exige una ruta explicita")
     ruta = Path(db_path)
