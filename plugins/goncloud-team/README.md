@@ -62,6 +62,15 @@ Durably enforced by the database graph:
   `agent.secret_scope.get_secret` and only ever travels to the child
   environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
   with no message text (just its length and a short sha256) and no key.
+- the same hook also routes the message (claw direct, one of the specialists,
+  or the engineering chain) in parallel with `skill_select` and adds
+  `Jev sugiere: X (conf)`; Goncloud stage cards and specialist cards that
+  finished (completed or blocked) since the previous turn add
+  `Jev cierre: X (conf)` (quedo/corregir/bloqueado, cursor in
+  `<claw home>/jev/cierre-cursor.json`). Confidence >= 0.85 is followed, below
+  it claw decides. Every JEV call has a hard 2 s cap, no retries, and fails
+  open; each decision is one line in `<claw home>/jev/decisiones.jsonl` (ids
+  and message length only, output, confidence, latency, error).
 
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers
 cannot supply a role argument. This is a trusted-single-user application guard,
