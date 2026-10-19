@@ -186,14 +186,20 @@ class OpenCodeAdapter(SubscriptionAdapter):
         try:
             evidence = self._run(request, route, build_assignment_prompt(request))
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         if evidence.returncode != 0:
             failure = classify_failure(
                 evidence.returncode, evidence.stream, evidence.stderr
             )
             return self._failed_result(
-                route, failure, evidence=(evidence.stderr, evidence.stream)
+                route,
+                failure,
+                request=request,
+                evidence=(evidence.stderr, evidence.stream),
+                returncode=evidence.returncode,
             )
 
         parsed = parse_opencode_jsonl(evidence.stream)
@@ -210,4 +216,10 @@ class OpenCodeAdapter(SubscriptionAdapter):
         # contract: the vendor responded and delivered nothing usable.
         # Nothing here shows the task itself failed, which is exactly
         # invalid_terminal.
-        return self._failed_result(route, FailureKind.INVALID_TERMINAL)
+        return self._failed_result(
+            route,
+            FailureKind.INVALID_TERMINAL,
+            request=request,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
+        )

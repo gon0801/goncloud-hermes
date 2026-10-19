@@ -316,6 +316,244 @@ class Salida(Escenario):
         self.assertIn("ERROR despertar raices:", salida.getvalue())
 
 
+class Cadenas(Escenario):
+    """El buzón de cadenas locales (encargo H-cadenas-avisan): una línea
+    corta por aviso, una sola vez, stdout vacío cuando no hay nada."""
+
+    def avisar(self, aviso, nombre=None):
+        import json
+
+        nombre = nombre or "{workflow_id}-{run_id}-{outcome}.json".format(
+            workflow_id=aviso.get("workflow_id", "t_x"),
+            run_id=aviso.get("run_id", "run"),
+            outcome=aviso.get("outcome", "unknown"),
+        )
+        buzon = Path(self.directorio.name) / "goncloud-local" / "avisos"
+        buzon.mkdir(parents=True, exist_ok=True)
+        (buzon / nombre).write_text(
+            json.dumps(aviso, ensure_ascii=True), encoding="utf-8"
+        )
+        return buzon / nombre
+
+    def buzon(self):
+        return Path(self.directorio.name) / "goncloud-local" / "avisos"
+
+    def test_la_cadena_bloqueada_avisa_una_sola_vez(self):
+        self.avisar(
+            {
+                "workflow_id": "t_bloq",
+                "repo": "owner-01/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "Missing credentials for the Odoo login",
+                "instruccion": "arregla el login",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_bloq (owner-01/repo-a) se trabó en implementer:"
+                " Missing credentials for the Odoo login."
+            ],
+        )
+        # Segunda vuelta: el aviso ya está entregado (renombrado), no se
+        # repite la línea y el resto del cron sigue en silencio.
+        self.impresos.clear()
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+        self.assertEqual([p.suffix for p in self.buzon().iterdir()], [".entregado"])
+
+    def test_la_cadena_entregada_y_la_fallada_avisan_igual(self):
+        self.avisar(
+            {
+                "workflow_id": "t_ok",
+                "repo": "owner-01/repo-a",
+                "outcome": "delivered",
+                "etapa": None,
+                "motivo": "",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        # El error del bootstrap llega sin repo (la cadena nunca arrancó).
+        self.avisar(
+            {
+                "workflow_id": "t_err",
+                "outcome": "error",
+                "motivo": "local driver failed; check durable status",
+                "fecha": "2026-10-19T00:00:00Z",
+            },
+            nombre="t_err-boot-error.json",
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_err falló: local driver failed; check durable status.",
+                "Cadena t_ok (owner-01/repo-a) entregada.",
+            ],
+        )
+
+    def test_el_motivo_con_forma_de_llave_sale_tachado(self):
+        self.avisar(
+            {
+                "workflow_id": "t_llave",
+                "repo": "owner-01/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "push refused for ghp_Abc123Def456Ghi789",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.correr()
+        linea = self.impresos[0]
+        self.assertNotIn("ghp_Abc123Def456Ghi789", linea)
+        self.assertIn("[redacted]", linea)
+
+    def test_la_pausa_y_la_espera_tienen_su_linea(self):
+        self.avisar(
+            {
+                "workflow_id": "t_p",
+                "repo": "owner-01/repo-a",
+                "outcome": "paused",
+                "etapa": "ingenieria",
+                "motivo": "paused at its stop_after checkpoint",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.avisar(
+            {
+                "workflow_id": "t_w",
+                "repo": "owner-01/repo-a",
+                "outcome": "waiting",
+                "etapa": "ingenieria",
+                "motivo": "a stage waits on its parents",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_p (owner-01/repo-a) quedó en pausa: paused at its"
+                " stop_after checkpoint.",
+                "Cadena t_w (owner-01/repo-a) quedó esperando: a stage waits"
+                " on its parents.",
+            ],
+        )
+
+    def test_la_cadena_corriendo_sin_terminar_tiene_su_linea(self):
+        # Live review F3: el cierre por task_failure deja la cadena trabada
+        # con outcome running, que close rechaza y close_hint no anuncia.
+        self.avisar(
+            {
+                "workflow_id": "t_run",
+                "repo": "owner-01/repo-a",
+                "outcome": "running",
+                "etapa": "implementer",
+                "motivo": "the driver quit with the stage still unfinished",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_run (owner-01/repo-a) quedó corriendo sin terminar:"
+                " the driver quit with the stage still unfinished."
+            ],
+        )
+        # Segunda vuelta: entregado, silencio.
+        self.impresos.clear()
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+
+    def test_el_motivo_multilinea_sale_en_una_sola_linea(self):
+        # cr 4312376374: el resumen de una etapa bloqueada puede traer salto
+        # de línea; la promesa del cron es UNA línea por aviso.
+        self.avisar(
+            {
+                "workflow_id": "t_nl",
+                "repo": "owner-01/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "push refused:\nhttp 402 upstream\nretry as owner",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(len(self.impresos), 1)
+        self.assertNotIn("\n", self.impresos[0])
+        self.assertIn(
+            "push refused: http 402 upstream retry as owner", self.impresos[0]
+        )
+
+    def test_el_repo_con_forma_de_llave_sale_tachado(self):
+        # cr 4312376359: el borde de lectura re-redacta el repo de avisos
+        # escritos por otras manos.
+        self.avisar(
+            {
+                "workflow_id": "t_repo",
+                "repo": "/srv/ghp_Abc123Def456Ghi789/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "Missing credentials for the Odoo login",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.assertEqual(self.correr(), 0)
+        linea = self.impresos[0]
+        self.assertNotIn("ghp_Abc123Def456Ghi789", linea)
+        self.assertIn("[redacted]", linea)
+
+    def test_entregar_pisa_un_entregado_anterior_sin_fallar(self):
+        # Lead r3: un .entregado de una vuelta anterior no frena nada (cada
+        # relanzamiento lo pide claw). Al entregar el evento nuevo del mismo
+        # arranque roto, despertar lo pisa: os.replace y no rename, porque en
+        # Windows el nombre ocupado falla, el aviso nuevo queda sin marcar y
+        # la próxima vuelta lo repetiría.
+        import json
+
+        buzon = self.buzon()
+        buzon.mkdir(parents=True, exist_ok=True)
+        viejo = buzon / "t_boot-boot-error.entregado"
+        viejo.write_text(
+            json.dumps({"outcome": "error", "vuelta": 1}), encoding="utf-8"
+        )
+        nuevo = buzon / "t_boot-boot-error.json"
+        nuevo.write_text(
+            json.dumps({"outcome": "error", "vuelta": 2}), encoding="utf-8"
+        )
+
+        despertar.entregar_aviso(nuevo)
+
+        self.assertFalse(nuevo.exists())
+        self.assertEqual(
+            json.loads(viejo.read_text(encoding="utf-8")),
+            {"outcome": "error", "vuelta": 2},
+        )
+
+    def test_el_aviso_desconocido_no_se_imprime_ni_se_marca(self):
+        self.avisar({"workflow_id": "t_raro", "outcome": "surprise"})
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+        self.assertEqual(
+            [p.name for p in self.buzon().iterdir()], ["t_raro-run-surprise.json"]
+        )
+
+    def test_el_aviso_ilegible_es_silencio(self):
+        buzon = self.buzon()
+        buzon.mkdir(parents=True, exist_ok=True)
+        (buzon / "t_roto-run-blocked.json").write_text("{truncado", encoding="utf-8")
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+
+    def test_sin_avisos_stdout_vacio(self):
+        self.assertEqual(self.correr(), 0)
+        self.assertEqual(self.impresos, [])
+
+
 class E2eDelBriefH6b(Escenario):
     """El e2e del brief sin inyectar nada a mano: submit -> instruction_put
     -> reconcile -> cron ticker -> tarjeta -> resultado review.v1 del doble
