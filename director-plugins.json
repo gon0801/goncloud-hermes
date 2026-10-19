@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "director": "claw",
+  "local": ["forja-queue-cap"],
   "plugins": [
     {
       "name": "jev",
