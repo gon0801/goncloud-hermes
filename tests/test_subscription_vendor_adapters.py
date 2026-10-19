@@ -1371,6 +1371,110 @@ class MuseCommandTests(unittest.TestCase):
         self.assertIsNotNone(runner.command)
 
 
+class ProbeAwareRunner(FakeCliRunner):
+    """Answers the non-generative grok probe; the invocation gets the failure."""
+
+    def __call__(self, command, **kwargs):
+        if command[:2] == ["grok", "models"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="logged in, grok-4.6 available", stderr=""
+            )
+        return super().__call__(command, **kwargs)
+
+
+class FailureEvidenceDetailTests(unittest.TestCase):
+    """A failed attempt records WHY it failed, redacted, in its detail."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.workspace = Path(self.tmp.name).resolve()
+
+    def router_with_grok(self, runner):
+        return SubscriptionRouter(
+            adapters={"grok": GrokAdapter(runner=runner)},
+            db_path=self.workspace / "detail.db",
+        )
+
+    def test_failed_stderr_reaches_the_attempt_detail(self):
+        runner = ProbeAwareRunner(stderr="Not logged in, run grok login", returncode=1)
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.AUTH)
+        self.assertEqual(len(attempts), 1)
+        detail = attempts[0]["detail"]
+        self.assertIn("grok invocation failed (auth)", detail)
+        self.assertIn("exit 1", detail)
+        self.assertIn("Not logged in, run grok login", detail)
+        # The public result text stays the bounded class message.
+        self.assertTrue(
+            result.text.startswith("grok invocation failed (auth)"), result.text
+        )
+
+    def test_api_key_shaped_stderr_is_redacted_in_the_attempt_detail(self):
+        runner = ProbeAwareRunner(
+            stderr="auth rejected key sk-fixture-grok-key-000123", returncode=1
+        )
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        detail = router.store.stage_attempts("wf-5", "stage-verifier")[0]["detail"]
+
+        self.assertFalse(result.success)
+        self.assertIn("[redacted]", detail)
+        self.assertNotIn("sk-fixture-grok-key-000123", detail)
+        self.assertNotIn("sk-fixture-grok-key-000123", repr(result))
+
+    def test_detail_keeps_only_the_last_1500_characters_of_each_channel(self):
+        stderr = "head " + "a" * 4000 + " END-OF-STDERR"
+        stream = "head " + "b" * 4000 + " END-OF-STREAM"
+        adapter = GrokAdapter(
+            runner=FakeCliRunner(stdout=stream, stderr=stderr, returncode=3)
+        )
+
+        result = adapter.invoke(request(self.workspace), route_for("grok", "grok-4.6"))
+
+        self.assertFalse(result.success)
+        self.assertIn("END-OF-STDERR", result.detail)
+        self.assertIn("END-OF-STREAM", result.detail)
+        self.assertNotIn("head ", result.detail)
+        self.assertLess(len(result.detail), 3400)
+
+    def test_successful_invocation_leaves_the_detail_unchanged(self):
+        runner = ProbeAwareRunner(stdout=GROK_ACP)
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.detail, "")
+        self.assertEqual(attempts[0]["detail"], "grok answered")
+
+    def test_process_error_message_is_recorded_in_the_attempt_detail(self):
+        def timeout_runner(command, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
+
+        adapter = GrokAdapter(runner=timeout_runner)
+        adapter.timeout_seconds = 30
+
+        result = adapter.invoke(request(self.workspace), route_for("grok", "grok-4.6"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertIn("vendor process timed out after 30s", result.detail)
+
+
 class CodexCommandTests(unittest.TestCase):
     """A stage invocation keeps Codex's own sandbox and native tools available."""
 

@@ -98,6 +98,6 @@ def sanitize_result(result, secrets: Sequence[str] = ()):
         result,
         **{
             field: redact_text(getattr(result, field), secrets)
-            for field in ("text", "session_id", "adapter", "model")
+            for field in ("text", "session_id", "adapter", "model", "detail")
         },
     )

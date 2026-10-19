@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 
+from ..redaction import redact_text
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -107,6 +108,10 @@ _TRANSPORT_PATTERN = re.compile(
 #: 2026-10-19: no model finishes a large design or implementation inside a
 #: fixed window, and Kimi already ran unbounded in the owner's terminal).
 _MAX_PROBE_TIMEOUT_SECONDS = 300
+
+#: Per-channel cap on the failure evidence an attempt detail keeps: the LAST
+#: characters of stderr and of the stream, where a CLI's closing error lives.
+_DETAIL_TAIL_CHARS = 1500
 
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
@@ -302,13 +307,32 @@ class SubscriptionAdapter:
         detail: str = "",
         *,
         evidence: tuple[str, ...] = (),
+        returncode: int | None = None,
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
+        # The durable attempt detail keeps the vendor's own answer: the class,
+        # the exit code and the redacted tails of stderr and the stream, so a
+        # failed chain records WHY it failed. Diagnostics are not a public
+        # evidence channel; only the attempt record and a recovered attempt
+        # read them, and every boundary re-redacts. Channels arrive redacted
+        # from the process boundary (which holds the child's own environment),
+        # so this pass re-redacts shapes against the router's environment.
+        parts = [text]
+        if returncode is not None:
+            parts.append(f"exit {returncode}")
+        if detail:
+            parts.append(detail)
+        parts.extend(
+            f"{label} tail: {redact_text((channel or '')[-_DETAIL_TAIL_CHARS:])}"
+            for label, channel in zip(("stderr", "stream"), evidence)
+            if channel
+        )
         # Diagnostics are not a public evidence channel, even after redaction;
         # only a throttle's wait is read out of them.
         return InvocationResult(
             success=False,
             text=text,
+            detail="\n".join(parts) if len(parts) > 1 else "",
             adapter=route.adapter,
             model=route.model,
             billing_mode=route.billing_mode,

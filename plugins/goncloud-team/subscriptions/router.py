@@ -601,7 +601,9 @@ class SubscriptionRouter:
                 session_id=result.session_id,
                 end_revision=revision,
                 changed_files=list(changed),
-                detail=result.text[:2000],
+                # A failed result carries its own bounded diagnostics; a
+                # success keeps the bounded result text as the record.
+                detail=result.detail or result.text[:2000],
                 disposition=disposition,
             )
             if not recorded:

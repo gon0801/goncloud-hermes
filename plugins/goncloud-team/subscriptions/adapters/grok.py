@@ -172,5 +172,8 @@ class GrokAdapter(SubscriptionAdapter):
             else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(
-            route, failure, evidence=(evidence.stderr, evidence.stream)
+            route,
+            failure,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
         )
