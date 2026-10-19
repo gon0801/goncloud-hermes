@@ -36,13 +36,37 @@ que ticker._documento_de_resultado (ticker.py:335-371) pasa tal cual a
 reportar_resultado — la evidencia (summary + evidence del sobre) viaja en el
 store content-addressed de instrucciones (instrucciones.guardar), así claw la
 verifica después por digest. Blocked, sobre inválido, router en fallo, router
-sin cadena para el perfil, instrucción ilegible o workspace que no resuelve:
-block_task con el motivo acotado (motivo_de_outcome) — NUNCA quedan
-pendientes quemando la reserva de una llamada por vuelta; el ticker ya lo
-trata como transporte caído (ticker.py:305-310) y decidir escala. Y si el
-hijo murió sin llegar a cerrar la tarjeta, el ticker lee su archivo de
-resultado (<raiz>/raices/ejecutor/<id>.json) en la vuelta siguiente y cierra
-con la misma causa (ticker._cerrar_hijo_terminal).
+sin cadena para el perfil, instrucción ilegible, workspace que no resuelve o
+workspace fuera de la autoridad: block_task con el motivo acotado
+(motivo_de_outcome) — NUNCA quedan pendientes quemando la reserva de una
+llamada por vuelta; el ticker ya lo trata como transporte caído
+(ticker.py:305-310) y decidir escala. Y si el hijo murió sin llegar a cerrar
+la tarjeta, el ticker lee su archivo de resultado
+(<raiz>/raices/ejecutor/<id>.json) en la vuelta siguiente y cierra con la
+misma causa (ticker._cerrar_hijo_terminal).
+
+AUTORIDAD DEL WORKSPACE (F9): `inputRevision.workspace` no se confía — el
+slug del assignment ya lo valida la autoridad de la raíz, pero la RUTA del
+checkout viaja en una llave libre y un assignment con un repository
+autorizado y un workspace arbitrario pondría a un perfil con permiso de
+escritura a trabajar FUERA del repo autorizado. Antes de llamar al router,
+el workspace resuelto tiene que ser un checkout git cuyo remoto origin
+corresponda a uno de authority.repos de la raíz (owner/nombre exacto) y
+vivir bajo una raíz de trabajo permitida (<raiz>/raices/workspaces.json, o
+en su ausencia el padre del checkout que hospeda este plugin — C:\\dev en la
+PC); si no, block_task con el motivo acotado SIN llamar al router. Sin
+archivo legible la lista es la del plugin; sin lista, nada está permitido
+(falla cerrada).
+
+RESERVA (F8): todo desenlace ANTES de la llamada al modelo
+(OUTCOMES_SIN_LLAMADA del ticker: sin-driver, workspace-unavailable,
+workspace-no-autorizado, instruccion-ilegible, router-no-configurado)
+DEVUELVE la reserva del lanzamiento (store.devolver_lanzamiento, idempotente
+— solo toca un reclamo vivo) ADEMÁS de bloquear la tarjeta. Es el camino de
+producción: el hijo real sí bloquea, así que la vuelta siguiente concilia
+con la tarjeta bloqueada y cierra el intento por la incidencia de transporte
+ANTES de que _despachar_ejecutores lea el archivo — sin la devolución aquí,
+la reserva quedaba quemada con el contador de presupuesto sobre-contado.
 
 Un rol de solo lectura (_READ_ONLY_STAGES de la cadena: scout, ingenieria —
 live 2026-09-28) que modifique el workspace se trata igual que en la cadena:
@@ -203,6 +227,145 @@ def _perfil_de(assignment: dict) -> str:
     return str(target.get("agentId") or target.get("adapterId") or "sin-perfil")
 
 
+def _slug_de_url(url: str) -> str | None:
+    """owner/nombre desde una URL de remoto git (https, ssh, scp-like
+    git@host:owner/name). Los ÚLTIMOS dos segmentos: un grupo anidado de
+    GitLab cae igual en el par que la autoridad lista. Sin dos segmentos no
+    hay identidad — se trata como checkout sin remoto (falla cerrada)."""
+    texto = url.strip()
+    if "://" in texto:
+        texto = texto.split("://", 1)[1]
+        _host, _, texto = texto.partition("/")
+    elif ":" in texto:
+        texto = texto.split(":", 1)[1]
+    partes = [p for p in texto.split("/") if p]
+    if len(partes) < 2:
+        return None
+    nombre = partes[-1]
+    if nombre.endswith(".git"):
+        nombre = nombre[: -len(".git")]
+    if not partes[-2] or not nombre:
+        return None
+    return f"{partes[-2]}/{nombre}"
+
+
+def _origen_de(workspace: Path) -> str | None:
+    """El slug owner/nombre del remoto origin del checkout, o None: no es un
+    checkout git, no tiene origin o la URL no dice owner/nombre. git se
+    corre con tope de tiempo: un remoto colgado no debe frenar la vuelta."""
+    try:
+        terminado = subprocess.run(
+            ["git", "-C", str(workspace), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if terminado.returncode != 0:
+        return None
+    return _slug_de_url(terminado.stdout or "")
+
+
+def raices_de_trabajo(base) -> list:
+    """Las raíces de trabajo bajo las que el hijo puede correr (F9). La
+    fuente es <raiz>/raices/workspaces.json — un array JSON de rutas
+    ABSOLUTAS (la misma carpeta que permisos.json: datos de la PC junto al
+    store). Sin archivo legible define el plugin: el padre del checkout git
+    que hospeda este módulo (el repo en C:\\dev\\goncloud-hermes deja
+    C:\\dev; la copia instalada bajo <home>/profiles no tiene checkout y no
+    define NADA). Sin lista, vacía: nada está permitido — falla cerrada. Las
+    entradas que no sean rutas absolutas se ignoran; un archivo ausente o
+    ilegible cae al default del plugin — la lista explícita de la PC, cuando
+    existe y parsea, es LA lista (vacía niega todo)."""
+    documento = Path(base) / "raices" / "workspaces.json"
+    try:
+        datos = json.loads(documento.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        datos = None
+    if isinstance(datos, list):
+        return [
+            Path(cruda)
+            for cruda in datos
+            if isinstance(cruda, str) and cruda.strip() and Path(cruda).is_absolute()
+        ]
+    checkout = PLUGIN
+    for _ in range(4):
+        if (checkout / ".git").exists():
+            return [checkout.parent]
+        if checkout.parent == checkout:
+            break
+        checkout = checkout.parent
+    return []
+
+
+def _bajo_alguna_raiz(workspace: Path, raices: list) -> bool:
+    """Si el workspace vive bajo ALGUNA raíz de trabajo permitida. Cada raíz
+    se resuelve (los enlaces simbólicos del archivo de la PC no pueden
+    colar un /var por un /private/var: el workspace ya sale resuelto de
+    workspace_de), normcase (Windows: C:\\DEV y c:\\dev son la misma carpeta)
+    y commonpath (un prefijo de TEXTO daría por bueno C:\\dev-otro sobre
+    C:\\dev); discos distintos no comparten raíz (ValueError de commonpath)
+    y se niegan."""
+    dentro = os.path.normcase(str(workspace))
+    for raiz in raices:
+        try:
+            fuera = os.path.normcase(str(Path(raiz).resolve()))
+        except OSError:
+            continue
+        try:
+            comun = os.path.commonpath([dentro, fuera])
+        except ValueError:
+            continue
+        if comun == fuera:
+            return True
+    return False
+
+
+def _workspace_no_autorizado(workspace, repos_de_autoridad, raices) -> str | None:
+    """La razón acotada por la que el workspace no puede correr esta unidad
+    (F9), o None si procede: el checkout tiene que SER un repo autorizado
+    (origin → owner/nombre en authority.repos) y estar BAJO una raíz de
+    trabajo permitida. La razón no lleva rutas: el motivo del bloqueo es
+    para el dueño, no un volcado del sistema de archivos."""
+    if not isinstance(repos_de_autoridad, list) or not repos_de_autoridad:
+        return "root authority lists no repos"
+    permitidos = {r.strip() for r in repos_de_autoridad if isinstance(r, str)}
+    slug = _origen_de(workspace)
+    if slug is None:
+        return "workspace has no git origin to match against the authority repos"
+    if slug not in permitidos:
+        esperados = ", ".join(sorted(permitidos))[:200]
+        return (
+            f"workspace origin {slug} is not in the authority repos"
+            f" (authority repos: {esperados})"
+        )
+    if not _bajo_alguna_raiz(workspace, raices):
+        return "workspace is outside the allowed work roots"
+    return None
+
+
+def _devolver_reserva(ruta_store, ids) -> None:
+    """La devolución de la reserva en el hijo (F8): un desenlace ANTES de la
+    llamada al modelo no la consumió. Store nuevo y cerrado — el principal
+    de correr_intento ya está cerrado cuando se bloquea la tarjeta, y una
+    conexión prestada entre ramas no: la misma forma del latido. Idempotente
+    por store.devolver_lanzamiento: si el reclamo ya se fue (poda del TTL,
+    devolución del ticker), no toca el contador. BEST-EFFORT: un fallo aquí
+    no puede tumbar el cierre de la tarjeta — el desenlace terminal manda —
+    y la misma devolución idempotente la reintentan el ticker al consumir el
+    archivo (_cerrar_hijo_terminal) y al conciliar la tarjeta bloqueada."""
+    try:
+        store = importlib.import_module("raices.store")
+        tienda = store.Store(ruta_store)
+        try:
+            tienda.devolver_lanzamiento(*ids)
+        finally:
+            tienda.cerrar()
+    except Exception:
+        pass
+
+
 def _conectar_kanban(ruta_kanban):
     from hermes_cli.kanban_db_connect import connect
 
@@ -229,6 +392,9 @@ def _completar(conexion, card_id, carga: dict) -> bool:
 
 _MOTIVOS_TERMINALES = {
     "workspace-unavailable": "workspace unavailable; owner review required",
+    "workspace-no-autorizado": (
+        "workspace not authorized by the root authority; owner review required"
+    ),
     "instruccion-ilegible": "instruction unreadable; owner review required",
     "sin-driver": "executor sin driver de cadena; owner review required",
     "router-no-configurado": (
@@ -372,7 +538,9 @@ def correr_intento(
     if local is None:
         # Sin el driver de la cadena no hay parser de sobre ni huella: no se
         # toca la tarjeta y la vuelta siguiente reintenta tras el TTL, como
-        # cualquier hijo que murió sin decir nada.
+        # cualquier hijo que murió sin decir nada. La reserva (F8) sí vuelve:
+        # tampoco aquí hubo llamada.
+        _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
         return {
             "rootId": root_id,
             "unitId": unit_id,
@@ -386,6 +554,9 @@ def correr_intento(
             "SELECT card_id, assignment_json FROM intentos WHERE root_id = ?"
             " AND unit_id = ? AND attempt = ?",
             (root_id, unit_id, attempt),
+        )
+        fila_raiz = tienda._una_fila(
+            "SELECT authority_json FROM raices WHERE root_id = ?", (root_id,)
         )
     finally:
         tienda.cerrar()
@@ -407,6 +578,10 @@ def correr_intento(
     assignment = json.loads(fila["assignment_json"])
     perfil = _perfil_de(assignment)
     revision = assignment.get("inputRevision") or {}
+    try:
+        autoridad_meta = json.loads(fila_raiz["authority_json"] or "{}")
+    except (ValueError, TypeError, KeyError):
+        autoridad_meta = {}
     conexion = _conectar_kanban(ruta_kanban)
     latido = None
     try:
@@ -423,6 +598,28 @@ def correr_intento(
                 "outcome": "workspace-unavailable",
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
+            return resultado
+        # F9: la ruta del checkout no se confía — el slug del assignment ya
+        # lo validó la autoridad, pero el directorio viaja en una llave libre
+        # y un workspace arbitrario pondría a un perfil con permiso de
+        # escritura fuera del repo autorizado. Bloqueo SIN llamar al router,
+        # con la reserva de vuelta (F8): el desenlace es previo a la llamada.
+        razon = _workspace_no_autorizado(
+            workspace,
+            autoridad_meta.get("repos") if isinstance(autoridad_meta, dict) else None,
+            raices_de_trabajo(Path(ruta_store).parent),
+        )
+        if razon is not None:
+            resultado = {
+                "rootId": root_id,
+                "unitId": unit_id,
+                "attempt": attempt,
+                "outcome": "workspace-no-autorizado",
+                "reason": razon,
+            }
+            _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
             return resultado
         referencia = assignment.get("instructionRef") or {}
         cuerpo, motivo_ref = instrucciones.resolver(
@@ -439,6 +636,7 @@ def correr_intento(
                 "reason": motivo_ref,
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
             return resultado
         solo_lectura = perfil in local._READ_ONLY_STAGES
         antes = local._workspace_fingerprint(workspace) if solo_lectura else None
@@ -456,6 +654,7 @@ def correr_intento(
                 "reason": str(fallo)[:400],
             }
             _bloquear(conexion, card_id, motivo_de_outcome(resultado))
+            _devolver_reserva(ruta_store, (root_id, unit_id, attempt))
             return resultado
         latido = _LatidoDeReclamo(ruta_store, root_id, unit_id, attempt)
         resultado, FailureKind = _resultado_del_router(

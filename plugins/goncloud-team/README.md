@@ -106,8 +106,22 @@ el ticker lee ese archivo: el hijo que completa la tarjeta deja el result con
 la evidencia referida por digest, que el ticker reporta; un desenlace
 terminal de error (hijo muerto, router sin cadena para el perfil, workspace
 que no resuelve, instrucción ilegible) bloquea la tarjeta con su causa y
-devuelve la reserva si no hubo llamada al modelo. Los especialistas de
-`kanban.dispatch_profiles` no lanzan hijo: los corre el despachador nativo.
+devuelve la reserva si no hubo llamada al modelo — la devuelve el PROPIO hijo
+cuando llegó a bloquear (su desenlace es previo a la llamada) y el ticker la
+reintenta de forma idempotente al consumir el archivo o al conciliar la
+tarjeta bloqueada, así que ninguna de las dos rutas (la de producción y la de
+prueba) quema el presupuesto. El workspace del hijo no se confía (F9): el
+checkout de `inputRevision.workspace` tiene que ser un repo cuyo remoto
+origin corresponde a uno de los `repos` de la autoridad de la raíz (owner y
+nombre exactos) y vivir bajo una raíz de trabajo permitida — la lista de
+rutas absolutas de `<raíz>\raices\workspaces.json` (junto al store, como
+`permisos.json`); sin el archivo, vale el padre del checkout que hospeda el
+plugin (en la PC, `C:\dev`); sin lista, nada está permitido. Fuera de la
+autoridad, el hijo bloquea la tarjeta sin llamar al modelo. Los
+especialistas de `kanban.dispatch_profiles` no lanzan hijo: los corre el
+despachador nativo (y si `team.json` no se puede leer, el ticker NO lanza
+nada esa vuelta: con la lista ausente no se sabe a quién corre el nativo y
+lanzar sería arriesgar el doble run).
 El instalador (H4b3) copia `raices/cron_ticker.py` a
 `<home>/scripts/ticker-raices.py` y registra el trabajo sin agente en el perfil
 default (la raíz del home; toda llamada lleva `-p default` porque el CLI usa el

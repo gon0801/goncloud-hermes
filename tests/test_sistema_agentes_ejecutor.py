@@ -229,10 +229,12 @@ class Escenario(unittest.TestCase):
         self.addCleanup(self.directorio.cleanup)
         self.escenarios = 0
 
-    def repositorio(self, nombre="repo"):
+    def repositorio(self, nombre="repo", origen="owner-01/repo-a"):
         """Un repositorio git REAL: la forma del inputRevision que la cadena
         exige ("pass the path exactly as the owner gave it") y la huella de la
-        guarda de solo lectura."""
+        guarda de solo lectura. Con remoto origin (F9: la identidad que el
+        hijo contrasta con authority.repos) a nombre de `origen`; None no
+        añade remoto — el caso "checkout sin origin"."""
         ruta = Path(self.directorio.name) / f"{nombre}-{self.escenarios}"
         ruta.mkdir()
         subprocess.run(["git", "init", "-q", str(ruta)], check=True)
@@ -240,6 +242,19 @@ class Escenario(unittest.TestCase):
             ["git", "-C", str(ruta), "config", "user.email", "p@test"], check=True
         )
         subprocess.run(["git", "-C", str(ruta), "config", "user.name", "p"], check=True)
+        if origen:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(ruta),
+                    "remote",
+                    "add",
+                    "origin",
+                    f"https://github.com/{origen}.git",
+                ],
+                check=True,
+            )
         (ruta / "a.txt").write_text("uno", encoding="utf-8")
         subprocess.run(["git", "-C", str(ruta), "add", "."], check=True)
         subprocess.run(
@@ -258,6 +273,15 @@ class Escenario(unittest.TestCase):
         tienda = store.Store(self.directorio.name + f"/{self.escenarios}.db")
         self.addCleanup(tienda.cerrar)
         tienda.abrir_raiz(meta or meta_de())
+        # F9: la raíz de trabajo permitida de ESTA PC de pruebas — el
+        # directorio temporal que contiene el store y los checkouts. Sin
+        # este archivo el default sería el padre del checkout del plugin
+        # (en la PC, C:\dev) y el directorio temporal quedaría fuera.
+        raices = Path(self.directorio.name) / "raices"
+        raices.mkdir(exist_ok=True)
+        (raices / "workspaces.json").write_text(
+            json.dumps([self.directorio.name]), encoding="utf-8"
+        )
         # El puerto REAL (el doble hermes_cli en proceso): el ejecutor escribe
         # la tarjeta por hermes_cli, así que la tarjeta tiene que vivir en una
         # base de kanban de verdad, no en el doble en memoria.
@@ -476,6 +500,116 @@ class LosBloqueos(Escenario):
         self.assertEqual(resultado["outcome"], "busy")
         tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
         self.assertEqual(tarjeta.estado, "pendiente")
+
+
+class ElWorkspaceContraLaAutoridad(Escenario):
+    """F9 (SEGURIDAD): inputRevision.workspace no se confía. Un assignment
+    con un repository autorizado y un workspace arbitrario pondría a un
+    perfil con permiso de escritura a trabajar FUERA del repo autorizado.
+    El hijo exige: checkout git con origin owner/nombre ∈ authority.repos y
+    bajo una raíz de trabajo permitida (<raiz>/raices/workspaces.json);
+    fuera de eso, bloquea la tarjeta SIN llamar al router y con la reserva
+    de vuelta (F8: el desenlace es previo a la llamada)."""
+
+    def test_workspace_de_otro_repo_bloquea_sin_llamar_al_router(self):
+        # Checkout REAL de OTRO repo (origin otro/proyecto-b): el slug del
+        # assignment (owner-01/repo-a) está autorizado, pero el directorio
+        # no es ese repo — no corre.
+        ruta_repo, sha = self.repositorio(origen="otro/proyecto-b")
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        reclamo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, "tarjeta-x")
+        self.assertFalse(hasattr(reclamo, "codigo"))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "workspace-no-autorizado")
+        self.assertIn("owner-01/repo-a", resultado["reason"])
+        self.assertIn("otro/proyecto-b", resultado["reason"])
+        self.assertIsNone(doble.peticion())
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
+        # F8: la reserva se devolvió — el desenlace fue antes de la llamada.
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+
+    def test_workspace_sin_remoto_bloquea(self):
+        # Un checkout git sin origin no tiene identidad contrastable: falla
+        # cerrada, nunca "confiar porque está en la raíz permitida".
+        ruta_repo, sha = self.repositorio(origen=None)
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "workspace-no-autorizado")
+        self.assertIn("no git origin", resultado["reason"])
+        self.assertIsNone(doble.peticion())
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
+
+    def test_workspace_fuera_de_la_raiz_de_trabajo_bloquea(self):
+        # Repo autorizado (origin correcto) PERO fuera de la raíz de trabajo
+        # permitida: el workspaces.json de la PC manda aunque el repo cuadre.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        otra_raiz = Path(self.directorio.name) / "otra-raiz-permitida"
+        otra_raiz.mkdir()
+        (Path(tienda.ruta).parent / "raices" / "workspaces.json").write_text(
+            json.dumps([str(otra_raiz)]), encoding="utf-8"
+        )
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "workspace-no-autorizado")
+        self.assertIn("outside the allowed work roots", resultado["reason"])
+        self.assertIsNone(doble.peticion())
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "bloqueada")
+
+    def test_workspace_autorizado_completa(self):
+        # El bueno: origin que corresponde al slug de la autoridad y bajo la
+        # raíz permitida — el hijo corre y la tarjeta completa.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "completed")
+        self.assertEqual(doble.peticion().workspace, ruta_repo.resolve())
+
+    def test_workspaces_json_vacio_niega_todo(self):
+        # Falla cerrada: la lista explícita de la PC manda — vacía, nada
+        # corre aunque el checkout sea el repo autorizado.
+        ruta_repo, sha = self.repositorio()
+        tienda, kanban = self.frescar()
+        (Path(tienda.ruta).parent / "raices" / "workspaces.json").write_text(
+            json.dumps([]), encoding="utf-8"
+        )
+        self.encredar(tienda, kanban, sha=sha, workspace=ruta_repo)
+        doble = RouterDoble()
+        resultado = self.corer_intento(tienda, doble)
+        self.assertEqual(resultado["outcome"], "workspace-no-autorizado")
+        self.assertIsNone(doble.peticion())
+
+    def test_el_slug_de_una_url_de_remoto(self):
+        resolver = ejecutor._slug_de_url
+        self.assertEqual(
+            resolver("https://github.com/owner-01/repo-a.git"), "owner-01/repo-a"
+        )
+        self.assertEqual(
+            resolver("https://github.com/owner-01/repo-a"), "owner-01/repo-a"
+        )
+        self.assertEqual(
+            resolver("git@github.com:owner-01/repo-a.git"), "owner-01/repo-a"
+        )
+        self.assertEqual(
+            resolver("ssh://git@github.com:2222/owner-01/repo-a.git"),
+            "owner-01/repo-a",
+        )
+        # Grupo anidado: los ÚLTIMOS dos segmentos.
+        self.assertEqual(resolver("https://gitlab.com/grupo/sub/repo.git"), "sub/repo")
+        self.assertIsNone(resolver("https://github.com/solo"))
+        self.assertIsNone(resolver("gopher://host/x"))
 
 
 class SoloLectura(Escenario):
@@ -723,6 +857,44 @@ class ElLanzamientoDelTicker(Escenario):
         self.assertEqual(informe.lanzamientos, 0)
         self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
 
+    def test_perfiles_de_despacho_nativo_falla_cerrado(self):
+        # 4309610867: un team.json ausente, ilegible o sin dispatch_profiles
+        # NO es "nadie lo corre el nativo" (lanzaría ejecutores dobles y
+        # reservas dobles) sino "no se sabe": None. Solo una lista válida
+        # devuelve el frozenset.
+        with tempfile.TemporaryDirectory() as base:
+            raiz = Path(base)
+            self.assertIsNone(ticker.perfiles_de_despacho_nativo(raiz=raiz))
+            (raiz / "team.json").write_text("{ no soy json", encoding="utf-8")
+            self.assertIsNone(ticker.perfiles_de_despacho_nativo(raiz=raiz))
+            (raiz / "team.json").write_text(
+                json.dumps({"kanban": {}}), encoding="utf-8"
+            )
+            self.assertIsNone(ticker.perfiles_de_despacho_nativo(raiz=raiz))
+            (raiz / "team.json").write_text(
+                json.dumps({"kanban": {"dispatch_profiles": ["amazon"]}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                ticker.perfiles_de_despacho_nativo(raiz=raiz),
+                frozenset({"amazon"}),
+            )
+
+    def test_team_json_ilegible_la_vuelta_no_lanza_nada(self):
+        # El centinela en la vuelta: sin lista de despacho nativo, ENTERA la
+        # fase de lanzamiento se salta — ni reclamo ni reserva ni hijo.
+        tienda, kanban = self.frescar()
+        lanzar, llamadas = self.grabador()
+        centinela = mock.patch.object(
+            ticker, "perfiles_de_despacho_nativo", return_value=None
+        )
+        centinela.start()
+        self.addCleanup(centinela.stop)
+        informe = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(informe.lanzamientos, 0)
+        self.assertEqual(llamadas, [])
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+
     def test_hijo_que_falla_determinista_bloquea_y_devuelve_la_reserva(self):
         # F3: el resultado del hijo se lee en la vuelta siguiente. Un fallo
         # determinista ANTES de la llamada al modelo (router sin cadena para
@@ -745,6 +917,64 @@ class ElLanzamientoDelTicker(Escenario):
         self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
         # El archivo se consumió: la vuelta siguiente no lo reviviría.
         self.assertFalse(archivo_de_resultado(tienda).exists())
+
+    def test_el_hijo_real_que_bloquea_deja_reserva_y_archivo_cuadrados(self):
+        # F8 (flujo de producción): el hijo REAL además de escribir su
+        # archivo BLOQUEA la tarjeta — la vuelta siguiente concilia la
+        # tarjeta bloqueada y cierra el intento por la incidencia de
+        # transporte ANTES de que _despachar_ejecutores lea el archivo. Sin
+        # el consumo en la conciliación, la reserva quedaba quemada y el
+        # archivo huérfano. Aquí el hijo bloquea él mismo y devuelve su
+        # reserva (como el hijo real, F8): la conciliación la reintenta de
+        # forma idempotente y consume el archivo.
+        tienda, kanban = self.frescar()
+        lanzar = self.hijo_que_escribe(
+            "router-no-configurado",
+            "No model chain configured for profile: codex",
+        )
+        primera = self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(primera.lanzamientos, 1)
+        # El hijo real: bloquea la tarjeta Y devuelve su reserva.
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        with kanban.write_txn() as escritura:
+            escritura.bloquear(
+                tarjeta.id,
+                ejecutor.motivo_de_outcome(
+                    {"outcome": "router-no-configurado", "reason": "sin cadena"}
+                ),
+            )
+        self.assertTrue(tienda.devolver_lanzamiento(RAIZ, "a", 1))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        # La vuelta siguiente: conciliación (tarjeta bloqueada → incidencia
+        # de transporte) sin doble devolución ni archivo huérfano.
+        self.vuelta(tienda, kanban, lanzador=self.grabador(nace=False)[0])
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertFalse(archivo_de_resultado(tienda).exists())
+        vista = tienda.leer_vista(RAIZ, hechos_de(tienda))
+        self.assertIn(
+            "recovery-transport-failure",
+            [i["incident"]["kind"] for i in vista["incidencias"]],
+        )
+
+    def test_sin_driver_devuelve_la_reserva_y_no_toca_la_tarjeta(self):
+        # F8: sin el driver de la cadena el hijo no llega ni a tocar la
+        # tarjeta, pero la reserva del lanzamiento tampoco se consumió: se
+        # devuelve (el relanzamiento tras el TTL reserva la suya limpia).
+        tienda, kanban = self.frescar()
+        lanzar, _llamadas = self.grabador()
+        self.vuelta(tienda, kanban, lanzador=lanzar)
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
+        sin_driver = mock.patch.object(ejecutor, "_driver_de_cadena", return_value=None)
+        sin_driver.start()
+        self.addCleanup(sin_driver.stop)
+        resultado = ejecutor.correr_intento(
+            str(tienda.ruta), str(self.ruta_kanban), RAIZ, "a", 1
+        )
+        self.assertEqual(resultado["outcome"], "sin-driver")
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
+        tarjeta = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
+        self.assertEqual(tarjeta.estado, "pendiente")
 
     def test_hijo_con_error_tras_la_llamada_conserva_la_reserva(self):
         # "error" puede llegar después de un run: la reserva NO se devuelve
@@ -848,6 +1078,13 @@ class ElLanzadorDeProduccion(Escenario):
         kanban = KanbanHermes(self.ruta_kanban)
         self.addCleanup(kanban.cerrar)
         tarjeta = self.encredar(tienda, kanban)  # slug sin workspace
+        # F8: con el reclamo de producción en la mesa (el ticker lo toma
+        # ANTES de nacer al hijo), el hijo REAL — este bootstrap con
+        # sys.executable — bloquea la tarjeta por el workspace ausente Y
+        # DEVUELVE la reserva: su desenlace es previo a la llamada al modelo.
+        reclamo = tienda.reclamar_lanzamiento(RAIZ, "a", 1, tarjeta.id)
+        self.assertFalse(hasattr(reclamo, "codigo"))
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 1)
         lanzar = ejecutor.lanzador_de(base, self.ruta_kanban)
         nacido = lanzar(RAIZ, "a", 1, tarjeta.id)
         self.assertIsNotNone(nacido)
@@ -864,6 +1101,11 @@ class ElLanzadorDeProduccion(Escenario):
         self.assertEqual(documento["outcome"], "workspace-unavailable")
         cerrada = kanban.leer_estado(clave_de_tarjeta(RAIZ, "a", 1))
         self.assertEqual(cerrada.estado, "bloqueada")
+        # F8 en el camino REAL: el hijo devolvió su reserva (no solo en el
+        # camino de prueba donde el ticker consume el archivo) y el reclamo
+        # se fue de la mesa.
+        self.assertEqual(tienda.llamadas_modelo(RAIZ), 0)
+        self.assertIsNone(tienda._una_fila("SELECT * FROM lanzamientos"))
         # Cosechar al hijo detached: sin zombie ni ResourceWarning al salir.
         try:
             os.waitpid(nacido["pid"], 0)
@@ -893,6 +1135,18 @@ class ExtremoAExtremo(Escenario):
         (ruta_repo / "README.md").write_text("uno", encoding="utf-8")
         subprocess.run(["git", "-C", str(ruta_repo), "add", "."], check=True)
         subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ruta_repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/david/repo-e2e.git",
+            ],
+            check=True,
+        )
+        subprocess.run(
             ["git", "-C", str(ruta_repo), "commit", "-q", "-m", "uno"], check=True
         )
         sha = subprocess.run(
@@ -912,6 +1166,14 @@ class ExtremoAExtremo(Escenario):
         puerta = mock.patch("raices.capacidades.abrir_ruta", return_value=(True, None))
         puerta.start()
         self.addCleanup(puerta.stop)
+        # F9: la raíz de trabajo permitida de esta PC de pruebas (el store
+        # vive en <base>/sistema-agentes.db, así que la lista va en
+        # <base>/raices/workspaces.json y el checkout e2e queda dentro).
+        raices_base = base / "raices"
+        raices_base.mkdir(parents=True, exist_ok=True)
+        (raices_base / "workspaces.json").write_text(
+            json.dumps([str(base)]), encoding="utf-8"
+        )
         perfil_scout = base / "profiles" / "scout"
         perfil_scout.mkdir(parents=True)
         (perfil_scout / "goncloud-managed.json").write_text(

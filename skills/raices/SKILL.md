@@ -25,9 +25,14 @@ El `assignment` lleva: `target` `{kind: "cli", hostId: "gon-pc",
 adapterId: <perfil>}`, `instructionRef` `{ref, digest}` (el del brief),
 `resultContract: "review.v1"`, `inputRevision` con el sha REAL del head
 (`git ls-remote` o `gh`; nunca inventado) y `workspace`: la ruta ABSOLUTA del
-checkout local del repo en la PC, el directorio donde el hijo corre — sin
-`workspace` (o con una ruta que no existe) la tarjeta se bloquea, no se
-relanza. `continuation` `{kind: "requester"}`.
+checkout local del repo en la PC, el directorio donde el hijo corre — tiene
+que ser el checkout del repo autorizado (su remoto origin corresponde al slug
+de `repository`) y vivir bajo la raíz de trabajo permitida de la PC
+(`raices/workspaces.json`); otro repo, sin origin o fuera de esa raíz bloquea
+la tarjeta. Sin `workspace` (o con una ruta que no existe) la tarjeta se
+bloquea: el reintento automático vuelve a levantar una tarjeta nueva mientras
+siga faltando, hasta el tope de reintentos. `continuation`
+`{kind: "requester"}`.
 
 ## Al despertar por despertar-raices
 
@@ -47,8 +52,11 @@ El cron te avisa en el chat qué raíz necesita qué. Léela con
   "review.v1"`, `inputRevision` con el slug `owner/nombre` EXACTO que lista la
   autoridad (el contrato lo exige así), el sha REAL del head (`git ls-remote`
   o `gh`; nunca inventado) y `workspace`: la ruta ABSOLUTA del checkout local
-  de ese repo en la PC — es el directorio donde el hijo corre; sin `workspace`
-  la tarjeta se bloquea. `continuation` `{kind: "requester"}`, y el brief
+  de ESE repo en la PC — es el directorio donde el hijo corre, y el origin
+  del checkout tiene que corresponder al slug y vivir bajo la raíz de trabajo
+  permitida; sin `workspace` la tarjeta se bloquea y el reintento automático
+  la vuelve a lanzar mientras siga faltando. `continuation`
+  `{kind: "requester"}`, y el brief
   (instruction_put) con las instrucciones.
 - `assignment` con razón `correction`: mismo carril, el brief lleva los
   `findingsRefs` de la necesidad.

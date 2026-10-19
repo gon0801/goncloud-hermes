@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -51,6 +52,7 @@ OUTCOMES_TERMINALES = frozenset(
         "error",
         "sin-driver",
         "workspace-unavailable",
+        "workspace-no-autorizado",
         "instruccion-ilegible",
         "router-no-configurado",
         "tarjeta-incompletable",
@@ -65,6 +67,7 @@ OUTCOMES_SIN_LLAMADA = frozenset(
     {
         "sin-driver",
         "workspace-unavailable",
+        "workspace-no-autorizado",
         "instruccion-ilegible",
         "router-no-configurado",
     }
@@ -90,22 +93,27 @@ def cargar_politicas() -> dict:
     return store_module.leer_politicas()
 
 
-def perfiles_de_despacho_nativo() -> frozenset:
+def perfiles_de_despacho_nativo(raiz=None) -> frozenset | None:
     """Los especialistas que el despachador nativo del gateway SÍ corre
     (team.json kanban.dispatch_profiles). A esos el ticker NUNCA les lanza el
     ejecutor: su ruta es la compuerta poteto del gateway, que los niega con
-    causa poteto:<perfil> (H4b2, I08). El archivo vive en la raíz del repo, la
-    misma resolución que usa poteto para su copia (poteto.REPO = parents[3]);
-    sin archivo legible, vacío — la puerta poteto del despacho sigue siendo la
-    que decide, esto solo evita lanzar dos veces lo mismo."""
-    raiz = Path(__file__).resolve().parents[3]
+    causa poteto:<perfil> (H4b2, I08). `raiz` es la costura de prueba; sin
+    ella, la raíz del repo — la misma resolución que usa poteto para su copia
+    (poteto.REPO = parents[3]; el cron de producción corre desde el checkout,
+    que es donde vive team.json). FAIL CLOSED (hilo de CodeRabbit 4309610867):
+    un team.json ausente, ilegible o sin dispatch_profiles NO es "nadie lo
+    corre el nativo" (eso lanzaría ejecutores DOBLES — hijo y despachador
+    nativo — y dos reservas por tarjeta) sino "no se sabe": None y
+    _despachar_ejecutores se salta ENTERA la fase de lanzamiento de la vuelta
+    con el aviso en stderr; la vuelta siguiente, con el archivo bueno, sigue."""
+    raiz = Path(raiz) if raiz is not None else Path(__file__).resolve().parents[3]
     try:
         team = json.loads((raiz / "team.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return frozenset()
+        return None
     perfiles = (team.get("kanban") or {}).get("dispatch_profiles")
     if not isinstance(perfiles, list):
-        return frozenset()
+        return None
     return frozenset(str(p) for p in perfiles)
 
 
@@ -268,10 +276,19 @@ def _despachar_ejecutores(tienda, puerto, lanzador, vistas, conflictos) -> int:
     el reclamo con su incidencia launch-failed (decidir la clasifica retry).
     Antes de reclamar, el resultado que el hijo dejara escrito en la vuelta
     anterior se consume: un desenlace terminal cierra la tarjeta con su causa
-    (_cerrar_hijo_terminal) en lugar de relanzar a ciegas."""
+    (_cerrar_hijo_terminal) en lugar de relanzar a ciegas. Y si el team.json
+    no se puede leer (fail closed, 4309610867), NO se lanza nada: con la
+    lista de dispatch_profiles ausente no se sabe a quién corre el despachador
+    nativo y lanzar sería arriesgar el doble run y la doble reserva."""
     if lanzador is None:
         return 0
     despacho_nativo = perfiles_de_despacho_nativo()
+    if despacho_nativo is None:
+        print(
+            "ticker-raices: team.json ilegible; no lanzo ejecutores esta vuelta",
+            file=sys.stderr,
+        )
+        return 0
     lanzados = 0
     tienda.limpiar_lanzamientos()
     for intento in tienda.intentos_lanzables():
@@ -363,6 +380,27 @@ def _cerrar_hijo_terminal(tienda, puerto, intento, resultado) -> None:
             intento["cardId"], ejecutor.motivo_de_outcome(resultado)[:1800]
         )
     if str(resultado.get("outcome")) in OUTCOMES_SIN_LLAMADA:
+        tienda.devolver_lanzamiento(
+            intento["rootId"], intento["unitId"], intento["attempt"]
+        )
+    _consumir_archivo_de_hijo(tienda, intento)
+
+
+def _consumir_archivo_de_hijo(tienda, intento) -> None:
+    """El archivo de resultado del hijo de ESTE intento, consumido (F8): la
+    devolución de la reserva si el desenlace fue ANTES de la llamada al
+    modelo — el hijo real ya la hizo él mismo (ejecutor._devolver_reserva);
+    esta es la del camino donde la conciliación cierra el intento ANTES de
+    que _despachar_ejecutores llegue a leer el archivo, más el hijo que
+    murió justo antes de devolverla — y el borrado del archivo para que no
+    quede huérfano en <raiz>/raices/ejecutor/. Idempotente: sin archivo no
+    hay nada y la devolución solo toca un reclamo vivo."""
+    ejecutor = importlib.import_module("raices.ejecutor")
+    resultado = _resultado_del_hijo(tienda, intento)
+    if (
+        isinstance(resultado, dict)
+        and str(resultado.get("outcome")) in OUTCOMES_SIN_LLAMADA
+    ):
         tienda.devolver_lanzamiento(
             intento["rootId"], intento["unitId"], intento["attempt"]
         )
@@ -546,6 +584,11 @@ def _transporte_caido(tienda, intento, tarjeta) -> None:
         f"tarjeta:{tarjeta.id}",
         {"kind": "recovery-transport-failure", "evidenceRef": tarjeta.id},
     )
+    # F8: el hijo REAL bloquea la tarjeta él mismo y esta conciliación cierra
+    # el intento ANTES de que _despachar_ejecutores llegue a su archivo —
+    # consumirlo aquí (reserva de vuelta si no hubo llamada; el hijo ya la
+    # devolvió, idempotente) para que no quede huérfano ni reserva quemada.
+    _consumir_archivo_de_hijo(tienda, intento)
 
 
 def _reportar(tienda, intento, tarjeta, ahora) -> None:
