@@ -273,6 +273,15 @@ class Certificar(unittest.TestCase):
         self.assertEqual(salida.strip(), "par-incierto")
         self.assertEqual(self.pruebas, [])
 
+    def test_la_version_sin_certificar_abre_con_aviso_y_certifica_igual(self):
+        # Encargo H punto 3: decidir ahora abre con la causa advisoría; el
+        # camino de certificar sigue leyendo la causa, no solo la puerta.
+        codigo, salida = self.certificar(
+            self.argv(), leer_par=lambda: (True, "version-no-certificada", PAR)
+        )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(json.loads(salida)["code_sha"], SHA)
+
 
 class ElLectorUnicoDeVersion(unittest.TestCase):
     """El texto de --version se lee UNA vez: certificar reutiliza el lector de

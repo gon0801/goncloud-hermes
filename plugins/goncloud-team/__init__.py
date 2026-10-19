@@ -90,6 +90,17 @@ def _transport_handlers(ctx):
                     arguments.get("affects_business_rules", False)
                 ),
             )
+            if created.get("queued_behind") is not None:
+                # Encargo H punto 2: the repository still has a live chain;
+                # the new one waits in queue instead of failing, and the
+                # next run (or resume) starts it when the old one finishes.
+                # No driver is spawned over the busy checkout.
+                return json.dumps(
+                    {**created, "queued": True, "driver_pid": None},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
             launched = orchestrator.launch_detached(
                 created["workflow_id"], stop_after=stop_after
             )

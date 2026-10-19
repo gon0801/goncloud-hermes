@@ -337,13 +337,14 @@ class Decidir(unittest.TestCase):
         hechos = hechos_de(certificadas=[entrada()])
         self.assertEqual(capacidades.decidir(hechos), (True, None))
 
-    def test_la_version_distinta_cierra_por_version_no_certificada(self):
+    def test_la_version_distinta_abre_con_aviso_de_version_no_certificada(self):
+        # Encargo H punto 3: la certificación solo avisa, sin bloquear.
         hechos = hechos_de(certificadas=[entrada(version="0.22.0")])
-        self.assertEqual(capacidades.decidir(hechos), (False, "version-no-certificada"))
+        self.assertEqual(capacidades.decidir(hechos), (True, "version-no-certificada"))
 
-    def test_el_sha_distinto_cierra_por_version_no_certificada(self):
+    def test_el_sha_distinto_abre_con_aviso_de_version_no_certificada(self):
         hechos = hechos_de(certificadas=[entrada(sha=OTRO_SHA)])
-        self.assertEqual(capacidades.decidir(hechos), (False, "version-no-certificada"))
+        self.assertEqual(capacidades.decidir(hechos), (True, "version-no-certificada"))
 
     def test_el_sufijo_que_no_es_prefijo_del_sha_deja_el_par_incierto(self):
         version = capacidades.VersionCLI("0.21.5", OTRO_SHA[:7])
@@ -403,10 +404,10 @@ class Decidir(unittest.TestCase):
             capacidades.decidir(hechos), (False, "capacidad-faltante:link_tasks")
         )
 
-    def test_capacidades_presentas_con_par_sin_certificar_no_abre(self):
+    def test_capacidades_presentes_con_par_sin_certificar_abre_con_aviso(self):
         self.assertEqual(
             capacidades.decidir(hechos_de(certificadas=[])),
-            (False, "version-no-certificada"),
+            (True, "version-no-certificada"),
         )
 
     def test_el_par_de_release_022_sin_certificar_da_version_no_certificada(self):
@@ -416,7 +417,7 @@ class Decidir(unittest.TestCase):
             code_sha="e06df9c2eae6901f4c88f464e0ae6e753c0428b8",
         )
         hechos = hechos_de(version=version, gateway=gateway)
-        self.assertEqual(capacidades.decidir(hechos), (False, "version-no-certificada"))
+        self.assertEqual(capacidades.decidir(hechos), (True, "version-no-certificada"))
 
     def test_el_par_de_release_022_certificado_abre(self):
         sha22 = "e06df9c2eae6901f4c88f464e0ae6e753c0428b8"
@@ -480,7 +481,7 @@ class PuertaViva(unittest.TestCase):
         inexistente = Path(self.directorio.name) / "no-hay" / "certificadas.json"
         self.assertEqual(
             self.abrir(certificados=inexistente),
-            (False, "version-no-certificada"),
+            (True, "version-no-certificada"),
         )
 
     def test_el_estado_detenido_de_un_perfil_no_cuenta(self):

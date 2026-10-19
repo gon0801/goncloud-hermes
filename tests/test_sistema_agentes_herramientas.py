@@ -824,6 +824,19 @@ class PuertaDeCapacidades(Base):
         self.assertEqual(respuesta["rootId"], RAIZ)
         self.assertFalse(respuesta["replayed"])
 
+    def test_version_sin_certificar_abre_con_aviso_en_el_recibo(self):
+        # Encargo H punto 3: la puerta abre con aviso; el submit fluye y el
+        # recibo lleva el aviso sin bloquear nada.
+        herramientas = importlib.import_module("raices.herramientas")
+        respuesta = herramientas.enviar_raiz(
+            {"plan": meta_de()},
+            "claw",
+            home=self.temporal.name,
+            ruta_abierta=lambda: (True, "version-no-certificada"),
+        )
+        self.assertEqual(respuesta["rootId"], RAIZ)
+        self.assertEqual(respuesta["aviso"], "version-no-certificada")
+
     def test_la_lectura_no_consulta_la_puerta(self):
         puerta = mock.MagicMock(return_value=(False, "version-no-certificada"))
         with mock.patch("raices.capacidades.abrir_ruta", puerta):

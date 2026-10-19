@@ -107,8 +107,13 @@ class WorkflowTestCase(unittest.TestCase):
                 sources=SOURCES,
             )
 
-    def test_concurrent_different_requests_cannot_share_one_repository(self) -> None:
-        # Initialize the native schema before racing only the policy decision.
+    def test_concurrent_different_requests_serialize_through_one_repository(
+        self,
+    ) -> None:
+        # Encargo H punto 2: the repository no longer refuses a second chain;
+        # the atomic root insert still serializes the race (each root exactly
+        # once, no half-created chain), and without a subscription store to
+        # prove lease evidence the loser is queued behind, not closed.
         with connect_closing(self.db_path):
             pass
         barrier = threading.Barrier(2)
@@ -132,28 +137,33 @@ class WorkflowTestCase(unittest.TestCase):
                 except WorkflowError as exc:
                     outcomes.append(("error", str(exc)))
 
-        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 1)
-        self.assertEqual([kind for kind, _ in outcomes].count("error"), 1)
-        self.assertIn(
-            "already has active Goncloud workflow",
-            next(value for kind, value in outcomes if kind == "error"),
-        )
+        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 2)
+        self.assertEqual([kind for kind, _ in outcomes].count("error"), 0)
         with connect_closing(self.db_path) as conn:
-            self.assertEqual(len(list_tasks(conn)), 8)
+            self.assertEqual(len(list_tasks(conn, include_archived=True)), 16)
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 2)
+        # The race's loser never even had a driver (no mark, no lease): the
+        # winner's start freed it with the automatic close.
+        self.assertEqual(sum(task.status == "archived" for task in roots), 1)
 
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")
 
-        with self.assertRaisesRegex(
-            WorkflowError, "already has active Goncloud workflow"
-        ):
-            self.service().start(
-                request_key="case-b",
-                repository=str(self.repo).swapcase(),
-                revision="abc123",
-                instruction="Alias of the same repository",
-                sources=SOURCES,
-            )
+        # Encargo H punto 2: the alias of the same repository no longer gets
+        # a refusal — start recognizes the repo through its normalized path.
+        started = self.service().start(
+            request_key="case-b",
+            repository=str(self.repo).swapcase(),
+            revision="abc123",
+            instruction="Alias of the same repository",
+            sources=SOURCES,
+        )
+        self.assertNotIn("already has active Goncloud workflow", repr(started))
 
     def test_native_dependencies_keep_later_stages_from_running_early(self) -> None:
         started = self.start()

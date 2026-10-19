@@ -11,6 +11,7 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_db import (
     add_comment,
+    archive_task,
     block_task,
     complete_task,
     create_task,
@@ -27,14 +28,19 @@ from hermes_cli.kanban_db_graph import decompose_triage_task
 
 try:  # Loaded as the Hermes plugin package.
     from .subscriptions.catalog import compile_profile_routes
-    from .subscriptions.router import SubscriptionRouter
+    from .subscriptions.router import SubscriptionRouter, default_db_path
+    from .subscriptions.state import SubscriptionStateStore
     from .subscriptions.types import InvocationRequest
     from .subscriptions.redaction import sanitize_result, redact_data
 except ImportError:  # Loaded with the plugin directory on sys.path.
     from subscriptions.catalog import compile_profile_routes  # type: ignore
-    from subscriptions.router import SubscriptionRouter  # type: ignore
+    from subscriptions.router import (  # type: ignore
+        SubscriptionRouter,
+        default_db_path,
+    )
+    from subscriptions.state import SubscriptionStateStore  # type: ignore
     from subscriptions.types import InvocationRequest  # type: ignore
-    from subscriptions.redaction import sanitize_result, redact_data
+    from subscriptions.redaction import sanitize_result, redact_data  # type: ignore
 
 
 TEAM_ROLES = (
@@ -73,8 +79,50 @@ HIGH_SEVERITIES = {"high", "critical"}
 
 _WORKFLOW_KEY_PREFIX = "goncloud-workflow:"
 _CONTRACT_MARKER = "GONCLOUD_ENGINEERING_V1\n"
+#: Public alias: local_orchestrator reads workflow contracts through it.
+CONTRACT_MARKER = _CONTRACT_MARKER
+#: Marker of the durable close receipt on the director root; a second close
+#: recognizes it instead of writing another comment. The close tool and the
+#: automatic close of ``start`` write the same receipt (encargo H punto 2).
+CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
+
+#: The reason the automatic close leaves on a chain ``start`` freed for a
+#: new one (encargo H punto 2, the same path goncloud_local_close uses).
+AUTO_CLOSE_REASON = (
+    "auto-closed by WorkflowService.start: the chain's driver had stopped "
+    "and the repository was freed for a new chain"
+)
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
+
+
+def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
+    """(alive, stopped) according to the local driver's own result-file mark.
+
+    The mark is the local driver's lifecycle record — local_orchestrator
+    owns it, so the import stays deferred and one-directional. A running
+    mark whose pid is alive is live work; anything else (a stopped outcome,
+    a dead or recycled pid, no mark at all) proves nothing is running. A
+    helper that cannot even load answers alive: fail closed, never archive
+    on missing evidence.
+    """
+    try:
+        try:
+            from .local_orchestrator import driver_mark_live, read_driver_mark
+        except ImportError:
+            from local_orchestrator import driver_mark_live, read_driver_mark
+    except ImportError:
+        return True, False
+    mark = read_driver_mark(workflow_id)
+    if (
+        isinstance(mark, dict)
+        and mark.get("outcome") == "running"
+        and driver_mark_live(mark)
+    ):
+        return True, False
+    return False, True
+
+
 _SUBSCRIPTION_EVIDENCE_KEYS = (
     "workflow_id",
     "stage_id",
@@ -92,6 +140,17 @@ _SUBSCRIPTION_EVIDENCE_KEYS = (
 
 class WorkflowError(ValueError):
     """A rejected workflow operation safe to return through a model tool."""
+
+
+class _StoreUnavailable:
+    """Sentinel: the subscription store could not be opened, so lease
+    evidence is unchecked and nothing may be auto-closed on its absence."""
+
+
+#: Root statuses a chain close (the tool and the automatic one) accepts;
+#: anything else is either live work, already delivered, or not a decidable
+#: chain. "triage" covers a root whose decomposition failed after the insert.
+CLOSEABLE_ROOT_STATUSES = frozenset({"todo", "ready", "scheduled", "blocked", "triage"})
 
 
 def _build_subscription_router(**_kwargs):
@@ -334,10 +393,19 @@ class WorkflowService:
         body = _contract_body(contract)
         idempotency_key = _WORKFLOW_KEY_PREFIX + request_key
 
+        # Encargo H punto 2: one active chain per repository, without the
+        # refusal. A chain whose driver already stopped is closed here with
+        # the same native path goncloud_local_close uses; a chain whose
+        # driver may still be working leaves the new one queued (the caller
+        # sees queued_behind and the driver's own repository guard fences
+        # the checkout) instead of failing.
+        store = self._subscription_store_checked()
         with self._connect() as conn:
             # BEGIN IMMEDIATE makes the same-repository check and root insert a
             # single native DB decision across concurrent gateway processes.
             # create_task explicitly supports nested composition via savepoint.
+            queued_behind = None
+            stopped_chains = []
             with write_txn(conn):
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
@@ -352,11 +420,12 @@ class WorkflowService:
                         continue
                     if active.status in {"done", "archived"}:
                         continue
-                    if active.idempotency_key != idempotency_key:
-                        raise WorkflowError(
-                            f"repository already has active Goncloud workflow {active.id}; "
-                            "wait for its director root to finish"
-                        )
+                    if active.idempotency_key == idempotency_key:
+                        continue
+                    if self._foreign_chain_alive(conn, active, store=store):
+                        queued_behind = queued_behind or active.id
+                    else:
+                        stopped_chains.append(active.id)
                 root_id = create_task(
                     conn,
                     title=f"Engineering: {instruction[:120]}",
@@ -368,6 +437,12 @@ class WorkflowService:
                     triage=True,
                     idempotency_key=idempotency_key,
                 )
+            closed_chains = [
+                old_id
+                for old_id in stopped_chains
+                if self._auto_close_stopped_chain(old_id, store=store)
+            ]
+
             root = get_task(conn, root_id)
             if root is None:
                 raise WorkflowError("native Kanban did not persist the workflow root")
@@ -391,7 +466,94 @@ class WorkflowService:
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
-            return self._start_result(root_id, child_ids)
+            result = self._start_result(root_id, child_ids)
+            result["queued_behind"] = queued_behind
+            result["closed_chains"] = sorted(closed_chains)
+            return result
+
+    @staticmethod
+    def _subscription_store_checked() -> Any:
+        """The subscription store for lease evidence, or a sentinel.
+
+        A missing store file means no router ever leased anything here: that
+        is checked ground, not a failure (None). A store that cannot be
+        opened is unchecked ground — ``_StoreUnavailable`` — and the caller
+        treats every chain as possibly alive instead of archiving without
+        lease evidence.
+        """
+        path = default_db_path()
+        if not path.exists():
+            return None
+        try:
+            return SubscriptionStateStore(path)
+        except Exception:
+            return _StoreUnavailable()
+
+    def _foreign_chain_alive(self, conn: Any, active: Any, *, store: Any) -> bool:
+        """Whether another chain's driver may still be working its repository."""
+        if isinstance(store, _StoreUnavailable):
+            return True
+        if active.status == "running":
+            return True
+        initial_ids = self._decomposed_child_ids(conn, active.id) or []
+        correction = self._correction_ids(conn, active.id)
+        if any(
+            self._require_task(conn, task_id).status == "running"
+            for task_id in [*initial_ids, *correction.values()]
+        ):
+            return True
+        if store is not None and store.active_leases(active.id):
+            return True
+        alive, _stopped = _driver_signals(active.id)
+        return alive
+
+    def _auto_close_stopped_chain(self, workflow_id: str, *, store: Any) -> bool:
+        """Free a chain whose driver already stopped; True when this call did.
+
+        The same path goncloud_local_close uses: the native per-task archive
+        for the director root and every stage that is not done (done stages
+        stay as evidence), and the close comment with the reason on the
+        root. Every guard runs fresh right before the writes: a chain that
+        turned alive in the meantime is left alone, and the new chain then
+        queues behind it through the driver's own repository guard.
+        """
+        if isinstance(store, _StoreUnavailable) or store is None:
+            return False
+        with self._connect() as conn:
+            root = self._require_workflow_root(conn, workflow_id)
+            if root.status not in CLOSEABLE_ROOT_STATUSES:
+                return False
+            initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
+            correction = self._correction_ids(conn, workflow_id)
+            members = [(workflow_id, root.status)] + [
+                (task_id, self._require_task(conn, task_id).status)
+                for task_id in [*initial_ids, *correction.values()]
+            ]
+            if any(status == "running" for _, status in members):
+                return False
+        if store.active_leases(workflow_id):
+            return False
+        alive, _stopped = _driver_signals(workflow_id)
+        if alive:
+            return False
+        with self._connect() as conn:
+            for member_id, member_status in members:
+                if member_status in {"archived", "done"}:
+                    continue
+                if not archive_task(conn, member_id):
+                    raise WorkflowError(f"native Kanban refused to archive {member_id}")
+            comment = CLOSE_COMMENT_MARKER + json.dumps(
+                {"reason": AUTO_CLOSE_REASON, "workflow_id": workflow_id},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if not any(
+                item.body.startswith(CLOSE_COMMENT_MARKER)
+                for item in list_comments(conn, workflow_id)
+            ):
+                add_comment(conn, workflow_id, "claw", comment)
+        return True
 
     def start_contract(self, *, request_key: str) -> Optional[dict]:
         """Read the original provenance for an idempotent local start."""

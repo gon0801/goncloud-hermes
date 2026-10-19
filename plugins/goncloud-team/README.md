@@ -132,12 +132,16 @@ ambos con las mismas garantías que ticker-raices.
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
-raices cerrada (H4a: capacidad faltante, par incierto o par sin certificar en
-`raices/certificadas.json`) el cron avisa `CAPACIDAD_INCIERTA` una vez por
+raices cerrada (H4a: capacidad faltante o par incierto) el cron avisa
+`CAPACIDAD_INCIERTA` una vez por
 cambio de causa y sale 0; la vuelta sigue corriendo cerrada, con bloqueos y
 conciliacion pero sin decidir ni despachar ni correr la pasada del emisor, y si
-falta una capacidad ni siquiera abre el store. `goncloud_root_submit` responde
-`ruta-cerrada` con la causa; el par nuevo se acredita con `raices/certificar.py`
+falta una capacidad ni siquiera abre el store. Una version sin certificar en
+`raices/certificadas.json` ya no cierra (encargo H punto 3): la puerta abre con
+aviso, el cron imprime `AVISO` una vez por cambio de causa y la vuelta corre
+abierta. `goncloud_root_submit` responde
+`ruta-cerrada` con la causa cuando la puerta cierra, y lleva el `aviso` en el
+recibo cuando abre con uno; el par nuevo se acredita con `raices/certificar.py`
 en la PC y entra por PR. El store vive en la raíz del home de Hermes
 (`raices/hogar.py` la resuelve con `hermes_constants`: el home de perfil del
 gateway y el del cron suben a la misma raíz); el kanban, `HERMES_KANBAN_DB` o
@@ -223,15 +227,32 @@ and writes its outcome under the same `run_id` when it quits, so a stopped
 outcome is only evidence while it is the file's last write: a relaunched
 chain refuses the close until its own driver stops, and an unreadable result
 file fails closed. A driver that dies without writing its outcome leaves the
-mark in `running`; one more `resume` produces a fresh outcome.
+mark in `running`; one more `resume` produces a fresh outcome. A `running`
+mark is read through its pid (encargo H punto 4): the marked process must
+predate its own mark, so a dead pid — or one recycled by a process born
+after the mark — reads as a stopped driver, while a live pid keeps the close
+refused and a relaunch queued.
+Relaunching is retrying (encargo H punto 1): a run whose request key lands
+on a chain with blocked stages and a stopped driver unblocks those stages
+with the native unblock and opens a new attempt generation for each, so the
+router calls the model again instead of replaying the recorded result. Done
+stages are respected; reviewer stages stay closed (the two-round ceiling and
+its durable decision are contracts); there is no retry cap.
 Delivery closes the director root after all stages and review gates finish.
-A chain left paused (a `stop_after` checkpoint), blocked, waiting or error
-still holds the same-repository mutex: `WorkflowService.start` refuses every
-new chain in that repository until its director root is done or archived.
-The claw profile releases it with `goncloud_local_close` (`workflow_id`,
-`reason`): the tool requires durable evidence that the driver is gone — one
+`WorkflowService.start` no longer refuses when a repository already has an
+active chain (encargo H punto 2): a chain whose driver already stopped is
+closed automatically with the same native path `goncloud_local_close` uses
+(the not-done stages archived, the reason left as a close comment), and the
+new chain starts; a chain whose driver may still be working — a running
+stage, a live subscription lease, or a live running mark — leaves the new
+one queued instead of failing, and the next run (or `resume`) starts it when
+the old chain finishes. Two drivers never edit the same checkout at once.
+The claw profile can still release a chain with `goncloud_local_close`
+(`workflow_id`, `reason`): the tool requires durable evidence that the
+driver is gone — one
 of the driver's own stopped outcomes (paused, blocked, waiting or error) as
-the result file's last write, and no live subscription lease — and it
+the result file's last write, a running mark whose pid is gone, and no live
+subscription lease — and it
 archives the root and the stages that are not done through the native
 `archive` (one native transaction per task, never nested in one of its own),
 keeps the done stages as evidence,
@@ -240,8 +261,8 @@ from the resulting durable state, so closing an already-closed chain returns
 the same receipt. A root stuck in `triage` without its stage graph (a
 decomposition that failed after the root insert) closes the same way, since
 it never had a driver. `goncloud_local_status` announces the close with a
-`close_hint` only under the same evidence: a live lease or a missing driver
-outcome never advertises the close.
+`close_hint` only under the same evidence: a live lease or a live driver
+never advertises the close.
 
 Reviewer envelopes remain available as bounded handoff/status evidence,
 including evidence needed by a corrective implementer. Decisions still come

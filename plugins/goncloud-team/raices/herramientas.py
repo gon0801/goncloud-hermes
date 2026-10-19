@@ -63,7 +63,8 @@ def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
     # la ruta cerrada, sin abrir la tienda; el dueño sigue leyendo y frenando
     # con read, control y resolve. La puerta mira el gateway_state.json de la
     # RAIZ (hogar.raiz_del_hogar: el home de un perfil sube, nunca HERMES_HOME
-    # pelado; cierra el F8 del bot).
+    # pelado; cierra el F8 del bot). Una version sin certificar ya no niega
+    # el submit (encargo H punto 3): abre con aviso y el recibo lo lleva.
     capacidades = importlib.import_module("raices.capacidades")
     raiz = hogar.raiz_del_hogar(home)
     puerta = ruta_abierta or (lambda: capacidades.abrir_ruta(home=raiz))
@@ -75,7 +76,7 @@ def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
         respuesta = tienda.abrir_raiz(plan)
     finally:
         tienda.cerrar()
-    return _de_ok(
+    recibo = _de_ok(
         respuesta,
         lambda recibo: {
             "rootId": recibo.root_id,
@@ -83,6 +84,9 @@ def enviar_raiz(argumentos, perfil, home=None, ruta_abierta=None):
             "controlEpoch": recibo.control_epoch,
         },
     )
+    if causa is not None:
+        recibo["aviso"] = causa
+    return recibo
 
 
 def leer_raiz(argumentos, perfil, home=None):

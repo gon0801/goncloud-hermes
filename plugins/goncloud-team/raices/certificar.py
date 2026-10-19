@@ -146,7 +146,9 @@ def main(
         return 1
 
     abierta, causa, par = leer_par()
-    if abierta:
+    # Encargo H punto 3: decidir abre con aviso para una versión sin
+    # certificar — la causa, no solo la puerta, decide el camino.
+    if abierta and causa is None:
         print("el par vivo ya esta certificado")
         return 0
     if causa != "version-no-certificada" or not isinstance(par, dict):

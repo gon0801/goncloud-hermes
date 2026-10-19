@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,9 @@ from hermes_cli.kanban_db import (
     complete_task,
     list_comments,
     list_runs,
+    list_tasks,
     parent_ids,
+    unblock_task,
 )
 from hermes_cli.kanban_db_connect import write_txn
 
@@ -29,6 +32,9 @@ try:
     from .subscriptions.router import GitInspector, default_db_path
     from .subscriptions.state import SubscriptionStateStore
     from .workflow import (
+        CLOSEABLE_ROOT_STATUSES as _CLOSEABLE_ROOT_STATUSES,
+        CLOSE_COMMENT_MARKER as _CLOSE_COMMENT_MARKER,
+        CONTRACT_MARKER as _CONTRACT_MARKER_REF,
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
         WorkflowError,
@@ -39,6 +45,9 @@ except ImportError:
     from subscriptions.router import GitInspector, default_db_path
     from subscriptions.state import SubscriptionStateStore
     from workflow import (
+        CLOSEABLE_ROOT_STATUSES as _CLOSEABLE_ROOT_STATUSES,
+        CLOSE_COMMENT_MARKER as _CLOSE_COMMENT_MARKER,
+        CONTRACT_MARKER as _CONTRACT_MARKER_REF,
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
         WorkflowError,
@@ -50,19 +59,6 @@ MAX_TERMINAL_BYTES = 1800
 #: 2026-09-28, ingenieria wrote and committed the change itself and scout did
 #: the same on another run; instructions alone did not hold.
 _READ_ONLY_STAGES = frozenset({"scout", "ingenieria"})
-
-#: Root statuses a close accepts; anything else is either live work, already
-#: delivered, or not a decidable chain. Live 2026-10-18, a read-only
-#: diagnostic (stop_after=scout) stayed outcome "paused" with its director
-#: root in "todo" and WorkflowService.start refused every new chain in the
-#: repository; claw had no way to release it. "triage" covers the same jam
-#: with another cause: a root whose decomposition failed after the insert
-#: (workflow.py inserts the root and decomposes afterwards) also blocks the
-#: repository forever, and closing it archives the root plus whatever stages
-#: exist.
-_CLOSEABLE_ROOT_STATUSES = frozenset(
-    {"todo", "ready", "scheduled", "blocked", "triage"}
-)
 
 #: Durable driver outcomes that prove the driver process stopped. "paused"
 #: and "blocked" are its own checkpoints; "waiting" is a stage whose parents
@@ -76,9 +72,16 @@ _CLOSEABLE_ROOT_STATUSES = frozenset(
 #: stopped outcome is only evidence while it is the file's last write.
 _STOPPED_DRIVER_OUTCOMES = frozenset({"paused", "blocked", "waiting", "error"})
 
-#: Marker of the durable close receipt on the director root; a second close
-#: recognizes it instead of writing another comment.
-_CLOSE_COMMENT_MARKER = "GONCLOUD_LOCAL_CLOSE_V1\n"
+#: How far a running mark's started_at may sit from the marked process's own
+#: start (encargo H punto 4). The mark keeps seconds precision and the POSIX
+#: read of the process start is second-granular elapsed time, so a small
+#: tolerance absorbs the rounding; a recycled pid starts much earlier or
+#: later than the mark and reads as dead.
+_DRIVER_START_TOLERANCE_SECONDS = 5
+
+#: Stages the retry generation never reopens: the reviewer's two-round
+#: ceiling and its durable decision are a product contract, not a jam.
+_RETRY_EXEMPT_ROLES = frozenset({"reviewer", "round2:reviewer"})
 
 #: The reason is bounded like the other model-supplied texts.
 MAX_CLOSE_REASON_CHARS = 1000
@@ -140,6 +143,7 @@ _DRIVER_BOOTSTRAP = (
     "import json, os, sys\n"
     "plugin, hermes, workflow_id, out = sys.argv[1:5]\n"
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
+    "launch_run_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None\n"
     "sys.path.insert(0, hermes)\n"
     "try:\n"
     "    try:\n"
@@ -149,7 +153,8 @@ _DRIVER_BOOTSTRAP = (
     "            raise\n"
     "    sys.path.insert(0, plugin)\n"
     "    from local_orchestrator import LocalOrchestrator\n"
-    "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after)\n"
+    "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after,\n"
+    "                                        launch_run_id=launch_run_id)\n"
     "except Exception:\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
     "              'error': 'local driver failed; check durable status'}\n"
@@ -186,7 +191,7 @@ def _running_mark(workflow_id, run_id):
     evidence that got live chains archived — with "running" under its own
     run id, and the same run overwrites the mark with its outcome when it
     quits. The pid stays as evidence for telling a dead driver from a live
-    one; nothing acts on it yet.
+    one (encargo H punto 4); nothing acted on it before that check existed.
     """
     return {
         "workflow_id": workflow_id,
@@ -195,6 +200,141 @@ def _running_mark(workflow_id, run_id):
         "pid": os.getpid(),
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def _process_start_epoch(pid):
+    """Epoch seconds when the process started, or None if it is gone.
+
+    POSIX asks ps for the elapsed time (both macOS and Linux serve it; macOS
+    has no /proc and no etimes keyword) and derives the start from it. Windows
+    asks for the creation time through OpenProcess/GetExitCodeProcess-grade
+    handles. A dead or unanswerable pid returns None.
+    """
+    if type(pid) is not int or pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return None
+            try:
+                creation, exit_time, kernel_time, user_time = (
+                    wintypes.FILETIME(),
+                    wintypes.FILETIME(),
+                    wintypes.FILETIME(),
+                    wintypes.FILETIME(),
+                )
+                if not kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel_time),
+                    ctypes.byref(user_time),
+                ):
+                    return None
+            finally:
+                kernel32.CloseHandle(handle)
+            stamp = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+            return stamp / 10_000_000 - 11644473600
+        except (OSError, AttributeError, ValueError):
+            return None
+    try:
+        finished = subprocess.run(
+            ["ps", "-o", "etime=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if finished.returncode != 0:
+        return None
+    elapsed = finished.stdout.strip()
+    try:
+        # [[dd-]hh:]mm:ss — a young process carries no day part.
+        day_text, has_days, clock = elapsed.partition("-")
+        values = (
+            [int(part) for part in clock.split(":")]
+            if has_days
+            else [int(part) for part in elapsed.split(":")]
+        )
+        if len(values) == 3:
+            hours, minutes, seconds = values
+        elif len(values) == 2:
+            hours, minutes, seconds = 0, values[0], values[1]
+        else:
+            return None
+        lived = (
+            (int(day_text) if has_days else 0) * 86400
+            + hours * 3600
+            + minutes * 60
+            + seconds
+        )
+    except ValueError:
+        return None
+    return time.time() - max(lived, 0)
+
+
+def driver_mark_live(mark, *, process_start=None):
+    """Whether a running mark's pid belongs to the process that wrote it.
+
+    Encargo H punto 4: a dead driver is not a live one. A missing or
+    unreadable pid fails closed (a driver may be alive). The marked process
+    must predate its own mark — it wrote it while running. A pid that only
+    came to exist after the mark was written was recycled by another
+    process: the marked driver is gone, so the mark reads as dead. A
+    long-lived launcher (the gateway) predates its marks by hours and reads
+    as live, exactly like the short-lived driver that starts with its mark.
+    """
+    if not isinstance(mark, dict):
+        return True
+    pid = mark.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return True
+    started = (process_start or _process_start_epoch)(pid)
+    if started is None:
+        return False
+    try:
+        marked = datetime.fromisoformat(
+            str(mark.get("started_at", "")).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return True
+    if marked.tzinfo is None:
+        marked = marked.replace(tzinfo=timezone.utc)
+    return started <= marked.timestamp() + _DRIVER_START_TOLERANCE_SECONDS
+
+
+def driver_stopped(mark):
+    """Durable evidence the driver stopped: one of its stopped outcomes as
+    the file's last write, or a running mark whose process is gone (a dead
+    or recycled pid — encargo H punto 4). Anything else reads as a driver
+    that may still be running."""
+    outcome = (mark or {}).get("outcome")
+    if outcome in _STOPPED_DRIVER_OUTCOMES:
+        return True
+    return outcome == "running" and not driver_mark_live(mark)
+
+
+def read_driver_mark(workflow_id, *, home=None):
+    """The result file's last write, or None when there is no file.
+
+    An unreadable file proves nothing about the driver (live review F8):
+    fail closed as a running mark instead of deriving a stopped outcome.
+    """
+    check_workflow_id(workflow_id)
+    home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
+    result_file = _result_file(workflow_id, home)
+    if not result_file.is_file():
+        return None
+    try:
+        return json.loads(result_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"workflow_id": workflow_id, "outcome": "running"}
 
 
 # Vendors differ on whether they break the line before the opening fence, so the
@@ -220,24 +360,29 @@ def check_workflow_id(workflow_id):
     return workflow_id
 
 
-def close_hint(status_output, driver_outcome, *, driver_live=False):
+def close_hint(status_output, driver_outcome, *, driver_live=False, pid_live=None):
     """What goncloud_local_status tells claw about closing this chain.
 
     Every driver start overwrites the result file with a running mark under
     its own run id, and the driver's stopped outcome is only written when it
     quits — so a stopped outcome there means the last driver is gone. A
     close is announced only with one of those stopped outcomes (paused,
-    blocked, waiting or error), no live lease, and a root status that is
-    closeable at all (a done root was delivered; an archived one is already
-    closed; a running or unknown one is never announced).
+    blocked, waiting or error), a running mark whose process is gone
+    (pid_live=False, encargo H punto 4), no live lease, and a root status
+    that is closeable at all (a done root was delivered; an archived one is
+    already closed; a running or unknown one is never announced).
     """
     root_status = (status_output.get("root") or {}).get("status")
     if root_status not in _CLOSEABLE_ROOT_STATUSES:
         return None
-    if driver_outcome not in _STOPPED_DRIVER_OUTCOMES or driver_live:
+    stopped = driver_outcome in _STOPPED_DRIVER_OUTCOMES or (
+        driver_outcome == "running" and pid_live is False
+    )
+    if not stopped or driver_live:
         return None
     return (
-        "driver stopped (paused, blocked, waiting or error): close it with "
+        "driver stopped (paused, blocked, waiting or error as the last "
+        "write; a running mark whose pid is gone counts too): close it with "
         "goncloud_local_close {workflow_id, reason} to free the repository "
         "for a new chain"
     )
@@ -542,19 +687,42 @@ class LocalOrchestrator:
                 "INSERT OR IGNORE INTO goncloud_local_workflows VALUES (?, ?)",
                 (workflow_id, max_steps),
             ).close()
-        return {"workflow_id": workflow_id, "stages": dict(started["stages"])}
+        result = {"workflow_id": workflow_id, "stages": dict(started["stages"])}
+        # Encargo H punto 2: start ya no rechaza — la cadena vieja parada se
+        # cerro sola y una viva deja la nueva en cola. El transporte no
+        # lanza driver sobre una cola: la cadena arranca con el siguiente
+        # goncloud_local_run (o resume) cuando la vieja termine.
+        if started.get("queued_behind") is not None:
+            result["queued_behind"] = started["queued_behind"]
+        if started.get("closed_chains"):
+            result["closed_chains"] = list(started["closed_chains"])
+        return result
 
     def launch_detached(self, workflow_id, *, home=None, stop_after=None):
         """Drive a created workflow in a detached process and return at once.
 
-        Only identifiers travel in argv (the workflow id and, for a read-only
-        inspection, the stage to stop after); the assignment stays in the
-        durable contract. Vendor diagnostics go nowhere (the driver prints
-        nothing); the bounded result lands in a private file under the home.
+        Only identifiers travel in argv (the workflow id, its launch's run id
+        and, for a read-only inspection, the stage to stop after); the
+        assignment stays in the durable contract. Vendor diagnostics go
+        nowhere (the driver prints nothing); the bounded result lands in a
+        private file under the home.
         """
         check_workflow_id(workflow_id)
         self._check_stop(stop_after)
         home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
+        # A relaunch never spawns a second driver over a live one (encargo H
+        # punto 2): the running mark written by that driver is the life
+        # signal, and the queue — not a refusal — is the answer. Our own
+        # process's pid marks a previous run of this very process, not
+        # another driver.
+        mark = read_driver_mark(workflow_id, home=home)
+        if (
+            isinstance(mark, dict)
+            and mark.get("outcome") == "running"
+            and driver_mark_live(mark)
+            and mark.get("pid") != os.getpid()
+        ):
+            return {"workflow_id": workflow_id, "queued": True}
         # The start itself invalidates whatever outcome a previous driver
         # left (live review F8): from here on the file says running under
         # this launch's id, until this run's driver overwrites it with its
@@ -573,6 +741,7 @@ class LocalOrchestrator:
             str(workflow_id),
             str(result_file),
             *([str(stop_after)] if stop_after else []),
+            str(mark["run_id"]),
         ]
         detach = (
             {
@@ -592,6 +761,12 @@ class LocalOrchestrator:
             close_fds=True,
             **detach,
         )
+        # The pre-spawn mark carries the launcher's pid, which outlives the
+        # driver (the gateway stays up for days): a driver dead before its
+        # own entry-mark would read as live forever. With the driver's real
+        # pid, that death is exactly what the pid-liveness check (encargo H
+        # punto 4) reads as a stopped driver. The run id stays the launch's.
+        _write_result(workflow_id, {**mark, "pid": process.pid}, home=home)
         return {
             "workflow_id": workflow_id,
             "driver_pid": process.pid,
@@ -601,18 +776,7 @@ class LocalOrchestrator:
 
     def driver_result(self, workflow_id, *, home=None):
         """The detached driver's bounded outcome, or None while it still runs."""
-        check_workflow_id(workflow_id)
-        home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
-        result_file = _result_file(workflow_id, home)
-        if not result_file.is_file():
-            return None
-        try:
-            return json.loads(result_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # An unreadable file proves nothing about the driver (live
-            # review F8): fail closed, like a driver that may still run,
-            # instead of deriving a stopped outcome from it.
-            return {"workflow_id": workflow_id, "outcome": "running"}
+        return read_driver_mark(workflow_id, home=home)
 
     def close(self, workflow_id, *, reason, store=None, home=None):
         """Close a chain the driver already stopped and free its repository.
@@ -702,10 +866,9 @@ class LocalOrchestrator:
                 # The driver's result file is the marker it writes when it
                 # stops. Without it the chain may have a live driver between
                 # stages (nothing marks a stage running), so the close waits.
-                outcome = (self.driver_result(workflow_id, home=home) or {}).get(
-                    "outcome"
-                )
-                if outcome not in _STOPPED_DRIVER_OUTCOMES:
+                # A running mark whose pid is gone is a dead driver: stop
+                # evidence too (encargo H punto 4).
+                if not driver_stopped(self.driver_result(workflow_id, home=home)):
                     raise WorkflowError(
                         "no durable driver stop (paused, blocked, waiting or "
                         "error) as the result file's last write; the driver "
@@ -763,8 +926,9 @@ class LocalOrchestrator:
         """Whether goncloud_local_status announces the close, with evidence.
 
         Same contract the close enforces: one of the driver's durable
-        stopped outcomes (paused, blocked, waiting or error), no live
-        subscription lease, and a closeable root.
+        stopped outcomes (paused, blocked, waiting or error) — or a running
+        mark whose pid is gone —, no live subscription lease, and a
+        closeable root.
         A chain whose status cannot even be read (unknown id, or the triage
         root of a failed decomposition) has no driver outcome to speak of,
         so it never gets a hint.
@@ -774,13 +938,15 @@ class LocalOrchestrator:
             state = self.status(workflow_id)
         except WorkflowError:
             return None
-        driver = self.driver_result(workflow_id, home=home) or {}
+        driver = read_driver_mark(workflow_id, home=home) or {}
+        outcome = driver.get("outcome")
+        pid_live = driver_mark_live(driver) if outcome == "running" else None
         if store is None:
             path = default_db_path()
             if path.exists():
                 store = SubscriptionStateStore(path)
         live = bool(store.active_leases(workflow_id)) if store is not None else False
-        return close_hint(state, driver.get("outcome"), driver_live=live)
+        return close_hint(state, outcome, driver_live=live, pid_live=pid_live)
 
     def _context(self, workflow_id):
         service = self.services("claw")
@@ -901,18 +1067,150 @@ class LocalOrchestrator:
             and record.get("result", {}).get("outcome") == "approved"
         )
 
-    def resume(self, workflow_id, *, stop_after=None, home=None):
+    def _queued_behind(
+        self, workflow_id, repository, *, home=None, store=None, own_mark=None
+    ):
+        """The first chain whose driver may still be working this repository.
+
+        Encargo H punto 2: the answer is a chain id to queue behind, never a
+        refusal. Live work is a running root or stage, an unexpired
+        subscription lease, or a running mark whose pid is alive — except a
+        mark our own process wrote (pid == os.getpid()), which is a previous
+        sequential run of this process, not another driver. The caller's own
+        chain is excluded by id; its mark arrives via ``own_mark`` so a
+        relaunch over a live driver of the same chain also queues.
+        """
+        if (
+            isinstance(own_mark, dict)
+            and own_mark.get("outcome") == "running"
+            and driver_mark_live(own_mark)
+            and own_mark.get("pid") != os.getpid()
+        ):
+            return workflow_id
+        if store is None:
+            path = default_db_path()
+            if path.exists():
+                store = SubscriptionStateStore(path)
+        try:
+            repo = Path(str(repository)).expanduser().resolve()
+        except OSError:
+            return None
+        service = self.services("claw")
+        with service._connect() as conn:
+            for active in list_tasks(conn, include_archived=True):
+                if active.id == workflow_id:
+                    continue
+                if not (active.body or "").startswith(_CONTRACT_MARKER_REF):
+                    continue
+                if active.status in {"done", "archived"}:
+                    continue
+                if active.workspace_kind != "dir" or not active.workspace_path:
+                    continue
+                try:
+                    active_repo = Path(active.workspace_path).expanduser().resolve()
+                except OSError:
+                    continue
+                if active_repo != repo:
+                    continue
+                if active.status == "running":
+                    return active.id
+                initial_ids = service._decomposed_child_ids(conn, active.id) or []
+                correction = service._correction_ids(conn, active.id)
+                if any(
+                    service._require_task(conn, task_id).status == "running"
+                    for task_id in [*initial_ids, *correction.values()]
+                ):
+                    return active.id
+                if store is not None and store.active_leases(active.id):
+                    return active.id
+                mark = read_driver_mark(active.id, home=home)
+                if (
+                    isinstance(mark, dict)
+                    and mark.get("outcome") == "running"
+                    and driver_mark_live(mark)
+                ):
+                    return active.id
+        return None
+
+    def _reopen_blocked_stages(self, workflow_id, service, *, mark, own_launch, home):
+        """Relanzar = reintentar (encargo H punto 1).
+
+        A relaunch over a chain whose driver already stopped reopens its
+        blocked stages with the native unblock and opens a new attempt
+        generation for each, so the router calls the model again instead of
+        replaying the recorded result. Done stages are respected and there
+        is no retry cap. Reviewer stages are exempt: the two-round review
+        ceiling and its durable decision are a product contract, not a jam.
+        The stop evidence is the previous driver's own — a stopped outcome
+        as the file's last write, or a running mark whose pid is gone — or,
+        on a relaunched driver (own launch mark already in place), the
+        blocked stages themselves: only a stopped driver leaves them.
+        """
+        state = service.status(workflow_id=workflow_id)
+        blocked = [
+            (role, stage)
+            for group in ("stages", "corrective_stages")
+            for role, stage in state[group].items()
+            if stage["status"] == "blocked" and role not in _RETRY_EXEMPT_ROLES
+        ]
+        if not blocked:
+            # Blocked stages are the jam a relaunch retries. A blocked root
+            # on its own is an operator's pause: it stays until the owner
+            # resumes or closes it.
+            return
+        if not (own_launch or driver_stopped(mark)):
+            return
+        with service._connect() as conn:
+            for _, stage in blocked:
+                if not unblock_task(conn, stage["id"]):
+                    raise WorkflowError(
+                        f"native Kanban refused to unblock {stage['id']}"
+                    )
+            if state["root"]["status"] == "blocked" and not unblock_task(
+                conn, workflow_id
+            ):
+                raise WorkflowError(f"native Kanban refused to unblock {workflow_id}")
+        path = default_db_path()
+        if not path.exists():
+            return
+        store = SubscriptionStateStore(path)
+        for _, stage in blocked:
+            store.open_generation(workflow_id, stage["id"])
+
+    def resume(self, workflow_id, *, stop_after=None, home=None, launch_run_id=None):
         self._check_stop(stop_after)
         contract, max_steps = self._context(workflow_id)
         service = self.services("claw")
+        home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
+        # Encargo H punto 2: a driver never runs stages over another live
+        # driver in the same repository — it queues instead, without
+        # touching the result file (the live mark stays the life signal).
+        mark = read_driver_mark(workflow_id, home=home)
+        own_launch = (
+            launch_run_id is not None
+            and isinstance(mark, dict)
+            and mark.get("run_id") == launch_run_id
+        )
+        if not own_launch:
+            behind = self._queued_behind(
+                workflow_id,
+                contract["repository"],
+                home=home,
+                own_mark=None if own_launch else mark,
+            )
+            if behind is not None:
+                return {**self.status(workflow_id), "outcome": "queued"}
         # Every driver enters here — the detached one the bootstrap spawns
         # and the CLI resume alike — so this is the one place a run marks
         # the result file running before its first stage (live review F8).
         # From this write on, the previous driver's stopped outcome is no
         # longer the file's last word.
-        home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
         run_id = uuid4().hex
         _write_result(workflow_id, _running_mark(workflow_id, run_id), home=home)
+        # Encargo H punto 1: relanzar es reintentar.
+        self._reopen_blocked_stages(
+            workflow_id, service, mark=mark, own_launch=own_launch, home=home
+        )
 
         def report(outcome):
             return self._report(workflow_id, outcome, home=home, run_id=run_id)

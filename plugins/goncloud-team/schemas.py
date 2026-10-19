@@ -59,7 +59,12 @@ LOCAL_RUN = {
         "Start technical work that arrived over a messaging transport. Only the claw "
         "profile may call this. Creates the durable Goncloud chain and leaves it running "
         "in the background through the subscription router; returns at once with the "
-        "workflow_id. Never selects models or workers. Reuse request_key on retries."
+        "workflow_id. Never selects models or workers. Reuse request_key on retries: "
+        "a relaunch retries the chain's blocked stages (fresh model calls, no retry "
+        "cap) and respects done stages. The repository keeps one active chain: a "
+        "stopped one is closed automatically and the new chain starts; a live one "
+        "queues the new chain (queued: true) instead of failing, and the next run "
+        "starts it when the old chain finishes."
     ),
     "parameters": {
         "type": "object",
@@ -134,8 +139,12 @@ LOCAL_CLOSE = {
         "profile may call this. Closing requires durable evidence that the "
         "driver is gone: one of its own stopped outcomes as the result "
         "file's last write — every driver start marks that file running "
-        "first, so a relaunched chain waits for its own driver — and no "
-        "live subscription lease; a running chain is refused. Archives the "
+        "first, so a relaunched chain waits for its own driver — a running "
+        "mark whose pid is gone counts as a dead driver, and no "
+        "live subscription lease; a running chain is refused. Note that "
+        "WorkflowService.start now frees a stopped chain by itself and "
+        "queues behind a live one, so an explicit close is only needed to "
+        "abandon a chain. Archives the "
         "director root and every stage that is not done with the native "
         "Kanban archive, keeps the done stages as evidence, records the "
         "reason as a comment on the root, and also frees a root stuck in "
