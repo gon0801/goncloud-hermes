@@ -49,9 +49,21 @@ def _raiz_handler(ctx, funcion):
     return handle
 
 
+def _jev_config(ctx):
+    """La config JEV del plugin (plugin.yaml), o None si no se pudo leer."""
+    try:
+        try:
+            from . import jev_cliente
+        except ImportError:
+            import jev_cliente  # type: ignore
+        return jev_cliente.config_jev(ctx)
+    except Exception:
+        return None
+
+
 def _build_service(ctx):
     """Bind the durable service to the calling profile; test seam."""
-    return WorkflowService(actor_role=ctx.profile_name)
+    return WorkflowService(actor_role=ctx.profile_name, jev_config=_jev_config(ctx))
 
 
 def _build_orchestrator(ctx):

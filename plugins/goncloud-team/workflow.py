@@ -94,8 +94,11 @@ class WorkflowError(ValueError):
     """A rejected workflow operation safe to return through a model tool."""
 
 
-def _build_subscription_router(**_kwargs):
+def _build_subscription_router(**kwargs):
     """Factory seam so tests can substitute a scripted router."""
+    jev_config = kwargs.get("jev_config")
+    if jev_config is not None:
+        return SubscriptionRouter(jev_config=jev_config)
     return SubscriptionRouter()
 
 
@@ -132,9 +135,16 @@ class WorkflowService:
     Hermes profile, not OS-level isolation.
     """
 
-    def __init__(self, *, actor_role: str, db_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor_role: str,
+        db_path: Optional[Path] = None,
+        jev_config=None,
+    ) -> None:
         self.actor_role = str(actor_role or "").strip()
         self.db_path = Path(db_path) if db_path is not None else None
+        self.jev_config = jev_config
 
     def _connect(self):
         return connect_closing(self.db_path)
@@ -632,7 +642,7 @@ class WorkflowService:
                     "subscription assignment authorization changed; request refused"
                 )
 
-        router = _build_subscription_router()
+        router = _build_subscription_router(jev_config=self.jev_config)
         routes = compile_profile_routes(self.actor_role, router.routing_source)
         request = InvocationRequest(
             workflow_id=workflow_id,
@@ -802,7 +812,7 @@ class WorkflowService:
     ) -> dict[str, Any]:
         """Non-generative route matrix for the calling profile."""
         self._require_known_actor()
-        router = _build_subscription_router()
+        router = _build_subscription_router(jev_config=self.jev_config)
         return router.status(
             self.actor_role, workflow_id=workflow_id, stage_id=stage_id
         )
