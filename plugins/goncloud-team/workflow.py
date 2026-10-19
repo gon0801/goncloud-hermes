@@ -502,13 +502,14 @@ class WorkflowService:
             if root is None:
                 raise WorkflowError("native Kanban did not persist the workflow root")
             # La comparación es a contrato canónico: el worktree de la
-            # cadena (r-H-cadena-worktree) viaja en el cuerpo guardado y no
-            # cuenta como contrato distinto al relanzar la misma clave.
+            # cadena (r-H-cadena-worktree), su SHA base y la rama base del
+            # PR (H-entrega-pr) viajan en el cuerpo guardado y no cuentan
+            # como contrato distinto al relanzar la misma clave.
             stored = self._contract_of(root)
             canonical = {
                 k: v
                 for k, v in stored.items()
-                if k not in {"worktree", "worktree_base"}
+                if k not in {"worktree", "worktree_base", "base_branch"}
             }
             if canonical != contract:
                 raise WorkflowError(
@@ -541,6 +542,10 @@ class WorkflowService:
                 migrated = "worktree" not in stored
                 stored["worktree"] = worktree
                 stored["worktree_base"] = worktree_base
+                # H-entrega-pr: la base del PR es la rama de la que nacio la
+                # cadena, tal como estaba el checkout original EN ESTE
+                # MOMENTO (no la rama por defecto del remoto).
+                stored["base_branch"] = self._rama_base_del_repo(str(repo))
                 if migrated:
                     with write_txn(conn):
                         conn.execute(
@@ -675,6 +680,44 @@ class WorkflowService:
                 f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
             )
         return str(wt_path), base_sha
+
+    def _rama_base_del_repo(self, repository: str) -> str | None:
+        """La rama de la que nace la cadena: HEAD del checkout original.
+
+        El trabajo no siempre va contra la rama por defecto (en
+        goncloud-hermes va contra feat/hermes-team): lo que vale es la rama
+        que estaba cargada EN ESTE MOMENTO. En detached (HEAD pelado) el
+        respaldo es la rama por defecto del remoto; sin ninguna, la cadena
+        nace sin rama base y el PR la deduce despues.
+        """
+        try:
+            hecho = subprocess.run(
+                ["git", "-C", repository, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # F3: un timeout del probe no deja la raiz sin grafo y el repo
+            # en busy — sin rama guardada, el PR deducira la base despues.
+            return None
+        rama = hecho.stdout.strip() if hecho.returncode == 0 else ""
+        if rama and rama != "HEAD":
+            return rama
+        try:
+            simbolico = subprocess.run(
+                ["git", "-C", repository, "symbolic-ref", "refs/remotes/origin/HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if simbolico.returncode == 0:
+            salida = simbolico.stdout.strip()
+            if salida.startswith("refs/remotes/origin/"):
+                return salida[len("refs/remotes/origin/") :] or None
+        return None
 
     def cleanup_chain_worktree(
         self, contract: dict[str, Any], workflow_id: str | None = None
