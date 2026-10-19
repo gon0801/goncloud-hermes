@@ -59,7 +59,7 @@ class Fila(dict):
 
 def _append_event(conn, task_id, kind, payload):
     conn.execute(
-        "INSERT INTO task_events (task_id, kind, payload_json, created_at)"
+        "INSERT INTO task_events (task_id, kind, payload, created_at)"
         " VALUES (?, ?, ?, ?)",
         (task_id, kind, json.dumps(payload, sort_keys=True), int(time.time())),
     )
@@ -482,14 +482,11 @@ def list_events(conn, task_id):
         "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
     ).fetchall():
         evento = Fila(f)
+        crudo = evento["payload"]
         try:
-            evento["payload"] = (
-                json.loads(evento["payload_json"])
-                if evento["payload_json"] is not None
-                else None
-            )
+            evento["payload"] = json.loads(crudo) if crudo is not None else None
         except ValueError:
-            evento["payload"] = evento["payload_json"]
+            evento["payload"] = crudo
         eventos.append(evento)
     return eventos
 

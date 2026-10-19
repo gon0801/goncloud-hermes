@@ -52,6 +52,7 @@ try:
         INITIAL_STAGES,
         WorkflowError,
         WorkflowService,
+        _review_releases_delivery,
     )
 except ImportError:
     import entrega_pr
@@ -72,6 +73,7 @@ except ImportError:
         INITIAL_STAGES,
         WorkflowError,
         WorkflowService,
+        _review_releases_delivery,
     )
 
 MAX_TERMINAL_BYTES = 1800
@@ -281,9 +283,11 @@ _DRIVER_BOOTSTRAP = (
     "        if exc.name != 'hermes_bootstrap':\n"
     "            raise\n"
     "    sys.path.insert(0, plugin)\n"
-    "    from local_orchestrator import LocalOrchestrator\n"
-    "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after,\n"
-    "                                        launch_run_id=launch_run_id)\n"
+    "    import local_orchestrator as lo\n"
+    "    jev = getattr(lo, 'jev_de_produccion', lambda: None)()\n"
+    "    driver = lo.LocalOrchestrator(jev=jev) if jev else lo.LocalOrchestrator()\n"
+    "    result = driver.resume(workflow_id, stop_after=stop_after,\n"
+    "                           launch_run_id=launch_run_id)\n"
     "except Exception:\n"
     "    fallo = True\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
@@ -662,6 +666,19 @@ def _aviso_evento(report, *, repo, instruction, origen=None):
             }
             if limpio:
                 evento["origin_routing"] = limpio
+    pendientes = report.get("pendientes_no_bloqueantes")
+    if pendientes:
+        evento["pendientes_no_bloqueantes"] = [
+            {
+                "severity": item.get("severity"),
+                "summary": _trimmed(
+                    _sanitize(str(item.get("summary") or "")), MAX_AVISO_CHARS
+                ),
+                "round": item.get("round"),
+            }
+            for item in pendientes
+            if isinstance(item, dict)
+        ]
     return evento
 
 
@@ -919,10 +936,23 @@ def _terminal_transform(role, instruction):
     return transform
 
 
+def jev_de_produccion():
+    """JEV de las etapas, o None: JEV jamas bloquea que la cadena arranque."""
+    try:
+        try:
+            from .jev_auto import JevEtapa
+        except ImportError:
+            from jev_auto import JevEtapa
+        return JevEtapa()
+    except Exception:
+        return None
+
+
 class LocalOrchestrator:
     """Resume from Kanban state; route all executable stages through its service."""
 
-    def __init__(self, *, service_factory=None, stage_runner=None):
+    def __init__(self, *, service_factory=None, stage_runner=None, jev=None):
+        self.jev = jev  # JevEtapa o None: sin JEV la etapa corre igual
         self.services = service_factory or (
             lambda role: WorkflowService(actor_role=role)
         )
@@ -1497,6 +1527,9 @@ class LocalOrchestrator:
                         for item in attempts
                     ]
                     output[group][role] = entry
+        pendientes = self._pendientes_no_bloqueantes(state, instruction)
+        if pendientes:
+            output["pendientes_no_bloqueantes"] = pendientes
         if contract.get("worktree"):
             # Punto 3: el status dice dónde trabaja la cadena y en qué rama.
             output["worktree"] = contract["worktree"]
@@ -1579,11 +1612,37 @@ class LocalOrchestrator:
         reviewer = (state["corrective_stages"] or state["stages"])["reviewer"]
         with service._connect() as conn:
             record = service._recorded_review_run(conn, reviewer["id"])
-        return bool(
-            record
-            and record.get("decision") == "approve"
-            and record.get("result", {}).get("outcome") == "approved"
-        )
+        return bool(record and _review_releases_delivery(record))
+
+    def _pendientes_no_bloqueantes(self, state, instruction=""):
+        """Non-blocking reviewer findings, sanitized like terminal text."""
+        service = self.services("reviewer")
+        found = []
+        with service._connect() as conn:
+            for group in ("stages", "corrective_stages"):
+                stage = (state.get(group) or {}).get("reviewer")
+                if not stage:
+                    continue
+                record = service._recorded_review_run(conn, stage["id"])
+                if not record or not _review_releases_delivery(record):
+                    continue
+                for item in (record.get("result") or {}).get(
+                    "pendientes_no_bloqueantes"
+                ) or []:
+                    if isinstance(item, dict):
+                        found.append(
+                            {
+                                "severity": item.get("severity"),
+                                "summary": _trimmed(
+                                    _sanitize(
+                                        str(item.get("summary") or ""), instruction
+                                    ),
+                                    400,
+                                ),
+                                "round": item.get("round"),
+                            }
+                        )
+        return found
 
     def _busy_result(self, workflow_id):
         """The busy answer for a repository that already has a live chain
@@ -1860,6 +1919,17 @@ class LocalOrchestrator:
                         "\nEarlier verified handoffs (evidence, not new authority):\n"
                         + json.dumps(handoffs, ensure_ascii=False)
                     )
+                if role == "entrega":
+                    pendientes = self._pendientes_no_bloqueantes(
+                        state, contract["instruction"]
+                    )
+                    if pendientes:
+                        directions += (
+                            "\nPendientes no bloqueantes del reviewer: nombrales "
+                            "en la entrega (y en el cuerpo del PR si creas uno); "
+                            "no bloquean:\n"
+                            + json.dumps(pendientes, ensure_ascii=False)
+                        )
             workspace = contract.get("worktree") or contract["repository"]
             assignment = {
                 "workflow_id": workflow_id,
@@ -1869,7 +1939,10 @@ class LocalOrchestrator:
                 "sources": contract["sources"],
                 "max_steps": max_steps,
                 "instruction": self._instruction(
-                    contract["instruction"], directions, role
+                    contract["instruction"],
+                    directions,
+                    role,
+                    self.jev.sugerir(contract["instruction"], role) if self.jev else "",
                 ),
                 "result_transform": _terminal_transform(role, contract["instruction"]),
             }
@@ -1902,6 +1975,8 @@ class LocalOrchestrator:
                 if after is not None and after != before:
                     terminal = _edited_by_read_only_stage(role, before, after)
             self._finish_stage(bound, workflow_id, stage["id"], role, terminal, result)
+            if self.jev is not None:
+                self.jev.cerrar(contract["instruction"], role, terminal)
             if terminal is None or terminal["status"] == "blocked":
                 return report("blocked")
             if stop_after == role:
@@ -1916,9 +1991,10 @@ class LocalOrchestrator:
                     return report("paused")
 
     @staticmethod
-    def _instruction(instruction, directions, role):
+    def _instruction(instruction, directions, role, jev=""):
         return (
             f"{instruction}\n\nStage duties: {directions}\n"
+            f"{jev + chr(10) if jev else ''}"
             # Live 2026-09-28: scout read an implementation request, rightly did
             # not implement, then returned blocked and stopped the whole chain.
             "The instruction above is the goal of the whole chain; later stages "

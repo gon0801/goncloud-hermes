@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -80,6 +81,48 @@ INITIAL_STAGES = (
 )
 CORRECTIVE_STAGES = ("implementer", "verifier", "adversary", "reviewer")
 HIGH_SEVERITIES = {"high", "critical"}
+#: Quality-kit rule 4: only a blocking finding reopens the cycle. A rejection
+#: whose findings are all low/medium (and none touches security, data or
+#: credentials) is delivered with the findings named as non-blocking pending.
+NON_BLOCKING_SEVERITIES = {"low", "medium"}
+NON_BLOCKING_OUTCOME = "approved_with_pending"
+_SENSITIVE_FINDING = re.compile(
+    r"seguridad|security|credencial|credential|contrase|password|secreto"
+    r"|\bsecret\b|\btoken\b|datos|data breach|data loss|privacidad|privacy",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_finding(summary: Any) -> bool:
+    """A finding marked as security/data/credentials always blocks."""
+    return bool(_SENSITIVE_FINDING.search(str(summary or "")))
+
+
+def _review_releases_delivery(review: Any) -> bool:
+    """Whether a recorded review lets entrega (and the root) complete.
+
+    Plain approval, or a low/medium rejection with no sensitive marking
+    recorded under the non-blocking outcome. Anything else — high/critical,
+    a sensitive marking, an unparseable or missing severity — fails safe
+    and does not release delivery.
+    """
+    if not isinstance(review, dict):
+        return False
+    result = review.get("result")
+    if not isinstance(result, dict):
+        return False
+    if review.get("decision") == "approve":
+        return result.get("outcome") == "approved"
+    pendientes = result.get("pendientes_no_bloqueantes")
+    return (
+        review.get("decision") == "reject"
+        and result.get("outcome") == NON_BLOCKING_OUTCOME
+        and str(review.get("severity") or "").strip().lower() in NON_BLOCKING_SEVERITIES
+        and isinstance(pendientes, list)
+        and len(pendientes) > 0
+        and not _is_sensitive_finding(review.get("summary"))
+    )
+
 
 _WORKFLOW_KEY_PREFIX = "goncloud-workflow:"
 _CONTRACT_MARKER = "GONCLOUD_ENGINEERING_V1\n"
@@ -282,9 +325,7 @@ class WorkflowService:
                     if (
                         reviewer.status != "done"
                         or reviewer.assignee != "reviewer"
-                        or not review
-                        or review.get("decision") != "approve"
-                        or review.get("result", {}).get("outcome") != "approved"
+                        or not _review_releases_delivery(review)
                     ):
                         raise WorkflowError("durable reviewer approval is required")
                     watched.add(reviewer_id)
@@ -914,7 +955,7 @@ class WorkflowService:
                     # this same transaction, so both close paths leave
                     # identical rastros.
                     conn.execute(
-                        "INSERT INTO task_events (task_id, kind, payload_json,"
+                        "INSERT INTO task_events (task_id, kind, payload,"
                         " created_at) VALUES (?, 'archived', ?, ?)",
                         (
                             member_id,
@@ -1017,7 +1058,9 @@ class WorkflowService:
             "adversary": "Find risks and counterexamples; report findings and do not fix them.",
             "reviewer": (
                 "Adjudicate findings with goncloud_engineering_review. A first high/critical "
-                "rejection may open one corrective review; other unresolved material findings block."
+                "rejection may open one corrective review; a low/medium rejection with no "
+                "security, data or credential finding does not block: it goes to entrega "
+                "with the findings named as non-blocking pending."
             ),
             "entrega": (
                 "Package the verified handoff. Do not deliver unless every dependency and review "
@@ -1556,6 +1599,22 @@ class WorkflowService:
                     "task_id": task_id,
                     "corrective_stages": correction,
                 }
+            elif (
+                severity_value in NON_BLOCKING_SEVERITIES
+                and not _is_sensitive_finding(summary)
+            ):
+                result = {
+                    "outcome": NON_BLOCKING_OUTCOME,
+                    "round": round_number,
+                    "task_id": task_id,
+                    "pendientes_no_bloqueantes": [
+                        {
+                            "severity": severity_value,
+                            "summary": summary,
+                            "round": round_number,
+                        }
+                    ],
+                }
             else:
                 result = {
                     "outcome": "blocked",
@@ -1607,6 +1666,8 @@ class WorkflowService:
             result=(
                 "review approved"
                 if outcome == "approved"
+                else "review rejected with non-blocking findings; delivery proceeds"
+                if outcome == NON_BLOCKING_OUTCOME
                 else "review rejected; correction opened"
             ),
             summary=summary,

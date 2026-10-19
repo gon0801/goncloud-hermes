@@ -59,9 +59,9 @@ def _build_service(ctx):
 def _build_orchestrator(ctx):
     """The proven local entry point a messaging transport submits to; test seam."""
     del ctx
-    from .local_orchestrator import LocalOrchestrator
+    from .local_orchestrator import LocalOrchestrator, jev_de_produccion
 
-    return LocalOrchestrator()
+    return LocalOrchestrator(jev=jev_de_produccion())
 
 
 def _transport_handlers(ctx):
@@ -317,8 +317,9 @@ def register(ctx) -> None:
     except Exception:
         pass  # el buzón es durable: el aviso espera a la próxima vida
 
-    ctx.register_hook("pre_tool_call", guard_reviewer_completion)
-
-    # Consulta automatica a JEV antes de cargar skill (encargo H-jev-auto):
-    # pre_llm_call consulta el router y transform_llm_output deja el pie.
+    # JEV (H-jev-auto, tanda 2) se registra ANTES que la guarda: Hermes admite
+    # varias funciones por gancho, pero los dobles de prueba guardan una sola por
+    # nombre y el gancho que debe ganar en pre_tool_call es el de la guarda.
     registrar_jev_auto(ctx)
+
+    ctx.register_hook("pre_tool_call", guard_reviewer_completion)
