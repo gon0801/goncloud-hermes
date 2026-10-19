@@ -290,7 +290,10 @@ SUBSCRIPTION_RUN = {
             "repository": {
                 "type": "string",
                 "description": (
-                    "Absolute repository path; must match the stage workspace."
+                    "Absolute repository path; must match the stage workspace. "
+                    "For chains with a worktree, this is the chain's worktree "
+                    "path (branch cadena/<workflow_id>) — never the original "
+                    "checkout."
                 ),
             },
             "revision": {
