@@ -1,24 +1,69 @@
 name: sistema-agentes
+# Bateria UNA vez por bloque (orden del dueno 2026-10-18; patron del PR 477
+# de goncloud-Orbit, el mismo de quality.yml de G):
+# - PR en draft: no corre nada (los jobs se saltan enteros).
+# - `ready_for_review` (y opened/synchronize/reopened de un PR que NO es
+#   draft): corre la bateria UNA vez sobre el SHA final.
+# - Push a la rama por defecto: si el arbol empujado es identico al de la
+#   cabeza de su PR y esa cabeza ya dejo `espejo-de-g` en success, se reusa
+#   el veredicto (.github/scripts/reusar_completa.sh); ante cualquier duda
+#   se corre (fail-closed hacia CORRER, nunca hacia saltar). El push quedo
+#   limitado a la rama por defecto: si siguiera en "**", cada push a una
+#   rama de PR pagaria la bateria de nuevo.
+# - dispatch manual sigue existiendo para casos raros, pero ya no es el
+#   camino normal: nada de `gh workflow run` en el flujo habitual.
+# Fijado por tests/test_sistema_agentes_ci_una_vez.py.
 on:
   push:
     branches:
-      - "**"
+      - feat/hermes-team
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+# Minimos para el reuso por arbol: leer el PR asociado al commit empujado y
+# los check runs de su cabeza. Sin tokens nuevos: usa github.token.
 permissions:
   contents: read
+  pull-requests: read
+  checks: read
 
 jobs:
   espejo-de-g:
     runs-on: ubuntu-latest
+    # En draft no corre la bateria: entra al dejar de ser draft (tras el
+    # APROBADO) y en push/dispatch como siempre. Un solo job: la condicion
+    # del propio job ES la exigencia del gate (en draft no deja check que
+    # pueda contar como verde de la bateria).
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft)
     steps:
       - uses: actions/checkout@v4
+
+      - name: Reusa el veredicto si el arbol ya paso la bateria (solo push)
+        # Al unir a la rama por defecto: si el arbol del commit empujado es
+        # identico al de la cabeza de su PR y esa cabeza ya tiene
+        # `espejo-de-g` en success, no se repiten las pruebas. Fail-closed
+        # hacia CORRER: arbol distinto, sin PR o consulta fallida => bateria
+        # completa. El script jamas falla: su salida es reusar=true (salta
+        # la bateria) o reusar=false (la corre completa).
+        id: reuso
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/reusar_completa.sh
+
       - uses: actions/setup-python@v5
+        if: steps.reuso.outputs.reusar != 'true'
         with:
           python-version: "3.11"
       - name: Pruebas del espejo, el contrato, derivar y el recorrido de ensayos
+        if: steps.reuso.outputs.reusar != 'true'
         run: python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py" -v
       - name: El espejo coincide byte a byte con G en el commit fijado
+        if: steps.reuso.outputs.reusar != 'true'
         run: |
           COMMIT=$(python3 -c "import json; print(json.load(open('shared/sistema-agentes/pin.json'))['commit'])")
           python3 scripts/verificar_pin_g.py --fuente "https://raw.githubusercontent.com/gon0801/goncloud-openclaw/${COMMIT}/"
