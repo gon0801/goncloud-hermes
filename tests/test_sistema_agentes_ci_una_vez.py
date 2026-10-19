@@ -35,6 +35,7 @@ PATH) las clases que lo corren se SALTAN en vez de quedar rojas — en la PC
 Windows esta bateria tambien corre (F5).
 """
 
+import itertools
 import json
 import os
 import re
@@ -146,6 +147,9 @@ def repo_temporal(raiz: Path) -> tuple[str, str]:
     return git(raiz, "rev-parse", "HEAD"), git(raiz, "rev-parse", "HEAD^{tree}")
 
 
+CORRIDAS = itertools.count()
+
+
 def correr_reuso(raiz: Path, escena: dict) -> tuple[subprocess.CompletedProcess, str]:
     """Corre el script REAL con el doble de gh en el PATH; (proc, salida)."""
     doble = raiz / "doble"
@@ -154,7 +158,11 @@ def correr_reuso(raiz: Path, escena: dict) -> tuple[subprocess.CompletedProcess,
     # newline="\n": el shebang exige LF aunque el repo se chequee con CRLF.
     gh.write_text(DOBLE_GH, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
-    salida = raiz / "salida.txt"
+    # Archivo de salida NUEVO por corrida: el script escribe con >> al
+    # GITHUB_OUTPUT, y un archivo compartido entre pruebas acumularia los
+    # veredictos de corridas anteriores (F7): un assertIn sobre lo acumulado
+    # pasaria aunque esta corrida escribiera el veredicto contrario.
+    salida = raiz / f"salida-{next(CORRIDAS)}.txt"
     env = env_sin_git() | {
         "PATH": f"{doble}:{os.environ['PATH']}",
         "ESCENA": json.dumps(escena),
@@ -354,9 +362,11 @@ class EscenarioReuso(unittest.TestCase):
         escena = self.escena(pulls, self.cabeza_con_arbol(self.arbol), self.check_ok())
         proc, salida = correr_reuso(self.raiz, escena)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(
-            "reusar=true",
+        # Comparacion EXACTA de la corrida (archivo nuevo por corrida): un
+        # assertIn sobre contenido acumulado no discrimina (F7).
+        self.assertEqual(
             salida,
+            "reusar=true\n",
             f"mismo arbol ya validado debe reusarse: {proc.stderr}",
         )
         self.assertIn(self.sha, proc.stdout, "debe imprimir la cabeza reusada")
@@ -367,9 +377,9 @@ class EscenarioReuso(unittest.TestCase):
         escena = self.escena(pulls, self.cabeza_con_arbol("0" * 40), self.check_ok())
         proc, salida = correr_reuso(self.raiz, escena)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(
-            "reusar=false",
+        self.assertEqual(
             salida,
+            "reusar=false\n",
             f"arbol distinto nunca se reusa: {proc.stderr}",
         )
 
@@ -382,9 +392,9 @@ class EscenarioReuso(unittest.TestCase):
             0,
             "el script jamas termina en error: " + proc.stderr,
         )
-        self.assertIn(
-            "reusar=false",
+        self.assertEqual(
             salida,
+            "reusar=false\n",
             f"consulta fallida cae a correr, jamas a saltar: {proc.stderr}",
         )
 
@@ -393,9 +403,9 @@ class EscenarioReuso(unittest.TestCase):
         escena = self.escena("[]", self.cabeza_con_arbol(self.arbol), self.check_ok())
         proc, salida = correr_reuso(self.raiz, escena)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(
-            "reusar=false",
+        self.assertEqual(
             salida,
+            "reusar=false\n",
             f"sin PR no hay veredicto que reusar: {proc.stderr}",
         )
 
