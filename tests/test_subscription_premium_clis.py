@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
-from subscriptions.adapters.claude import ClaudeAdapter  # noqa: E402
+from subscriptions.adapters.claude import ClaudeAdapter, allowed_tools_for  # noqa: E402
 from subscriptions.adapters.codex import CodexAdapter  # noqa: E402
 from subscriptions.adapters.muse import MuseAdapter  # noqa: E402
 from subscriptions.types import (  # noqa: E402
@@ -240,6 +240,65 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(runner.command[effort_at + 1], "xhigh")
         self.assertIn("Produce the stage deliverable.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
+
+    def test_claude_adversary_gets_write_tools_for_scratch_evidence(self):
+        # roles/adversary.md: adversary writes its evidence and reproductions
+        # into the assignment's scratch; under dontAsk a read-only allowlist
+        # makes the CLI deny those writes. verifier reproduces with Bash and
+        # never edits source, so it stays read-only.
+        adversary_tools = allowed_tools_for("adversary").split(",")
+        self.assertIn("Write", adversary_tools)
+        self.assertIn("Edit", adversary_tools)
+        for role in ("verifier", "reviewer", "scout", "ingenieria"):
+            with self.subTest(role=role):
+                tools = allowed_tools_for(role).split(",")
+                self.assertNotIn("Write", tools)
+                self.assertNotIn("Edit", tools)
+        runner = FakeCliRunner(stdout=CLAUDE_STREAM)
+
+        result = ClaudeAdapter(runner=runner).invoke(
+            replace(request(self.workspace), role="adversary"),
+            route_for("claude", "claude-sonnet-5", slot=2),
+        )
+
+        self.assertTrue(result.success)
+        index = runner.command.index("--allowedTools")
+        argv_tools = runner.command[index + 1].split(",")
+        self.assertIn("Write", argv_tools)
+        self.assertIn("Edit", argv_tools)
+
+    def test_claude_allowlists_tools_by_role_for_dont_ask(self):
+        # In dontAsk mode every call that would prompt is denied, so the
+        # adapter must pre-approve each role's tools via --allowedTools:
+        # writing roles (including adversary, which writes scratch
+        # evidence) may edit, read-only roles may run tests but never edit.
+        roles = {
+            "implementer": "Read,Glob,Grep,Edit,Write,MultiEdit,Bash",
+            "entrega": "Read,Glob,Grep,Edit,Write,MultiEdit,Bash",
+            "adversary": "Read,Glob,Grep,Edit,Write,MultiEdit,Bash",
+            "verifier": "Read,Glob,Grep,Bash",
+            "scout": "Read,Glob,Grep,Bash",
+            "ingenieria": "Read,Glob,Grep,Bash",
+            "reviewer": "Read,Glob,Grep,Bash",
+            "cualquier-otro-rol": "Read,Glob,Grep,Bash",
+        }
+        for role, allowed in roles.items():
+            with self.subTest(role=role):
+                runner = FakeCliRunner(stdout=CLAUDE_STREAM)
+
+                result = ClaudeAdapter(runner=runner).invoke(
+                    replace(request(self.workspace), role=role),
+                    route_for("claude", "claude-sonnet-5", slot=2),
+                )
+
+                self.assertTrue(result.success)
+                index = runner.command.index("--allowedTools")
+                self.assertEqual(runner.command[index + 1], allowed)
+                self.assertEqual(runner.command.count("--allowedTools"), 1)
+                mode_at = runner.command.index("--permission-mode")
+                self.assertEqual(runner.command[mode_at + 1], "dontAsk")
+                self.assertNotIn("--dangerously-skip-permissions", runner.command)
+                self.assertNotIn("bypassPermissions", runner.command)
 
     def test_claude_result_parses_stream_and_session(self):
         result = ClaudeAdapter(runner=FakeCliRunner(stdout=CLAUDE_STREAM)).invoke(
