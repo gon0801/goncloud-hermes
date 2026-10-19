@@ -177,9 +177,11 @@ _DRIVER_BOOTSTRAP = (
     "        if exc.name != 'hermes_bootstrap':\n"
     "            raise\n"
     "    sys.path.insert(0, plugin)\n"
-    "    from local_orchestrator import LocalOrchestrator\n"
-    "    result = LocalOrchestrator().resume(workflow_id, stop_after=stop_after,\n"
-    "                                        launch_run_id=launch_run_id)\n"
+    "    import local_orchestrator as lo\n"
+    "    jev = getattr(lo, 'jev_de_produccion', lambda: None)()\n"
+    "    driver = lo.LocalOrchestrator(jev=jev) if jev else lo.LocalOrchestrator()\n"
+    "    result = driver.resume(workflow_id, stop_after=stop_after,\n"
+    "                           launch_run_id=launch_run_id)\n"
     "except Exception:\n"
     "    fallo = True\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
@@ -778,10 +780,23 @@ def _terminal_transform(role, instruction):
     return transform
 
 
+def jev_de_produccion():
+    """JEV de las etapas, o None: JEV jamas bloquea que la cadena arranque."""
+    try:
+        try:
+            from .jev_auto import JevEtapa
+        except ImportError:
+            from jev_auto import JevEtapa
+        return JevEtapa()
+    except Exception:
+        return None
+
+
 class LocalOrchestrator:
     """Resume from Kanban state; route all executable stages through its service."""
 
-    def __init__(self, *, service_factory=None, stage_runner=None):
+    def __init__(self, *, service_factory=None, stage_runner=None, jev=None):
+        self.jev = jev  # JevEtapa o None: sin JEV la etapa corre igual
         self.services = service_factory or (
             lambda role: WorkflowService(actor_role=role)
         )
@@ -1641,7 +1656,10 @@ class LocalOrchestrator:
                 "sources": contract["sources"],
                 "max_steps": max_steps,
                 "instruction": self._instruction(
-                    contract["instruction"], directions, role
+                    contract["instruction"],
+                    directions,
+                    role,
+                    self.jev.sugerir(contract["instruction"], role) if self.jev else "",
                 ),
                 "result_transform": _terminal_transform(role, contract["instruction"]),
             }
@@ -1676,6 +1694,8 @@ class LocalOrchestrator:
                 if after is not None and after != before:
                     terminal = _edited_by_read_only_stage(role, before, after)
             self._finish_stage(bound, workflow_id, stage["id"], role, terminal, result)
+            if self.jev is not None:
+                self.jev.cerrar(contract["instruction"], role, terminal)
             if terminal is None or terminal["status"] == "blocked":
                 return report("blocked")
             if stop_after == role:
@@ -1690,9 +1710,10 @@ class LocalOrchestrator:
                     return report("paused")
 
     @staticmethod
-    def _instruction(instruction, directions, role):
+    def _instruction(instruction, directions, role, jev=""):
         return (
             f"{instruction}\n\nStage duties: {directions}\n"
+            f"{jev + chr(10) if jev else ''}"
             # Live 2026-09-28: scout read an implementation request, rightly did
             # not implement, then returned blocked and stopped the whole chain.
             "The instruction above is the goal of the whole chain; later stages "

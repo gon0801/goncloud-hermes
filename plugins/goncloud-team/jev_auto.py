@@ -55,12 +55,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from . import jev_estado
-    from .jev_decisiones import TOPE_JEV_S, Decisor, linea_cierre, linea_ruteo
+    from . import jev_estado, jev_texto
+    from .jev_decisiones import (
+        ESPECIALISTAS,
+        TOPE_JEV_S,
+        Decisor,
+        guardar_correccion,
+        linea_bucle,
+        linea_cierre,
+        linea_clasificacion,
+        linea_ruteo,
+    )
     from .subscriptions.redaction import redact_text, sensitive_values
 except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
     import jev_estado
-    from jev_decisiones import TOPE_JEV_S, Decisor, linea_cierre, linea_ruteo
+    import jev_texto
+    from jev_decisiones import (
+        ESPECIALISTAS,
+        TOPE_JEV_S,
+        Decisor,
+        guardar_correccion,
+        linea_bucle,
+        linea_cierre,
+        linea_clasificacion,
+        linea_ruteo,
+    )
     from subscriptions.redaction import redact_text, sensitive_values
 
 DIRECTOR = "claw"
@@ -71,6 +90,11 @@ ROUTER = "jev-skill-router-mcp"
 VAR_VISIBLE = "GONCLOUD_JEV_AUTO_VISIBLE"
 CLAVE_VISIBLE = "jev_auto_visible"
 APAGADORES = frozenset({"0", "false", "no", "off"})
+TOPE_BUCLES_POR_TURNO = 3  # consultas de bucle por turno: ahorro
+TOPE_FICHA = 1500
+# Herramientas de claw cuyo uso es un despacho (correcciones del ruteo).
+HERRAMIENTA_CADENA = "goncloud_local_run"
+HERRAMIENTA_TARJETA = "kanban_create"
 
 # Lo que corre dentro del hijo (venv de uv o PYTHONPATH del respaldo): una
 # sola consulta, salida JSON minima sin roster ni cuerpos de skills.
@@ -332,34 +356,81 @@ class JevAuto:
         self._pendiente: dict = {}  # (session_id, turn_id) -> veredicto
         self._pieados: dict = {}  # turnos que ya llevaron el pie
         self._lineas: dict = {}  # (session_id, turn_id) -> lineas de Jev
+        self._clasificados: dict = {}  # perfiles no-director: turno -> lineas
+        self._avisos: dict = {}  # session_id -> advertencias de bucle del siguiente turno
+        self._ultima: dict = {}  # session_id -> (herramienta, repeticiones)
+        self._bucles_turno: dict = {}  # session_id -> consultas de bucle del turno
+        self._cierres_fin: set = set()  # turnos que ya evaluaron quedo/seguir/bloqueado
+        self._correcciones: dict = {}  # session_id -> {texto, sugerido, despachos}
+        self.hilos: list = []  # hilos de fondo (bucle, fin); las pruebas los esperan
+
+    def _nuevo_turno(self, session_id: str) -> None:
+        """Cada turno empieza sin herramienta previa ni consultas de bucle."""
+        self._ultima.pop(session_id, None)
+        self._bucles_turno.pop(session_id, None)
 
     def pre_llm_call(self, **kwargs):
-        """UNA consulta por turno de David al director, en chat con persona."""
-        if self.perfil != DIRECTOR:
-            return None
-        plataforma = str(kwargs.get("platform") or "").strip().lower()
-        if plataforma not in PLATAFORMAS:
-            return None
+        """UNA consulta por turno de David; el director rutea, el resto clasifica."""
+        try:
+            return self._pre_llm_call(**kwargs)
+        except Exception:
+            return None  # JEV es un apoyo: ningun fallo suyo bloquea el turno
+
+    def _pre_llm_call(self, **kwargs):
         mensaje = kwargs.get("user_message")
         if not isinstance(mensaje, str) or not mensaje.strip():
             return None
-        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
-        previo = self._pendiente.get(llave)
+        sesion = str(kwargs.get("session_id") or "")
+        llave = (sesion, str(kwargs.get("turn_id") or ""))
+        plataforma = str(kwargs.get("platform") or "").strip().lower()
+        director = self.perfil == DIRECTOR
+        if director and plataforma not in PLATAFORMAS:
+            return None
+        previo = self._pendiente.get(llave) if director else None
         if previo is not None:
             # F3: una sola consulta por turno; el mismo contexto vuelve sin
             # otro subproceso ni otra linea de registro.
             return {"context": self._contexto(llave, previo)}
-        texto = mensaje.strip()
-        hilos, casillas = self._lanzar_decisiones(texto)
+        if llave in self._clasificados:
+            return self._contexto_clasificado(llave)
+        self._nuevo_turno(sesion)
+        avisos = self._avisos.pop(sesion, [])
+        texto = jev_texto.limpiar(mensaje)
+        if jev_texto.es_corto(texto):
+            # Ahorro: un "ya?" no vale una consulta. Las advertencias pendientes si salen.
+            return {"context": "\n".join(avisos)} if avisos else None
+        if not director:
+            linea = self._clasificar(texto, len(mensaje))
+            self._clasificados[llave] = [*avisos, *([linea] if linea else [])]
+            self._podar()
+            return self._contexto_clasificado(llave)
+        hilos, casillas = self._lanzar_decisiones(texto, len(mensaje), llave)
         veredicto = self.consultar(texto)
         for hilo in hilos:
             hilo.join(TOPE_JEV_S + 1)
         self._registrar(veredicto, texto, kwargs, plataforma)
         self._pendiente[llave] = veredicto
         # Orden fijo: primero el ruteo, luego los cierres, sin importar quien acabe antes.
-        self._lineas[llave] = [linea for casilla in casillas for linea in casilla]
+        self._lineas[llave] = [
+            *avisos,
+            *(linea for casilla in casillas for linea in casilla),
+        ]
         self._podar()
         return {"context": self._contexto(llave, veredicto)}
+
+    def _contexto_clasificado(self, llave):
+        lineas = self._clasificados.get(llave) or []
+        return {"context": "\n".join(lineas)} if lineas else None
+
+    def _clasificar(self, texto: str, crudo: int):
+        """tipo y modo del encargo en un perfil que no es el director."""
+        if self.decisor is None:
+            return None
+        clave, secretos = self.decisor.resuelva()
+        tipo, modo = self.decisor.clasificar(
+            texto, clave=clave, secretos=secretos, crudo=crudo
+        )
+        return linea_clasificacion(tipo, modo)
 
     def _casa(self) -> Path:
         return Path(self.hogar) if self.hogar else _hogar_perfil()
@@ -367,7 +438,7 @@ class JevAuto:
     def _contexto(self, llave, veredicto) -> str:
         return "\n".join([_linea_contexto(veredicto), *self._lineas.get(llave, [])])
 
-    def _lanzar_decisiones(self, texto: str):
+    def _lanzar_decisiones(self, texto: str, crudo: int = 0, llave=None):
         """Ruteo y cierres de JEV en hilos paralelos al skill_select.
 
         Devuelve (hilos, casillas): cada hilo llena su casilla con a lo mas
@@ -399,11 +470,20 @@ class JevAuto:
             hilos.append(hilo)
             hilo.start()
 
-        lanzar(
-            lambda: linea_ruteo(
-                self.decisor.rutear(texto, clave=clave, secretos=secretos)
+        def ruteo():
+            decision = self.decisor.rutear(
+                texto, clave=clave, secretos=secretos, crudo=crudo
             )
-        )
+            if llave and decision.opcion and not decision.error:
+                self._correcciones[llave[0]] = {
+                    "texto": texto,
+                    "sugerido": decision.opcion,
+                    "despachos": [],
+                    "secretos": (*secretos, clave),
+                }
+            return linea_ruteo(decision)
+
+        lanzar(ruteo)
         for cierre in self._cierres_nuevos():
             lanzar(lambda c=cierre: self._linea_de_cierre(c, clave, secretos))
         return hilos, casillas
@@ -454,6 +534,139 @@ class JevAuto:
             if conn is not None:
                 conn.close()
 
+    def pre_tool_call(self, **kwargs):
+        """Detector de bucle: nunca bloquea, jamas espera a JEV, siempre None."""
+        try:
+            self._pre_tool_call(**kwargs)
+        except Exception:
+            pass
+        return None
+
+    def _pre_tool_call(self, **kwargs):
+        herramienta = str(kwargs.get("tool_name") or "")
+        sesion = str(kwargs.get("session_id") or "")
+        if not herramienta or self.decisor is None:
+            return
+        previa, veces = self._ultima.get(sesion, (None, 0))
+        veces = veces + 1 if previa == herramienta else 1
+        self._ultima[sesion] = (herramienta, veces)
+        if veces < 2:
+            return
+        if self._bucles_turno.get(sesion, 0) >= TOPE_BUCLES_POR_TURNO:
+            return
+        self._bucles_turno[sesion] = self._bucles_turno.get(sesion, 0) + 1
+        clave, secretos = self.decisor.resuelva()  # en el hilo del gancho
+        argumentos = json.dumps(kwargs.get("args"), ensure_ascii=False, default=str)
+        ficha = (
+            f"Herramienta: {herramienta}\nLlamadas seguidas: {veces}\n"
+            f"Argumentos: {argumentos[:300]}"
+        )[:TOPE_FICHA]
+
+        def evalua():
+            decision = self.decisor.bucle(
+                ficha,
+                {"herramienta": herramienta, "veces": veces},
+                clave=clave,
+                secretos=secretos,
+            )
+            aviso = linea_bucle(herramienta, decision)
+            if aviso:
+                cola = self._avisos.setdefault(sesion, [])
+                if aviso not in cola:
+                    cola.append(aviso)
+
+        self._en_fondo(evalua)
+
+    def post_tool_call(self, **kwargs):
+        """Observa los despachos del director para aprender de las correcciones."""
+        try:
+            if self.perfil != DIRECTOR:
+                return None
+            registro = self._correcciones.get(str(kwargs.get("session_id") or ""))
+            if registro is None or kwargs.get("status") not in (None, "ok"):
+                return None
+            herramienta = kwargs.get("tool_name")
+            args = kwargs.get("args") if isinstance(kwargs.get("args"), dict) else {}
+            if herramienta == HERRAMIENTA_CADENA:
+                registro["despachos"].append("ingenieria")
+            elif herramienta == HERRAMIENTA_TARJETA:
+                asignado = str(args.get("assignee") or "").strip()
+                if asignado in ESPECIALISTAS:
+                    registro["despachos"].append(asignado)
+        except Exception:
+            pass
+        return None
+
+    def post_llm_call(self, **kwargs):
+        """Fin del turno: aprende de la correccion y evalua quedo/seguir/bloqueado."""
+        try:
+            self._cerrar_correccion(str(kwargs.get("session_id") or ""))
+            self._evaluar_fin(kwargs)
+        except Exception:
+            pass
+        return None
+
+    def _cerrar_correccion(self, sesion: str) -> None:
+        """JEV sugirio X: si claw despacho a Y, o lo resolvio solo, se guarda."""
+        registro = self._correcciones.pop(sesion, None)
+        if registro is None or self.perfil != DIRECTOR:
+            return
+        sugerido, despachos = registro["sugerido"], registro["despachos"]
+        if not despachos:
+            correcto = DIRECTOR  # lo resolvio solo
+        elif sugerido in despachos:
+            return
+        else:
+            correcto = despachos[0]
+        if correcto != sugerido:
+            guardar_correccion(
+                self._casa(), registro["texto"], sugerido, correcto, registro["secretos"]
+            )
+
+    def _evaluar_fin(self, kwargs: dict) -> None:
+        if self.decisor is None:
+            return
+        respuesta = kwargs.get("assistant_response")
+        if not isinstance(respuesta, str) or not respuesta.strip():
+            return
+        texto = jev_texto.limpiar(kwargs.get("user_message"))
+        if jev_texto.es_corto(texto):
+            return
+        llave = (str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""))
+        if llave in self._cierres_fin:
+            return  # ahorro: una evaluacion por turno
+        self._cierres_fin.add(llave)
+        while len(self._cierres_fin) > 64:
+            self._cierres_fin.pop()
+        clave, secretos = self.decisor.resuelva()
+        ficha = (
+            f"Encargo:\n{texto[:600]}\n\nRespuesta:\n{respuesta.strip()[:900]}"
+        )[:TOPE_FICHA]
+
+        def evalua():
+            self.decisor.fin(
+                ficha,
+                {"len": len(texto), "respuesta_len": len(respuesta)},
+                clave=clave,
+                secretos=secretos,
+            )
+
+        self._en_fondo(evalua)
+
+    def _en_fondo(self, tarea) -> None:
+        """Hilo daemon: el gancho vuelve al instante y JEV jamas retiene el turno."""
+
+        def corre():
+            try:
+                tarea()
+            except Exception:
+                pass
+
+        hilo = threading.Thread(target=corre, name="jev-fondo", daemon=True)
+        self.hilos = [h for h in self.hilos if h.is_alive()][-16:]
+        self.hilos.append(hilo)
+        hilo.start()
+
     def transform_llm_output(self, **kwargs):
         """El pie de ese turno; una sola vez y solo si hubo consulta."""
         if not self._pie_encendido():
@@ -502,6 +715,10 @@ class JevAuto:
             self._pendiente.pop(next(iter(self._pendiente)))
         while len(self._pieados) > 16:
             self._pieados.pop(next(iter(self._pieados)))
+        while len(self._clasificados) > 16:
+            self._clasificados.pop(next(iter(self._clasificados)))
+        while len(self._correcciones) > 16:
+            self._correcciones.pop(next(iter(self._correcciones)))
 
     def _registrar(self, veredicto: dict, texto: str, kwargs: dict, plataforma: str):
         """Una linea JSONL por consulta: sin mensaje, sin llave, sin excusas."""
@@ -545,10 +762,67 @@ def registrar(ctx):
     if isinstance(config, dict) and CLAVE_VISIBLE in config:
         visible = _visible_de_llave(config[CLAVE_VISIBLE])
     perfil = str(getattr(ctx, "profile_name", "") or "")
-    # El ruteo y el cierre son del director: otro perfil
-    # carga el plugin sin decisor y sus ganchos ni consultan ni anotan.
-    decisor = Decisor() if perfil == DIRECTOR else None
-    auto = JevAuto(perfil=perfil, visible=visible, decisor=decisor)
+    # Tanda 2: TODOS los perfiles llevan decisor (clasifican y evaluan el fin);
+    # solo el director rutea, cierra tarjetas y aprende de las correcciones.
+    auto = JevAuto(perfil=perfil, visible=visible, decisor=Decisor())
     ctx.register_hook("pre_llm_call", auto.pre_llm_call)
+    ctx.register_hook("post_llm_call", auto.post_llm_call)
+    ctx.register_hook("pre_tool_call", auto.pre_tool_call)
+    ctx.register_hook("post_tool_call", auto.post_tool_call)
     ctx.register_hook("transform_llm_output", auto.transform_llm_output)
     return auto
+
+
+class JevEtapa:
+    """JEV en las etapas de la cadena (scout ... entrega).
+
+    Las etapas corren en CLIs de suscripcion FUERA de Hermes: no hay turno ni
+    ganchos de herramienta. El orquestador local llama a `sugerir` al componer
+    el prompt de la etapa y a `cerrar` cuando la etapa termina. Fail-open: sin
+    JEV (o con texto corto) devuelve cadena vacia y la etapa sigue igual.
+    """
+
+    def __init__(self, decisor=None):
+        self.decisor = decisor if decisor is not None else Decisor(_hogar_de_etapas())
+
+    def sugerir(self, instruccion: str, rol: str) -> str:
+        try:
+            texto = jev_texto.limpiar(instruccion)
+            if jev_texto.es_corto(texto):
+                return ""
+            clave, secretos = self.decisor.resuelva()
+            tipo, modo = self.decisor.clasificar(
+                texto, clave=clave, secretos=secretos, crudo=len(instruccion)
+            )
+            return linea_clasificacion(tipo, modo)
+        except Exception:
+            return ""
+
+    def cerrar(self, instruccion: str, rol: str, terminal) -> None:
+        try:
+            texto = jev_texto.limpiar(instruccion)
+            if jev_texto.es_corto(texto) or not isinstance(terminal, dict):
+                return
+            clave, secretos = self.decisor.resuelva()
+            ficha = (
+                f"Etapa {rol}. Encargo:\n{texto[:600]}\n\nReporte: estado "
+                f"{terminal.get('status')}: {str(terminal.get('summary') or '')[:600]}"
+            )[:TOPE_FICHA]
+            self.decisor.fin(
+                ficha,
+                {"etapa": rol, "estado": str(terminal.get("status"))},
+                clave=clave,
+                secretos=secretos,
+            )
+        except Exception:
+            pass
+
+
+def _hogar_de_etapas() -> Path:
+    """El driver corre sin perfil: el home de claw guarda llave, cliente y registro."""
+    casa = _hogar_perfil()
+    with contextlib.suppress(Exception):
+        claw = _raiz_del_hogar(casa) / "profiles" / DIRECTOR
+        if claw.is_dir():
+            return claw
+    return casa

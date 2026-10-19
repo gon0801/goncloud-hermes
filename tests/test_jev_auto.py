@@ -967,7 +967,13 @@ class CableadoTests(unittest.TestCase):
         self.plugin.register(ctx)
         self.assertEqual(
             sorted(ctx.hooks),
-            ["pre_llm_call", "pre_tool_call", "transform_llm_output"],
+            [
+                "post_llm_call",
+                "post_tool_call",
+                "pre_llm_call",
+                "pre_tool_call",
+                "transform_llm_output",
+            ],
         )
 
     def test_el_plugin_yaml_declara_los_ganchos(self):
@@ -998,6 +1004,7 @@ class CableadoTests(unittest.TestCase):
         self.assertIsNone(pre(**turno(platform="cron")))
         scout = _CtxFalso(perfil="scout")
         self.plugin.register(scout)
+        scout.hooks["pre_llm_call"].__self__.decisor = None  # JEV real jamas en pruebas
         self.assertIsNone(scout.hooks["pre_llm_call"](**turno()))
 
     def test_la_consulta_registrada_deja_registro_y_pie(self):

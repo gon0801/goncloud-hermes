@@ -72,6 +72,39 @@ Durably enforced by the database graph:
   open; each decision is one line in `<claw home>/jev/decisiones.jsonl` (ids
   and message length only, output, confidence, latency, error).
 
+### JEV tanda 2: todos los perfiles (David 2026-10-19)
+
+The OpenClaw `jev-auto` improvements, by code and on Hermes hooks. The
+5-minute watchdog stays OUT (the event notice replaces it): do not bring it
+back. Which Hermes hook backs each point:
+
+| Point | Hook | Where |
+| --- | --- | --- |
+| Classify tipo (codigo/diagnostico/operacion/comunicacion/investigacion/consulta) and modo (directo/investigar/aclarar), inject `Jev sugiere: tipo=.., modo=..` | `pre_llm_call` (every profile; claw keeps routing) | `jev_auto.py` |
+| Evaluate quedo/seguir/bloqueado at the end and log it | `post_llm_call` (background thread, never holds the turn) | `jev_auto.py` |
+| Loop detector: same tool as the previous call -> JEV asks bucle/avanza; >= 0.9 queues `Jev advierte:` for the NEXT turn, never blocks | `pre_tool_call` (always returns `None`; JEV runs in a daemon thread; max 3 queries per turn) | `jev_auto.py` |
+| Learn from corrections: JEV suggested X, claw dispatched Y (`kanban_create` to a specialist, `goncloud_local_run` = ingenieria) or solved it alone -> `{texto,sugerido,correcto}` in `<claw home>/jev/correcciones.jsonl`; the last 15 become examples in every routing question | `post_tool_call` + `post_llm_call` (claw only) | `jev_auto.py`, `jev_decisiones.py` |
+| Chain stages (scout, ingenieria, implementer, verifier, adversary, reviewer, entrega) | NO Hermes hook exists: stages run in subscription CLIs outside Hermes (no turn, no tool hooks). `Jev sugiere` is injected when the driver composes the stage prompt and the end is logged when the stage finishes; the loop detector does not apply inside stages. | `JevEtapa`, `local_orchestrator.py` |
+
+Clean text: before any query `jev_texto.limpiar` keeps only the current user
+message (no `[Replying to: ..]`, media/system notes, `[Sender]`, Telegram
+headers, fenced metadata blocks, `System:` or date lines, nor our own
+`JEV skill_select:`/`Jev sugiere:` lines). `decisiones.jsonl` records
+`input` (first 200 chars, redacted) and `rawLen` (length before cleaning).
+Savings: texts under 15 characters skip JEV, and the same question is not
+asked twice in one turn. JEV down, slow (2 s cap) or answering badly never
+blocks a turn (all hooks are fail-open).
+
+Non-claw profiles do not install the `jev` plugin: they read claw's
+`client.py` read-only and need their own `TYPESAFE_API_KEY` (profile `.env` or
+scope); without it JEV fails open and the turn goes on. The `jev` plugin
+versions are NOT changed here.
+
+Activating it: restart the gateway FROM OUTSIDE a turn (from a terminal or
+the service manager), never from a turn or from a subagent: `plugins reload`
+fails in "drain" while a turn is running, and a subagent that restarts the
+gateway kills its own run.
+
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers
 cannot supply a role argument. This is a trusted-single-user application guard,
 not OS security isolation: a local process with direct write access to the

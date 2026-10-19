@@ -224,7 +224,9 @@ class DecisorTests(Base):
         self.assertIn("at", ok)
         self.assertIsNone(mal["salida"])
         self.assertEqual(mal["error"], "caido")
-        self.assertNotIn(MENSAJE, json.dumps([ok, mal]))
+        # tanda 2: input acotado a 200 chars (tachado) y rawLen, no el mensaje entero
+        self.assertEqual(ok["entrada"]["input"], MENSAJE)
+        self.assertEqual(ok["entrada"]["rawLen"], len(MENSAJE))
 
     def test_sin_el_plugin_jev_instalado_falla_cerrado_y_corto(self):
         decision = jev_decisiones.Decisor(self.claw).rutear(MENSAJE)
@@ -278,7 +280,12 @@ class RuteoPorMensajeTests(Base):
         otro = jev_auto.JevAuto(
             "scout", hogar=self.claw, corredor=corredor_ok, decisor=decisor
         )
-        self.assertIsNone(otro.pre_llm_call(**turno()))
+        # otro perfil clasifica (tipo/modo) pero jamas rutea ni corre skill_select
+        contexto = otro.pre_llm_call(**turno())["context"]
+        self.assertTrue(contexto.startswith("Jev sugiere:"))
+        self.assertNotIn("skill_select", contexto)
+        self.assertNotIn("ruteo", self.jev.preguntas())
+        self.jev.llamadas.clear()
         auto = self.auto()
         for plataforma in ("cron", "bot-chat", "kanban", ""):
             self.assertIsNone(auto.pre_llm_call(**turno(platform=plataforma)))
@@ -295,7 +302,9 @@ class RuteoPorMensajeTests(Base):
         self.auto().pre_llm_call(**turno())
         (fila,) = self.decisiones()
         self.assertEqual(fila["pregunta"], "ruteo")
-        self.assertNotIn("amazon de hoy", json.dumps(fila))
+        # input acotado a 200 chars y rawLen; sin llaves ni envoltorios
+        self.assertEqual(fila["entrada"]["input"], MENSAJE)
+        self.assertEqual(fila["entrada"]["rawLen"], len(MENSAJE))
 
 
 class CierreTests(Base):
@@ -437,10 +446,18 @@ class RegistrarTests(Base):
         jev_auto.registrar(director)
         jev_auto.registrar(otro)
         self.assertEqual(
-            sorted(director.hooks), ["pre_llm_call", "transform_llm_output"]
+            sorted(director.hooks),
+            [
+                "post_llm_call",
+                "post_tool_call",
+                "pre_llm_call",
+                "pre_tool_call",
+                "transform_llm_output",
+            ],
         )
+        # Tanda 2: todos los perfiles llevan decisor; solo claw rutea.
         self.assertIsNotNone(director.hooks["pre_llm_call"].__self__.decisor)
-        self.assertIsNone(otro.hooks["pre_llm_call"].__self__.decisor)
+        self.assertIsNotNone(otro.hooks["pre_llm_call"].__self__.decisor)
 
 
 if __name__ == "__main__":
