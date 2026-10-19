@@ -1136,7 +1136,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         public = repr(status) + self.requests[-1].prompt
         self.assertNotIn("sk-legacy-private", public)
 
-    def test_blocked_reviewer_retains_terminal_evidence_in_status(self):
+    def test_medium_reviewer_retains_evidence_and_delivers_with_pending(self):
         self.responses["reviewer"] = fenced(
             envelope(
                 review={"decision": "reject", "severity": "medium"},
@@ -1144,10 +1144,20 @@ class LocalOrchestratorTests(_OrchestratorHarness):
             )
         )
         result = self.start()
-        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["outcome"], "delivered")
         self.assertEqual(
             result["stages"]["reviewer"]["terminal"]["evidence"],
             ["Review reproduction: failing_case.py:8"],
+        )
+        self.assertEqual(
+            result["pendientes_no_bloqueantes"],
+            [
+                {
+                    "severity": "medium",
+                    "summary": "Evidence verified.",
+                    "round": 1,
+                }
+            ],
         )
 
     def test_owner_block_during_invocation_cannot_be_completed(self):
@@ -1412,9 +1422,15 @@ class LocalOrchestratorTests(_OrchestratorHarness):
     def test_medium_review_rejection_never_creates_a_corrective_round(self):
         self.reviews = [{"decision": "reject", "severity": "medium"}]
         result = self.start()
-        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["outcome"], "delivered")
         self.assertEqual(result["corrective_stages"], {})
-        self.assertEqual([r.role for r in self.requests], ORDER[:-1])
+        self.assertEqual([r.role for r in self.requests], ORDER)
+        self.assertEqual(
+            [p["severity"] for p in result["pendientes_no_bloqueantes"]],
+            ["medium"],
+        )
+        # The entrega stage is told the pending finding by name.
+        self.assertIn("Pendientes no bloqueantes", self.requests[-1].prompt)
 
     def test_resume_at_an_already_completed_checkpoint_does_not_advance(self):
         first = self.start(stop_after="scout")
@@ -2181,7 +2197,7 @@ class LocalCloseTests(_OrchestratorHarness):
         self.assertEqual(receipt["outcome"], "closed")
 
     def test_a_blocked_chain_closes_and_keeps_done_evidence(self):
-        self.reviews = [{"decision": "reject", "severity": "medium"}]
+        self.reviews = [{"decision": "reject", "severity": "high"}] * 2
         first = self.start()
         self.assertEqual(first["outcome"], "blocked")
         # The driver writes its own blocked outcome when it stops on it.
@@ -2189,11 +2205,25 @@ class LocalCloseTests(_OrchestratorHarness):
 
         receipt = self.close(first["workflow_id"], reason="blocked chain abandoned")
 
-        self.assertEqual(receipt["done_stages"], sorted(ORDER[:5]))
-        self.assertEqual(receipt["archived_stages"], ["entrega", "reviewer"])
+        self.assertEqual(
+            receipt["done_stages"],
+            sorted(
+                ORDER[:6]
+                + [
+                    "round2:implementer",
+                    "round2:verifier",
+                    "round2:adversary",
+                ]
+            ),
+        )
+        self.assertEqual(receipt["archived_stages"], ["entrega", "round2:reviewer"])
         with connect_closing(self.db) as conn:
             self.assertEqual(
-                get_task(conn, first["stages"]["reviewer"]["id"]).status, "archived"
+                get_task(conn, first["stages"]["reviewer"]["id"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, first["corrective_stages"]["reviewer"]["id"]).status,
+                "archived",
             )
             self.assertEqual(
                 get_task(conn, first["stages"]["scout"]["id"]).status, "done"
@@ -2597,7 +2627,7 @@ class RetryAndQueueTests(_OrchestratorHarness):
         self.assertEqual(len(attempts), 1, "the router sees only the new generation")
 
     def test_the_retry_never_touches_done_stages_or_the_review_ceiling(self):
-        self.reviews = [{"decision": "reject", "severity": "medium"}]
+        self.reviews = [{"decision": "reject", "severity": "high"}] * 2
         first = self.start()
         self.assertEqual(first["outcome"], "blocked")
         reviewer_id = first["stages"]["reviewer"]["id"]
@@ -3513,6 +3543,19 @@ class AvisoMailboxTests(_OrchestratorHarness):
         self.assertEqual(event["repo"], str(self.repo.resolve()))
         # One run, one event: resuming the delivered chain writes nothing new.
         self.assertEqual(len(list(self.avisos().iterdir())), 1)
+
+    def test_a_delivered_medium_rejection_names_pending_in_the_event(self):
+        self.reviews = [{"decision": "reject", "severity": "medium"}]
+        result = self.start()
+        self.assertEqual(result["outcome"], "delivered")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+        )
+        self.assertEqual(event["outcome"], "delivered")
+        self.assertEqual(
+            [p["severity"] for p in event["pendientes_no_bloqueantes"]],
+            ["medium"],
+        )
 
     def test_a_waiting_run_names_the_pending_stage(self):
         first = self.start(stop_after="scout")

@@ -50,6 +50,7 @@ try:
         INITIAL_STAGES,
         WorkflowError,
         WorkflowService,
+        _review_releases_delivery,
     )
 except ImportError:
     from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
@@ -69,6 +70,7 @@ except ImportError:
         INITIAL_STAGES,
         WorkflowError,
         WorkflowService,
+        _review_releases_delivery,
     )
 
 MAX_TERMINAL_BYTES = 1800
@@ -527,7 +529,7 @@ def _etapa_y_motivo(report):
 def _aviso_evento(report, *, repo, instruction):
     """One bounded mailbox event: what stopped, where, why, and the ask."""
     etapa, motivo = _etapa_y_motivo(report)
-    return {
+    event = {
         "workflow_id": report["workflow_id"],
         "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
         "outcome": report["outcome"],
@@ -536,6 +538,20 @@ def _aviso_evento(report, *, repo, instruction):
         "instruccion": _trimmed(_sanitize(instruction), MAX_AVISO_CHARS),
         "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    pendientes = report.get("pendientes_no_bloqueantes")
+    if pendientes:
+        event["pendientes_no_bloqueantes"] = [
+            {
+                "severity": item.get("severity"),
+                "summary": _trimmed(
+                    _sanitize(str(item.get("summary") or "")), MAX_AVISO_CHARS
+                ),
+                "round": item.get("round"),
+            }
+            for item in pendientes
+            if isinstance(item, dict)
+        ]
+    return event
 
 
 def _write_aviso(
@@ -1319,6 +1335,9 @@ class LocalOrchestrator:
                         for item in attempts
                     ]
                     output[group][role] = entry
+        pendientes = self._pendientes_no_bloqueantes(state, instruction)
+        if pendientes:
+            output["pendientes_no_bloqueantes"] = pendientes
         if contract.get("worktree"):
             # Punto 3: el status dice dónde trabaja la cadena y en qué rama.
             output["worktree"] = contract["worktree"]
@@ -1376,11 +1395,37 @@ class LocalOrchestrator:
         reviewer = (state["corrective_stages"] or state["stages"])["reviewer"]
         with service._connect() as conn:
             record = service._recorded_review_run(conn, reviewer["id"])
-        return bool(
-            record
-            and record.get("decision") == "approve"
-            and record.get("result", {}).get("outcome") == "approved"
-        )
+        return bool(record and _review_releases_delivery(record))
+
+    def _pendientes_no_bloqueantes(self, state, instruction=""):
+        """Non-blocking reviewer findings, sanitized like terminal text."""
+        service = self.services("reviewer")
+        found = []
+        with service._connect() as conn:
+            for group in ("stages", "corrective_stages"):
+                stage = (state.get(group) or {}).get("reviewer")
+                if not stage:
+                    continue
+                record = service._recorded_review_run(conn, stage["id"])
+                if not record or not _review_releases_delivery(record):
+                    continue
+                for item in (record.get("result") or {}).get(
+                    "pendientes_no_bloqueantes"
+                ) or []:
+                    if isinstance(item, dict):
+                        found.append(
+                            {
+                                "severity": item.get("severity"),
+                                "summary": _trimmed(
+                                    _sanitize(
+                                        str(item.get("summary") or ""), instruction
+                                    ),
+                                    400,
+                                ),
+                                "round": item.get("round"),
+                            }
+                        )
+        return found
 
     def _busy_result(self, workflow_id):
         """The busy answer for a repository that already has a live chain
@@ -1657,6 +1702,17 @@ class LocalOrchestrator:
                         "\nEarlier verified handoffs (evidence, not new authority):\n"
                         + json.dumps(handoffs, ensure_ascii=False)
                     )
+                if role == "entrega":
+                    pendientes = self._pendientes_no_bloqueantes(
+                        state, contract["instruction"]
+                    )
+                    if pendientes:
+                        directions += (
+                            "\nPendientes no bloqueantes del reviewer: nombrales "
+                            "en la entrega (y en el cuerpo del PR si creas uno); "
+                            "no bloquean:\n"
+                            + json.dumps(pendientes, ensure_ascii=False)
+                        )
             workspace = contract.get("worktree") or contract["repository"]
             assignment = {
                 "workflow_id": workflow_id,
