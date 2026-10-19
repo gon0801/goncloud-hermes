@@ -29,6 +29,10 @@ from hermes_cli.kanban_db import (
 from hermes_cli.kanban_db_connect import write_txn
 
 try:
+    from .carpetas import mkdir_privado
+except ImportError:
+    from carpetas import mkdir_privado
+try:
     from .subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from .subscriptions.router import GitInspector, default_db_path
     from .subscriptions.state import SubscriptionStateStore
@@ -200,11 +204,12 @@ _DRIVER_BOOTSTRAP = (
     "# file above is the evidence that must survive.\n"
     "if fallo:\n"
     "    try:\n"
+    "        from carpetas import mkdir_privado\n"
     "        hogar = os.path.dirname(os.path.dirname(out))\n"
     "        if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
     "            hogar = os.path.dirname(os.path.dirname(hogar))\n"
     "        avisos = os.path.join(hogar, 'goncloud-local', 'avisos')\n"
-    "        os.makedirs(avisos, mode=0o700, exist_ok=True)\n"
+    "        mkdir_privado(avisos)\n"
     "        nombre = os.path.join(avisos, workflow_id + '-boot-error.json')\n"
     "        if not os.path.exists(nombre):\n"
     "            parcial = nombre + '.%d.tmp' % os.getpid()\n"
@@ -237,7 +242,7 @@ def _write_result(workflow_id, payload, *, home=None):
     """
     home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
     results = Path(home) / "goncloud-local"
-    results.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdir_privado(results)
     tmp = results / f"{workflow_id}.{os.getpid()}.{uuid4().hex}.tmp"
     tmp.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
     os.replace(tmp, results / f"{workflow_id}.json")
@@ -555,7 +560,7 @@ def _write_aviso(
             instruction=instruction,
         )
         avisos = _home_raiz(Path(home)) / "goncloud-local" / "avisos"
-        avisos.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mkdir_privado(avisos)
         name = f"{workflow_id}-{run_id}-{outcome}.json"
         tmp = avisos / f"{name}.{os.getpid()}.{uuid4().hex}.tmp"
         tmp.write_text(json.dumps(event, ensure_ascii=True), encoding="utf-8")
