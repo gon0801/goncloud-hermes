@@ -485,18 +485,29 @@ class LocalOrchestrator:
             else {"start_new_session": True}
         )
         env = dict(os.environ)
-        if self.jev_config is not None:
-            # El hijo no tiene ctx: la config JEV efectiva viaja en el
-            # entorno y el router la resuelve ahí (jev_cliente.config_jev).
+        try:
             try:
-                try:
-                    from . import jev_cliente
-                except ImportError:
-                    import jev_cliente  # type: ignore
+                from . import jev_cliente
+            except ImportError:
+                import jev_cliente  # type: ignore
 
+            if self.jev_config is not None:
+                # El hijo no tiene ctx: la config JEV efectiva viaja en el
+                # entorno y el router la resuelve ahí (jev_cliente.config_jev).
                 env.update(jev_cliente.entorno_jev(self.jev_config))
+            # La llave se resuelve en el padre y SOLO viaja en el entorno
+            # del hijo, jamás en argv (como jev_auto._comando_y_ambiente):
+            # en el gateway multiplexado vive en el secret_scope y el hijo,
+            # sin ctx, no puede resolverla por su cuenta (F11).
+            env.pop("TYPESAFE_API_KEY", None)
+            try:
+                clave = jev_cliente.obtener_llave()
             except Exception:
-                pass
+                clave = ""
+            if clave:
+                env["TYPESAFE_API_KEY"] = clave
+        except Exception:
+            pass
         process = subprocess.Popen(
             argv,
             cwd=str(home),

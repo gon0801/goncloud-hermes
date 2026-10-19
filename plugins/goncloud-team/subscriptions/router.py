@@ -516,7 +516,13 @@ class SubscriptionRouter:
             except SubscriptionBusy:
                 return self._stage_busy()
             result = self._route_evidence(result, route, skipped_routes)
+            clase_regla = None
             if disposition == "executed":
+                # The heuristic class is what governs the irreversible
+                # calls below: JEV re-classifies the evidence, but it must
+                # never lift a mutant failure out of the post-mutation
+                # block nor mark or quarantine the account on its own.
+                clase_regla = result.failure
                 result = self._aplicar_jev(result, route, attempt_no)
             revision, changed, mutated = self.git.mutation_since(
                 request.workspace, request.start_revision
@@ -556,7 +562,7 @@ class SubscriptionRouter:
                 )
                 last_failure = self._route_evidence(result, route, skipped_routes)
                 continue
-            self._record_health(route.adapter, result)
+            self._record_health(route.adapter, result, clase_regla)
             if result.success:
                 return result
             last_failure = result
@@ -564,7 +570,12 @@ class SubscriptionRouter:
                 # The kinds that never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
                 return result
-            if result.failure in _BLOCK_AFTER_MUTATION and mutated:
+            if mutated and (
+                result.failure in _BLOCK_AFTER_MUTATION
+                # The heuristic class blocks too (F12): a JEV re-classification
+                # never lifts a mutant failure out of the block.
+                or clase_regla in _BLOCK_AFTER_MUTATION
+            ):
                 return result
             if mutated:
                 request = replace(
@@ -901,7 +912,12 @@ class SubscriptionRouter:
             return result
         return replace(result, failure=FailureKind(nueva))
 
-    def _record_health(self, adapter: str, result: InvocationResult) -> None:
+    def _record_health(
+        self,
+        adapter: str,
+        result: InvocationResult,
+        regla: Optional[FailureKind] = None,
+    ) -> None:
         if result.success:
             self.store.save_health(
                 adapter,
@@ -911,7 +927,9 @@ class SubscriptionRouter:
                 lift_quarantine=True,
             )
             return
-        failure = result.failure
+        # The heuristic class, not JEV's re-classification, decides account
+        # health (F12): JEV never marks or quarantines an account on its own.
+        failure = regla if regla is not None else result.failure
         # A rejected envelope advances the slot but says nothing about the
         # account: the vendor answered. Keeping it ready avoids skipping the
         # primary position for the whole health window after one bad answer.

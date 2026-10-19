@@ -144,6 +144,31 @@ def obtener_llave(getter: Callable | None = None) -> str:
     raise JevError("TYPESAFE_API_KEY no está disponible")
 
 
+def secretos_del_scope() -> tuple[str, ...]:
+    """Los values() del scope del perfil (agent.secret_scope, Hermes 0.22).
+
+    En el gateway multiplexado TODAS las llaves del perfil viven ahí, no en
+    os.environ, y ninguna debe salir a TypeSafe aunque no encaje en las
+    formas de SENSITIVE_TEXT. Helper común del plugin: también lo usa
+    jev_auto para su propio redactado. Los valores solo sirven para tachar:
+    jamás a argv, logs ni registro.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope
+
+        alcance = current_secret_scope()
+    except Exception:
+        return ()
+    if alcance is None:
+        return ()
+    try:
+        return tuple(
+            valor for valor in alcance.values() if isinstance(valor, str) and valor
+        )
+    except Exception:
+        return ()
+
+
 def _raiz_hermes() -> Path | None:
     """La raíz del home de Hermes vía raices.hogar, o None si no se resuelve.
 
@@ -398,7 +423,12 @@ class ClienteJev:
             if not llave:
                 self.ultimo_error = "sin_llave"
                 return None
-            estado_limpio = redact_text(str(estado or ""))[-_MAX_STATE_CHARS:]
+            # Lo que sale a TypeSafe se tacha también contra los secretos
+            # reales del perfil (scope, F13) y contra la llave resuelta:
+            # ninguna credencial viaja al tercero aunque no tenga forma.
+            estado_limpio = redact_text(
+                str(estado or ""), (*secretos_del_scope(), llave)
+            )[-_MAX_STATE_CHARS:]
             payload = {
                 "state": estado_limpio,
                 "model": self.config.modelo,

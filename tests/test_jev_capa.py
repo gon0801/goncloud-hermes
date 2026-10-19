@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -123,6 +124,36 @@ def completed(adapter="claude"):
     )
 
 
+class _AlcanceFake:
+    """Instala un agent.secret_scope de mentira y lo saca al salir."""
+
+    def __init__(self, get_secret=None, current_secret_scope=None):
+        self.modulo_agente = types.ModuleType("agent")
+        self.modulo_alcance = types.ModuleType("agent.secret_scope")
+        if get_secret is not None:
+            self.modulo_alcance.get_secret = get_secret
+        if current_secret_scope is not None:
+            self.modulo_alcance.current_secret_scope = current_secret_scope
+        self.previos = None
+
+    def __enter__(self):
+        self.previos = {
+            nombre: sys.modules.get(nombre)
+            for nombre in ("agent", "agent.secret_scope")
+        }
+        sys.modules["agent"] = self.modulo_agente
+        sys.modules["agent.secret_scope"] = self.modulo_alcance
+        return self
+
+    def __exit__(self, *exc):
+        for nombre, previo in self.previos.items():
+            if previo is None:
+                sys.modules.pop(nombre, None)
+            else:
+                sys.modules[nombre] = previo
+        return False
+
+
 class ClienteTests(unittest.TestCase):
     def test_route_usa_la_api_real_de_typesafe(self):
         transporte = TransporteFalso(answers_choice("quota", 0.92))
@@ -209,6 +240,26 @@ class ClienteTests(unittest.TestCase):
                 transporte=transporte, obtener_llave=lambda: LLAVE_FALSA
             )
             self.assertIsNone(cliente.check("estado", "¿pasa?"), repr(error))
+
+    def test_los_secretos_del_scope_y_la_llave_no_salen_a_typesafe(self):
+        # F13: en el gateway multiplexado las credenciales del perfil viven
+        # en agent.secret_scope, no en os.environ, y ni esas values() ni la
+        # llave resuelta tienen por qué tener forma de llave: lo que sale a
+        # TypeSafe no las contiene.
+        secreto_scope = "mjs-privado-scope-9931"
+        llave_plana = "llave-plana-sin-forma-4567"
+        with _AlcanceFake(current_secret_scope=lambda: {"OTRA_LLAVE": secreto_scope}):
+            transporte = TransporteFalso({"jev_check": {"type": "noul", "noul": 0.5}})
+            cliente = jev_cliente.ClienteJev(
+                transporte=transporte, obtener_llave=lambda: llave_plana
+            )
+            cliente.check(
+                f"evidencia con {secreto_scope} y {llave_plana} dentro", "¿pasa?"
+            )
+        enviado = json.dumps(transporte.llamadas[0]["payload"])
+        self.assertNotIn(secreto_scope, enviado)
+        self.assertNotIn(llave_plana, enviado)
+        self.assertIn("[redacted]", transporte.llamadas[0]["payload"]["state"])
 
     def test_estado_con_secreto_no_llega_a_la_peticion(self):
         transporte = TransporteFalso({"jev_check": {"type": "noul", "noul": 0.5}})
@@ -331,6 +382,36 @@ class RouterJevTests(unittest.TestCase):
         (decision,) = self.decisiones()
         self.assertEqual(decision["actuo"], "regla")
         self.assertEqual(decision["resultado_regla"], "rate_limit")
+
+    def test_falla_mutante_reclamada_por_jev_no_sale_del_bloqueo(self):
+        # F12: la heurística dejó transport (bloquea tras mutación) con el
+        # workspace ya cambiado; JEV reclama quota 0.99: la etapa se bloquea
+        # igual (el siguiente slot no corre, no hay continue) y la salud de
+        # la cuenta se evalúa con la clase heurística, no con la de JEV.
+        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
+
+        def muta_y_transport(request, route):
+            (request.workspace / "parcial.py").write_text("medio\n", encoding="utf-8")
+            return failed(
+                FailureKind.TRANSPORT,
+                adapter="opencode_go",
+                text="connection reset before an answer",
+            )
+
+        self.adapters["opencode_go"].result = muta_y_transport
+        self.adapters["claude"].result = completed()
+        transporte = TransporteFalso(answers_choice("quota", 0.99))
+        router = self.router(transporte)
+        resultado = router.run(self.request(), self.rutas())
+        self.assertFalse(resultado.success)
+        self.assertEqual(self.adapters["claude"].requests, [])
+        self.assertEqual(resultado.failure, FailureKind.QUOTA)
+        salud = router.store.health("opencode_go")
+        self.assertEqual(salud["failure"], "transport")
+        self.assertFalse(salud["ready"])
+        (decision,) = self.decisiones()
+        self.assertEqual(decision["actuo"], "jev")
+        self.assertEqual(decision["respuesta"], "quota")
 
     def test_jev_caido_o_lento_gana_heuristica(self):
         for error in (TimeoutError("tope de 3s"), RuntimeError("typesafe caido")):
@@ -782,13 +863,70 @@ class CadenaDesacopladaTests(unittest.TestCase):
             def __init__(self, argv, **kwargs):
                 capturado.update(kwargs)
 
-        with patch.object(local_orchestrator.subprocess, "Popen", PopenFalso):
-            resultado = orquestador.launch_detached("wf_hijo", home=self.workspace)
+        with patch.dict(os.environ, {"TYPESAFE_API_KEY": LLAVE_FALSA}):
+            with patch.object(local_orchestrator.subprocess, "Popen", PopenFalso):
+                resultado = orquestador.launch_detached("wf_hijo", home=self.workspace)
         self.assertEqual(resultado["driver_pid"], 4321)
         env = capturado["env"]
         self.assertEqual(env["GONCLOUD_JEV_UMBRAL"], "0.5")
         self.assertEqual(env["GONCLOUD_JEV_ROUTER_CLASIFICACION"], "0")
+        # F11: el entorno REAL del hijo trae la llave (entorno_jev nunca la
+        # lleva; quien la pasa es launch_detached).
+        self.assertEqual(env["TYPESAFE_API_KEY"], LLAVE_FALSA)
         self.assertNotIn("TYPESAFE_API_KEY", jev_cliente.entorno_jev(config))
+
+    def test_launch_detached_trae_la_llave_del_scope_y_jamas_al_argv(self):
+        # F11: en el gateway multiplexado la llave vive en agent.secret_scope
+        # y el hijo no tiene ctx para resolverla: el padre la resuelve y la
+        # pasa SOLO en el entorno del hijo, nunca en argv.
+        fake = str(ROOT / "tests" / "fake_hermes_cli")
+        if fake not in sys.path:
+            sys.path.insert(0, fake)
+        import local_orchestrator
+
+        config = jev_cliente.JevConfig(
+            umbral=0.5, puntos={"router_clasificacion": False}
+        )
+        orquestador = local_orchestrator.LocalOrchestrator(jev_config=config)
+        capturado = {}
+
+        class PopenFalso:
+            pid = 4321
+
+            def __init__(self, argv, **kwargs):
+                capturado.update(argv=argv, **kwargs)
+
+        llave_scope = "llave-solo-scope-sin-forma-7777"
+        with _AlcanceFake(get_secret=lambda nombre, defecto="": llave_scope):
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(local_orchestrator.subprocess, "Popen", PopenFalso):
+                    orquestador.launch_detached("wf_llave", home=self.workspace)
+        env = capturado["env"]
+        self.assertEqual(env["TYPESAFE_API_KEY"], llave_scope)
+        self.assertNotIn(llave_scope, " ".join(capturado["argv"]))
+        self.assertNotIn(llave_scope, json.dumps(capturado["argv"]))
+        # La config sigue viajando junto a la llave.
+        self.assertEqual(env["GONCLOUD_JEV_UMBRAL"], "0.5")
+
+    def test_launch_detached_sin_llave_no_explota_y_no_la_inventa(self):
+        fake = str(ROOT / "tests" / "fake_hermes_cli")
+        if fake not in sys.path:
+            sys.path.insert(0, fake)
+        import local_orchestrator
+
+        orquestador = local_orchestrator.LocalOrchestrator()
+        capturado = {}
+
+        class PopenFalso:
+            pid = 4321
+
+            def __init__(self, argv, **kwargs):
+                capturado.update(kwargs)
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(local_orchestrator.subprocess, "Popen", PopenFalso):
+                orquestador.launch_detached("wf_sin_llave", home=self.workspace)
+        self.assertNotIn("TYPESAFE_API_KEY", capturado["env"])
 
 
 class TransporteRedirectTests(unittest.TestCase):
