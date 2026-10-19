@@ -8,9 +8,10 @@ sandbox del modelo— lo hace cuando la cadena termina delivered:
 1. En el worktree de la cadena: `git push origin cadena/<id>` con las
    credenciales que la PC ya tiene (Git Credential Manager o SSH).
 2. El PR por la API de GitHub (POST /repos/{owner}/{repo}/pulls), base = la
-   rama de la que nacio la cadena, head = cadena/<id>, titulo = primera
-   linea de la instruccion, cuerpo = resumen de la entrega + id de la
-   cadena. El token se pide en el momento con `git credential fill` para
+   rama de la que nacio la cadena, head = cadena/<id>, titulo neutral
+   ("Cadena <id>: entrega") y cuerpo con id y rama — el resumen de la
+   entrega solo entra si el repo es privado; la instruccion JAMAS sale a
+   GitHub. El token se pide en el momento con `git credential fill` para
    https://github.com (si el remoto es SSH, se deduce owner/repo de la URL
    y la credencial https se pide igual), vive en memoria y JAMAS se
    escribe a disco, log, resultado ni aviso.
@@ -22,6 +23,7 @@ sandbox del modelo— lo hace cuando la cadena termina delivered:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -36,10 +38,6 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
 
 #: Un motivo de una linea, acotado: viaja en el aviso, nunca un volcado.
 _TOPE_MOTIVO = 200
-_TOPE_TITULO = 80
-#: Sin prompt de terminal: el fill pregunta al almacen configurado y si no
-#: hay credencial falla limpio, jamas se queda esperando a nadie.
-_ENTORNO_CREDENCIAL = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo")
 
 #: owner/repo desde la URL del remoto, https o SSH, con o sin .git.
 _GITHUB = re.compile(
@@ -88,7 +86,7 @@ def _subir(worktree, rama: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=600,
-            env=_ENTORNO_CREDENCIAL,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, _corto(f"git push no corrio: {exc}")
@@ -103,7 +101,10 @@ def _credencial() -> str | None:
 
     `git credential fill` pregunta al almacen configurado de la PC (Git
     Credential Manager, osxkeychain, ...). El token vive solo en esta
-    variable: jamas a disco, log, resultado ni aviso.
+    variable: jamas a disco, log, resultado ni aviso. El entorno se arma
+    POR LLAMADA (F4): sin GIT_ASKPASS — "echo" en POSIX fabricaria una
+    credencial con el texto del prompt — y con GIT_TERMINAL_PROMPT=0 para
+    que sin almacen el fill falle limpio.
     """
     try:
         llenado = subprocess.run(
@@ -112,7 +113,7 @@ def _credencial() -> str | None:
             capture_output=True,
             text=True,
             timeout=60,
-            env=_ENTORNO_CREDENCIAL,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -142,17 +143,21 @@ def _api(metodo: str, ruta: str, token: str, payload=None) -> tuple[int | None, 
             bruto = respuesta.read().decode("utf-8", "replace")
         try:
             return respuesta.status, json.loads(bruto or "{}")
-        except ValueError:
+        except (TypeError, ValueError):
             return respuesta.status, {}
     except urllib.error.HTTPError as exc:
         try:
             datos = json.loads(exc.read().decode("utf-8", "replace") or "{}")
-        except ValueError:
+        except (
+            ValueError,
+            http.client.HTTPException,
+            OSError,
+        ):  # respuesta truncada o cortada a medias: ni el cuerpo escapa
             datos = {}
         if not isinstance(datos, dict):
             datos = {}
         return exc.code, datos
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         return None, {}
 
 
@@ -171,14 +176,14 @@ def _rama_base_local(worktree) -> str | None:
     return None
 
 
-def publicar(
-    workflow_id: str, *, worktree, instruction: str = "", summary: str = "", base=None
-):
+def publicar(workflow_id: str, *, worktree, summary: str = "", base=None):
     """Sube `cadena/<id>` y abre el PR; ({"pull_request": url}) o el motivo.
 
     `base` es la rama guardada en el contrato (de donde nacio la cadena,
     capturada al crear el worktree); sin ella —cadenas viejas— se deduce del
     origin/HEAD local y, por ultimo, de la rama por defecto del remoto.
+    F5 (privacidad): el titulo es neutral y la instruccion JAMAS sale a
+    GitHub; el resumen de la entrega solo entra si el repo es privado.
     Nunca lanza y nunca devuelve la credencial: lo unico que sale de aqui
     es la URL del PR o un motivo corto y redactado.
     """
@@ -210,22 +215,26 @@ def publicar(
     if codigo != 200:
         return {"pr_no_abierto": _motivo_api(codigo, cuerpo)}
 
+    # F5 (privacidad): el repo se consulta siempre — `private` decide si el
+    # resumen del trabajo puede salir a GitHub, y default_branch es el
+    # respaldo de la base. Si no se sabe, se trata como público.
+    codigo, cuerpo = _api("GET", f"/repos/{dueño}/{nombre}", token)
+    privado = codigo == 200 and isinstance(cuerpo, dict) and bool(cuerpo.get("private"))
+
     # La base guardada en el contrato manda; origin/HEAD y la rama por
     # defecto del remoto son el respaldo de las cadenas viejas.
     base = base or _rama_base_local(worktree)
-    if not base:
-        codigo, cuerpo = _api("GET", f"/repos/{dueño}/{nombre}", token)
-        base = cuerpo.get("default_branch") if codigo == 200 else None
+    if not base and codigo == 200 and isinstance(cuerpo, dict):
+        base = cuerpo.get("default_branch")
     if not base:
         return {"pr_no_abierto": "sin rama base identificable"}
 
-    primera = (instruction or "").strip().splitlines()
-    titulo = _corto(primera[0] if primera else "", _TOPE_TITULO) or (
-        f"Cadena {workflow_id}"
-    )
-    cuerpo_pr = _corto(
-        f"{(summary or '').strip()}\n\nCadena {workflow_id}.".strip(), 2000
-    )
+    # F5: el titulo es neutral y la instruccion JAMAS viaja a GitHub; el
+    # resumen de la entrega solo entra si el repo es privado.
+    titulo = f"Cadena {workflow_id}: entrega"
+    cuerpo_pr = _corto(f"Cadena {workflow_id} (rama {rama}).", 2000)
+    if privado and (summary or "").strip():
+        cuerpo_pr += "\n\n" + _corto(summary, 1800)
     codigo, cuerpo = _api(
         "POST",
         f"/repos/{dueño}/{nombre}/pulls",

@@ -366,6 +366,48 @@ class Cadenas(Escenario):
         self.assertEqual(self.impresos, [])
         self.assertEqual([p.suffix for p in self.buzon().iterdir()], [".entregado"])
 
+    def test_el_aviso_delivered_trae_el_link_del_pr_en_la_linea(self):
+        # F1 (H-entrega-pr r4): el detalle de la entrega llega a la línea —
+        # el link del PR es lo único que le dice a claw cómo publicarlo.
+        self.avisar(
+            {
+                "workflow_id": "t_pr",
+                "repo": "owner-01/repo-a",
+                "outcome": "delivered",
+                "etapa": None,
+                "motivo": "https://github.com/owner-01/repo-a/pull/9",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.correr()
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_pr (owner-01/repo-a) entregada: "
+                "https://github.com/owner-01/repo-a/pull/9."
+            ],
+        )
+
+    def test_el_aviso_delivered_trae_el_motivo_del_pr_no_abierto(self):
+        self.avisar(
+            {
+                "workflow_id": "t_sin_pr",
+                "repo": "owner-01/repo-a",
+                "outcome": "delivered",
+                "etapa": None,
+                "motivo": "PR no abierto: sin credencial de GitHub",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.correr()
+        self.assertEqual(
+            self.impresos,
+            [
+                "Cadena t_sin_pr (owner-01/repo-a) entregada: "
+                "PR no abierto: sin credencial de GitHub."
+            ],
+        )
+
     def test_la_cadena_entregada_y_la_fallada_avisan_igual(self):
         self.avisar(
             {

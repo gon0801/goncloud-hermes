@@ -10,6 +10,7 @@ resultado, aviso ni motivo.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -111,9 +112,6 @@ class _TableroGit(unittest.TestCase):
             return entrega_pr.publicar(
                 "t_x",
                 worktree=cambios.pop("worktree", self.worktree),
-                instruction=cambios.pop(
-                    "instruction", "Arregla el panel de odoo\ny su prueba"
-                ),
                 summary=cambios.pop("summary", "panel arreglado"),
                 **cambios,
             )
@@ -137,6 +135,10 @@ class PublicacionTests(_TableroGit):
     def test_la_entrega_empuja_la_rama_y_abre_el_pr(self):
         falso, hechas = self.api_falsa(
             {
+                ("GET", "/repos/acme/repo"): (
+                    200,
+                    {"private": True, "default_branch": "main"},
+                ),
                 ("GET", "/repos/acme/repo/pulls"): (200, []),
                 ("POST", "/repos/acme/repo/pulls"): (201, {"html_url": URL_PR}),
             }
@@ -147,7 +149,7 @@ class PublicacionTests(_TableroGit):
         self.assertEqual(resultado, {"pull_request": URL_PR})
         # El push fue real: la rama de la cadena vive en el origen.
         self.assertTrue(self.la_rama_esta_en_el_origen())
-        get, post = hechas[0], hechas[1]
+        get, post = hechas[0], hechas[-1]
         self.assertEqual(get["metodo"], "GET")
         self.assertTrue(get["ruta"].startswith("/repos/acme/repo/pulls?"))
         self.assertIn("head=acme:cadena/t_x", get["ruta"])
@@ -156,9 +158,49 @@ class PublicacionTests(_TableroGit):
         self.assertEqual(post["payload"]["head"], "cadena/t_x")
         # La base sale del origin/HEAD del repo local: main, donde nacio.
         self.assertEqual(post["payload"]["base"], "main")
-        self.assertEqual(post["payload"]["title"], "Arregla el panel de odoo")
+        # F5: titulo neutral; el repo es privado, asi que el resumen entra.
+        self.assertEqual(post["payload"]["title"], "Cadena t_x: entrega")
         self.assertIn("panel arreglado", post["payload"]["body"])
         self.assertIn("Cadena t_x", post["payload"]["body"])
+        self.assertIn("rama cadena/t_x", post["payload"]["body"])
+
+    def test_la_entrega_con_repo_publico_no_publica_resumen_ni_instruccion(self):
+        # F5: si el repo no es privado (o no se sabe), el cuerpo solo lleva
+        # id de cadena y rama — jamas el resumen del trabajo ni la
+        # instruccion, que son privados.
+        falso, hechas = self.api_falsa(
+            {
+                ("GET", "/repos/acme/repo"): (
+                    200,
+                    {"private": False, "default_branch": "main"},
+                ),
+                ("GET", "/repos/acme/repo/pulls"): (200, []),
+                ("POST", "/repos/acme/repo/pulls"): (201, {"html_url": URL_PR}),
+            }
+        )
+
+        resultado = self.publicar(falso, summary="resumen privado del trabajo")
+
+        self.assertEqual(resultado, {"pull_request": URL_PR})
+        payload = hechas[-1]["payload"]
+        self.assertNotIn("resumen privado", payload["body"])
+        self.assertNotIn("Arregla el panel", payload["body"])
+        self.assertIn("Cadena t_x", payload["body"])
+        self.assertIn("rama cadena/t_x", payload["body"])
+
+    def test_la_entrega_empezando_sin_repo_conocido_trata_todo_como_publico(self):
+        # F5: si el GET del repo no responde, no se sabe -> publico.
+        falso, hechas = self.api_falsa(
+            {
+                ("GET", "/repos/acme/repo/pulls"): (200, []),
+                ("POST", "/repos/acme/repo/pulls"): (201, {"html_url": URL_PR}),
+            }
+        )
+
+        resultado = self.publicar(falso, summary="resumen privado del trabajo")
+
+        self.assertEqual(resultado, {"pull_request": URL_PR})
+        self.assertNotIn("resumen privado", hechas[-1]["payload"]["body"])
 
     def test_la_base_guardada_en_el_contrato_gana_sobre_origin_head(self):
         # H-entrega-pr r2: la rama guardada al crear el worktree es la base;
@@ -250,6 +292,37 @@ class PublicacionTests(_TableroGit):
         self.assertNotIn(TOKEN, json.dumps(resultado))
         self.assertIn("[redacted]", resultado["pr_no_abierto"])
         self.assertIn("API de GitHub 422", resultado["pr_no_abierto"])
+
+
+@unittest.skipIf(os.name == "nt", "los dobles de git son scripts sh")
+class CredencialTests(unittest.TestCase):
+    """F4: _credencial con un doble de git — sin credencial -> None."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.binario = Path(self.tmp.name) / "bin"
+        self.binario.mkdir()
+        self.shim = self.binario / "git"
+        self.shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        self.shim.chmod(0o755)
+
+    def correr_con(self, guion):
+        self.shim.write_text(guion, encoding="utf-8")
+        with mock.patch.dict(
+            os.environ, {"PATH": f"{self.binario}:{os.environ.get('PATH', '')}"}
+        ):
+            return entrega_pr._credencial()
+
+    def test_un_git_que_falla_no_da_credencial(self):
+        self.assertIsNone(self.correr_con("#!/bin/sh\nexit 1\n"))
+
+    def test_un_llenado_sin_password_no_da_credencial(self):
+        self.assertIsNone(
+            self.correr_con(
+                "#!/bin/sh\necho 'protocol=https'\necho 'host=github.com'\n"
+            )
+        )
 
 
 class DueñoYRepoTests(unittest.TestCase):

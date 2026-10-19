@@ -697,7 +697,9 @@ class WorkflowService:
                 text=True,
                 timeout=60,
             )
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
+            # F3: un timeout del probe no deja la raiz sin grafo y el repo
+            # en busy — sin rama guardada, el PR deducira la base despues.
             return None
         rama = hecho.stdout.strip() if hecho.returncode == 0 else ""
         if rama and rama != "HEAD":
@@ -709,7 +711,7 @@ class WorkflowService:
                 text=True,
                 timeout=60,
             )
-        except OSError:
+        except (OSError, subprocess.SubprocessError):
             return None
         if simbolico.returncode == 0:
             salida = simbolico.stdout.strip()

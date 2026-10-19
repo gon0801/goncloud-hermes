@@ -1106,8 +1106,10 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
         def api(metodo, ruta, token_llamada, payload=None):
             llamadas.append((metodo, ruta, payload))
-            if metodo == "GET":
+            if metodo == "GET" and ruta.startswith("/repos/acme/repo/pulls"):
                 return 200, []
+            if metodo == "GET":
+                return 200, {"private": True, "default_branch": "main"}
             return 201, {"html_url": "https://github.com/acme/repo/pull/7"}
 
         with (
@@ -1141,11 +1143,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         self.assertEqual(payload["head"], f"cadena/{result['workflow_id']}")
         self.assertEqual(payload["base"], "main")
         evento = self._aviso_delivered(result["workflow_id"], result["run_id"])
-        self.assertEqual(
-            evento["motivo"],
-            f"Cadena {result['workflow_id']} entregada: "
-            "https://github.com/acme/repo/pull/7",
-        )
+        self.assertEqual(evento["motivo"], "https://github.com/acme/repo/pull/7")
         # El resultado durable tambien lleva el link, y el token no sale ni
         # en el resultado ni en el aviso.
         durable = json.loads(
@@ -1189,8 +1187,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         evento = self._aviso_delivered(result["workflow_id"], result["run_id"])
         self.assertEqual(
             evento["motivo"],
-            f"rama cadena/{result['workflow_id']} lista, PR no abierto: "
-            "sin credencial de GitHub para https://github.com",
+            "PR no abierto: sin credencial de GitHub para https://github.com",
         )
 
     def test_the_pr_base_is_the_branch_the_chain_was_born_from(self):
@@ -1211,8 +1208,10 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
         def api(metodo, ruta, token, payload=None):
             llamadas.append((metodo, ruta, payload))
-            if metodo == "GET":
+            if metodo == "GET" and ruta.startswith("/repos/acme/repo/pulls"):
                 return 200, []
+            if metodo == "GET":
+                return 200, {"private": True, "default_branch": "main"}
             return 201, {"html_url": "https://github.com/acme/repo/pull/3"}
 
         with (
@@ -1247,8 +1246,10 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
         def api(metodo, ruta, token, payload=None):
             llamadas.append((metodo, ruta, payload))
-            if metodo == "GET":
+            if metodo == "GET" and ruta.startswith("/repos/acme/repo/pulls"):
                 return 200, []
+            if metodo == "GET":
+                return 200, {"private": True, "default_branch": "main"}
             return 201, {"html_url": "https://github.com/acme/repo/pull/5"}
 
         with (

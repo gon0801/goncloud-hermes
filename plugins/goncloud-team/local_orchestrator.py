@@ -531,13 +531,11 @@ def _aviso_evento(report, *, repo, instruction):
     """One bounded mailbox event: what stopped, where, why, and the ask."""
     etapa, motivo = _etapa_y_motivo(report)
     if report.get("pull_request"):
-        # H-entrega-pr: el link del PR es el aviso de la entrega.
-        motivo = f"Cadena {report['workflow_id']} entregada: {report['pull_request']}"
+        # H-entrega-pr: el detalle de la entrega es el link del PR (la línea
+        # de despertar lo antepone a "Cadena X entregada").
+        motivo = report["pull_request"]
     elif report.get("pr_no_abierto"):
-        motivo = (
-            f"rama cadena/{report['workflow_id']} lista, PR no abierto: "
-            f"{report['pr_no_abierto']}"
-        )
+        motivo = f"PR no abierto: {report['pr_no_abierto']}"
     return {
         "workflow_id": report["workflow_id"],
         "repo": _trimmed(_sanitize(repo), MAX_AVISO_CHARS) or None,
@@ -1370,17 +1368,23 @@ class LocalOrchestrator:
         if outcome == "delivered" and (contract or {}).get("worktree"):
             # H-entrega-pr: al entregar, el driver sube la rama cadena/<id> y
             # abre el PR (codigo del plugin, fuera del sandbox del modelo).
-            # Fail-open: la cadena ya esta entregada; el link del PR o el
-            # motivo corto viajan en el resultado durable y en el aviso.
-            report.update(
-                entrega_pr.publicar(
-                    workflow_id,
-                    worktree=contract["worktree"],
-                    instruction=(contract or {}).get("instruction", ""),
-                    summary=_etapa_y_motivo(report)[1],
-                    base=(contract or {}).get("base_branch") or None,
+            # Fail-open doble: publicar promete no lanzar, y AUN ASI una
+            # excepcion inesperada no convierte la entrega en error — el
+            # resultado ya se publicara con un motivo generico y el aviso lo
+            # dira. La cadena entregada jamas termina "error" por el PR.
+            try:
+                report.update(
+                    entrega_pr.publicar(
+                        workflow_id,
+                        worktree=contract["worktree"],
+                        summary=_etapa_y_motivo(report)[1],
+                        base=(contract or {}).get("base_branch") or None,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001 - fail-open, ver arriba
+                report["pr_no_abierto"] = _trimmed(_sanitize(str(exc)), 200) or (
+                    "la publicacion fallo sin motivo"
+                )
         _write_result(workflow_id, report, home=home)
         # The mailbox event rides the same stop the result file records, so
         # the cron despertar-raices can tell claw with zero model calls —
