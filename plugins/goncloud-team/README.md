@@ -217,14 +217,21 @@ metadata. A first high/critical rejection opens exactly one corrective
 review blocks delivery. Other rejected or blocked stages stop the runner.
 External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
+Every driver start — a detached launch and a CLI `resume` alike — first
+overwrites that result file with a `running` mark (its own `run_id` and pid)
+and writes its outcome under the same `run_id` when it quits, so a stopped
+outcome is only evidence while it is the file's last write: a relaunched
+chain refuses the close until its own driver stops, and an unreadable result
+file fails closed. A driver that dies without writing its outcome leaves the
+mark in `running`; one more `resume` produces a fresh outcome.
 Delivery closes the director root after all stages and review gates finish.
 A chain left paused (a `stop_after` checkpoint), blocked, waiting or error
 still holds the same-repository mutex: `WorkflowService.start` refuses every
 new chain in that repository until its director root is done or archived.
 The claw profile releases it with `goncloud_local_close` (`workflow_id`,
 `reason`): the tool requires durable evidence that the driver is gone — one
-of the driver's own stopped outcomes (paused, blocked, waiting or error; the
-result file it writes when it quits) and no live subscription lease — and it
+of the driver's own stopped outcomes (paused, blocked, waiting or error) as
+the result file's last write, and no live subscription lease — and it
 archives the root and the stages that are not done through the native
 `archive` (one native transaction per task, never nested in one of its own),
 keeps the done stages as evidence,

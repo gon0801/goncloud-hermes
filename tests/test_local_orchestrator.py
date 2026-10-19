@@ -613,6 +613,15 @@ class _OrchestratorHarness(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.db = self.root / "kanban.db"
+        # Live review F9: without this, close and close_hint resolve the
+        # machine's real subscription store through default_db_path() and
+        # the suite runs its migrations and locks the live router. The
+        # isolated store is the same one the patched router below uses.
+        subscriptions = patch.dict(
+            os.environ, {"GONCLOUD_SUBSCRIPTION_DB": str(self.root / "routes.db")}
+        )
+        subscriptions.start()
+        self.addCleanup(subscriptions.stop)
         self.requests = []
         self.responses = {}
         self.reviews = []
@@ -1990,10 +1999,134 @@ class LocalCloseTests(_OrchestratorHarness):
         )
         with self.assertRaisesRegex(WorkflowError, "driver"):
             self.close(first["workflow_id"], reason="no")
+        # Live review F8: an illegible file proves nothing either — the
+        # close fails closed, like a driver that may still be running.
+        (self.root / "goncloud-local" / f"{first['workflow_id']}.json").write_text(
+            "{broken", encoding="utf-8"
+        )
+        self.assertIsNone(
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+        )
+        with self.assertRaisesRegex(WorkflowError, "driver"):
+            self.close(first["workflow_id"], reason="no")
         self.write_driver_outcome(first["workflow_id"], "paused")
         self.assertEqual(
             self.close(first["workflow_id"], reason="ya paro")["outcome"], "closed"
         )
+
+    def test_a_relaunched_chain_refuses_the_close_while_its_mark_is_running(self):
+        # Live review F8 (1): the result file survived a relaunch — after
+        # resuming a paused chain (or a same-request-key run) the old
+        # "paused" was still there, so the close archived a live chain.
+        # Every driver start now overwrites the file with a running mark
+        # (its own run id) before any stage, and the close and the hint
+        # refuse until that driver's own outcome is the last write.
+        first = self.paused()
+        with patch(
+            "local_orchestrator.subprocess.Popen",
+            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+        ):
+            self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
+        mark = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(mark["outcome"], "running")
+        self.assertEqual(mark["workflow_id"], first["workflow_id"])
+        self.assertTrue(mark["run_id"])
+
+        self.assertIsNone(
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root)
+        )
+        with self.assertRaisesRegex(WorkflowError, "driver"):
+            self.close(first["workflow_id"], reason="no")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "todo")
+
+    def test_the_relaunched_driver_paused_outcome_closes(self):
+        # Live review F8 (2): the same relaunched driver quits paused — its
+        # outcome, written under the run id it started with, is now the last
+        # write: the hint announces the close and the close accepts it.
+        first = self.paused()
+        with patch(
+            "local_orchestrator.subprocess.Popen",
+            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+        ):
+            self.orchestrator.launch_detached(first["workflow_id"], home=self.root)
+        report = self.orchestrator.resume(
+            first["workflow_id"], stop_after="ingenieria", home=self.root
+        )
+        self.assertEqual(report["outcome"], "paused")
+        written = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(written["outcome"], "paused")
+        self.assertEqual(written["run_id"], report["run_id"])
+
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(first["workflow_id"], home=self.root),
+        )
+        receipt = self.close(first["workflow_id"], reason="driver stopped")
+        self.assertEqual(receipt["outcome"], "closed")
+        self.assertEqual(receipt["done_stages"], ["ingenieria", "scout"])
+
+    def test_both_driver_entries_mark_running_before_the_first_stage(self):
+        # Live review F8 (3): launch_detached marks the file running before
+        # spawning the driver, and the CLI resume marks it through the same
+        # orchestrator resume — in both cases before the first stage runs.
+        first = self.paused()
+        with patch(
+            "local_orchestrator.subprocess.Popen",
+            lambda *args, **kwargs: type("P", (), {"pid": 4242})(),
+        ):
+            launched = self.orchestrator.launch_detached(
+                first["workflow_id"], home=self.root
+            )
+        result_file = self.root / "goncloud-local" / f"{first['workflow_id']}.json"
+        marked = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertEqual(marked["outcome"], "running")
+        self.assertEqual(marked["run_id"], launched["run_id"])
+
+        observed = {}
+
+        def recording_stage_runner(service, **assignment):
+            observed["at_stage"] = json.loads(result_file.read_text(encoding="utf-8"))
+            review = (
+                {"decision": "approve", "severity": None}
+                if service.actor_role == "reviewer"
+                else None
+            )
+            return {
+                "success": True,
+                "text": fenced(envelope(review=review)),
+                "adapter": "opencode_go",
+            }
+
+        spec = importlib.util.spec_from_file_location(
+            "run_local_workflow_f8", ROOT / "scripts/run_local_workflow.py"
+        )
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        orchestrator = LocalOrchestrator(
+            service_factory=self.service, stage_runner=recording_stage_runner
+        )
+        out = io.StringIO()
+        with patch.dict(os.environ, {"HERMES_HOME": str(self.root)}):
+            with redirect_stdout(out):
+                code = cli.main(
+                    ["resume", "--workflow-id", first["workflow_id"]],
+                    orchestrator_factory=lambda: orchestrator,
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(observed["at_stage"]["outcome"], "running")
+        self.assertTrue(observed["at_stage"]["run_id"])
+        final = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertEqual(final["outcome"], "delivered")
+        self.assertEqual(final["run_id"], observed["at_stage"]["run_id"])
 
     def test_a_waiting_driver_outcome_closes_and_is_announced(self):
         # Live review F5: resume also stops durably with "waiting" (a stage
@@ -2026,9 +2159,10 @@ class LocalCloseTests(_OrchestratorHarness):
 
     def test_an_error_driver_outcome_closes_and_is_announced(self):
         # Live review F5: the driver writes "error" when its bootstrap fails
-        # (local_orchestrator ~141) and driver_result derives it from an
-        # unreadable result. Either way the process is gone; the same jam,
-        # so the close accepts it and the hint announces it.
+        # (local_orchestrator ~141). F8 later made an unreadable result file
+        # fail closed ("running"), so "error" here is the driver's own
+        # written outcome: the process is gone; the same jam, so the close
+        # accepts it and the hint announces it.
         first = self.paused()
         self.write_driver_outcome(first["workflow_id"], "error")
         self.assertIn(
