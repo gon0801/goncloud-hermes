@@ -63,8 +63,9 @@ LOCAL_RUN = {
         "a relaunch retries the chain's blocked stages (fresh model calls, no retry "
         "cap) and respects done stages. The repository keeps one active chain: a "
         "stopped one is closed automatically and the new chain starts; a live one "
-        "queues the new chain (queued: true) instead of failing, and the next run "
-        "starts it when the old chain finishes."
+        "queues the new chain (queued: true) instead of failing, and the old "
+        "chain's driver launches the queue's head itself when it writes its final "
+        "outcome — the next run is only the fallback."
     ),
     "parameters": {
         "type": "object",
@@ -140,7 +141,9 @@ LOCAL_CLOSE = {
         "driver is gone: one of its own stopped outcomes as the result "
         "file's last write — every driver start marks that file running "
         "first, so a relaunched chain waits for its own driver — a running "
-        "mark whose pid is gone counts as a dead driver, and no "
+        "mark whose pid is gone counts as a dead driver, a chain still "
+        "sitting in the queue closes on its durable queue marker (it never "
+        "had a driver), and no "
         "live subscription lease; a running chain is refused. Note that "
         "WorkflowService.start now frees a stopped chain by itself and "
         "queues behind a live one, so an explicit close is only needed to "

@@ -37,6 +37,7 @@ try:
         CONTRACT_MARKER as _CONTRACT_MARKER_REF,
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
+        QUEUED_COMMENT_MARKER as _QUEUED_COMMENT_MARKER,
         WorkflowError,
         WorkflowService,
     )
@@ -50,6 +51,7 @@ except ImportError:
         CONTRACT_MARKER as _CONTRACT_MARKER_REF,
         CORRECTIVE_STAGES,
         INITIAL_STAGES,
+        QUEUED_COMMENT_MARKER as _QUEUED_COMMENT_MARKER,
         WorkflowError,
         WorkflowService,
     )
@@ -172,6 +174,14 @@ def _default_home():
 
 def _result_file(workflow_id, home):
     return Path(home) / "goncloud-local" / f"{workflow_id}.json"
+
+
+def _queue_order(task):
+    """FIFO by creation (encargo H punto 3): the native ids are t_<n>."""
+    try:
+        return (0, int(task.id.split("_", 1)[1]))
+    except (IndexError, ValueError):
+        return (1, task.id)
 
 
 def _write_result(workflow_id, payload, *, home):
@@ -401,7 +411,9 @@ def check_workflow_id(workflow_id):
     return workflow_id
 
 
-def close_hint(status_output, driver_outcome, *, driver_live=False, pid_live=None):
+def close_hint(
+    status_output, driver_outcome, *, driver_live=False, pid_live=None, queued=False
+):
     """What goncloud_local_status tells claw about closing this chain.
 
     Every driver start overwrites the result file with a running mark under
@@ -409,21 +421,25 @@ def close_hint(status_output, driver_outcome, *, driver_live=False, pid_live=Non
     quits — so a stopped outcome there means the last driver is gone. A
     close is announced only with one of those stopped outcomes (paused,
     blocked, waiting or error), a running mark whose process is gone
-    (pid_live=False, encargo H punto 4), no live lease, and a root status
+    (pid_live=False, encargo H punto 4), a chain still sitting in the queue
+    (it never had a driver), no live lease, and a root status
     that is closeable at all (a done root was delivered; an archived one is
     already closed; a running or unknown one is never announced).
     """
     root_status = (status_output.get("root") or {}).get("status")
     if root_status not in _CLOSEABLE_ROOT_STATUSES:
         return None
-    stopped = driver_outcome in _STOPPED_DRIVER_OUTCOMES or (
-        driver_outcome == "running" and pid_live is False
+    stopped = (
+        driver_outcome in _STOPPED_DRIVER_OUTCOMES
+        or (queued and driver_outcome is None)
+        or (driver_outcome == "running" and pid_live is False)
     )
     if not stopped or driver_live:
         return None
     return (
         "driver stopped (paused, blocked, waiting or error as the last "
-        "write; a running mark whose pid is gone counts too): close it with "
+        "write; a running mark whose pid is gone counts too; a queued "
+        "chain never had one): close it with "
         "goncloud_local_close {workflow_id, reason} to free the repository "
         "for a new chain"
     )
@@ -731,8 +747,9 @@ class LocalOrchestrator:
         result = {"workflow_id": workflow_id, "stages": dict(started["stages"])}
         # Encargo H punto 2: start ya no rechaza — la cadena vieja parada se
         # cerro sola y una viva deja la nueva en cola. El transporte no
-        # lanza driver sobre una cola: la cadena arranca con el siguiente
-        # goncloud_local_run (o resume) cuando la vieja termine.
+        # lanza driver sobre una cola: la cadena arranca sola cuando el
+        # driver de la vieja escribe su outcome final (punto 3), o con el
+        # siguiente goncloud_local_run (o resume).
         if started.get("queued_behind") is not None:
             result["queued_behind"] = started["queued_behind"]
         if started.get("closed_chains"):
@@ -838,8 +855,16 @@ class LocalOrchestrator:
         }
 
     def driver_result(self, workflow_id, *, home=None):
-        """The detached driver's bounded outcome, or None while it still runs."""
-        return read_driver_mark(workflow_id, home=home)
+        """The detached driver's bounded outcome, or None while it still runs.
+
+        A running mark comes back annotated with ``pid_check`` when the pid
+        could not be checked (review F4/F11): the cause is visible in what
+        goncloud_local_status reports, not discarded with a local copy.
+        """
+        mark = read_driver_mark(workflow_id, home=home)
+        if isinstance(mark, dict) and mark.get("outcome") == "running":
+            driver_mark_live(mark)
+        return mark
 
     def close(self, workflow_id, *, reason, store=None, home=None):
         """Close a chain the driver already stopped and free its repository.
@@ -875,6 +900,13 @@ class LocalOrchestrator:
             service._require_workflow_root(conn, workflow_id)
             initial_ids = service._decomposed_child_ids(conn, workflow_id) or []
             correction = service._correction_ids(conn, workflow_id)
+            # Encargo H punto 3: a chain sitting in the queue never had a
+            # driver, so the durable queue marker — not a driver mark — is
+            # its close evidence.
+            queued = any(
+                item.body.startswith(_QUEUED_COMMENT_MARKER)
+                for item in list_comments(conn, workflow_id)
+            )
         stages = dict(zip(INITIAL_STAGES, initial_ids))
         stages.update(
             {f"round2:{role}": task_id for role, task_id in correction.items()}
@@ -930,8 +962,12 @@ class LocalOrchestrator:
                 # stops. Without it the chain may have a live driver between
                 # stages (nothing marks a stage running), so the close waits.
                 # A running mark whose pid is gone is a dead driver: stop
-                # evidence too (encargo H punto 4).
-                if not driver_stopped(self.driver_result(workflow_id, home=home)):
+                # evidence too (encargo H punto 4). A queued chain never
+                # had a driver — its durable queue marker is the evidence
+                # (encargo H punto 3).
+                if not (
+                    queued or driver_stopped(self.driver_result(workflow_id, home=home))
+                ):
                     raise WorkflowError(
                         "no durable driver stop (paused, blocked, waiting or "
                         "error) as the result file's last write; the driver "
@@ -990,7 +1026,8 @@ class LocalOrchestrator:
 
         Same contract the close enforces: one of the driver's durable
         stopped outcomes (paused, blocked, waiting or error) — or a running
-        mark whose pid is gone —, no live subscription lease, and a
+        mark whose pid is gone —, a chain still sitting in the queue (it
+        never had a driver), no live subscription lease, and a
         closeable root.
         A chain whose status cannot even be read (unknown id, or the triage
         root of a failed decomposition) has no driver outcome to speak of,
@@ -1006,12 +1043,20 @@ class LocalOrchestrator:
         # nothing (review F6): no outcome to speak of, never a crash.
         outcome = driver.get("outcome") if isinstance(driver, dict) else None
         pid_live = driver_mark_live(driver) if outcome == "running" else None
+        service = self.services("claw")
+        with service._connect() as conn:
+            queued = any(
+                item.body.startswith(_QUEUED_COMMENT_MARKER)
+                for item in list_comments(conn, workflow_id)
+            )
         if store is None:
             path = default_db_path()
             if path.exists():
                 store = SubscriptionStateStore(path)
         live = bool(store.active_leases(workflow_id)) if store is not None else False
-        return close_hint(state, outcome, driver_live=live, pid_live=pid_live)
+        return close_hint(
+            state, outcome, driver_live=live, pid_live=pid_live, queued=queued
+        )
 
     def _context(self, workflow_id):
         service = self.services("claw")
@@ -1119,7 +1164,82 @@ class LocalOrchestrator:
         # reads (live review F8).
         report["run_id"] = run_id
         _write_result(workflow_id, report, home=home)
+        # Encargo H punto 3 (review F9): the final outcome frees the
+        # repository, so the queue's head launches here — FIFO, one chain,
+        # from the driver's own process. A failure launching never touches
+        # the outcome just written: the queue stays durable and the next
+        # run (or resume) starts the chain.
+        try:
+            launched = self._launch_next_queued(workflow_id, home=home)
+        except Exception:
+            launched = None
+        if launched is not None:
+            report["launched_queued"] = launched
         return report
+
+    def _launch_next_queued(self, finished_id, *, home=None):
+        """Launch the repository queue's head (encargo H punto 3, F9).
+
+        The chain that just wrote its final outcome freed the repository;
+        the first queued chain of the same repository — FIFO by native id,
+        the creation order — launches with the same detached driver any
+        start uses. One chain per call. Queued means the durable queue
+        marker plus demonstrably no live work: no running member, no live
+        subscription lease, no live driver mark (the launched chain stops
+        reading as queued the moment its own driver writes its mark, so a
+        second concurrent report cannot spawn a second driver — the
+        launch's own guard refuses).
+        """
+        service = self.services("claw")
+        with service._connect() as conn:
+            root = service._require_workflow_root(conn, finished_id)
+            repo = Path(str(root.workspace_path or "")).expanduser().resolve()
+            queued = []
+            for active in list_tasks(conn, include_archived=True):
+                if active.id == finished_id:
+                    continue
+                if not (active.body or "").startswith(_CONTRACT_MARKER_REF):
+                    continue
+                if active.workspace_kind != "dir" or not active.workspace_path:
+                    continue
+                if active.status in {"done", "archived", "running"}:
+                    continue
+                try:
+                    if Path(active.workspace_path).expanduser().resolve() != repo:
+                        continue
+                except OSError:
+                    continue
+                if not any(
+                    comment.body.startswith(_QUEUED_COMMENT_MARKER)
+                    for comment in list_comments(conn, active.id)
+                ):
+                    continue
+                children = service._decomposed_child_ids(conn, active.id) or []
+                correction = service._correction_ids(conn, active.id)
+                if any(
+                    service._require_task(conn, task_id).status == "running"
+                    for task_id in [*children, *correction.values()]
+                ):
+                    continue
+                queued.append(active)
+        queued.sort(key=_queue_order)
+        if not queued:
+            return None
+        path = default_db_path()
+        store = SubscriptionStateStore(path) if path.exists() else None
+        for candidate in queued:
+            if store is not None and store.active_leases(candidate.id):
+                continue
+            mark = read_driver_mark(candidate.id, home=home)
+            if (
+                isinstance(mark, dict)
+                and mark.get("outcome") == "running"
+                and driver_mark_live(mark)
+            ):
+                continue
+            self.launch_detached(candidate.id, home=home)
+            return candidate.id
+        return None
 
     def _approved(self, state):
         service = self.services("reviewer")

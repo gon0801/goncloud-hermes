@@ -56,6 +56,21 @@ class WorkflowTestCase(unittest.TestCase):
         # router store — and passed or failed depending on its existence.
         os.environ["GONCLOUD_SUBSCRIPTION_DB"] = str(self.root / "routes.db")
         self.addCleanup(os.environ.pop, "GONCLOUD_SUBSCRIPTION_DB", None)
+        # The race must decide with the store present (encargo H, pruebas):
+        # an absent store file is checked ground, and the no-store early
+        # return it used to trigger masked exactly the bug this suite
+        # guards. Creating the schema here keeps every test on the
+        # with-store path.
+        from subscriptions.state import SubscriptionStateStore
+
+        SubscriptionStateStore(self.root / "routes.db")
+        # The driver-mark home needs the same pin (regla D removed the
+        # no-store early return that used to mask this): the fake's
+        # sequential ids repeat across runs, so an unpinned HERMES_HOME
+        # let _driver_signals read a stale mark from the real home and
+        # the race archived a birthing chain.
+        os.environ["HERMES_HOME"] = str(self.root / "hermes-home")
+        self.addCleanup(os.environ.pop, "HERMES_HOME", None)
 
     def service(self, role: str = "claw") -> WorkflowService:
         return WorkflowService(db_path=self.db_path, actor_role=role)

@@ -264,8 +264,12 @@ closed automatically with the same native path `goncloud_local_close` uses
 (the not-done stages archived, the reason left as a close comment), and the
 new chain starts; a chain whose driver may still be working — a running
 stage, a live subscription lease, or a live running mark — leaves the new
-one queued instead of failing, and the next run (or `resume`) starts it when
-the old chain finishes. Two drivers never edit the same checkout at once.
+one queued instead of failing, and the old chain's driver launches the
+queue's head itself (FIFO, one chain) when it writes its final outcome —
+the next run (or `resume`) is only the fallback. Two drivers never edit the
+same checkout at once. A chain sitting in the queue never had a driver: its
+durable queue marker is the close evidence, so `goncloud_local_close` takes
+it out of the queue and `goncloud_local_status` announces it.
 The claw profile can still release a chain with `goncloud_local_close`
 (`workflow_id`, `reason`): the tool requires durable evidence that the
 driver is gone — one

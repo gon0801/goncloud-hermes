@@ -11,7 +11,6 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_db import (
     add_comment,
-    archive_task,
     block_task,
     complete_task,
     create_task,
@@ -547,79 +546,80 @@ class WorkflowService:
             return True
         if store is not None and store.active_leases(active.id):
             return True
-        if active.status == "triage" and not initial_ids and not correction:
-            # A triage root without its stage graph never had a driver: the
-            # graph is complete before any launch, and a queued chain
-            # always carries the full graph (review F2). Provably
-            # driverless, so it never queues the new chain.
-            return False
         alive, stopped = _driver_signals(active.id)
         # Review F2: no mark is not a stopped driver — a queued chain has
-        # none. "Not proven stopped" counts as alive: the queue, not the
-        # archive, is the answer.
+        # none, and a triage root without children is a chain being born
+        # (its decomposition commits after the root insert), not a stopped
+        # driver (F8). "Not proven stopped" counts as alive: the queue,
+        # not the archive, is the answer.
         return alive or not stopped
 
     def _auto_close_stopped_chain(self, workflow_id: str, *, store: Any) -> bool:
         """Free a chain whose driver already stopped; True when this call did.
 
-        The same path goncloud_local_close uses: the native per-task archive
-        for the director root and every stage that is not done (done stages
-        stay as evidence), and the close comment with the reason on the
-        root. Every guard runs fresh right before the writes: a chain that
-        turned alive in the meantime is left alone, and the new chain then
-        queues behind it (review F3 — the detached driver runs no
-        repository guard of its own). The stop evidence must be positive —
-        a stopped outcome, or a running mark whose pid is gone (review F2:
-        a chain in the queue has no mark at all and is never archived).
+        Reglas simples del encargo H (B y D). The stop evidence is only the
+        driver's own: a stopped outcome as the result file's last write, or
+        a running mark whose pid is gone — a triage root without children is
+        a chain being born, never evidence (F8), and a chain in the queue
+        has no mark at all (review F2). A missing subscription store is
+        checked ground — no router ever leased here, so the decision rests
+        on the mark alone; only a store that cannot be opened leaves the
+        chain alone. The guards, the state re-read and every archive share
+        ONE native transaction: the chain is re-read inside it, and anything
+        that changed between the start's scan and this write aborts the
+        close before the first archive lands — the caller then queues the
+        new chain behind it (review F3). ``archive_task`` opens its own
+        transaction and refuses nesting (reference 0.22), so the archive
+        rides this transaction with the same guarded, idempotent UPDATE the
+        native primitive applies.
         """
-        if isinstance(store, _StoreUnavailable) or store is None:
+        if isinstance(store, _StoreUnavailable):
             return False
         with self._connect() as conn:
-            root = self._require_workflow_root(conn, workflow_id)
-            if root.status not in CLOSEABLE_ROOT_STATUSES:
-                return False
-            initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
-            correction = self._correction_ids(conn, workflow_id)
-            members = [(workflow_id, root.status)] + [
-                (task_id, self._require_task(conn, task_id).status)
-                for task_id in [*initial_ids, *correction.values()]
-            ]
-            if any(status == "running" for _, status in members):
-                return False
-        if store.active_leases(workflow_id):
-            return False
-        if root.status == "triage" and not members[1:]:
-            # A triage root without its stage graph never had a driver: the
-            # graph is complete before any launch can happen, and a queued
-            # chain always carries the full graph (review F2). This is the
-            # one case where "no mark" is itself the evidence — the same
-            # rule goncloud_local_close applies.
-            return self._archive_chain_members(workflow_id, members)
-        alive, stopped = _driver_signals(workflow_id)
-        if alive or not stopped:
-            return False
-        return self._archive_chain_members(workflow_id, members)
-
-    def _archive_chain_members(self, workflow_id: str, members: list) -> bool:
-        """The write half of the automatic close: archive, leave the reason."""
-        with self._connect() as conn:
-            for member_id, member_status in members:
-                if member_status in {"archived", "done"}:
-                    continue
-                if not archive_task(conn, member_id):
-                    raise WorkflowError(f"native Kanban refused to archive {member_id}")
-            comment = CLOSE_COMMENT_MARKER + json.dumps(
-                {"reason": AUTO_CLOSE_REASON, "workflow_id": workflow_id},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if not any(
-                item.body.startswith(CLOSE_COMMENT_MARKER)
-                for item in list_comments(conn, workflow_id)
-            ):
-                add_comment(conn, workflow_id, "claw", comment)
-        return True
+            with write_txn(conn):
+                root = self._require_workflow_root(conn, workflow_id)
+                if root.status not in CLOSEABLE_ROOT_STATUSES:
+                    return False
+                initial_ids = self._decomposed_child_ids(conn, workflow_id) or []
+                correction = self._correction_ids(conn, workflow_id)
+                members = [(workflow_id, root.status)] + [
+                    (task_id, self._require_task(conn, task_id).status)
+                    for task_id in [*initial_ids, *correction.values()]
+                ]
+                if any(status == "running" for _, status in members):
+                    return False
+                if store is not None and store.active_leases(workflow_id):
+                    return False
+                alive, stopped = _driver_signals(workflow_id)
+                if alive or not stopped:
+                    return False
+                for member_id, member_status in members:
+                    # Done stages are the chain's evidence: they stay as
+                    # they are; archived ones are already closed — the
+                    # guarded UPDATE makes a re-run a no-op.
+                    if member_status in {"archived", "done"}:
+                        continue
+                    cursor = conn.execute(
+                        "UPDATE tasks SET status = 'archived'"
+                        " WHERE id = ? AND status != 'archived'",
+                        (member_id,),
+                    )
+                    if cursor.rowcount != 1:
+                        raise WorkflowError(
+                            f"native Kanban refused to archive {member_id}"
+                        )
+                comment = CLOSE_COMMENT_MARKER + json.dumps(
+                    {"reason": AUTO_CLOSE_REASON, "workflow_id": workflow_id},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if not any(
+                    item.body.startswith(CLOSE_COMMENT_MARKER)
+                    for item in list_comments(conn, workflow_id)
+                ):
+                    add_comment(conn, workflow_id, "claw", comment)
+            return True
 
     def start_contract(self, *, request_key: str) -> Optional[dict]:
         """Read the original provenance for an idempotent local start."""
