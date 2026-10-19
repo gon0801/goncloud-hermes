@@ -466,12 +466,16 @@ class WorkflowService:
             # busy, sin crear nada (la marca la juzgó la fase 1 y la valla
             # del cierre la releyó la fase 2).
             with write_txn(conn):
+                own_existing = None
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
                         continue
                     if active.status in {"done", "archived"}:
                         continue
                     if active.idempotency_key == idempotency_key:
+                        # Review F12: la raíz ya existía (relanzamiento) —
+                        # si el worktree falla, esta raíz NO se archiva.
+                        own_existing = active.id
                         continue
                     try:
                         active_repo = (
@@ -481,6 +485,7 @@ class WorkflowService:
                         continue
                     if active.workspace_kind == "dir" and active_repo == repo:
                         return self._busy_result(active.id, str(repo))
+                created_here = own_existing is None
                 root_id = create_task(
                     conn,
                     title=f"Engineering: {instruction[:120]}",
@@ -518,15 +523,18 @@ class WorkflowService:
             try:
                 created = self._ensure_worktree(root_id, str(repo), revision)
             except (WorkflowError, subprocess.SubprocessError, OSError):
-                # archive_task abre su propia transacción (no se anida):
-                # la raíz recién insertada queda archivada y el repo libre.
-                if not archive_task(conn, root_id):
-                    add_comment(
-                        conn,
-                        root_id,
-                        self.actor_role,
-                        "worktree creation failed; archive this root manually",
-                    )
+                # Review F12: archive_task abre su propia transacción (no se
+                # anida); SOLO se archiva la raíz que ESTE start acaba de
+                # crear — una preexistente (relanzamiento de una cadena
+                # viva) queda intacta y el error se propaga.
+                if created_here:
+                    if not archive_task(conn, root_id):
+                        add_comment(
+                            conn,
+                            root_id,
+                            self.actor_role,
+                            "worktree creation failed; archive this root manually",
+                        )
                 raise
             worktree, worktree_base = created if created else (None, None)
             if worktree is not None:
@@ -602,10 +610,13 @@ class WorkflowService:
                 text=True,
                 timeout=60,
             )
-        except (OSError, subprocess.SubprocessError):
-            # Review F1: un probe que no contesta no puede dejar una raíz
-            # atascada; la cadena trabaja como hoy (sin worktree).
-            return None
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Review F13: un probe que FALLA (error, timeout) en un
+            # repository que podría ser git no degrada al checkout
+            # original — error claro y la cadena no se crea. Solo un probe
+            # que RESPONDE "no es repo git" (returncode != 0) conserva la
+            # conducta de hoy (punto 4).
+            raise WorkflowError(f"git probe failed for {repository}: {exc}") from exc
         if probe.returncode != 0 or probe.stdout.strip() != "true":
             return None
         repo_path = Path(repository)
@@ -647,7 +658,7 @@ class WorkflowService:
             # Review F5: rama sobrante (restart concurrente o relanzamiento
             # tras limpiar la ruta) — el worktree se añade SIN -b sobre esa
             # rama, nunca se recrea.
-            attempt = git("worktree", "add", str(wt_path), branch)
+            attempt = git("worktree", "add", "--end-of-options", str(wt_path), branch)
         else:
             attempt = git(
                 "worktree",
@@ -711,9 +722,12 @@ class WorkflowService:
         if int(own.stdout.strip()) > 0:
             info["reason"] = "tiene commits sin publicar"
             return info
-        dirty = git("status", "--porcelain")
+        # Review F14: también los ARCHIVOS IGNORADOS cuentan — un worktree
+        # con ellos no se quita (build/, cachés, secretos locales...). Se
+        # conserva y el motivo lo dice.
+        dirty = git("status", "--porcelain", "--ignored")
         if dirty.stdout.strip():
-            info["reason"] = "tiene cambios sin commit"
+            info["reason"] = "tiene cambios sin commit o archivos ignorados"
             return info
         removed = subprocess.run(
             ["git", "-C", str(contract["repository"]), "worktree", "remove", worktree],

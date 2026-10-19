@@ -4066,6 +4066,113 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertEqual(again["outcome"], "delivered")
         self.assertTrue(worktree.is_dir(), "the worktree is re-added")
 
+    # F12 — relanzar una cadena viva cuyo worktree falla NO archiva la
+    # raíz preexistente: queda intacta y el error se propaga.
+    def test_relaunch_failure_keeps_the_preexisting_root_alive(self):
+        sha = self._git_repo()
+        first = self.orchestrator.create(
+            request_key="viva",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertTrue(Path(first["worktree"]).is_dir())
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["workflow_id"]).status,
+                "todo",
+                "the chain exists alive: created, never launched",
+            )
+
+        bloqueo = self.root / "bloqueo"
+        bloqueo.write_text("archivo\n", encoding="utf-8")
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": str(bloqueo / "wt")}):
+            with self.assertRaises(WorkflowError):
+                self.orchestrator.create(
+                    request_key="viva",
+                    repository=str(self.repo),
+                    revision=sha,
+                    instruction="Inspect again.",
+                    sources=SOURCES,
+                    max_steps=5,
+                )
+
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["workflow_id"]).status,
+                "todo",
+                "the preexisting live root stays intact",
+            )
+            vivas = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(vivas), 1, "no extra roots, nothing archived")
+
+        # Con la raíz buena, el mismo key corre: el worktree se reutiliza.
+        again = self.orchestrator.start(
+            request_key="viva",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect again.",
+            sources=SOURCES,
+            max_steps=5,
+        )
+        self.assertEqual(again["outcome"], "delivered")
+
+    # F13 — un probe de git que FALLA no degrada al checkout original:
+    # error claro, nada activo se crea, y el repo no queda jamado.
+    def test_a_failing_git_probe_creates_nothing(self):
+        sha = self._git_repo()
+
+        def timed_out(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+
+        with patch("workflow.subprocess.run", timed_out):
+            with self.assertRaises(WorkflowError) as ctx:
+                self.start(request_key="f13", revision=sha)
+        self.assertIn("git probe failed", str(ctx.exception))
+        with connect_closing(self.db) as conn:
+            active = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+                and task.status not in {"done", "archived"}
+            ]
+        self.assertEqual(active, [], "nothing active is created")
+        result = self.start(request_key="f13-despues", revision=sha)
+        self.assertEqual(result["outcome"], "delivered", "the repo is not jammed")
+
+    # F14 — archivos ignorados: el worktree se conserva y el cierre lo
+    # dice (sin commits propios, vía .git/info/exclude).
+    def test_a_worktree_with_ignored_files_is_kept_and_said(self):
+        sha = self._git_repo()
+        chain = self.paused(request_key="ignorados", revision=sha)
+        worktree = Path(chain["worktree"])
+        exclude = self.repo / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text("ignorado.txt\n", encoding="utf-8")
+        (worktree / "ignorado.txt").write_text("cache\n", encoding="utf-8")
+        sanity = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--ignored"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("ignorado.txt", sanity.stdout)
+
+        receipt = self.close(chain["workflow_id"], reason="solo ignorados")
+
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "ignored files keep the worktree alive",
+        )
+        self.assertIn("ignorados", receipt["worktree"]["reason"])
+        self.assertTrue(worktree.is_dir())
+
     # (d) — un repository que no es git conserva la conducta de hoy.
     def test_a_non_git_repository_keeps_todays_behavior(self):
         result = self.start()
