@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -197,6 +198,29 @@ class GitInspector:
         files = tuple(sorted(set(committed) | set(self.changed_files(workspace))))
         return current, files, bool(files or current != (baseline or revision))
 
+    def tree_fingerprint(
+        self, workspace: Path
+    ) -> tuple[str, tuple[tuple[str, str], ...]]:
+        """The tree as ONE attempt starts: HEAD plus every dirty file with a
+        content digest.
+
+        Names alone cannot tell an untouched dirty file from a worker's edit
+        of that same file (review round 2, 2026-09-26), so each entry pins
+        its bytes. Comparing two of these answers "did this attempt change
+        the workspace" without hashing the whole tree: only dirt is read,
+        and a file the attempt never touched compares equal.
+        """
+        entries = []
+        for name in self.changed_files(workspace):
+            try:
+                digest = hashlib.sha256((workspace / name).read_bytes()).hexdigest()
+            except OSError:
+                # Gone or unreadable between the two reads; an empty digest
+                # still compares, and the pair difference stays honest.
+                digest = ""
+            entries.append((name, digest))
+        return self.current_revision(workspace), tuple(entries)
+
 
 class _StageLeaseHeartbeat:
     """Renew the stage lease in the background while one stage runs.
@@ -360,9 +384,13 @@ class SubscriptionRouter:
                     failure = (
                         FailureKind(latest["failure"]) if latest["failure"] else None
                     )
-                    mutated = bool(
-                        latest["changed_files"]
-                        or latest["end_revision"] != latest["start_revision"]
+                    # The recorded file lists mix what the stage inherited
+                    # with what the attempt did, so they decide nothing here
+                    # (owner, 2026-10-19). The attempt's own start revision
+                    # against the tree now is the same delta the live
+                    # decision read.
+                    _, _, mutated = self.git.mutation_since(
+                        request.workspace, latest["start_revision"]
                     )
                     if (
                         latest["success"]
@@ -382,12 +410,22 @@ class SubscriptionRouter:
                     routes = tuple(
                         route for route in routes if route.slot > latest["slot"]
                     )
-                elif latest["status"] == "interrupted":
+                elif latest["status"] in ("interrupted", "abandoned"):
                     routes = tuple(
                         route for route in routes if route.slot >= latest["slot"]
                     )
 
         request = self._absorb_workspace_state(request)
+        # Inherited work is evidence, not a verdict (owner, 2026-10-19): a
+        # stage running on top of its OWN earlier attempts keeps the old rule
+        # that any failure over recorded same-stage changes blocks, and the
+        # commit span between one attempt's own start and end revisions is
+        # exactly that. The recorded file lists cannot tell inherited from
+        # own, so they decide nothing here.
+        own_stage_changes = any(
+            row["start_revision"] and row["end_revision"] != row["start_revision"]
+            for row in self.store.stage_attempts(request.workflow_id, request.stage_id)
+        )
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
         skipped_routes: list[SkippedRoute] = []
@@ -495,6 +533,10 @@ class SubscriptionRouter:
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
                 return self._stage_busy()
+            # This attempt's own baseline. Everything the workspace already
+            # carried (earlier stages' files and commits, dirt older than
+            # this attempt) is frozen here and stops deciding the verdict.
+            attempt_baseline = self.git.tree_fingerprint(request.workspace)
             self.store.record_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -507,7 +549,7 @@ class SubscriptionRouter:
                 success=False,
                 failure=None,
                 session_id="",
-                start_revision=request.start_revision,
+                start_revision=attempt_baseline[0],
                 end_revision=request.current_revision,
                 changed_files=list(request.changed_files),
                 detail="attempt running",
@@ -578,18 +620,22 @@ class SubscriptionRouter:
             except SubscriptionBusy:
                 return self._stage_busy()
             result = self._route_evidence(result, route, skipped_routes)
-            revision, changed, mutated = self.git.mutation_since(
-                request.workspace, request.start_revision
+            revision, changed, _git_mutated = self.git.mutation_since(
+                request.workspace, attempt_baseline[0]
             )
             changed = tuple(sorted(set(changed) | set(request.changed_files)))
-            # Deliberately conservative once an attempt has executed: any dirt
-            # counts. Telling the two apart needs a content baseline, and the
-            # attempts at that kept finding new ways to read a real mutation as
-            # "nothing changed" (two review rounds, 2026-09-26). Blocking a
-            # stage is recoverable; overwriting a worker's edits is not. The one
-            # case that does not need the distinction is attempt 0, where no
-            # worker has run yet, and _absorb_workspace_state handles it.
-            mutated = mutated or request.mode == "continue"
+            # One attempt, one verdict (owner, 2026-10-19): what THIS attempt
+            # did to the tree is the fingerprint it started with against the
+            # tree now. What the stage had already inherited rides in
+            # changed_files as evidence and no longer blocks a clean attempt:
+            # a task_failure over an untouched workspace is a dead route, not
+            # a verdict (t_9df6342d, t_464d20e7). A rewritten dirty file
+            # changes its bytes and still reads as a mutation (review round
+            # 2, 2026-09-26); untouched dirt compares equal.
+            mutated = self.git.tree_fingerprint(request.workspace) != attempt_baseline
+            # A stage continuing over its own earlier attempts keeps the old
+            # conservative rule: a failure on top of same-stage work blocks.
+            mutated = mutated or (request.mode == "continue" and own_stage_changes)
             recorded = self.store.finish_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -629,6 +675,7 @@ class SubscriptionRouter:
             if result.failure in _BLOCK_AFTER_MUTATION and mutated:
                 return result
             if mutated:
+                own_stage_changes = True
                 request = replace(
                     request,
                     mode="continue",

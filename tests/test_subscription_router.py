@@ -24,7 +24,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.catalog import compile_profile_routes  # noqa: E402
-from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
 from subscriptions.router import GitInspector, SubscriptionRouter  # noqa: E402
 from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.types import (  # noqa: E402
@@ -1428,31 +1427,24 @@ class MutationContinuationTests(RouterTestCase):
 
         self.assertEqual(absorbed.mode, "start")
 
-    def test_a_dirty_tree_blocks_at_slot_zero_without_a_false_continuation(self):
-        """Attempt 0 tells the truth about the tree, and still refuses to advance.
+    def test_pre_existing_dirt_advances_when_the_attempt_touches_nothing(self):
+        """Attempt 0 tells the truth about the tree, and a clean failure advances.
 
         Two separate questions. The owner's uncommitted files must never be
-        reported to the model as a previous worker's mutation, which is what
-        broke the real chain. Whether to fail over on top of them is answered
-        conservatively: blocking a stage is recoverable, overwriting a worker's
-        edits is not, so with the tree dirty the stage stops with evidence.
+        reported to the model as a previous worker's mutation, and they must
+        not read as THIS attempt's mutation either: the attempt's verdict is
+        its own delta against the baseline it started from (owner,
+        2026-10-19; live t_464d20e7, uv.lock dirty before the attempt). What
+        still blocks is an attempt that changed something and then failed.
         """
         start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
         (self.git_repo / "owner-wip.py").write_text("my own edit", encoding="utf-8")
-        partial = '{"type":"part","part":{"type":"text","text":"partial"}}'
 
-        def exits_zero_without_terminal(command, **kwargs):
-            return subprocess.CompletedProcess(
-                list(command), 0, stdout=partial, stderr=""
-            )
-
-        self.fake_adapters["opencode_go"] = OpenCodeAdapter(
-            runner=exits_zero_without_terminal
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
         )
-        self.fake_adapters["claude"].result = completed("must not run", "claude")
-        SubscriptionStateStore(self.db_path).save_health(
-            "opencode_go", ready=True, account_class="subscription"
-        )
+        self.fake_adapters["claude"].result = completed("clean failover", "claude")
 
         router = self.router()
         result = router.run(
@@ -1460,19 +1452,59 @@ class MutationContinuationTests(RouterTestCase):
                 request(self.git_repo),
                 start_revision=start,
                 current_revision=start,
-                result_transform=lambda value: value,
             ),
             primary_and_next(),
         )
 
-        self.assertFalse(result.success)
-        # Reclassified: the CLI answered, just not in the terminal contract.
-        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
-        self.assertEqual(self.fake_adapters["claude"].requests, [])
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "clean failover")
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
         attempt = router.store.stage_attempts("wf-6", "st-6")[0]
-        self.assertEqual(attempt["failure"], "invalid_terminal")
+        self.assertEqual(attempt["failure"], "task_failure")
         # The part that matters: no invented continuation on the first attempt.
         self.assertEqual(attempt["mode"], "start")
+
+    def test_inherited_stage_changes_no_longer_block_a_clean_failed_attempt(self):
+        """A stage that inherits another stage's work advances on a clean failure.
+
+        Live 2026-10-19 (t_9df6342d verifier over grok; t_464d20e7 scout): the
+        attempt carried the whole inherited file list in its record, read it
+        back as its own mutation, and blocked the stage although the attempt
+        touched nothing. The inherited files stay in the record as evidence;
+        only the attempt's own delta decides advance or block.
+        """
+        (self.git_repo / "implemented.py").write_text("stage work\n", encoding="utf-8")
+        self._run_git("add", "implemented.py")
+        self._run_git("commit", "-q", "-m", "implementer stage")
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed("verifier next slot", "claude")
+
+        router = self.router()
+        result = router.run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+                mode="continue",
+                changed_files=("implemented.py", "uv.lock"),
+            ),
+            primary_and_next(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "verifier next slot")
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        attempt = router.store.stage_attempts("wf-6", "st-6")[0]
+        self.assertEqual(attempt["failure"], "task_failure")
+        # The evidence keeps the inherited union even though the verdict used
+        # only this attempt's delta (nothing).
+        self.assertEqual(attempt["changed_files"], ["implemented.py", "uv.lock"])
+        # The record names the attempt's own baseline, not the stage's.
+        self.assertEqual(attempt["start_revision"], start)
 
     def test_a_worker_rewriting_an_already_dirty_file_counts_as_mutation(self):
         """A worker editing an already-dirty file must not read as "nothing changed".
@@ -1870,6 +1902,40 @@ class StateStoreTests(RouterTestCase):
         reopened.release_stage("wf", "st", "new")
         self.assertTrue(store.claim_stage("wf", "st", "third", 60))
 
+    def test_reclaiming_a_stage_closes_running_attempts_of_dead_owners_as_abandoned(
+        self,
+    ):
+        """A running attempt whose owner no longer exists closes with a cause.
+
+        Live 2026-10-19 (claw point 9, t_70e4ed2c kimi slot 1): rows stayed
+        success=0, failure NULL, detail "attempt running" forever when their
+        owner vanished without a lease row to name. Reopening the stage must
+        close them as abandoned with a readable reason, never NULL.
+        """
+        store = SubscriptionStateStore(self.db_path)
+        # A row found in the wild: running, no failure, and no lease row left
+        # naming its owner (an expired lease of another owner would already
+        # interrupt its own rows; this owner matches nothing).
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO subscription_attempts (workflow_id, stage_id, slot, "
+                "attempt, adapter, model, billing_mode, mode, success, failure, "
+                "session_id, start_revision, end_revision, changed_files, detail, "
+                "status, owner, disposition) VALUES "
+                "('wf', 'st', 1, 0, 'kimi', 'k3', 'subscription', 'start', 0, "
+                "NULL, '', 'r0', 'r0', '[]', 'attempt running', 'running', "
+                "'ghost', 'executed')"
+            )
+            conn.commit()
+
+        self.assertTrue(store.claim_stage("wf", "st", "fresh", 60))
+
+        row = store.stage_attempts("wf", "st")[0]
+        self.assertEqual(row["status"], "abandoned")
+        self.assertEqual(row["failure"], "task_failure")
+        self.assertIn("abandoned", row["detail"])
+        self.assertNotEqual(row["detail"], "attempt running")
+
     def test_duplicate_attempt_is_rejected_instead_of_silently_hidden(self):
         store = SubscriptionStateStore(self.db_path)
         values = dict(
@@ -2059,25 +2125,38 @@ class InvalidTerminalTests(RouterTestCase):
             text="not an envelope", adapter="opencode_go"
         )
         self.fake_adapters["claude"].result = completed(adapter="claude")
-        mutated_git = type(
-            "Git",
-            (),
-            {
-                "current_revision": lambda _, workspace: "r1",
-                "resolve_revision": lambda _, workspace, revision: "r0",
-                "changed_files": lambda _, workspace: ("a.txt",),
-                "mutation_since": lambda _, workspace, revision: (
-                    "r1",
-                    ("a.txt",),
-                    True,
-                ),
-            },
-        )()
+
+        class MutatedGit:
+            """A tree that moves between the attempt's baseline and its verdict."""
+
+            def __init__(self):
+                self.reads = 0
+
+            def current_revision(self, workspace):
+                return "r1"
+
+            def resolve_revision(self, workspace, revision):
+                return "r0"
+
+            def changed_files(self, workspace):
+                return ("a.txt",)
+
+            def mutation_since(self, workspace, revision):
+                return "r1", ("a.txt",), True
+
+            def tree_fingerprint(self, workspace):
+                # First read: the attempt's baseline. Second: the verdict, a
+                # file changed in between.
+                self.reads += 1
+                if self.reads == 1:
+                    return "r0", ()
+                return "r1", (("a.txt", "d"),)
+
         router = SubscriptionRouter(
             adapters=self.fake_adapters,
             db_path=self.db_path,
             routing_source=SOURCE,
-            git=mutated_git,
+            git=MutatedGit(),
         )
 
         result = router.run(

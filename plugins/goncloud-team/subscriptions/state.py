@@ -279,6 +279,20 @@ class SubscriptionStateStore:
                     "WHERE workflow_id = ? AND stage_id = ?",
                     (workflow_id, stage_id),
                 )
+            # Reopening the stage proves every running attempt just lost its
+            # owner: the lease is gone or expired, so nobody is executing.
+            # Rows whose owner no longer matches any lease used to stay
+            # "attempt running" with failure NULL forever (claw point 9,
+            # t_70e4ed2c); close them as abandoned with a readable cause.
+            conn.execute(
+                "UPDATE subscription_attempts SET status = 'abandoned', "
+                "failure = 'task_failure', "
+                "detail = 'attempt abandoned: its owner lost the stage lease "
+                "and never closed it' "
+                "WHERE workflow_id = ? AND stage_id = ? "
+                "AND status = 'running' AND owner != ?",
+                (workflow_id, stage_id, owner),
+            )
             conn.execute(
                 "INSERT INTO subscription_stage_leases VALUES (?,?,?,?)",
                 (
