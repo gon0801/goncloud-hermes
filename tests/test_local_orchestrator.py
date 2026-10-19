@@ -1001,10 +1001,11 @@ class LocalOrchestratorTests(_OrchestratorHarness):
 
     def _real_git_repo(self):
         def git(*args):
-            subprocess.run(
+            return subprocess.run(
                 ["git", "-C", str(self.repo), *args],
                 check=True,
                 capture_output=True,
+                text=True,
             )
 
         git("init", "-q", "-b", "main")
@@ -1019,6 +1020,10 @@ class LocalOrchestratorTests(_OrchestratorHarness):
             "-qm",
             "init",
         )
+        # La cadena arranca en SU worktree desde esta revisión real: con
+        # review F8/F9 una revisión que no resuelve es un error claro, así
+        # que los tests pasan el SHA real, no un símbolo suelto.
+        return git("rev-parse", "HEAD").stdout.strip()
 
     def test_a_planning_stage_that_edits_the_repository_stops_the_chain(self):
         # Live 2026-09-28 (t_2748d636): ingenieria wrote and committed the
@@ -1027,7 +1032,7 @@ class LocalOrchestratorTests(_OrchestratorHarness):
         for role in ("scout", "ingenieria"):
             with self.subTest(role=role):
                 self.setUp()
-                self._real_git_repo()
+                sha = self._real_git_repo()
                 invoke = LocalOrchestratorTests.invoke.__get__(self)
 
                 def editing_invoke(request, route, role=role):
@@ -1038,15 +1043,15 @@ class LocalOrchestratorTests(_OrchestratorHarness):
                     return invoke(request, route)
 
                 self.invoke = editing_invoke
-                result = self.start()
+                result = self.start(revision=sha)
 
                 self.assertEqual(result["outcome"], "blocked")
                 self.assertEqual(result["stages"][role]["status"], "blocked")
                 self.assertNotIn("implementer", [r.role for r in self.requests])
 
     def test_a_planning_stage_that_leaves_the_repository_alone_proceeds(self):
-        self._real_git_repo()
-        result = self.start()
+        sha = self._real_git_repo()
+        result = self.start(revision=sha)
         self.assertEqual(result["outcome"], "delivered")
 
     def test_cli_reviewer_envelope_without_successful_vendor_terminal_cannot_approve(
@@ -3932,6 +3937,134 @@ class ChainWorktreeTests(_OrchestratorHarness):
         )
         self.assertEqual(receipt["worktree"]["reason"], "tiene commits sin publicar")
         self.assertTrue(committed_wt.is_dir())
+
+    # F1 — si el worktree no se puede crear, la raíz recién insertada se
+    # archiva: el repo queda libre y el siguiente start arranca (no busy).
+    def test_a_failed_worktree_leaves_no_root_and_the_repo_free(self):
+        sha = self._git_repo()
+        bloqueo = self.root / "bloqueo"
+        bloqueo.write_text("un archivo, no una carpeta\n", encoding="utf-8")
+        started = None
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": str(bloqueo / "wt")}):
+            with self.assertRaises(WorkflowError):
+                started = self.start(request_key="f1", revision=sha)
+
+        self.assertIsNone(started, "nothing is returned for a failed chain")
+        with connect_closing(self.db) as conn:
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 1)
+        self.assertEqual(roots[0].status, "archived", "the fresh root is archived")
+
+        siguiente = self.start(request_key="f1-siguiente", revision=sha)
+        self.assertEqual(
+            siguiente["outcome"],
+            "delivered",
+            "the next start runs: the failed one left no busy jam",
+        )
+
+    # F2 — la ronda correctiva apunta al worktree de la cadena.
+    def test_the_corrective_round_points_at_the_worktree(self):
+        sha = self._git_repo()
+        self.reviews = [
+            {"decision": "reject", "severity": "high"},
+            {"decision": "approve", "severity": None},
+        ]
+        result = self.start(revision=sha)
+
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = result["worktree"]
+        self.assertTrue(result["corrective_stages"], "a corrective round opened")
+        with connect_closing(self.db) as conn:
+            for stage in result["corrective_stages"].values():
+                card = get_task(conn, stage["id"])
+                self.assertEqual(
+                    Path(card.workspace_path).resolve(),
+                    Path(worktree).resolve(),
+                    "the corrective round works in the chain's worktree",
+                )
+                self.assertIn(str(worktree), card.body)
+
+    # F3 — el cierre mide contra el SHA base real: revision="HEAD" con
+    # commits propios en cadena/<id> se CONSERVA.
+    def test_closing_with_head_revision_keeps_committed_worktrees(self):
+        self._git_repo()
+        chain = self.paused(request_key="head-rev", revision="HEAD")
+        worktree = Path(chain["worktree"])
+        (worktree / "trabajo.txt").write_text("trabajo\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree), "add", "trabajo.txt"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "trabajo propio",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        head_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        receipt = self.close(chain["workflow_id"], reason="tiene trabajo")
+
+        self.assertFalse(
+            receipt["worktree"]["removed"],
+            "own commits against the real base SHA keep the worktree",
+        )
+        self.assertEqual(receipt["worktree"]["reason"], "tiene commits sin publicar")
+        self.assertTrue(worktree.is_dir())
+        kept_sha = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(kept_sha, head_sha)
+
+    # F5 — rama cadena/<id> ya creada (restart concurrente o relanzamiento
+    # tras limpiar la ruta): el worktree se añade SIN -b y la cadena corre.
+    def test_a_start_reuses_an_existing_branch_without_minus_b(self):
+        sha = self._git_repo()
+        first = self.start(request_key="relanzada", revision=sha)
+        worktree = Path(first["worktree"])
+        branch = f"cadena/{first['workflow_id']}"
+        # La ruta desaparece (limpieza manual) pero la rama queda: el
+        # relanzamiento debe añadir el worktree SIN -b, no reventar.
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "remove", str(worktree)],
+            check=True,
+            capture_output=True,
+        )
+        self.assertFalse(worktree.exists())
+        branch_alive = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--verify", branch],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(branch_alive.returncode, 0)
+
+        again = self.start(request_key="relanzada", revision=sha)
+
+        self.assertEqual(again["outcome"], "delivered")
+        self.assertTrue(worktree.is_dir(), "the worktree is re-added")
 
     # (d) — un repository que no es git conserva la conducta de hoy.
     def test_a_non_git_repository_keeps_todays_behavior(self):
