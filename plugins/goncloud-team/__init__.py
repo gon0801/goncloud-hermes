@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from .jev_auto import registrar as registrar_jev_auto
 from .muse_bridge import delegate_to_muse
 from .schemas import (
     CONSULT,
@@ -250,3 +251,7 @@ def register(ctx) -> None:
             }
 
     ctx.register_hook("pre_tool_call", guard_reviewer_completion)
+
+    # Consulta automatica a JEV antes de cargar skill (encargo H-jev-auto):
+    # pre_llm_call consulta el router y transform_llm_output deja el pie.
+    registrar_jev_auto(ctx)
