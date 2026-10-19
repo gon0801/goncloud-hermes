@@ -7,6 +7,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -92,12 +93,6 @@ AUTO_CLOSE_REASON = (
     "auto-closed by WorkflowService.start: the chain's driver had stopped "
     "and the repository was freed for a new chain"
 )
-#: Marker of the durable queue record a ``start`` leaves on a root that
-#: must wait behind a live chain (review F2). The queued state used to
-#: live only in the in-memory response, so a later start archived the
-#: waiting chain as if its driver had stopped. Nothing closes on this
-#: marker alone; it records why the chain carries no driver mark yet.
-QUEUED_COMMENT_MARKER = "GONCLOUD_LOCAL_QUEUED_V1\n"
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
 
@@ -108,13 +103,14 @@ def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
     The mark is the local driver's lifecycle record — local_orchestrator
     owns it, so the import stays deferred and one-directional. Three
     answers, never two collapsed into one: a running mark whose pid is
-    alive is live work; a stopped outcome, or a running mark whose pid is
-    gone, is positive evidence the driver stopped; anything else — no mark
-    at all, an unreadable or non-object file — proves nothing (review F2:
-    a chain sitting in the queue never wrote a mark, and "no evidence"
-    read as "stopped" had start archiving it with a lying close reason).
-    A helper that cannot even load answers alive: fail closed, never
-    archive on missing evidence.
+    alive is live work; a stopped outcome, a "queued" last write (a chain
+    waiting in the queue never had a driver, r5 punto 3), or a running
+    mark whose pid is gone is positive evidence no driver is working;
+    anything else — no mark at all, an unreadable or non-object file that
+    still reads as running — proves nothing (review F2: "no evidence"
+    read as "stopped" had start archiving chains with a lying close
+    reason). A helper that cannot even load answers alive: fail closed,
+    never archive on missing evidence.
     """
     try:
         try:
@@ -477,26 +473,53 @@ class WorkflowService:
                     # chain — its driver started, a lease appeared, or the
                     # store is unchecked ground. The detached driver never
                     # runs a repository guard of its own, so the new chain
-                    # queues here instead of launching over it.
+                    # queues here instead of launching over it. Review r5
+                    # punto 5: a False because the old chain ALREADY ended
+                    # (a concurrent start closed it first) is not a queue
+                    # head — re-read and let the new chain start. And a
+                    # "queued" old chain holds no driver at all (r5 punto
+                    # 3): it does not hold the repository either — the new
+                    # chain starts, and the queued one keeps its place in
+                    # the file queue (its own relaunch re-queues it behind
+                    # live work, r5 punto 2).
+                    try:
+                        old_root = self._require_workflow_root(conn, old_id)
+                    except WorkflowError:
+                        continue
+                    if old_root.status in {"done", "archived"}:
+                        continue
+                    try:
+                        from .local_orchestrator import read_driver_mark
+                    except ImportError:
+                        from local_orchestrator import read_driver_mark
+                    old_mark = read_driver_mark(old_id)
+                    if (
+                        isinstance(old_mark, dict)
+                        and old_mark.get("outcome") == "queued"
+                    ):
+                        continue
                     queued_behind = queued_behind or old_id
             if queued_behind is not None:
-                # Review F2: the queue is a durable state, not a footnote
-                # in the response — this comment is why the chain carries
-                # no driver mark, so no later start can mistake the
-                # absence for a stopped driver. It rides the final answer,
-                # after the close attempt above could still queue the new
-                # chain behind a chain it could not free.
-                add_comment(
-                    conn,
+                # La cola vive SOLO en el archivo de resultado (r5 punto
+                # 1): la última escritura {"outcome": "queued", "behind",
+                # "queued_at"} es el estado durable de la cola — ni
+                # comentarios del Kanban ni respuestas en memoria. Atómica
+                # (_write_result), así que ningún lector ve mitad. Import
+                # diferido: local_orchestrator importa a este módulo.
+                try:
+                    from .local_orchestrator import _write_result
+                except ImportError:
+                    from local_orchestrator import _write_result
+                _write_result(
                     root_id,
-                    self.actor_role,
-                    QUEUED_COMMENT_MARKER
-                    + json.dumps(
-                        {"queued_behind": queued_behind, "workflow_id": root_id},
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
+                    {
+                        "workflow_id": root_id,
+                        "outcome": "queued",
+                        "behind": queued_behind,
+                        "queued_at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                    },
                 )
 
             root = get_task(conn, root_id)
@@ -575,20 +598,38 @@ class WorkflowService:
         Reglas simples del encargo H (B y D). The stop evidence is only the
         driver's own: a stopped outcome as the result file's last write, or
         a running mark whose pid is gone — a triage root without children is
-        a chain being born, never evidence (F8), and a chain in the queue
-        has no mark at all (review F2). A missing subscription store is
-        checked ground — no router ever leased here, so the decision rests
-        on the mark alone; only a store that cannot be opened leaves the
-        chain alone. The guards, the state re-read and every archive share
-        ONE native transaction: the chain is re-read inside it, and anything
-        that changed between the start's scan and this write aborts the
-        close before the first archive lands — the caller then queues the
-        new chain behind it (review F3). ``archive_task`` opens its own
-        transaction and refuses nesting (reference 0.22), so the archive
-        rides this transaction with the same guarded, idempotent UPDATE the
-        native primitive applies.
+        a chain being born, never evidence (F8). A chain whose last write
+        reads "queued" is pending work, never auto-archived: the explicit
+        goncloud_local_close is claw's tool for those (r5 punto 3). A
+        missing subscription store is checked ground — no router ever
+        leased here, so the decision rests on the mark alone; only a store
+        that cannot be opened leaves the chain alone. The pid resolution
+        (ps) and the lease check run BEFORE the transaction (review F15);
+        inside it the chain state is re-read and the mark fence compares
+        run_id and outcome against what was judged outside — anything that
+        changed aborts the close before the first archive lands, and the
+        caller then queues the new chain behind it (review F3).
+        ``archive_task`` opens its own transaction and refuses nesting
+        (reference 0.22), so the archive rides this transaction with the
+        same guarded, idempotent UPDATE the native primitive applies.
         """
         if isinstance(store, _StoreUnavailable):
+            return False
+        # Outside the transaction (review F15): the mark, the pid it names
+        # (ps) and the lease check — no subprocess under the Kanban write
+        # lock. The fence inside compares this snapshot against the file.
+        try:
+            from .local_orchestrator import read_driver_mark
+        except ImportError:
+            from local_orchestrator import read_driver_mark
+        seen = read_driver_mark(workflow_id)
+        if isinstance(seen, dict) and seen.get("outcome") == "queued":
+            # Pending work, not a stopped driver (r5 punto 3).
+            return False
+        alive, stopped = _driver_signals(workflow_id)
+        if alive or not stopped:
+            return False
+        if store is not None and store.active_leases(workflow_id):
             return False
         with self._connect() as conn:
             with write_txn(conn):
@@ -603,10 +644,13 @@ class WorkflowService:
                 ]
                 if any(status == "running" for _, status in members):
                     return False
-                if store is not None and store.active_leases(workflow_id):
-                    return False
-                alive, stopped = _driver_signals(workflow_id)
-                if alive or not stopped:
+                # The fence (review F15): the file's last write is still
+                # the one judged outside. A new write means a driver woke
+                # or the state moved — the verdict is stale, abort.
+                fresh = read_driver_mark(workflow_id)
+                if (fresh or {}).get("outcome") != (seen or {}).get("outcome") or (
+                    fresh or {}
+                ).get("run_id") != (seen or {}).get("run_id"):
                     return False
                 for member_id, member_status in members:
                     # Done stages are the chain's evidence: they stay as

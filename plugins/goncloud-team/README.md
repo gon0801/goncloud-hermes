@@ -269,18 +269,29 @@ closed automatically with the same native path `goncloud_local_close` uses
 new chain starts; a chain whose driver may still be working — a running
 stage, a live subscription lease, or a live running mark — leaves the new
 one queued instead of failing, and the old chain's driver launches the
-queue's head itself (FIFO, one chain) when it writes its final outcome —
-the next run (or `resume`) is only the fallback. Two drivers never edit the
-same checkout at once. A chain sitting in the queue never had a driver: its
-durable queue marker is the close evidence, so `goncloud_local_close` takes
-it out of the queue and `goncloud_local_status` announces it. The marker
-retires the moment the chain launches (review F13) — a launched chain has a
-driver, and neither the stale marker nor anything short of the driver's own
-stop evidence lets the close archive it between stages.
+queue's head itself (FIFO by `queued_at`, one chain) when it writes a
+repo-freeing final outcome — `running` (the stage belongs to another
+owner) frees nothing, so it launches nothing (r5 punto 4); the next run
+(or `resume`) is only the fallback. Two drivers never edit the same
+checkout at once.
+The queue has ONE source of truth (r5 punto 1): the chain's result file. A
+chain is queued exactly while its last write reads
+`{"outcome": "queued", "behind": <id>, "queued_at": <iso>}` — `start`
+writes it when the new chain must wait, and a launched driver whose
+`resume` finds the repository still busy writes it again itself (r5 punto
+2), so a relaunched chain goes back to the queue instead of stranding.
+"queued" is a known no-driver state (r5 punto 3): `goncloud_local_close`
+takes it out of the queue, `goncloud_local_status` announces the close,
+the automatic close never archives it, and it holds no driver — a new key
+starts without waiting behind it, and its own relaunch re-queues it
+behind live work. The launch itself overwrites the record with the
+running mark (review F13): a launched chain reads as exactly what its
+driver last wrote, nothing else.
 The claw profile can still release a chain with `goncloud_local_close`
 (`workflow_id`, `reason`): the tool requires durable evidence that the
 driver is gone — one
-of the driver's own stopped outcomes (paused, blocked, waiting or error) as
+of the durable no-driver outcomes (paused, blocked, waiting, error or
+queued) as
 the result file's last write, a running mark whose pid is gone, and no live
 subscription lease — and it
 archives the root and the stages that are not done through the native

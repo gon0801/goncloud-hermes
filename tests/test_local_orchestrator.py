@@ -566,8 +566,12 @@ class DriverBootstrapTests(unittest.TestCase):
         )
         self.write_plugin("import only_after_bootstrap\n")
 
-        self.run_driver("scout")
+        # Live F1: a healthy run used to die on result['error'] (KeyError)
+        # after publishing its result; the exit must prove it didn't.
+        run = self.run_driver("scout")
 
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual(result["stop_after"], "scout")
@@ -597,13 +601,138 @@ class DriverBootstrapTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "error")
                 self.assertEqual(result["workflow_id"], "t_boot")
 
-    def test_a_hermes_tree_without_a_bootstrap_still_drives(self):
-        # Older Hermes trees have no hermes_bootstrap; the driver must not
-        # turn its absence into a failure.
-        self.write_plugin("")
+    def test_an_unloadable_driver_also_leaves_the_mailbox_error_event(self):
+        # Encargo H: the error stop reaches claw through the mailbox too.
+        # The run never started, so the run segment is the fixed "boot".
+        # The out path mirrors the production shape (nested under
+        # goncloud-local) because the bootstrap derives the mailbox from it.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        # Production always launches into a directory the running mark
+        # already created; the bootstrap never had to make it.
+        self.out.parent.mkdir()
+        avisos = self.root / "goncloud-local" / "avisos"
 
         self.run_driver()
 
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.json"],
+        )
+        event = json.loads(
+            (avisos / "t_boot-boot-error.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(event["workflow_id"], "t_boot")
+        self.assertEqual(event["outcome"], "error")
+        self.assertEqual(event["motivo"], "local driver failed; check durable status")
+        self.assertTrue(event["fecha"])
+
+        # Lead r3 (blocker): a delivered boot error brakes nothing. claw got
+        # the news and relaunched — every later broken launch of the chain
+        # must speak up again, or it stays silent forever after its first
+        # notice. (Reverses cr 4312376346: the only brake is an event still
+        # waiting unread; despertar delivers through the real
+        # entregar_aviso.)
+        despertar = importlib.import_module("raices.despertar")
+        despertar.entregar_aviso(avisos / "t_boot-boot-error.json")
+        self.out.unlink(missing_ok=True)
+
+        self.run_driver()
+
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
+        )
+
+        # A third broken launch while claw has not read the pending event
+        # stays one event: same name, overwritten in place, no pile-up.
+        self.out.unlink(missing_ok=True)
+        self.run_driver()
+
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
+        )
+
+    def test_a_healthy_delivered_run_ends_clean_with_its_result_and_aviso(self):
+        # Live F1 (High): the bootstrap read result['error'] after EVERY
+        # run, so the healthy delivered run — whose report carries no
+        # 'error' key — died on KeyError right after publishing its result,
+        # with a traceback and exit code 1. run_driver() discarded the
+        # CompletedProcess, so the crash never showed. The whole real
+        # bootstrap (sys.executable, the same argv launch_detached builds,
+        # #44 style) must end without exception, keep the delivered result,
+        # and keep the mailbox event the run's own write path published —
+        # with no boot-error event, which only a bootstrap that died may
+        # write. The stub resume ends the way the real _report does: the
+        # result file and the event through the real module's writers.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
+        real = ROOT / "plugins" / "goncloud-team"
+        (self.plugin / "local_orchestrator.py").write_text(
+            "import importlib.util\n"
+            "import sys\n"
+            f"sys.path.insert(0, {str(real)!r})\n"
+            "spec = importlib.util.spec_from_file_location(\n"
+            f"    'driver_real', {str(real / 'local_orchestrator.py')!r})\n"
+            "driver = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(driver)\n"
+            "\n"
+            "\n"
+            "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
+            "        report = {'workflow_id': workflow_id, 'outcome': 'delivered',\n"
+            "                  'run_id': 'feedc0de', 'stages': {}}\n"
+            "        driver._write_result(workflow_id, report, home="
+            f"{str(self.root)!r})\n"
+            "        driver._write_aviso(\n"
+            "            workflow_id, 'feedc0de', 'delivered', report,\n"
+            f"            home={str(self.root)!r}, repo='', instruction='')\n"
+            "        return report\n",
+            encoding="utf-8",
+        )
+
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                local_orchestrator_module._DRIVER_BOOTSTRAP,
+                str(self.plugin),
+                str(ROOT / "tests" / "fake_hermes_cli"),
+                "t_boot",
+                str(self.out),
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertNotIn("error", result)
+        avisos = self.root / "goncloud-local" / "avisos"
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-feedc0de-delivered.json"],
+        )
+        event = json.loads(
+            (avisos / "t_boot-feedc0de-delivered.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(event["outcome"], "delivered")
+
+    def test_a_hermes_tree_without_a_bootstrap_still_drives(self):
+        # Older Hermes trees have no hermes_bootstrap; the driver must not
+        # turn its absence into a failure. Live F1: the exit must prove the
+        # healthy run ends clean, not crashed on result['error'].
+        self.write_plugin("")
+
+        run = self.run_driver()
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "")
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
 
@@ -627,6 +756,12 @@ class _OrchestratorHarness(unittest.TestCase):
         )
         subscriptions.start()
         self.addCleanup(subscriptions.stop)
+        # The mailbox (encargo H) and the result file follow HERMES_HOME when
+        # resume runs without an explicit home; pin it to the mount so a run
+        # never drops either into the machine's real Hermes home.
+        hermes_home = patch.dict(os.environ, {"HERMES_HOME": str(self.root)})
+        hermes_home.start()
+        self.addCleanup(hermes_home.stop)
         self.requests = []
         self.responses = {}
         self.reviews = []
@@ -703,6 +838,17 @@ class _OrchestratorHarness(unittest.TestCase):
         results.mkdir(exist_ok=True)
         (results / f"{workflow_id}.json").write_text(json.dumps(mark), encoding="utf-8")
 
+    def queued_record_of(self, workflow_id):
+        """The chain's queued record from its result file (r5 punto 1), or
+        None when the last write is not a queued outcome."""
+        result_file = self.root / "goncloud-local" / f"{workflow_id}.json"
+        if not result_file.is_file():
+            return None
+        mark = json.loads(result_file.read_text(encoding="utf-8"))
+        return (
+            mark if isinstance(mark, dict) and mark.get("outcome") == "queued" else None
+        )
+
     @staticmethod
     def running_mark(pid, *, started_at=None):
         return {
@@ -724,6 +870,35 @@ class _OrchestratorHarness(unittest.TestCase):
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
         return process
+
+    @staticmethod
+    def recording_popen(spawned):
+        """A Popen double that records argv and survives subprocess.run:
+        the ps query inside the pid check opens its own Popen in a with
+        and talks to it (communicate/kill)."""
+
+        def double(argv, **kwargs):
+            spawned.append(argv)
+            return type(
+                "P",
+                (),
+                {
+                    "pid": 4242,
+                    "returncode": 0,
+                    "args": argv,
+                    "__enter__": lambda self: self,
+                    "__exit__": lambda self, *exc: None,
+                    "communicate": lambda self, input=None, timeout=None: (
+                        b"",
+                        b"",
+                    ),
+                    "kill": lambda self: None,
+                    "wait": lambda self, timeout=None: 0,
+                    "poll": lambda self: 0,
+                },
+            )()
+
+        return double
 
     def close(self, workflow_id, **kwargs):
         kwargs.setdefault("home", self.root)
@@ -2281,31 +2456,26 @@ class LocalCloseTests(_OrchestratorHarness):
             max_steps=5,
         )
 
-        # The birthing-looking root is never archived behind start's back.
+        # The birthing-looking root is never archived behind start's back,
+        # and the queue record lives in the created chain's result file
+        # (r5 punto 1) — not in a Kanban comment.
         self.assertNotEqual(created["workflow_id"], root_id)
         self.assertEqual(created.get("queued_behind"), root_id)
         self.assertNotIn("closed_chains", created)
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, root_id).status, "triage")
-            self.assertEqual(
-                [
-                    c.body
-                    for c in list_comments(conn, root_id)
-                    if c.body.startswith("GONCLOUD_LOCAL_QUEUED_V1")
-                ],
-                [],
-                "the stuck root itself is not marked queued",
-            )
-            en_colon = list_comments(conn, created["workflow_id"])
-        self.assertTrue(
-            any(c.body.startswith("GONCLOUD_LOCAL_QUEUED_V1") for c in en_colon),
-            "the new chain's queue record is durable",
+        en_colon = self.queued_record_of(created["workflow_id"])
+        self.assertEqual(
+            (en_colon or {}).get("behind"),
+            root_id,
+            "the queue record is durable in the result file",
         )
+        self.assertEqual((en_colon or {}).get("outcome"), "queued")
 
         # The explicit close releases the driverless root. The queued chain
-        # stays queued (durable) — a third key queues behind it, sin error
-        # (punto 3) — and goncloud_local_close can take the queued chain
-        # out too; with both closed the next start lands clean.
+        # (created) keeps its place in the file queue — a new key starts
+        # anyway (a queued chain holds no driver, r5 punto 3) and the
+        # queued chain stays closable until claw takes it out.
         receipt = self.close(root_id, reason="descomposicion fallida")
         self.assertEqual(receipt["outcome"], "closed")
         created2 = self.orchestrator.create(
@@ -2316,7 +2486,8 @@ class LocalCloseTests(_OrchestratorHarness):
             sources=SOURCES,
             max_steps=5,
         )
-        self.assertEqual(created2.get("queued_behind"), created["workflow_id"])
+        self.assertIsNone(created2.get("queued_behind"))
+        self.assertIsNotNone(self.queued_record_of(created["workflow_id"]))
         receipt = self.close(created["workflow_id"], reason="en cola, sin driver")
         self.assertEqual(receipt["outcome"], "closed")
         created3 = self.orchestrator.create(
@@ -2327,7 +2498,10 @@ class LocalCloseTests(_OrchestratorHarness):
             sources=SOURCES,
             max_steps=5,
         )
-        self.assertIsNone(created3.get("queued_behind"))
+        # created2 was accepted but never launched: no driver mark, no stop
+        # evidence — regla B, the new key queues durably behind it until a
+        # launch (or its close) frees the place.
+        self.assertEqual(created3.get("queued_behind"), created2["workflow_id"])
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, root_id).status, "archived")
 
@@ -2347,16 +2521,6 @@ class RetryAndQueueTests(_OrchestratorHarness):
         home = patch.dict(os.environ, {"HERMES_HOME": str(self.root)})
         home.start()
         self.addCleanup(home.stop)
-
-    def queued_behind_of(self, workflow_id):
-        """The durable queue record on a root (review F2), or None."""
-        with connect_closing(self.db) as conn:
-            for comment in list_comments(conn, workflow_id):
-                if comment.body.startswith("GONCLOUD_LOCAL_QUEUED_V1"):
-                    return json.loads(comment.body[len("GONCLOUD_LOCAL_QUEUED_V1") :])[
-                        "queued_behind"
-                    ]
-        return None
 
     # (a) — encargo H punto 1
     def test_a_relaunched_blocked_stage_calls_the_model_again_and_advances(self):
@@ -2656,18 +2820,19 @@ class RetryAndQueueTests(_OrchestratorHarness):
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
 
-    # review F13 — el marcador de cola se retira al lanzar y close usa el
-    # mismo predicado que close_hint: una cadena lanzada no se archiva.
+    # review F13 — una sola fuente de verdad: lanzada la cadena, su archivo
+    # pasa a decir "running" (marca viva) y deja de leerse como cola; close
+    # y close_hint leen lo mismo que el lanzador escribió.
     def test_a_launched_chain_no_longer_closes_on_its_queue_marker(self):
         first = self.paused()
         live = self.sleeper()
         self.write_mark(first["workflow_id"], self.running_mark(live.pid))
         second = self.start(request_key="second-chain")
         self.assertEqual(second["outcome"], "queued")
-        self.assertIsNotNone(self.queued_behind_of(second["workflow_id"]))
+        self.assertIsNotNone(self.queued_record_of(second["workflow_id"]))
 
-        # The queue head launches: the marker retires and the driver's mark
-        # (this double's live pid) is the life signal from here on.
+        # The queue head launches: the running mark (this double's live
+        # pid) replaces the queued record as the file's last write.
         with patch(
             "local_orchestrator.subprocess.Popen",
             lambda *args, **kwargs: type("P", (), {"pid": live.pid})(),
@@ -2675,16 +2840,164 @@ class RetryAndQueueTests(_OrchestratorHarness):
             self.orchestrator.launch_detached(second["workflow_id"], home=self.root)
 
         self.assertIsNone(
-            self.queued_behind_of(second["workflow_id"]),
-            "the launched chain's queue record retires",
+            self.queued_record_of(second["workflow_id"]),
+            "the launched chain's file no longer reads queued",
         )
-        # Between stages — no lease, no running stage — the stale marker
-        # must not close it, and the status must not announce the close.
+        # Between stages — no lease, no running stage — the launched
+        # chain's live mark must not close it, and the status must not
+        # announce the close.
         self.assertIsNone(
             self.orchestrator.close_hint(second["workflow_id"], home=self.root)
         )
         with self.assertRaisesRegex(WorkflowError, "refuses"):
             self.close(second["workflow_id"], reason="ya no está en cola")
+
+    # r5 (a) — lanzar sobre un repo ocupado re-encola; la cadena no se vara:
+    # sigue cerrable y el outcome final de la vieja la lanza.
+    def test_a_launch_on_a_busy_repo_requeues_and_the_queue_drains(self):
+        first = self.paused()
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+        second = self.start(request_key="second-chain")
+        third = self.start(request_key="third-chain")
+        self.assertEqual(second["outcome"], "queued")
+        self.assertEqual(third["outcome"], "queued")
+
+        # The launch lands on the busy repository: the driver's own resume
+        # re-queues the chain (r5 punto 2) instead of stranding it with a
+        # write nobody understands.
+        spawned = []
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            launched = self.orchestrator.launch_detached(
+                second["workflow_id"], home=self.root
+            )
+        # The driver enters and finds the repository busy: its own resume
+        # re-queues the chain (r5 punto 2) instead of stranding it with a
+        # write nobody understands.
+        result = self.orchestrator.resume(
+            second["workflow_id"], home=self.root, launch_run_id=launched["run_id"]
+        )
+        self.assertEqual(result["outcome"], "queued")
+        record = self.queued_record_of(second["workflow_id"])
+        self.assertEqual((record or {}).get("outcome"), "queued")
+        self.assertEqual((record or {}).get("behind"), first["workflow_id"])
+        self.assertTrue((record or {}).get("queued_at"))
+
+        # Still closable while queued: "queued" is a no-driver state.
+        self.assertIn(
+            "goncloud_local_close",
+            self.orchestrator.close_hint(second["workflow_id"], home=self.root),
+        )
+        receipt = self.close(third["workflow_id"], reason="orden retirada")
+        self.assertEqual(receipt["outcome"], "closed")
+
+        # The old chain's final outcome frees the repository and the queue
+        # head — the re-queued chain — launches.
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            self.orchestrator._report(
+                first["workflow_id"], "blocked", home=self.root, run_id="final-run"
+            )
+        driver_spawns = [argv for argv in spawned if len(argv) == 10]
+        self.assertEqual(
+            driver_spawns[-1][6],
+            second["workflow_id"],
+            "the re-queued chain is the head that launches",
+        )
+
+    # r5 (b) — un outcome "running" (etapa ocupada por otro dueño) NO
+    # libera el repo: no lanza la cola.
+    def test_a_running_report_does_not_launch_the_queue(self):
+        first = self.paused()
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+        second = self.start(request_key="second-chain")
+        self.assertEqual(second["outcome"], "queued")
+
+        spawned = []
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            report = self.orchestrator._report(
+                first["workflow_id"], "running", home=self.root, run_id="busy-run"
+            )
+
+        self.assertEqual(report["outcome"], "running")
+        self.assertNotIn("launched_queued", report)
+        self.assertIsNotNone(
+            self.queued_record_of(second["workflow_id"]),
+            "the queued chain keeps its place",
+        )
+
+        # Contrast: a freeing outcome does launch the head.
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            self.orchestrator._report(
+                first["workflow_id"], "blocked", home=self.root, run_id="free-run"
+            )
+        self.assertIsNone(
+            self.queued_record_of(second["workflow_id"]),
+            "the launched head reads running, not queued",
+        )
+        driver_spawns = [argv for argv in spawned if len(argv) == 10]
+        self.assertEqual(driver_spawns[-1][6], second["workflow_id"])
+
+    # r5 (c) — la cola se lanza FIFO por queued_at, no por orden de ids.
+    def test_the_queue_launches_fifo_by_queued_at(self):
+        first = self.paused()
+        live = self.sleeper()
+        self.write_mark(first["workflow_id"], self.running_mark(live.pid))
+        second = self.start(request_key="second-chain")
+        third = self.start(request_key="third-chain")
+        self.assertEqual(second["outcome"], "queued")
+        self.assertEqual(third["outcome"], "queued")
+
+        # Re-stamp the queue: third carries the OLDER queued_at, so it is
+        # the head regardless of the native id order.
+        self.write_mark(
+            second["workflow_id"],
+            {
+                **self.queued_record_of(second["workflow_id"]),
+                "queued_at": "2099-01-01T00:00:00+00:00",
+            },
+        )
+        self.write_mark(
+            third["workflow_id"],
+            {
+                **self.queued_record_of(third["workflow_id"]),
+                "queued_at": "2020-01-01T00:00:00+00:00",
+            },
+        )
+
+        spawned = []
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            self.orchestrator._report(
+                first["workflow_id"], "blocked", home=self.root, run_id="final-run"
+            )
+
+        driver_spawns = [argv for argv in spawned if len(argv) == 10]
+        self.assertEqual(len(driver_spawns), 1, "one chain per report")
+        self.assertEqual(driver_spawns[0][6], third["workflow_id"])
+        self.assertIsNotNone(
+            self.queued_record_of(second["workflow_id"]),
+            "the newer chain keeps waiting",
+        )
 
     def test_the_local_run_handler_queues_without_spawning_a_driver(self):
         first = self.paused()
@@ -2805,7 +3118,11 @@ class RetryAndQueueTests(_OrchestratorHarness):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(written["pid"], sleeper.pid)
+        # r5 punto 2: the busy driver leaves the queue record itself — the
+        # relaunched chain stays in the queue instead of stranding.
+        self.assertEqual(written["outcome"], "queued")
+        self.assertEqual(written["behind"], first["workflow_id"])
+        self.assertTrue(written["queued_at"])
 
         sleeper.kill()
         sleeper.wait()
@@ -2867,10 +3184,9 @@ class RetryAndQueueTests(_OrchestratorHarness):
 
     # review F2 — una cadena en cola nunca se cierra sola
     def test_a_queued_chain_is_never_auto_closed_by_a_later_start(self):
-        # Review F2: la cadena en cola nunca escribió marca de driver, y
-        # "sin marca" dejaba de leerse como "driver parado" — se archivaba
-        # con el motivo de cierre mentiroso justo después de responderle
-        # "en cola" a claw. El estado de cola queda durable en la raíz.
+        # Review F2: la cadena en cola es trabajo pendiente — su última
+        # escritura "queued" (r5 punto 1) la guarda, y el auto-cierre jamás
+        # la archiva: solo claw la saca con goncloud_local_close.
         first = self.paused()
         store = SubscriptionStateStore(self.root / "routes.db")
         self.assertTrue(
@@ -2884,28 +3200,28 @@ class RetryAndQueueTests(_OrchestratorHarness):
         queued = self.start(request_key="second-chain")
         self.assertEqual(queued["outcome"], "queued")
         self.assertEqual(
-            self.queued_behind_of(queued["workflow_id"]), first["workflow_id"]
+            (self.queued_record_of(queued["workflow_id"]) or {}).get("behind"),
+            first["workflow_id"],
         )
-        with connect_closing(self.db) as conn:
-            self.assertTrue(
-                any(
-                    comment.body.startswith("GONCLOUD_LOCAL_QUEUED_V1")
-                    for comment in list_comments(conn, queued["workflow_id"])
-                ),
-                "the queue is a durable state on the waiting root",
-            )
 
         store.release_stage(
             first["workflow_id"], first["stages"]["ingenieria"]["id"], "driver-live"
         )
-        third = self.start(request_key="third-chain")
+        spawned = []
+
+        with patch.object(
+            local_orchestrator_module.subprocess,
+            "Popen",
+            self.recording_popen(spawned),
+        ):
+            third = self.start(request_key="third-chain")
 
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
             self.assertNotEqual(
                 get_task(conn, queued["workflow_id"]).status,
                 "archived",
-                "the queued chain stays; no mark is no stop evidence",
+                "the queued chain stays; pending work is not stop evidence",
             )
             comentarios = [
                 comment.body for comment in list_comments(conn, queued["workflow_id"])
@@ -2914,8 +3230,16 @@ class RetryAndQueueTests(_OrchestratorHarness):
             all("GONCLOUD_LOCAL_CLOSE_V1" not in body for body in comentarios),
             "no lying close reason on the queued chain",
         )
+        # r5 punto 3: a queued chain has no driver and holds nothing — the
+        # new key starts, and when it frees the repository its final report
+        # drains the queue: the queued chain is the head that launches.
+        self.assertEqual(third["outcome"], "delivered")
+        driver_spawns = [argv for argv in spawned if len(argv) == 10]
+        self.assertEqual(len(driver_spawns), 1, "the queue head launched")
         self.assertEqual(
-            self.queued_behind_of(third["workflow_id"]), queued["workflow_id"]
+            driver_spawns[0][6],
+            queued["workflow_id"],
+            "the launched head is the queued chain",
         )
 
     # review F3 — si el cierre automático no cierra, la nueva se encola
@@ -2923,14 +3247,25 @@ class RetryAndQueueTests(_OrchestratorHarness):
         # Review F3: el cierre automático re-comprueba todo justo antes de
         # escribir; si la vieja giró a viva en ese intervalo, el cierre
         # devuelve False y la nueva cola detrás de ella — el driver
-        # detached nunca corre un guard de repositorio propio.
+        # detached nunca corre un guard de repositorio propio. A nivel
+        # service.start: el veredicto parcheado deja la vieja sin cerrar y
+        # el registro de cola vive ya en el archivo de la nueva (r5 punto
+        # 1), no en un comentario del Kanban.
         first = self.paused()
         signals = iter([(False, True), (True, False)])
         with patch("workflow._driver_signals", side_effect=lambda _id: next(signals)):
-            second = self.start(request_key="second-chain")
+            started = self.service().start(
+                request_key="second-chain",
+                repository=str(self.repo),
+                revision="baseline",
+                instruction="Inspect again.",
+                sources=SOURCES,
+            )
 
+        self.assertEqual(started.get("queued_behind"), first["workflow_id"])
         self.assertEqual(
-            self.queued_behind_of(second["workflow_id"]), first["workflow_id"]
+            (self.queued_record_of(started["workflow_id"]) or {}).get("behind"),
+            first["workflow_id"],
         )
         with connect_closing(self.db) as conn:
             self.assertNotEqual(get_task(conn, first["workflow_id"]).status, "archived")
@@ -2977,7 +3312,10 @@ class RetryAndQueueTests(_OrchestratorHarness):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(written["run_id"], "own-run", "the mark stays untouched")
+        # r5 punto 2: the re-queued driver writes the queued record itself —
+        # the chain stays in the queue with one source of truth.
+        self.assertEqual(written["outcome"], "queued")
+        self.assertEqual(written["behind"], first["workflow_id"])
 
     # review F4 — un pid incomprobable no es un pid muerto
     def test_an_uncheckable_pid_reads_alive_and_records_the_cause(self):
@@ -3064,6 +3402,198 @@ class RetryAndQueueTests(_OrchestratorHarness):
         self.assertEqual(second["outcome"], "delivered")
         with connect_closing(self.db) as conn:
             self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+
+
+class AvisoMailboxTests(_OrchestratorHarness):
+    """Encargo H: every stop a run lands leaves one mailbox event, redacted.
+
+    The cron despertar-raices drains the mailbox and tells claw with zero
+    model calls; these tests pin the writer side: one event per stopped run,
+    bounded and sanitized words, nothing for a live "running" mark.
+    """
+
+    def avisos(self):
+        return self.root / "goncloud-local" / "avisos"
+
+    def read_event(self, name):
+        return json.loads((self.avisos() / name).read_text(encoding="utf-8"))
+
+    def test_a_blocked_run_leaves_one_mailbox_event(self):
+        self.responses["implementer"] = fenced(
+            envelope(
+                status="blocked",
+                summary="Missing credentials for the Odoo login.",
+                evidence=["login step refused: 2fa"],
+            )
+        )
+        result = self.start()
+        self.assertEqual(result["outcome"], "blocked")
+        name = f"{result['workflow_id']}-{result['run_id']}-blocked.json"
+        event = self.read_event(name)
+        self.assertEqual(
+            set(event),
+            {
+                "workflow_id",
+                "repo",
+                "outcome",
+                "etapa",
+                "motivo",
+                "instruccion",
+                "fecha",
+            },
+        )
+        self.assertEqual(event["workflow_id"], result["workflow_id"])
+        self.assertEqual(event["repo"], str(self.repo.resolve()))
+        self.assertEqual(event["outcome"], "blocked")
+        self.assertEqual(event["etapa"], "implementer")
+        self.assertEqual(event["motivo"], "Missing credentials for the Odoo login.")
+        self.assertEqual(
+            event["instruccion"],
+            "Inspect this repository without external actions.",
+        )
+        self.assertTrue(event["fecha"])
+
+    def test_a_key_shaped_reason_reaches_the_mailbox_redacted(self):
+        token = "ghp_Abc123Def456Ghi789"
+        self.responses["implementer"] = fenced(
+            envelope(status="blocked", summary=f"push refused for {token}")
+        )
+        result = self.start()
+        name = f"{result['workflow_id']}-{result['run_id']}-blocked.json"
+        raw = (self.avisos() / name).read_text(encoding="utf-8")
+        self.assertNotIn(token, raw)
+        self.assertIn("[redacted]", self.read_event(name)["motivo"])
+
+    def test_a_delivered_run_leaves_one_mailbox_event(self):
+        result = self.start()
+        self.assertEqual(result["outcome"], "delivered")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+        )
+        self.assertEqual(event["outcome"], "delivered")
+        self.assertIsNone(event["etapa"])
+        self.assertEqual(event["repo"], str(self.repo.resolve()))
+        # One run, one event: resuming the delivered chain writes nothing new.
+        self.assertEqual(len(list(self.avisos().iterdir())), 1)
+
+    def test_a_waiting_run_names_the_pending_stage(self):
+        first = self.start(stop_after="scout")
+        self.service("ingenieria").consult(
+            task_id=first["stages"]["ingenieria"]["id"],
+            target_role="scout",
+            question="Verify dependency evidence.",
+            request_key="peer-1",
+        )
+        result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "waiting")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-waiting.json"
+        )
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(event["motivo"], "a stage waits on its parents.")
+
+    def test_a_paused_checkpoint_leaves_its_own_event(self):
+        result = self.start(stop_after="scout")
+        self.assertEqual(result["outcome"], "paused")
+        event = self.read_event(
+            f"{result['workflow_id']}-{result['run_id']}-paused.json"
+        )
+        self.assertEqual(event["outcome"], "paused")
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(event["motivo"], "paused at its stop_after checkpoint.")
+
+    def test_a_key_shaped_repo_reaches_the_mailbox_redacted(self):
+        # cr 4312376359: the repository path travels into the event under
+        # the same redaction as every other word, never as a place to hide
+        # a token-shaped secret.
+        secret = self.root / "ghp_Abc123Def456Ghi789"
+        secret.mkdir()
+        result = self.start(repository=str(secret))
+        self.assertEqual(result["outcome"], "delivered")
+        name = f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+        raw = (self.avisos() / name).read_text(encoding="utf-8")
+        self.assertNotIn("ghp_Abc123Def456Ghi789", raw)
+        self.assertIn("[redacted]", self.read_event(name)["repo"])
+
+    def test_a_driver_quitting_running_leaves_its_own_event(self):
+        # Live review F3: the router's task_failure path is the one quit
+        # that happens with a stage still live. The process ends, close
+        # refuses the chain and close_hint stays silent, so the mailbox is
+        # the only channel left: claw hears the jam and relaunches. (The
+        # running mark a start writes goes through _write_result, never
+        # through this event.)
+        first = self.start(stop_after="scout")
+        before = {p.name for p in self.avisos().iterdir()}
+        self.assertTrue(any(name.endswith("paused.json") for name in before))
+        self.orchestrator._report(
+            first["workflow_id"], "running", home=self.root, run_id="liverun"
+        )
+        event = self.read_event(f"{first['workflow_id']}-liverun-running.json")
+        self.assertEqual(event["outcome"], "running")
+        self.assertEqual(event["etapa"], "ingenieria")
+        self.assertEqual(
+            event["motivo"], "the driver quit with the stage still unfinished."
+        )
+
+    def test_a_broken_mailbox_keeps_the_real_result(self):
+        # Live F2 + cr 4312376366: the mailbox is best effort. A stop the
+        # result file already published is the truth; a mailbox that cannot
+        # be written (full disk, permission slip, Windows lock) is swallowed
+        # — never propagated, because the detached bootstrap's catch would
+        # overwrite the real outcome with its generic error.
+        first = self.start(stop_after="scout")
+        before = {p.name for p in self.avisos().iterdir()}
+        barrier = self.root / "barrier"
+        barrier.write_text("not a directory", encoding="utf-8")
+        with patch.object(
+            local_orchestrator_module, "_home_raiz", return_value=barrier
+        ):
+            result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "delivered")
+        durable = json.loads(
+            (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(durable["outcome"], "delivered")
+        self.assertEqual(durable["run_id"], result["run_id"])
+        # The broken mailbox published nothing, and the real events stay.
+        self.assertEqual({p.name for p in self.avisos().iterdir()}, before)
+
+    def test_the_event_is_idempotent_by_name(self):
+        first = self.start(stop_after="scout")
+        report = {"outcome": "paused", "workflow_id": first["workflow_id"]}
+        name = f"{first['workflow_id']}-same-run-paused.json"
+        for _ in range(2):
+            local_orchestrator_module._write_aviso(
+                first["workflow_id"],
+                "same-run",
+                "paused",
+                report,
+                home=self.root,
+                repo="owner/repo",
+                instruction="i",
+            )
+            # The chain's own checkpoint event stays untouched beside it.
+            self.assertEqual(
+                [p.name for p in self.avisos().iterdir() if "same-run" in p.name],
+                [name],
+            )
+
+    def test_a_profile_home_climbs_to_the_root_mailbox(self):
+        first = self.start(stop_after="scout")
+        profile = self.root / "profiles" / "claw"
+        result = self.orchestrator.resume(first["workflow_id"], home=profile)
+        self.assertEqual(result["outcome"], "delivered")
+        # The writer's home is the profile; the event lands at the root,
+        # where the cron in the default profile reads it.
+        self.assertTrue(
+            (
+                self.avisos()
+                / f"{result['workflow_id']}-{result['run_id']}-delivered.json"
+            ).exists()
+        )
+        self.assertFalse((profile / "goncloud-local" / "avisos").exists())
 
 
 class LocalCloseHandlerTests(_OrchestratorHarness):
