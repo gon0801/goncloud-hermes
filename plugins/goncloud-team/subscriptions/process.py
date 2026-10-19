@@ -28,6 +28,9 @@ _PROMPT_PLACEHOLDER = "{prompt_file}"
 #: Adapters put this token in argv where the private prompt file path belongs.
 PROMPT_PLACEHOLDER = _PROMPT_PLACEHOLDER
 _CLEANUP_GRACE_SECONDS = 4
+#: Only the WSL guardian's orphan safety net uses this (a stage without a
+#: deadline still passes it a far horizon); the live parent never enforces it.
+_ORPHAN_GUARD_SECONDS = 86_400
 _WINDOWS_GATE = "goncloud-subscription-start!"
 _WINDOWS_GATE_LAUNCHER = (
     "import json, subprocess, sys\n"
@@ -350,9 +353,14 @@ def _run_with_process_tree(
     cwd: Path,
     env: Mapping[str, str],
     stdin_text: str | None,
-    timeout: int,
+    timeout: int | None,
 ) -> tuple[int, str, str]:
-    """Run a real CLI in an isolated group so timeout cleanup includes children."""
+    """Run a real CLI in an isolated group so timeout cleanup includes children.
+
+    ``timeout=None`` waits indefinitely: a stage without a deadline must not
+    kill its vendor process for time. Only an explicit positive timeout
+    terminates the tree.
+    """
     windows = os.name == "nt"
     job = _create_windows_process_job()
     if windows and job is None:
@@ -466,13 +474,17 @@ def run_cli(
     command: Sequence[str],
     prompt: str,
     workspace: Path,
-    timeout: int,
+    timeout: int | None,
     env_overlay: Mapping[str, str] | None = None,
     prompt_transport: Literal["stdin", "tempfile"] = "stdin",
     runner=subprocess.run,
 ) -> ProcessEvidence:
-    """Run one vendor command without shell interpolation or leaked secrets."""
-    if type(timeout) is not int or timeout <= 0:
+    """Run one vendor command without shell interpolation or leaked secrets.
+
+    ``timeout=None`` is a stage without a deadline: the vendor process runs
+    until it ends. Probes always pass a positive integer window.
+    """
+    if timeout is not None and (type(timeout) is not int or timeout <= 0):
         raise SubscriptionProcessError(
             "timeout must be a positive integer number of seconds"
         )
@@ -505,13 +517,21 @@ def run_cli(
                 and command[3] == "--exec"
             )
             if wsl:
+                # The guardian needs a wall-clock deadline even for a stage
+                # without one: it is the safety net that reaps the tree if the
+                # parent itself is lost. A day bounds that orphan scenario
+                # without ever being a stage deadline — the parent's own wait,
+                # communicate(timeout=None), governs the live process.
+                deadline = time.time() + (
+                    timeout if timeout is not None else _ORPHAN_GUARD_SECONDS
+                )
                 command = command[:4] + [
                     "/usr/bin/python3",
                     "-I",
                     "-S",
                     "-c",
                     _WSL_PROCESS_GUARD,
-                    str(time.time() + timeout),
+                    str(deadline),
                     *command[4:],
                 ]
             returncode, stdout, stderr = _run_with_process_tree(
@@ -519,10 +539,12 @@ def run_cli(
                 cwd=workspace,
                 env=child_env,
                 stdin_text=stdin_text,
-                timeout=timeout + 1 if wsl else timeout,
+                timeout=None if timeout is None else (timeout + 1 if wsl else timeout),
             )
             if wsl and returncode == 124:
-                raise subprocess.TimeoutExpired(command, timeout)
+                raise subprocess.TimeoutExpired(
+                    command, timeout if timeout is not None else _ORPHAN_GUARD_SECONDS
+                )
             if wsl and returncode == 125:
                 raise SubscriptionProcessError("vendor process containment unavailable")
         else:

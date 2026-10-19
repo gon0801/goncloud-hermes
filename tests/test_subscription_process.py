@@ -276,21 +276,30 @@ class SafeProcessTests(unittest.TestCase):
             )
 
     def test_adapter_deadlines_cannot_exceed_process_limits(self):
+        """A stage is unbounded by default and a declared window is honored.
+
+        The old absolute 300 s ceiling (and its clamp) killed every long
+        design; neither may come back. Only probe windows stay bounded.
+        """
+
         class OverdueAdapter(SubscriptionAdapter):
             timeout_seconds = 900
             probe_timeout_seconds = 120
 
         adapter = OverdueAdapter()
 
-        self.assertEqual(adapter.timeout_seconds, 300)
+        self.assertIsNone(SubscriptionAdapter().timeout_seconds)
+        # A declared stage window passes through untouched — no clamp.
+        self.assertEqual(adapter.timeout_seconds, 900)
         self.assertEqual(adapter.probe_timeout_seconds, 30)
         adapter.timeout_seconds = 7
-        adapter.probe_timeout_seconds = 8
         self.assertEqual(adapter.timeout_seconds, 7)
+        adapter.timeout_seconds = None
+        self.assertIsNone(adapter.timeout_seconds)
+        # Probe ceilings keep working exactly as before.
+        adapter.probe_timeout_seconds = 8
         self.assertEqual(adapter.probe_timeout_seconds, 8)
-        adapter.timeout_seconds = 900
         adapter.probe_timeout_seconds = 120
-        self.assertEqual(adapter.timeout_seconds, 300)
         self.assertEqual(adapter.probe_timeout_seconds, 30)
 
     def test_an_adapter_may_declare_a_longer_probe_window_it_actually_needs(self):
@@ -306,19 +315,61 @@ class SafeProcessTests(unittest.TestCase):
         adapter.probe_timeout_seconds = 240
         self.assertEqual(adapter.probe_timeout_seconds, 120)
 
-    def test_a_declared_probe_window_still_obeys_the_absolute_process_limit(self):
+    def test_a_declared_probe_window_still_obeys_the_absolute_probe_limit(self):
         class UnboundedAdapter(SubscriptionAdapter):
             max_probe_timeout_seconds = 9000
-            max_timeout_seconds = 9000
             probe_timeout_seconds = 9000
-            timeout_seconds = 9000
 
         adapter = UnboundedAdapter()
 
         self.assertEqual(adapter.max_probe_timeout_seconds, 300)
-        self.assertEqual(adapter.max_timeout_seconds, 300)
         self.assertEqual(adapter.probe_timeout_seconds, 300)
-        self.assertEqual(adapter.timeout_seconds, 300)
+
+    def test_a_stage_without_a_deadline_runs_longer_than_the_old_ceiling(self):
+        """The stage path must survive an invocation longer than the old 300 s.
+
+        The old absolute deadline killed the vendor process at exactly 300 s
+        (2026-09-14). None now reaches the process boundary, so a real child
+        that outlasts a shrunken copy of the old ceiling completes instead of
+        dying as a timeout: restoring any stage deadline turns this red.
+        """
+        command = [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.75); print('done')",
+        ]
+
+        evidence = run_cli(command, "", self.workspace, timeout=None)
+
+        self.assertEqual(evidence.returncode, 0)
+        self.assertIn("done", evidence.stdout)
+
+    def test_adapters_hand_no_deadline_to_the_process_boundary(self):
+        """Every stage invocation passes ``None`` down, never a second count."""
+        seen = {}
+        workspace = self.workspace
+
+        def recording_runner(command, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+
+        class SlowAdapter(SubscriptionAdapter):
+            def invoke(self, request, route):
+                return run_cli(
+                    ["vendor"],
+                    "task",
+                    workspace,
+                    self.timeout_seconds,
+                    runner=recording_runner,
+                )
+
+        result = SlowAdapter().invoke(
+            InvocationRequest("wf", "st", "scout", "look", self.workspace, "r", "r"),
+            RouteSpec(0, "slow", "slow", "slow-model", "subscription"),
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIsNone(seen["timeout"])
 
     def test_the_muse_adapter_keeps_the_wsl_cold_start_probe_window(self):
         self.assertEqual(MuseAdapter().probe_timeout_seconds, 120)

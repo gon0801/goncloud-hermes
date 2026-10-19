@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import closing
@@ -637,15 +638,19 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(result.text, "ok")
         self.assertEqual(router.calls, ["opencode_go", "claude", "muse"])
 
-    def test_timeout_without_mutation_advances(self):
+    def test_a_timeout_failure_blocks_the_stage_instead_of_advancing(self):
+        # Stages have no deadline anymore (owner, 2026-10-19), so no route may
+        # hand the stage to the next model "for time". A timeout result is
+        # owner evidence, never an automatic advance.
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
-        self.fake_adapters["claude"].result = completed("zen ok", "claude")
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertTrue(result.success)
-        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertEqual(router.calls, ["opencode_go"])
 
     def test_transport_failure_without_mutation_advances(self):
         router = self.router()
@@ -774,9 +779,11 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
         self.assertEqual(router.calls, ["opencode_go"])
 
-    def test_timeout_then_rejected_envelope_advances_to_the_third_position(self):
+    def test_quota_then_rejected_envelope_advances_to_the_third_position(self):
+        # The chain still advances through advancing failures across slots;
+        # a timeout is not one of them anymore (it blocks, see above).
         router = self.router()
-        self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
+        self.fake_adapters["opencode_go"].result = failed(FailureKind.QUOTA)
         self.fake_adapters["claude"].result = failed(FailureKind.INVALID_TERMINAL)
         self.fake_adapters["muse"].result = completed("muse ok", "muse")
 
@@ -789,7 +796,7 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(
             result.skipped_routes,
             (
-                SkippedRoute(0, "opencode_go", FailureKind.TIMEOUT),
+                SkippedRoute(0, "opencode_go", FailureKind.QUOTA),
                 SkippedRoute(1, "claude", FailureKind.INVALID_TERMINAL),
             ),
         )
@@ -860,10 +867,11 @@ class FailoverTests(RouterTestCase):
         )
         self.assertTrue(router.store.health("opencode_go")["ready"])
 
-    def test_timeout_cools_the_account_so_a_hung_endpoint_is_skipped(self):
-        # opencode_go hangs to its 300s deadline at slot 0 of nearly every
-        # chain. A timeout must cool the account down like quota so the next
-        # stage skips it instead of hanging the full deadline again.
+    def test_a_timeout_failure_leaves_no_cooldown_bench(self):
+        # The bench existed so a hung endpoint would not re-eat the old 300 s
+        # deadline at slot 0 of every stage. With no stage deadline there is
+        # no hung-at-the-deadline pattern left, and time never advances a
+        # stage: the timeout result itself is the owner's evidence.
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.TIMEOUT, adapter="opencode_go"
         )
@@ -872,40 +880,10 @@ class FailoverTests(RouterTestCase):
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertTrue(result.success)
-        self.assertIsNotNone(router.store.cooldown_until("opencode_go"))
-
-    def test_a_timeout_cooldown_is_recorded_as_timeout_not_quota(self):
-        # Live 2026-09-27: one Opus timeout benched it and every later skip
-        # read "quota", so a healthy account looked exhausted.
-        self.fake_adapters["opencode_go"].result = failed(
-            FailureKind.TIMEOUT, adapter="opencode_go"
-        )
-        self.fake_adapters["claude"].result = completed(adapter="claude")
-        router = self.router()
-        router.run(request(self.workspace), routes_for_main())
-
-        router.run(
-            replace(request(self.workspace), workflow_id="wf-7", stage_id="st-7"),
-            routes_for_main(),
-        )
-
-        skipped = router.store.stage_attempts("wf-7", "st-7")[0]
-        self.assertEqual(skipped["disposition"], "skipped")
-        self.assertEqual(skipped["failure"], "timeout")
-
-    def test_a_workflow_timeout_still_benches_a_hung_endpoint(self):
-        self.fake_adapters["opencode_go"].result = failed(
-            FailureKind.TIMEOUT, adapter="opencode_go"
-        )
-        self.fake_adapters["claude"].result = completed(adapter="claude")
-        router = self.router()
-        before = datetime.now(timezone.utc)
-
-        router.run(request(self.workspace), routes_for_main())
-
-        until = router.store.cooldown_until("opencode_go")
-        self.assertGreaterEqual(until - before, timedelta(minutes=14))
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertEqual(router.calls, ["opencode_go"])
+        self.assertIsNone(router.store.cooldown_until("opencode_go"))
 
     def test_a_persistent_throttle_benches_the_account_briefly_and_keeps_it_ready(
         self,
@@ -2158,7 +2136,9 @@ class QuarantineExpiryTests(RouterTestCase):
             FailureKind.TASK_FAILURE,
             FailureKind.INVALID_REQUEST,
             FailureKind.AUTH,
-            FailureKind.TIMEOUT,
+            # A timeout is absent on purpose: a stage no longer advances "for
+            # time" (owner, 2026-10-19), so a timeout result blocks the stage
+            # instead of retrying through the expired quarantine here.
             FailureKind.TRANSPORT,
             FailureKind.MODEL_UNAVAILABLE,
         )
@@ -2195,6 +2175,96 @@ class QuarantineExpiryTests(RouterTestCase):
                 self.assertLess(age, 60)
                 # The re-armed quarantine is cached again: no probe per run.
                 self.assertEqual(len(go.probes), 1)
+
+
+class StageLeaseHeartbeatTests(RouterTestCase):
+    """The lease must outlive any stage: a heartbeat renews it while the
+    vendor process runs, and a dead process stops beating so the lease
+    expires on its own, exactly as before."""
+
+    def _counting_renewals(self, store):
+        renewals = []
+        original = store.renew_stage
+
+        def counting(*args, **kwargs):
+            renewed = original(*args, **kwargs)
+            if renewed:
+                renewals.append(time.monotonic())
+            return renewed
+
+        store.renew_stage = counting
+        return renewals
+
+    def test_the_lease_beats_during_a_long_invocation_and_blocks_other_owners(self):
+        router = self.router()
+        entered, release = threading.Event(), threading.Event()
+
+        def unbounded(request, route):
+            entered.set()
+            release.wait(10)
+            return completed("finally done", "opencode_go")
+
+        self.fake_adapters["opencode_go"].result = unbounded
+        renewals = self._counting_renewals(router.store)
+        other = SubscriptionStateStore(self.db_path)
+
+        with (
+            patch("subscriptions.router._STAGE_LEASE_RENEWAL_SECONDS", 0.01),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            future = pool.submit(
+                router.run, request(self.workspace), routes_for_main()[:1]
+            )
+            try:
+                self.assertTrue(entered.wait(10))
+                time.sleep(0.15)
+                # An outside owner cannot claim the stage while it runs.
+                self.assertFalse(other.claim_stage("wf-6", "st-6", "thief", 600))
+                self.assertGreaterEqual(len(renewals), 5)
+                beats = len(renewals)
+                time.sleep(0.15)
+                # The heartbeat kept beating while the invocation stayed slow.
+                self.assertGreater(len(renewals), beats)
+                self.assertFalse(other.claim_stage("wf-6", "st-6", "thief", 600))
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+
+        self.assertTrue(result.success)
+        # The heartbeat stops with the stage: the renewal count freezes.
+        stopped = len(renewals)
+        time.sleep(0.1)
+        self.assertEqual(len(renewals), stopped)
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 60))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
+
+    def test_a_dead_process_stops_beating_and_its_lease_expires_alone(self):
+        from subscriptions.router import _StageLeaseHeartbeat
+
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf-9", "st-9", "owner", 0.3))
+        renewals = self._counting_renewals(store)
+        heartbeat = _StageLeaseHeartbeat(
+            store,
+            "wf-9",
+            "st-9",
+            "owner",
+            lease_seconds=0.3,
+            interval=0.05,
+        )
+        heartbeat.start()
+        time.sleep(0.2)
+        self.assertGreaterEqual(len(renewals), 2)
+
+        # The router process dying is the thread dying: nothing renews after
+        # the beat stops, and the lease lapses with no owner releasing it.
+        heartbeat.stop()
+        frozen = len(renewals)
+        time.sleep(0.1)
+        self.assertEqual(len(renewals), frozen)
+        time.sleep(0.3)
+        self.assertTrue(store.claim_stage("wf-9", "st-9", "next-owner", 60))
+        store.release_stage("wf-9", "st-9", "next-owner")
 
 
 if __name__ == "__main__":
