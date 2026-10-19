@@ -130,11 +130,14 @@ LOCAL_CLOSE = {
     "description": (
         "Close a finished-but-open local chain (outcome paused after a "
         "stop_after checkpoint, or blocked) so new work can start again in "
-        "the same repository. Only the claw profile may call this. Archives "
-        "the director root and every stage that is not done with the native "
-        "Kanban archive, keeps the done stages as evidence, and records the "
-        "reason as a comment on the root. A running chain is refused, and "
-        "closing an already-closed chain returns the same receipt."
+        "the same repository. Only the claw profile may call this. Closing "
+        "requires durable evidence that the driver is gone: its own paused "
+        "or blocked outcome and no live subscription lease; a running chain "
+        "is refused. Archives the director root and every stage that is not "
+        "done with the native Kanban archive, keeps the done stages as "
+        "evidence, records the reason as a comment on the root, and also "
+        "frees a root stuck in triage without its stage graph. Closing an "
+        "already-closed chain returns the same receipt."
     ),
     "parameters": {
         "type": "object",

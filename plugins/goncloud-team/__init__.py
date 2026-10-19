@@ -108,11 +108,9 @@ def _transport_handlers(ctx):
             driver = getattr(orchestrator, "driver_result", None)
             if driver is not None:
                 result["driver"] = driver(workflow_id)
-            from .local_orchestrator import close_hint
-
-            result["close_hint"] = close_hint(
-                result, (result.get("driver") or {}).get("outcome")
-            )
+            # The hint enforces the same evidence the close does: the
+            # driver's durable stopped outcome and no live lease.
+            result["close_hint"] = orchestrator.close_hint(workflow_id)
             return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
