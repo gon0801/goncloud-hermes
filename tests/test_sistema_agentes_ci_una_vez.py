@@ -10,7 +10,10 @@ mismo modelo que quality.yml de G): la bateria corre UNA vez por bloque.
     con "**" cada push a una rama de PR pagaria la bateria de nuevo.
 (2) Un solo job: la condicion del propio job ES la exigencia del gate. En
     draft el job se salta entero y no deja check que pueda contar como verde
-    de la bateria; al pasar a ready el check nace sobre el SHA final.
+    de la bateria; al pasar a ready el check nace sobre el SHA final. El
+    checkout del PR fija `head.sha`: se prueba el arbol EXACTO de la cabeza
+    (no el merge commit refs/pull/N/merge), el mismo SHA donde el reuso
+    busca el check.
 (3) En push a la rama por defecto, si el arbol empujado es identico al de la
     cabeza del PR y esa cabeza dejo `espejo-de-g` en success, el veredicto
     se reusa (.github/scripts/reusar_completa.sh); ante cualquier duda se
@@ -138,7 +141,8 @@ def correr_reuso(raiz: Path, escena: dict) -> tuple[subprocess.CompletedProcess,
     doble = raiz / "doble"
     doble.mkdir(exist_ok=True)
     gh = doble / "gh"
-    gh.write_text(DOBLE_GH, encoding="utf-8")
+    # newline="\n": el shebang exige LF aunque el repo se chequee con CRLF.
+    gh.write_text(DOBLE_GH, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
     salida = raiz / "salida.txt"
     env = env_sin_git() | {
@@ -164,6 +168,10 @@ class ContratoDisparadores(unittest.TestCase):
         self.texto = WORKFLOW.read_text(encoding="utf-8")
         self.disparadores = bloque(self.texto, "on:")
         self.job = bloque(self.texto, "  espejo-de-g:")
+        # Cabecera del job: lo anterior a `    steps:` — el `if:` del PROPIO
+        # job. `bloque()` incluye los pasos, y un `if:` de paso satisfaria
+        # estas aserciones sin que el job se salte entero en draft (F3).
+        self.cabecera_job = self.job.split("    steps:", 1)[0]
 
     def test_la_bateria_corre_una_vez_al_pasar_a_ready(self) -> None:
         """(1) draft sin bateria; ready dispara una vez; push a la default."""
@@ -185,18 +193,40 @@ class ContratoDisparadores(unittest.TestCase):
         )
         self.assertIn(
             "(github.event_name == 'pull_request' && !github.event.pull_request.draft)",
-            self.job,
-            "el job debe saltarse entero en draft: en draft no corre la bateria (1)",
+            self.cabecera_job,
+            "el if: del JOB (no un paso) debe saltarse entero en draft: en "
+            "draft no corre la bateria (1)",
         )
         self.assertIn(
             "github.event_name == 'push'",
-            self.job,
-            "el job debe seguir corriendo en push a la rama por defecto",
+            self.cabecera_job,
+            "el if: del JOB debe seguir corriendo en push a la rama por defecto",
         )
         self.assertIn(
             "github.event_name == 'workflow_dispatch'",
-            self.job,
+            self.cabecera_job,
             "dispatch manual sigue existiendo para casos raros",
+        )
+
+    def test_el_checkout_prueba_el_arbol_de_la_cabeza_del_pr(self) -> None:
+        """(2b) El job prueba el arbol EXACTO de la cabeza, no el merge ref.
+
+        El default de `pull_request` es refs/pull/N/merge (merge commit):
+        si la bateria corriera ahi, certificaria un arbol distinto del que
+        el reuso compara y del check que busca en la cabeza.
+        """
+        self.assertIn(
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+            self.job,
+            "el checkout del job de bateria debe fijar la cabeza del PR "
+            "(head.sha): el reuso compara el arbol y busca el check en ese "
+            "mismo SHA",
+        )
+        self.assertIn(
+            "commits/$cabeza/check-runs",
+            SCRIPT.read_text(encoding="utf-8"),
+            "reusar_completa.sh debe buscar el check en la MISMA cabeza "
+            "que se prueba (checkout fijado a head.sha)",
         )
 
     def test_permisos_minimos_sin_tokens_nuevos(self) -> None:
@@ -358,37 +388,83 @@ class CentinelaGitEnv(unittest.TestCase):
     def test_el_git_env_del_hook_deja_intacto_el_repo_ajeno(self) -> None:
         """Regresion 2026-10-18: GIT_* del hook no pegan contra el repo real.
 
-        Un repo centinela recibe el GIT_DIR/GIT_INDEX_FILE hostil en el
-        entorno; tras correr TODO el escenario del reuso, el centinela debe
-        quedar exactamente igual (core.bare, HEAD, indice). Si el filtro de
-        GIT_* falta, la mutacion del centinela vuelve la prueba roja.
+        El centinela preexiste al bloque hostil. DENTRO del bloque con
+        GIT_DIR/GIT_INDEX_FILE apuntando al centinela se crea el repo
+        temporal del escenario (repo_temporal es lo unico que muta con
+        git init/add/commit) y se corre el escenario COMPLETO del reuso
+        hasta reusar=true (correr_reuso es lo unico que ejecuta el script).
+        Tras el bloque, el centinela debe quedar exactamente igual (core
+        .bare, HEAD, indice): si el filtro de GIT_* falta en repo_temporal,
+        la mutacion del centinela vuelve la prueba roja; si falta en
+        correr_reuso, el git del script lee el centinela y el escenario ya
+        no llega a reusar=true.
         """
+
+        def instantanea(raiz: Path) -> tuple[str, str, str]:
+            return (
+                git(raiz, "config", "core.bare"),
+                git(raiz, "rev-parse", "HEAD"),
+                git(raiz, "ls-files", "-s"),
+            )
+
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             centinela = base / "centinela"
             repo_temporal(centinela)
-            estado = (
-                git(centinela, "config", "core.bare"),
-                git(centinela, "rev-parse", "HEAD"),
-                git(centinela, "ls-files", "-s"),
+            # El centinela debe ser DISTINTO del escenario: repo_temporal
+            # produce repos identicos (mismo contenido, autor y segundo ->
+            # mismo SHA y arbol), y un script que leyera el centinela por el
+            # GIT_* hostil llegaria igual a reusar=true y la prueba no
+            # discriminaria.
+            (centinela / "archivo.txt").write_text("sentinela\n", encoding="utf-8")
+            git(centinela, "add", ".")
+            git(
+                centinela,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "dos",
             )
+            estado = instantanea(centinela)
             escenario = base / "escenario"
-            repo_temporal(escenario)
             hostil = {
                 "GIT_DIR": str(centinela / ".git"),
                 "GIT_INDEX_FILE": str(centinela / ".git" / "index"),
             }
             with mock.patch.dict(os.environ, hostil):
-                correr_reuso(
-                    escenario,
-                    {"pulls": "[]", "arbol": "{}", "check-runs": "{}"},
-                )
+                sha, arbol = repo_temporal(escenario)
+                escena = {
+                    "pulls": json.dumps([{"number": 7, "head": {"sha": sha}}]),
+                    "arbol": json.dumps({"commit": {"tree": {"sha": arbol}}}),
+                    "check-runs": json.dumps(
+                        {
+                            "check_runs": [
+                                {
+                                    "name": "espejo-de-g",
+                                    "conclusion": "success",
+                                    "html_url": "https://ci/run/1",
+                                }
+                            ]
+                        }
+                    ),
+                }
+                proc, salida = correr_reuso(escenario, escena)
             self.assertEqual(
-                (
-                    git(centinela, "config", "core.bare"),
-                    git(centinela, "rev-parse", "HEAD"),
-                    git(centinela, "ls-files", "-s"),
-                ),
+                proc.returncode,
+                0,
+                "el script jamas termina en error: " + proc.stderr,
+            )
+            self.assertIn(
+                "reusar=true",
+                salida,
+                "el escenario completo debe llegar a reusar=true DENTRO del "
+                "bloque hostil (asi la prueba discrimina): " + proc.stderr,
+            )
+            self.assertEqual(
+                instantanea(centinela),
                 estado,
                 "el repo centinela cambio: el GIT_* del hook se colo en los "
                 "subprocess del escenario",

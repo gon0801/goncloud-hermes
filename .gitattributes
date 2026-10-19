@@ -5,3 +5,6 @@ tests/fixtures/sistema-agentes-g/** -text
 # El parche de los plugins del directorio se aplica byte a byte con git
 # apply y su sha256 lo fija una prueba (encargo H-jev r2).
 patches/** -text
+# Los .sh se ejecutan con bash: con core.autocrlf=true (default de Git for
+# Windows) un CRLF en el shebang rompe el parseo en local y en CI.
+*.sh text eol=lf

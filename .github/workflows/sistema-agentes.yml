@@ -41,6 +41,12 @@ jobs:
       (github.event_name == 'pull_request' && !github.event.pull_request.draft)
     steps:
       - uses: actions/checkout@v4
+        with:
+          # En pull_request el default seria refs/pull/N/merge (el merge
+          # commit): se prueba el arbol EXACTO de la cabeza, el mismo SHA
+          # donde reusar_completa.sh busca el check `espejo-de-g` al reusar.
+          # En push/dispatch no hay PR y `||` cae al SHA del evento.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Reusa el veredicto si el arbol ya paso la bateria (solo push)
         # Al unir a la rama por defecto: si el arbol del commit empujado es
