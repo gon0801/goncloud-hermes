@@ -61,7 +61,6 @@ Regla de David (2026-10-18): JEV se usa en el trabajo normal, no solo en pruebas
 - JEV apoya, no autoriza: no reemplaza PERMISOS.md, las aprobaciones de David ni la evidencia de verifier y reviewer. Si la respuesta contradice la evidencia, prevalece la evidencia.
 - A JEV puede ir cualquier dato del trabajo (autorizacion permanente en PERMISOS.md), nunca credenciales.
 - Si JEV falla, sigue sin el y reportalo una vez con el error exacto; no reportes que se uso si no respondio.
-- Prohibido parchar a mano los archivos de los plugins jev y jev-skill-router (David, 2026-10-18): estan fijados en el repo goncloud-hermes (director-plugins.json + patches/claw). Un cambio necesario se pide para que entre primero al repo.
 
 # Especialistas
 

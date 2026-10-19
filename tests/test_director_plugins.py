@@ -649,16 +649,19 @@ class DespliegueFrescoTests(unittest.TestCase):
         self.assertIn("hermes plugins", resultado.stderr)
 
     def test_la_seccion_jev_va_en_el_soul_de_claw_y_de_nadie_mas(self):
-        # La regla de David (2026-10-18) vive en roles/claw.md, en la posicion
-        # exacta que claw dejo a mano en su SOUL de la PC: antes de
-        # Especialistas. El SOUL del director la lleva; ningun otro perfil la
-        # recibe porque el generador solo une roles/<rol>.md de cada perfil.
+        # La seccion JEV vive en roles/claw.md, en la posicion exacta que
+        # claw dejo a mano en su SOUL de la PC: antes de Especialistas. El
+        # SOUL del director la lleva; ningun otro perfil la recibe porque
+        # el generador solo une roles/<rol>.md de cada perfil. La regla
+        # "Prohibido parchar a mano" se retiro del rol (David, 2026-10-19)
+        # y el SOUL compuesto no debe volver a llevarla: mientras siga, el
+        # deploy marca conflicto con el SOUL vivo de la PC.
         resultado = self.run_configure()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         perfiles = self.runtime / "profiles"
         claw = (perfiles / "claw" / "SOUL.md").read_text(encoding="utf-8")
         self.assertIn("# JEV (decisiones rapidas)", claw)
-        self.assertIn("Prohibido parchar a mano", claw)
+        self.assertNotIn("Prohibido parchar a mano", claw)
         self.assertLess(
             claw.index("# JEV (decisiones rapidas)"),
             claw.index("# Especialistas"),
