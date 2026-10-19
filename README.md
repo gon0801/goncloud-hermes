@@ -242,7 +242,7 @@ python3 scripts/pinned_models.py --write    # reporte y lista para el vigia; des
 
 ## Calidad
 
-El remoto es `github.com/gon0801/goncloud-hermes`; la CI (`sistema-agentes.yml`) corre en cada push la bateria `test_sistema_agentes_*` y compara el espejo de G byte a byte contra el commit fijado. Durante el desarrollo se ejecuta localmente solamente el archivo de pruebas cambiado, y al cierre la bateria completa.
+El remoto es `github.com/gon0801/goncloud-hermes`; la CI (`sistema-agentes.yml`) corre la bateria `test_sistema_agentes_*` UNA vez por bloque: el PR vive en draft hasta el APROBADO y al pasar a ready corre la bateria sobre el SHA final (en draft no corre nada); el push a `feat/hermes-team` reusa el veredicto si el arbol es identico al de la cabeza del PR (`.github/scripts/reusar_completa.sh`), y nada de `gh workflow run` en el flujo normal. Ademas compara el espejo de G byte a byte contra el commit fijado. Durante el desarrollo se ejecuta localmente solamente el archivo de pruebas cambiado, y al cierre la bateria completa.
 
 Gate y despliegue 2026-09-27: 414 tests aprobados y 3 skips de plataforma; 8/8 hooks; `git diff --check` limpio. La regresion y una inferencia controlada prueban que `main` avanza OpenCode Go -> Claude Opus 5 `xhigh` sin tocar Kimi. Los nueve perfiles y el reinicio del gateway estan documentados en [estado](docs/status.md).
 
