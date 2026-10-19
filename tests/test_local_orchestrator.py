@@ -3225,6 +3225,86 @@ class RetryAndQueueTests(_OrchestratorHarness):
         self.assertEqual(result["cadena_viva"], first["workflow_id"])
         self.assertEqual([r.role for r in self.requests], ["scout"])
 
+    # Hallazgo del lead — en Windows, un proceso que ya terminó no es un
+    # driver vivo: OpenProcess abre el pid mientras quede un handle y
+    # GetProcessTimes contesta igual, así que el código de salida decide
+    # (259 = STILL_ACTIVE; cualquier otro código, terminado).
+    def test_windows_exit_code_says_whether_the_driver_is_gone(self):
+        import ctypes
+
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", ctypes.c_ulong),
+                ("dwHighDateTime", ctypes.c_ulong),
+            ]
+
+        # En macOS ctypes.wintypes no importa (es de Windows): el doble
+        # aporta un módulo equivalente con los tipos reales de ctypes.
+        fake_wintypes = SimpleNamespace(DWORD=ctypes.c_ulong, FILETIME=_FILETIME)
+
+        def fake_kernel32(*, exit_code=None, fail_exit_code=False, times_ok=True):
+            kernel32 = SimpleNamespace()
+
+            def get_exit(handle, ref):
+                if fail_exit_code:
+                    return False
+                ref._obj.value = exit_code
+                return True
+
+            def get_times(handle, creation, exit_time, kernel_time, user_time):
+                if not times_ok:
+                    return False
+                creation._obj.dwHighDateTime = 310_000_000
+                creation._obj.dwLowDateTime = 0
+                return True
+
+            kernel32.OpenProcess = lambda access, inherit, pid: 4242
+            kernel32.GetExitCodeProcess = get_exit
+            kernel32.GetProcessTimes = get_times
+            kernel32.CloseHandle = lambda handle: None
+            return kernel32
+
+        def windows_pid_check(kernel32):
+            with (
+                patch("os.name", "nt"),
+                patch("ctypes.WinDLL", lambda *args, **kwargs: kernel32, create=True),
+                patch("ctypes.get_last_error", lambda: 0, create=True),
+                patch.dict("sys.modules", {"ctypes.wintypes": fake_wintypes}),
+            ):
+                return local_orchestrator_module._process_start_epoch(4242)
+
+        expected_epoch = (310_000_000 << 32) / 10_000_000 - 11_644_473_600
+
+        # Exit code 0: el proceso ya terminó — pid muerto.
+        self.assertIsNone(
+            windows_pid_check(fake_kernel32(exit_code=0)),
+            "a terminated process is not a live driver",
+        )
+        # Exit code 259 (STILL_ACTIVE): sigue vivo — la hora nace de
+        # GetProcessTimes.
+        epoch = windows_pid_check(fake_kernel32(exit_code=259))
+        self.assertIsInstance(epoch, float)
+        self.assertEqual(epoch, expected_epoch)
+        # GetExitCodeProcess falla: incomprobable, la marca lee viva.
+        checked = windows_pid_check(fake_kernel32(exit_code=259, fail_exit_code=True))
+        self.assertIsInstance(checked, local_orchestrator_module._UncheckedPid)
+        self.assertIn("GetExitCodeProcess refused", checked.cause)
+        mark = {"workflow_id": "wf", "outcome": "running", "pid": 4242}
+        with (
+            patch("os.name", "nt"),
+            patch(
+                "ctypes.WinDLL",
+                lambda *args, **kwargs: fake_kernel32(fail_exit_code=True),
+                create=True,
+            ),
+            patch("ctypes.get_last_error", lambda: 0, create=True),
+            patch.dict("sys.modules", {"ctypes.wintypes": fake_wintypes}),
+        ):
+            self.assertTrue(
+                local_orchestrator_module.driver_mark_live(mark),
+                "an uncheckable exit code never reads as a dead driver",
+            )
+
     # review F6 — un resultado JSON que no es objeto no revienta
     def test_a_result_file_that_is_not_an_object_proves_no_stop(self):
         # Review F6: [1], "paused" o 5 son JSON válido y ninguna salida de

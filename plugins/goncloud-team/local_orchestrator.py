@@ -308,6 +308,18 @@ def _process_start_epoch(pid):
                     f"OpenProcess refused (error {ctypes.get_last_error()})"
                 )
             try:
+                # Hallazgo del lead: en Windows un proceso terminado sigue
+                # abriéndose mientras quede un handle (el Popen del gateway
+                # que lo lanzó, p. ej.) y GetProcessTimes contesta igual —
+                # sin el código de salida, un driver muerto lee VIVO. 259
+                # es STILL_ACTIVE; cualquier otro código ya terminó.
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return _UncheckedPid(
+                        f"GetExitCodeProcess refused (error {ctypes.get_last_error()})"
+                    )
+                if exit_code.value != 259:
+                    return None
                 creation, exit_time, kernel_time, user_time = (
                     wintypes.FILETIME(),
                     wintypes.FILETIME(),
