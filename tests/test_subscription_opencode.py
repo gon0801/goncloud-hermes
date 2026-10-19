@@ -347,6 +347,16 @@ class OpenCodeAdapterTests(unittest.TestCase):
             ]
         )
 
+    def test_opencode_2_texto_con_step_finish_stop_al_final_es_valido(self):
+        texto = '{"type":"text","part":{"type":"text","text":"respuesta"}}'
+        cierre_stop = (
+            '{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}'
+        )
+
+        self.assertTrue(
+            parse_opencode_jsonl(f"{texto}\n{cierre_stop}", major=2)["terminal_valid"]
+        )
+
     def test_opencode_2_fixture_real_es_terminal_valido(self):
         fixture = (ROOT / "tests/fixtures/opencode2_run.jsonl").read_text(
             encoding="utf-8"
