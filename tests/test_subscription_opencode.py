@@ -357,6 +357,40 @@ class OpenCodeAdapterTests(unittest.TestCase):
             parse_opencode_jsonl(f"{texto}\n{cierre_stop}", major=2)["terminal_valid"]
         )
 
+    def test_opencode_2_texto_mas_tool_use_es_invalido(self):
+        texto = '{"type":"text","part":{"type":"text","text":"respuesta"}}'
+        tool_use = (
+            '{"type":"tool_use","sessionID":"ses_a","part":{"type":"tool",'
+            '"tool":"read","state":{"status":"completed"}}}'
+        )
+
+        self.assertFalse(
+            parse_opencode_jsonl(f"{texto}\n{tool_use}", major=2)["terminal_valid"]
+        )
+
+    def test_opencode_2_texto_mas_step_start_es_invalido(self):
+        texto = '{"type":"text","part":{"type":"text","text":"respuesta"}}'
+        step_start = (
+            '{"type":"step_start","sessionID":"ses_a","part":{"type":"step-start"}}'
+        )
+
+        self.assertFalse(
+            parse_opencode_jsonl(f"{texto}\n{step_start}", major=2)["terminal_valid"]
+        )
+
+    def test_opencode_2_version_con_sufijo_da_el_major(self):
+        casos = [
+            ("opencode v2.0.30-rc.1", 2),
+            ("2.0.29 (darwin arm64)", 2),
+        ]
+        for salida, esperado in casos:
+            with self.subTest(salida=salida):
+                found = _VERSION_LINE.search(salida)
+                self.assertIsNotNone(found, salida)
+                self.assertEqual(int(found.group(1)), esperado)
+                adapter = OpenCodeAdapter(runner=FakeCliRunner(stdout=salida))
+                self.assertEqual(adapter._major(), esperado)
+
     def test_opencode_2_fixture_real_es_terminal_valido(self):
         fixture = (ROOT / "tests/fixtures/opencode2_run.jsonl").read_text(
             encoding="utf-8"
