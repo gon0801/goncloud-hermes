@@ -241,6 +241,38 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertIn("Produce the stage deliverable.", runner.kwargs["input"])
         self.assertFalse(runner.kwargs["shell"])
 
+    def test_claude_allowlists_tools_by_role_for_dont_ask(self):
+        # In dontAsk mode every call that would prompt is denied, so the
+        # adapter must pre-approve each role's tools via --allowedTools:
+        # writing roles may edit, read-only roles may run tests but never edit.
+        roles = {
+            "implementer": "Read,Glob,Grep,Edit,Write,MultiEdit,Bash",
+            "entrega": "Read,Glob,Grep,Edit,Write,MultiEdit,Bash",
+            "verifier": "Read,Glob,Grep,Bash",
+            "adversary": "Read,Glob,Grep,Bash",
+            "scout": "Read,Glob,Grep,Bash",
+            "ingenieria": "Read,Glob,Grep,Bash",
+            "reviewer": "Read,Glob,Grep,Bash",
+            "cualquier-otro-rol": "Read,Glob,Grep,Bash",
+        }
+        for role, allowed in roles.items():
+            with self.subTest(role=role):
+                runner = FakeCliRunner(stdout=CLAUDE_STREAM)
+
+                result = ClaudeAdapter(runner=runner).invoke(
+                    replace(request(self.workspace), role=role),
+                    route_for("claude", "claude-sonnet-5", slot=2),
+                )
+
+                self.assertTrue(result.success)
+                index = runner.command.index("--allowedTools")
+                self.assertEqual(runner.command[index + 1], allowed)
+                self.assertEqual(runner.command.count("--allowedTools"), 1)
+                mode_at = runner.command.index("--permission-mode")
+                self.assertEqual(runner.command[mode_at + 1], "dontAsk")
+                self.assertNotIn("--dangerously-skip-permissions", runner.command)
+                self.assertNotIn("bypassPermissions", runner.command)
+
     def test_claude_result_parses_stream_and_session(self):
         result = ClaudeAdapter(runner=FakeCliRunner(stdout=CLAUDE_STREAM)).invoke(
             request(self.workspace), route_for("claude", "claude-fable-5-1", slot=6)
