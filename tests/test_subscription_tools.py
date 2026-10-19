@@ -113,6 +113,10 @@ class FakeOrchestrator:
         self.calls.append(("status", workflow_id))
         return {"workflow_id": workflow_id, "outcome": "running"}
 
+    def close_hint(self, workflow_id):
+        self.calls.append(("close_hint", workflow_id))
+        return "paused or blocked chain: close it with goncloud_local_close"
+
 
 class TransportToolTests(unittest.TestCase):
     def test_local_run_creates_then_detaches_and_only_claw_may_call(self):
@@ -204,7 +208,28 @@ class TransportToolTests(unittest.TestCase):
         result = ctx.call("goncloud_local_status", {"workflow_id": "t_local"})
 
         self.assertEqual(result["outcome"], "running")
-        self.assertEqual(orchestrator.calls, [("status", "t_local")])
+        self.assertEqual(
+            orchestrator.calls, [("status", "t_local"), ("close_hint", "t_local")]
+        )
+        self.assertIn("goncloud_local_close", result["close_hint"])
+
+    def test_a_failing_close_hint_degrades_to_none_without_an_error(self):
+        # Live review F4: the hint opens its own subscription store (BEGIN
+        # IMMEDIATE plus migrations); a store failure must leave the status
+        # readable — the hint is additive, never a failure of the read.
+        class LockedHint(FakeOrchestrator):
+            def close_hint(self, workflow_id):
+                raise sqlite3.OperationalError("database is locked")
+
+        ctx = FakeContext(profile_name="claw")
+        orchestrator = LockedHint()
+        _PLUGIN._build_orchestrator = lambda context: orchestrator
+
+        _PLUGIN.register(ctx)
+        result = ctx.call("goncloud_local_status", {"workflow_id": "t_local"})
+
+        self.assertEqual(result["outcome"], "running")
+        self.assertIsNone(result["close_hint"])
 
 
 class PluginRegistrationTests(unittest.TestCase):

@@ -13,6 +13,13 @@ This native Hermes plugin registers these tools in the `goncloud_team` toolset:
   corrective review chain.
 - `goncloud_muse_delegate` sends a complete specialist assignment to the owner's
   authenticated Muse CLI through WSL, using standard input and Muse's own sandbox.
+- `goncloud_local_close` closes a local chain whose driver already stopped
+  (archives the director root and the stages that are not done, keeps the
+  done stages as evidence, and records the reason on the root) so the
+  repository accepts new chains again. Claw-only, idempotent; it refuses a
+  chain whose driver may still be running (requires one of the driver's own
+  stopped outcomes — paused, blocked, waiting or error — and no live lease)
+  and it also frees a root stuck in triage without a graph.
 
 The adapter uses `hermes_cli.kanban_db_connect.connect_closing`, public native
 Kanban operations, and the native atomic decomposition builder. The local runner
@@ -229,7 +236,31 @@ metadata. A first high/critical rejection opens exactly one corrective
 review blocks delivery. Other rejected or blocked stages stop the runner.
 External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
+Every driver start — a detached launch and a CLI `resume` alike — first
+overwrites that result file with a `running` mark (its own `run_id` and pid)
+and writes its outcome under the same `run_id` when it quits, so a stopped
+outcome is only evidence while it is the file's last write: a relaunched
+chain refuses the close until its own driver stops, and an unreadable result
+file fails closed. A driver that dies without writing its outcome leaves the
+mark in `running`; one more `resume` produces a fresh outcome.
 Delivery closes the director root after all stages and review gates finish.
+A chain left paused (a `stop_after` checkpoint), blocked, waiting or error
+still holds the same-repository mutex: `WorkflowService.start` refuses every
+new chain in that repository until its director root is done or archived.
+The claw profile releases it with `goncloud_local_close` (`workflow_id`,
+`reason`): the tool requires durable evidence that the driver is gone — one
+of the driver's own stopped outcomes (paused, blocked, waiting or error) as
+the result file's last write, and no live subscription lease — and it
+archives the root and the stages that are not done through the native
+`archive` (one native transaction per task, never nested in one of its own),
+keeps the done stages as evidence,
+records the reason as a comment on the root, and returns a receipt derived
+from the resulting durable state, so closing an already-closed chain returns
+the same receipt. A root stuck in `triage` without its stage graph (a
+decomposition that failed after the root insert) closes the same way, since
+it never had a driver. `goncloud_local_status` announces the close with a
+`close_hint` only under the same evidence: a live lease or a missing driver
+outcome never advertises the close.
 
 Reviewer envelopes remain available as bounded handoff/status evidence,
 including evidence needed by a corrective implementer. Decisions still come
