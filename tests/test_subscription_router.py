@@ -2266,6 +2266,23 @@ class StageLeaseHeartbeatTests(RouterTestCase):
         self.assertTrue(store.claim_stage("wf-9", "st-9", "next-owner", 60))
         store.release_stage("wf-9", "st-9", "next-owner")
 
+    def test_a_heartbeat_that_cannot_start_releases_the_lease(self):
+        from subscriptions.router import _StageLeaseHeartbeat
+
+        router = self.router()
+        with patch.object(
+            _StageLeaseHeartbeat,
+            "start",
+            side_effect=RuntimeError("can't start new thread"),
+        ):
+            with self.assertRaises(RuntimeError):
+                router.run(request(self.workspace), routes_for_main()[:1])
+
+        # The stage is free at once — not held for the lease window with no
+        # one running it.
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 60))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -857,6 +857,12 @@ def _run_live_probe_all(json_out, only, *, private_env, state):
                     else:
                         evidence = adapter.probe(route)
                         if evidence.ready:
+                            # A diagnostic probe is not a stage: the router's
+                            # unbounded default would let a hung CLI hold this
+                            # adapter's dispatch lock forever and bench every
+                            # real stage behind it. The adapter's own probe
+                            # window is the bound a diagnostic answers to.
+                            adapter.timeout_seconds = adapter.probe_timeout_seconds
                             evidence = adapter.invoke(
                                 InvocationRequest(
                                     workflow_id="live-probe",

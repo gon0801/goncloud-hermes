@@ -1391,6 +1391,47 @@ class LiveEvidenceTests(unittest.TestCase):
         self.assertIn("opencode_zai", probed)
         self.assertEqual(summary["passed"], len(expected))
 
+    def test_the_live_probe_bounds_its_diagnostic_invoke_by_the_probe_window(self):
+        # Stages run without a deadline, but this diagnostic invoke holds the
+        # adapter's dispatch lock while it runs: a hung CLI here must hit the
+        # adapter's own probe window, or every real stage of that adapter
+        # benches behind the lock ("stage already running or ownership
+        # expired; retry later").
+        observed = {}
+
+        class ReadyAdapter:
+            billing_mode = "subscription"
+            timeout_seconds = None
+            probe_timeout_seconds = 30
+
+            def probe(self, route):
+                return AdapterHealth(True, route.adapter)
+
+            def invoke(self, request, route):
+                observed["stage_window"] = self.timeout_seconds
+                return InvocationResult(
+                    True,
+                    "GONCLOUD_PROBE_OK",
+                    route.adapter,
+                    route.model,
+                    route.billing_mode,
+                )
+
+        adapter = ReadyAdapter()
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry",
+                return_value={"kimi": adapter},
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = module.run_live_probe_all(only="kimi")
+
+        self.assertEqual(result["passed"], 1)
+        self.assertIsNotNone(observed["stage_window"])
+        self.assertEqual(observed["stage_window"], 30)
+
     def test_live_probe_commands_exclude_other_processes_and_release_after_crash(self):
         import sqlite3
         import time

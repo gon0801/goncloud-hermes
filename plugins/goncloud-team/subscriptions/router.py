@@ -305,8 +305,11 @@ class SubscriptionRouter:
             lease_seconds=_STAGE_LEASE_SECONDS,
             interval=_STAGE_LEASE_RENEWAL_SECONDS,
         )
-        heartbeat.start()
         try:
+            # Inside the try: a thread that cannot start (a exhausted process
+            # out of threads) must release the stage, not hold the lease for
+            # its whole window with no one running the stage.
+            heartbeat.start()
             result = self._run_owned(request, routes, owner)
             if request.result_transform is not None and not (
                 result.adapter == "router"

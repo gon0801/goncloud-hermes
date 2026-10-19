@@ -28,9 +28,6 @@ _PROMPT_PLACEHOLDER = "{prompt_file}"
 #: Adapters put this token in argv where the private prompt file path belongs.
 PROMPT_PLACEHOLDER = _PROMPT_PLACEHOLDER
 _CLEANUP_GRACE_SECONDS = 4
-#: Only the WSL guardian's orphan safety net uses this (a stage without a
-#: deadline still passes it a far horizon); the live parent never enforces it.
-_ORPHAN_GUARD_SECONDS = 86_400
 _WINDOWS_GATE = "goncloud-subscription-start!"
 _WINDOWS_GATE_LAUNCHER = (
     "import json, subprocess, sys\n"
@@ -49,57 +46,106 @@ _WINDOWS_GATE_LAUNCHER = (
 
 # A Windows Job cannot contain Linux descendants. This isolated Linux guardian
 # owns/reaps its descendants, including children that create another session.
-# Its absolute deadline survives loss of wsl.exe and includes WSL startup time.
+# Its only clock is the caller's explicit deadline. A deadline-less stage is
+# bounded by the router's life instead — never by time while the work is
+# alive: when the parent chain is gone (router crashed), the vendor dies with
+# it, well before the stage lease lapses and another owner starts a second
+# vendor on the same workspace.
 _WSL_PROCESS_GUARD = """
 import ctypes, os, pathlib, signal, subprocess, sys, time
-deadline = float(sys.argv[1])
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-    raise SystemExit(125)
-stopped = False
-def stop(signum, frame):
-    global stopped
-    stopped = True
-for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-    signal.signal(sig, stop)
-children_file = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
-def children():
-    return [int(pid) for pid in children_file.read_text().split()]
-code = 124
-child = None
-try:
-    if time.time() < deadline and not stopped:
-        child = subprocess.Popen(sys.argv[2:], start_new_session=True)
-        while time.time() < deadline and not stopped:
-            code = child.poll()
-            if code is not None:
-                break
-            time.sleep(min(0.02, max(0, deadline - time.time())))
-        else:
-            code = 124
-finally:
-    cleanup_deadline = time.monotonic() + 0.9
-    while True:
-        owned = children()
-        if not owned:
-            break
-        for pid in owned:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        while True:
-            try:
-                if os.waitpid(-1, os.WNOHANG)[0] == 0:
+
+
+def die_with_parent():
+    # PR_SET_PDEATHSIG(SIGHUP): the kernel raises SIGHUP here the moment the
+    # parent fronting the Windows router disappears.
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
+def parent_gone(parent):
+    # Backstop for PDEATHSIG: the router is the only clock a deadline-less
+    # stage answers to.
+    return os.getppid() != parent or not pathlib.Path(
+        '/proc/' + str(parent)
+    ).exists()
+
+
+def owned_children():
+    # Every descendant we still own, including daemons that left our session.
+    children = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
+    try:
+        return [int(pid) for pid in children.read_text().split()]
+    except OSError:
+        return []
+
+
+def run(deadline, command, stopped):
+    parent = os.getppid()
+    still_running = (
+        (lambda: True) if deadline is None else (lambda: time.time() < deadline)
+    )
+    code = 124
+    child = None
+    try:
+        if still_running() and not stopped():
+            child = subprocess.Popen(command, start_new_session=True)
+            while still_running() and not stopped() and not parent_gone(parent):
+                code = child.poll()
+                if code is not None:
                     break
-            except ChildProcessError:
+                time.sleep(0.02)
+            else:
+                code = 124
+    finally:
+        cleanup_deadline = time.monotonic() + 0.9
+        while True:
+            owned = owned_children()
+            if not owned:
                 break
-        if time.monotonic() >= cleanup_deadline:
-            code = 125
-            break
-        time.sleep(0.01)
-    if child is not None:
-        child.returncode = code
-raise SystemExit(code)
+            for pid in owned:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            while True:
+                try:
+                    if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                        break
+                except ChildProcessError:
+                    break
+            if time.monotonic() >= cleanup_deadline:
+                code = 125
+                break
+            time.sleep(0.01)
+        if child is not None:
+            child.returncode = code
+    return code
+
+
+def main():
+    # `--parent` fronts a deadline-less stage: the vendor lives exactly as
+    # long as the router that owns it. A number is an explicit deadline.
+    if len(sys.argv) > 1 and sys.argv[1] == '--parent':
+        deadline = None
+    else:
+        deadline = float(sys.argv[1])
+    if not die_with_parent():
+        raise SystemExit(125)
+    stopped = False
+
+    def stop(signum, frame):
+        nonlocal stopped
+        stopped = True
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop)
+    raise SystemExit(run(deadline, sys.argv[2:], lambda: stopped))
+
+
+if __name__ == '__main__':
+    main()
 """
 
 
@@ -517,21 +563,21 @@ def run_cli(
                 and command[3] == "--exec"
             )
             if wsl:
-                # The guardian needs a wall-clock deadline even for a stage
-                # without one: it is the safety net that reaps the tree if the
-                # parent itself is lost. A day bounds that orphan scenario
-                # without ever being a stage deadline — the parent's own wait,
-                # communicate(timeout=None), governs the live process.
-                deadline = time.time() + (
-                    timeout if timeout is not None else _ORPHAN_GUARD_SECONDS
-                )
+                # A deadline-less stage is guarded by the router's own life
+                # (--parent): the vendor dies the moment the parent chain is
+                # gone and is never killed by time while the work is alive.
+                # A number is an explicit probe/stage deadline.
                 command = command[:4] + [
                     "/usr/bin/python3",
                     "-I",
                     "-S",
                     "-c",
                     _WSL_PROCESS_GUARD,
-                    str(deadline),
+                    *(
+                        ["--parent"]
+                        if timeout is None
+                        else [str(time.time() + timeout)]
+                    ),
                     *command[4:],
                 ]
             returncode, stdout, stderr = _run_with_process_tree(
@@ -542,9 +588,14 @@ def run_cli(
                 timeout=None if timeout is None else (timeout + 1 if wsl else timeout),
             )
             if wsl and returncode == 124:
-                raise subprocess.TimeoutExpired(
-                    command, timeout if timeout is not None else _ORPHAN_GUARD_SECONDS
-                )
+                if timeout is None:
+                    # The parent chain died, not the work: a lost guardian is
+                    # a dead route, never a time verdict.
+                    raise SubscriptionProcessError(
+                        "vendor process outlived its parent",
+                        FailureKind.TASK_FAILURE,
+                    ) from None
+                raise subprocess.TimeoutExpired(command, timeout)
             if wsl and returncode == 125:
                 raise SubscriptionProcessError("vendor process containment unavailable")
         else:

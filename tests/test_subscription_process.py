@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import secrets
 import shutil
@@ -11,6 +12,7 @@ import time
 import unittest
 from contextlib import chdir
 from pathlib import Path
+from typing import IO
 from unittest.mock import patch
 
 
@@ -25,6 +27,7 @@ from subscriptions.process import (  # noqa: E402
     ProcessEvidence,
     SubscriptionProcessError,
     _WindowsProcessJob,
+    _WSL_PROCESS_GUARD,
     run_cli,
 )
 from subscriptions.adapters import SubscriptionAdapter  # noqa: E402
@@ -326,17 +329,17 @@ class SafeProcessTests(unittest.TestCase):
         self.assertEqual(adapter.probe_timeout_seconds, 300)
 
     def test_a_stage_without_a_deadline_runs_longer_than_the_old_ceiling(self):
-        """The stage path must survive an invocation longer than the old 300 s.
+        """The stage path must survive an invocation longer than any deadline.
 
         The old absolute deadline killed the vendor process at exactly 300 s
         (2026-09-14). None now reaches the process boundary, so a real child
-        that outlasts a shrunken copy of the old ceiling completes instead of
-        dying as a timeout: restoring any stage deadline turns this red.
+        that outlives even a restored one-second deadline completes instead
+        of dying as a timeout: any restored stage deadline turns this red.
         """
         command = [
             sys.executable,
             "-c",
-            "import time; time.sleep(0.75); print('done')",
+            "import time; time.sleep(2); print('done')",
         ]
 
         evidence = run_cli(command, "", self.workspace, timeout=None)
@@ -993,6 +996,116 @@ def _is_our_test_process(pid: int, marker: str) -> bool:
         return marker.encode("utf-8") in proc_cmdline.read_bytes()
     except OSError:
         return False
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError as error:
+        return error.errno != errno.ESRCH
+    return True
+
+
+class WslGuardianTests(unittest.TestCase):
+    """The deadline-less WSL guardian answers to the router's life, not a clock.
+
+    The guardian script is Linux-only (prctl, /proc), so these tests drive its
+    real loop in a wrapper process with only the platform edges faked: the
+    liveness probes are substituted, the vendor spawn, the poll loop and the
+    SIGKILL reaping all run for real.
+    """
+
+    VENDOR = "import os, time\nprint('PID', os.getpid(), flush=True)\ntime.sleep(60)\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+
+    def _spawn_guardian(
+        self, parent_gone_expr: str
+    ) -> tuple[subprocess.Popen, IO[str]]:
+        marker = Path(self.tmp.name) / "parent-gone"
+        argv = ["guard", "--parent", sys.executable, "-c", self.VENDOR]
+        wrapper = "\n".join(
+            [
+                "import os, sys",
+                f"sys.argv = {argv!r}",
+                f"source = {_WSL_PROCESS_GUARD!r}",
+                "namespace = {'__name__': 'wsl_guard_under_test'}",
+                "exec(compile(source, 'wsl_process_guard', 'exec'), namespace)",
+                "namespace['die_with_parent'] = lambda: True",
+                f"namespace['parent_gone'] = lambda parent: {parent_gone_expr}",
+                "def _owned_children():",
+                "    import subprocess",
+                "    seen = subprocess.run(",
+                "        ['pgrep', '-P', str(__import__('os').getpid())],",
+                "        capture_output=True, text=True,",
+                "    )",
+                "    return [int(pid) for pid in seen.stdout.split()]",
+                "namespace['owned_children'] = _owned_children",
+                "namespace['main']()",
+            ]
+        )
+        environment = {**os.environ, "GUARD_PARENT_GONE": str(marker)}
+        process = subprocess.Popen(
+            [sys.executable, "-c", wrapper],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+        )
+        self.addCleanup(process.kill)
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(process.stderr.close)
+        return process, marker
+
+    def _vendor_pid(self, process) -> int:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            line = process.stdout.readline()
+            if line.startswith("PID "):
+                return int(line.split()[1])
+        self.fail("the vendor never reported its pid")
+
+    def test_a_live_parent_keeps_the_vendor_running_without_any_clock(self):
+        process, _marker = self._spawn_guardian("False")
+        vendor_pid = self._vendor_pid(process)
+
+        # No deadline exists: the vendor is still running well past any
+        # restored one- or two-second horizon.
+        time.sleep(1.0)
+        self.assertTrue(_pid_alive(vendor_pid), "the vendor was killed early")
+        time.sleep(1.2)
+        self.assertTrue(_pid_alive(vendor_pid), "the vendor was killed early")
+
+        # The guardian dies with its parent (a stand-in for PDEATHSIG's
+        # SIGHUP) and takes the vendor with it.
+        process.terminate()
+        process.wait(timeout=10)
+        deadline = time.monotonic() + 5
+        while _pid_alive(vendor_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(_pid_alive(vendor_pid), "the guardian left the vendor behind")
+        self.assertEqual(process.returncode, 124)
+
+    def test_a_dead_parent_chain_gets_the_vendor_killed_by_the_guardian(self):
+        process, marker = self._spawn_guardian(
+            "os.path.exists(os.environ['GUARD_PARENT_GONE'])"
+        )
+        vendor_pid = self._vendor_pid(process)
+        self.assertTrue(_pid_alive(vendor_pid))
+        self.assertIsNone(process.poll(), "the guardian died on its own")
+
+        # The router's chain disappears: the guardian — not the test — must
+        # kill the vendor immediately, without any time horizon.
+        marker.touch()
+        deadline = time.monotonic() + 5
+        while _pid_alive(vendor_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(_pid_alive(vendor_pid), "the guardian left the vendor behind")
+        self.assertTrue(_pid_alive(process.pid), "the guardian itself died")
+        self.assertEqual(process.wait(timeout=10), 124)
 
 
 if __name__ == "__main__":
