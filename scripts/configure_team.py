@@ -648,7 +648,10 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
     (``git rev-parse HEAD``), sin cambios con seguimiento fuera de los
     archivos del parche (los untracked como .hermes-catalog.json, .venv o
     __pycache__ se toleran) y cada archivo parchado con su sha256 del
-    manifiesto. Prístino se reporta como "Parche por aplicar"; con
+    manifiesto. Los parches de un mismo archivo forman una cadena ordenada:
+    un parche queda satisfecho también con un estado posterior de la cadena
+    y el apply corre en orden hasta el último. Prístino o intermedio se
+    reporta como "Parche por aplicar" (una línea por archivo); con
     ``aplicar`` se aplica el .patch del repo con ``git apply`` y se
     re-verifica el sha256. Cualquier otro estado levanta ValueError con el
     motivo y el arreglo, sin escribir nada. Devuelve las líneas del reporte.
@@ -687,8 +690,13 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
                 f"fuera del parche: {', '.join(ajenos)}; reconcílicalos o "
                 "reinstálalo en el commit fijado"
             )
+        # Los parches de un mismo archivo forman una cadena ordenada; cada
+        # archivo se concilia como una sola unidad.
+        cadenas: dict = {}
         for patch in plugin["patches"]:
-            target = plugin_dir / patch["file"]
+            cadenas.setdefault(patch["file"], []).append(patch)
+        for file, cadena in cadenas.items():
+            target = plugin_dir / file
             if target.is_file():
                 bruto = target.read_bytes()
                 # Un clon con core.autocrlf=true deja el archivo con CRLF: el
@@ -699,19 +707,13 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
             else:
                 exacto = con_lf = None
 
-            if patch["sha256_patched"] in (exacto, con_lf):
-                if aplicar and exacto != patch["sha256_patched"]:
-                    target.write_bytes(con_fines_lf(bruto))
-                    if (
-                        hashlib.sha256(target.read_bytes()).hexdigest()
-                        != patch["sha256_patched"]
-                    ):
-                        raise ValueError(
-                            f"Plugin del director {name}: {patch['file']} quedó sin "
-                            "el sha256 esperado tras canonizar los fines de linea"
-                        )
-                continue
-            if patch["sha256_pristine"] not in (exacto, con_lf):
+            # El contenido valido del archivo es cualquiera de los eslabones
+            # de su cadena: el prístino del primero o el parchado de
+            # cualquiera. Cualquier otro contenido es rojo sin tocar nada.
+            eslabones = {cadena[0]["sha256_pristine"]} | {
+                p["sha256_patched"] for p in cadena
+            }
+            if exacto not in eslabones and con_lf not in eslabones:
                 motivo = (
                     "falta"
                     if exacto is None
@@ -719,36 +721,60 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
                     "fijado ni con el parche Goncloud"
                 )
                 raise ValueError(
-                    f"Plugin del director {name}: {patch['file']} {motivo}; "
+                    f"Plugin del director {name}: {file} {motivo}; "
                     f"restáuralo con git -C {plugin_dir} checkout -- "
-                    f"{patch['file']} y vuelve a aplicar"
+                    f"{file} y vuelve a aplicar"
                 )
-            notas.append(f"Parche por aplicar: {name}: {patch['file']}")
-            if aplicar:
-                if exacto != patch["sha256_pristine"]:
+            final = cadena[-1]["sha256_patched"]
+            if exacto == final or con_lf == final:
+                # Verde: el archivo ya está al final de su cadena; un clon
+                # autocrlf solo se canóniza.
+                if aplicar and exacto != con_lf:
                     target.write_bytes(con_fines_lf(bruto))
-                # El apply no depende del autocrlf del sistema: con el -c el
-                # parche escribe los mismos bytes LF en cualquier arbol.
-                applied = _git(
-                    plugin_dir,
-                    "-c",
-                    "core.autocrlf=false",
-                    "apply",
-                    str(ROOT / patch["patch"]),
-                )
-                if applied is None or applied.returncode != 0:
-                    raise ValueError(
-                        f"Plugin del director {name}: git apply falló sobre "
-                        f"{patch['file']}: "
-                        f"{applied.stderr.strip() if applied else ''}"
+                    if (
+                        hashlib.sha256(target.read_bytes()).hexdigest()
+                        != cadena[-1]["sha256_patched"]
+                    ):
+                        raise ValueError(
+                            f"Plugin del director {name}: {file} quedó sin "
+                            "el sha256 esperado tras canonizar los fines de linea"
+                        )
+                continue
+            nota = f"Parche por aplicar: {name}: {file}"
+            if nota not in notas:
+                notas.append(nota)
+            if aplicar:
+                if exacto != con_lf:
+                    target.write_bytes(con_fines_lf(bruto))
+                # El apply corre los eslabones que falten, en orden, y no
+                # depende del autocrlf del sistema: con el -c el parche
+                # escribe los mismos bytes LF en cualquier arbol.
+                for patch in cadena:
+                    if (
+                        hashlib.sha256(target.read_bytes()).hexdigest()
+                        == patch["sha256_patched"]
+                    ):
+                        continue
+                    applied = _git(
+                        plugin_dir,
+                        "-c",
+                        "core.autocrlf=false",
+                        "apply",
+                        str(ROOT / patch["patch"]),
                     )
-                digest = hashlib.sha256(target.read_bytes()).hexdigest()
-                if digest != patch["sha256_patched"]:
-                    raise ValueError(
-                        f"Plugin del director {name}: {patch['file']} quedó sin "
-                        "el sha256 esperado tras aplicar el parche"
-                    )
-                print(f"Parche aplicado: {name}: {patch['file']}")
+                    if applied is None or applied.returncode != 0:
+                        raise ValueError(
+                            f"Plugin del director {name}: git apply falló sobre "
+                            f"{file}: "
+                            f"{applied.stderr.strip() if applied else ''}"
+                        )
+                    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                    if digest != patch["sha256_patched"]:
+                        raise ValueError(
+                            f"Plugin del director {name}: {file} quedó sin "
+                            "el sha256 esperado tras aplicar el parche"
+                        )
+                    print(f"Parche aplicado: {name}: {file}")
     return notas
 
 
