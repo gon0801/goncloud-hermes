@@ -87,7 +87,7 @@ def meta_de():
 class Emisor(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.instante_actual = "2026-10-17T12:00:00Z"
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
@@ -288,7 +288,7 @@ class TopeDeDetalle(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
             reloj=lambda: "2026-10-17T12:00:00Z",
@@ -364,7 +364,7 @@ class RecortePorLargo(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.tienda = store.Store(
             Path(self.directorio.name) / "db.sqlite",
             reloj=lambda: "2026-10-17T12:00:00Z",
@@ -567,7 +567,7 @@ class CapacidadIncierta(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "capacidad-incierta.json"
         self.textos: list = []
 

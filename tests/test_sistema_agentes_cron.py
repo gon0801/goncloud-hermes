@@ -135,7 +135,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.home = Path(self.temporal.name) / "hermes"
         self.home.mkdir()
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": str(self.home)})

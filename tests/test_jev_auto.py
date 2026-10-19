@@ -76,7 +76,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.modulo = cargar_jev_auto()
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.hogar = Path(self.temporal.name)
         self.llamadas = []
         entorno = mock.patch.dict(

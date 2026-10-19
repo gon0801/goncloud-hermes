@@ -163,7 +163,7 @@ class CreateEscribeBytesRotos(HermesFalsoDeCrones):
 class InstaladorDeRaices(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir(parents=True)
         self.modulo = cargar_instalador()

@@ -185,7 +185,7 @@ class Escenario(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.escenarios = 0
 
     def frescar(self):

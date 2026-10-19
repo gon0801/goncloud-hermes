@@ -199,7 +199,7 @@ class AlmacenDePrueba(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
         self.addCleanup(self.tienda.cerrar)
@@ -1380,7 +1380,7 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
         self.addCleanup(self.tienda.cerrar)

@@ -113,7 +113,7 @@ class Escenario(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
 
     def abrir(self, unidades=("a",)):
         tienda = store.Store(Path(self.directorio.name) / "sistema-agentes.db")

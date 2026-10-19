@@ -252,7 +252,7 @@ class EscenarioBase(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name)
         self.tienda = store.Store(self.home / "sistema-agentes.db")
         self.addCleanup(self.tienda.cerrar)

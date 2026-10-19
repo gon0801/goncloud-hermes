@@ -118,7 +118,7 @@ class Base(unittest.TestCase):
         self.plugin = cargar_plugin()
         self.addCleanup(hermes_falso.desinstalar)
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": self.temporal.name})
         parche.start()
         self.addCleanup(parche.stop)

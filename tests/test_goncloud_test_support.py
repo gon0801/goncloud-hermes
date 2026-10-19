@@ -112,6 +112,29 @@ class NoUnguardedTempCleanupTestCase(unittest.TestCase):
 
         self.assertEqual(len(unguarded_temp_cleanups(source)), 1)
 
+    def test_cleanup_temp_directory_receives_the_directory_not_the_method(self) -> None:
+        """cleanup_temp_directory llama .cleanup() sobre lo que recibe.
+
+        Si le pasan el metodo bound (cleanup_temp_directory, self.tmp.cleanup)
+        el teardown revienta con AttributeError en cada prueba: asi entraron
+        los 440 errores de la mitad sistema en #47 r3.
+        """
+        misuse = {}
+        for path in sorted((ROOT / "tests").glob("test_*.py")):
+            if path.resolve() == Path(__file__).resolve():
+                continue
+            found = re.compile(
+                r"cleanup_temp_directory[,(]\s*[\w.]*\.cleanup\b"
+            ).findall(path.read_text(encoding="utf-8"))
+            if found:
+                misuse[path.name] = found
+
+        self.assertEqual(
+            misuse,
+            {},
+            "pasa el TemporaryDirectory a cleanup_temp_directory, no su .cleanup",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

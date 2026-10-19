@@ -124,7 +124,7 @@ def hechos_nulos():
 class Escenario(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.tienda = store.Store(Path(self.directorio.name) / "db.sqlite")
         self.addCleanup(self.tienda.cerrar)
         self.destino = Path(self.directorio.name) / "raices"

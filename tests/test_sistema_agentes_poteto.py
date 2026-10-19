@@ -219,7 +219,7 @@ class PuertaDePoteto(unittest.TestCase):
         self.ticker = modulo_ticker
         self.kanban_port = modulo_kanban
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name)
         self.tienda = modulo_store.Store(self.home / "sistema-agentes.db")
         self.addCleanup(self.tienda.cerrar)

@@ -94,7 +94,7 @@ class Escenario(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.impresos: list[str] = []
         self.reloj = ["2026-10-18T12:00:00Z"]
 

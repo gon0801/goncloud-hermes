@@ -41,7 +41,7 @@ def config_con_toolsets(clis):
 class ToolsetsEfectivos(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name)
 
     def instalar(self, datos, configs=None):

@@ -263,7 +263,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
 
     @property
     def dir_de_instrucciones(self):
@@ -722,7 +722,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
     def test_dos_raices_sobre_el_mismo_repo_alternan_sin_conflicto(self):
         RAIZ_B = "root-prop-b"
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         tienda = store.Store(self.directorio.name + "/dos-raices.db")
         self.addCleanup(tienda.cerrar)
         self.assertIsInstance(

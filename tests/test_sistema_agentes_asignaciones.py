@@ -120,7 +120,7 @@ class Escenario(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
 
     def abrir(self, unidades=("a",)):
         tienda = store.Store(Path(self.directorio.name) / "sistema-agentes.db")
@@ -155,7 +155,7 @@ class Instrucciones(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.dir = Path(self.directorio.name) / "instrucciones"
 
     def test_guardar_devuelve_ref_y_digest_y_resolver_lo_trae(self):

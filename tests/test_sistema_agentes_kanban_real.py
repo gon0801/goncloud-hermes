@@ -43,7 +43,7 @@ class KanbanReal(unittest.TestCase):
         self.kanban_db = importlib.import_module("hermes_cli.kanban_db")
         self.connect = connect
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.ruta_db = Path(self.temporal.name) / "kanban.db"
 
     def adaptador(self):

@@ -51,7 +51,7 @@ class BaseDeAdaptador(unittest.TestCase):
 
         self.kanban = kanban
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(cleanup_temp_directory, self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.ruta_db = Path(self.temporal.name) / "kanban.db"
 
     def adaptador(self):
