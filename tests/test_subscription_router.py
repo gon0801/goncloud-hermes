@@ -529,6 +529,37 @@ class FailoverTests(RouterTestCase):
         self.assertNotIn("sk-sensitive", repr(health))
         self.assertNotIn("sk-sensitive", repr(status))
 
+    def test_assignment_prompt_is_redacted_from_detail_attempts_and_status(self):
+        # The failure detail is the one evidence channel that carries vendor
+        # output; sanitize_result must keep stripping the assignment prompt
+        # from it at every boundary a reader can reach. Dropping "detail"
+        # from its redaction tuple turns this test red.
+        prompt = "Move the fixture-echo-prompt file into place."
+        marker = "fixture-echo-prompt"
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = replace(
+            failed(FailureKind.TIMEOUT, "opencode_go"),
+            detail=(
+                "opencode_go invocation failed (timeout)\n"
+                f"stderr tail: vendor died reading the assignment: {prompt}"
+            ),
+        )
+
+        result = router.run(
+            replace(request(self.workspace), prompt=prompt), routes_for_main()[:1]
+        )
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        # The evidence survives redacted, the prompt does not survive at all.
+        self.assertIn("stderr tail:", result.detail)
+        self.assertIn("[redacted]", result.detail)
+        self.assertNotIn(marker, result.detail)
+        self.assertNotIn(marker, repr(attempts))
+        self.assertNotIn(marker, repr(status))
+
     def test_absent_health_probes_once_and_persists_result(self):
         router = self.router()
         go = self.fake_adapters["opencode_go"]
@@ -1255,6 +1286,45 @@ class MutationContinuationTests(RouterTestCase):
         self.assertEqual(
             evidence["end_revision"], self._run_git("rev-parse", "HEAD").stdout.strip()
         )
+
+    def test_recovered_failure_keeps_diagnostics_out_of_the_public_text(self):
+        # A blocking failure recovered from the durable record must return the
+        # short public text; the vendor diagnostics ride in detail and stay in
+        # the normalized attempt row.
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        def commit_then_fail(request, route):
+            (self.git_repo / "changed.py").write_text("new\n", encoding="utf-8")
+            self._run_git("add", "changed.py")
+            self._run_git("commit", "-q", "-m", "changed")
+            return replace(
+                failed(FailureKind.TRANSPORT, route.adapter),
+                detail=(
+                    "opencode_go invocation failed (transport)\n"
+                    "stderr tail: connection reset by peer"
+                ),
+            )
+
+        self.fake_adapters["opencode_go"].result = commit_then_fail
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        blocked = self.router().run(assignment, routes_for_main())
+        self.assertFalse(blocked.success)
+
+        resumed_router = self.router()
+        resumed = resumed_router.run(assignment, routes_for_main())
+
+        self.assertFalse(resumed.success)
+        self.assertEqual(resumed.failure, FailureKind.TRANSPORT)
+        self.assertEqual(resumed.text, "opencode_go invocation failed (transport)")
+        self.assertIn("connection reset by peer", resumed.detail)
+        attempt = resumed_router.store.stage_attempts("wf-6", "st-6")[-1]
+        self.assertIn("invocation failed (transport)", attempt["detail"])
+        self.assertIn("connection reset by peer", attempt["detail"])
 
     def test_a_throttle_after_a_mutation_retries_the_route_as_a_continuation(self):
         router = self.router()

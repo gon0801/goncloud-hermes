@@ -163,7 +163,9 @@ class CodexAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_codex_jsonl(evidence.stream)
         if (
@@ -185,5 +187,9 @@ class CodexAdapter(SubscriptionAdapter):
             else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(
-            route, failure, evidence=(evidence.stderr, evidence.stream)
+            route,
+            failure,
+            request=request,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
         )

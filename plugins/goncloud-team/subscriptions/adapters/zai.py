@@ -93,7 +93,10 @@ class ZAIAdapter(SubscriptionAdapter):
     def invoke(self, request: InvocationRequest, route: RouteSpec) -> InvocationResult:
         if not self._configured():
             return self._failed_result(
-                route, FailureKind.AUTH, "Z.AI Coding Plan is not configured"
+                route,
+                FailureKind.AUTH,
+                "Z.AI Coding Plan is not configured",
+                request=request,
             )
         try:
             status, body = request_json(
@@ -118,7 +121,7 @@ class ZAIAdapter(SubscriptionAdapter):
             )
         except SubscriptionHttpError as error:
             failure = FailureKind.TIMEOUT if error.timeout else FailureKind.TASK_FAILURE
-            return self._failed_result(route, failure, str(error))
+            return self._failed_result(route, failure, str(error), request=request)
 
         if status == 200:
             parsed = _parse_message_body(body)
@@ -131,7 +134,13 @@ class ZAIAdapter(SubscriptionAdapter):
                 session_id=parsed["id"],
             )
         failure = classify_http_failure(status, body)
-        return self._failed_result(route, failure, evidence=(body,))
+        return self._failed_result(
+            route,
+            failure,
+            request=request,
+            evidence=(body,),
+            channel_labels=("http response",),
+        )
 
 
 def _parse_message_body(body: str) -> dict:

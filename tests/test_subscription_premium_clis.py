@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +170,29 @@ class MuseAdapterTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.failure, FailureKind.AUTH)
+
+    def test_muse_noncompleted_terminal_labels_evidence_by_its_origin(self):
+        # The bridge outcome is terminal state plus output text, not process
+        # channels; the detail must say so instead of a fixed "stderr" label.
+        # The bridge itself is Windows-bound, so the outcome is scripted.
+        outcome = {
+            "model": "muse-spark-1.3-contributor-free",
+            "terminal": "crashed",
+            "text": "muse exploded",
+            "session_id": "muse_s1",
+        }
+        with patch(
+            "subscriptions.adapters.muse.delegate_to_muse", return_value=outcome
+        ):
+            result = MuseAdapter(runner=FakeCliRunner()).invoke(
+                request(self.workspace),
+                route_for("muse", "muse-spark-1.3-contributor-free"),
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("terminal tail: crashed", result.detail)
+        self.assertIn("output tail: muse exploded", result.detail)
+        self.assertNotIn("stderr tail:", result.detail)
 
     def test_muse_selects_the_exact_route_model_as_one_argument(self):
         runner = self._muse_runner()
