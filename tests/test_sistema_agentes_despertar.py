@@ -408,6 +408,27 @@ class Cadenas(Escenario):
         self.assertNotIn("\n", linea)
         self.assertLessEqual(len(linea), 500)
 
+    def test_el_repo_largo_y_multilinea_sale_acotado_como_el_titular(self):
+        # H70 L1: el repo pasaba solo por _redacta, sin _campo_corto: un
+        # repo largo/multilínea de otra mano alargaba el titular sin tope.
+        self.avisar(
+            {
+                "workflow_id": "t_repo_largo",
+                "repo": "owner\nlinea inyectada " + "r" * 300,
+                "outcome": "blocked",
+                "etapa": "implementer",
+                "motivo": "falla",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            },
+            nombre="t_repo_largo-run-blocked.json",
+        )
+        self.correr()
+        self.assertEqual(len(self.impresos), 1)
+        linea = self.impresos[0]
+        self.assertNotIn("\n", linea)
+        self.assertIn("…)", linea)
+        self.assertLessEqual(len(linea), 220)
+
     def test_el_link_largo_del_pr_no_se_corta_a_160(self):
         # H56 F6: owner/repo largos hacen la URL >160; claw necesita el link
         # entero, sin la elipsis que lo deja inservible.

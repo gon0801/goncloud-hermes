@@ -351,12 +351,12 @@ def test_only_deepseek_is_api_billed(adapters):
     assert adapters["deepseek"].billing_mode == "api"
 
 
-def test_grok_keeps_sandbox_and_kimi_uses_auto(runner):
+def test_grok_runs_bypass_in_every_role_inside_the_sandbox(runner):
     GrokAdapter(runner=runner).invoke(request(), route_for("grok", "grok-4.6"))
     # Grok runs bypassPermissions in every role, always inside --sandbox
     # workspace: it has no per-tool allowlist and dontAsk denies a scout's
     # read-only commands (#57). Read-only roles are held by the read-only guard.
-    assert "dontAsk" in runner.command and "--sandbox" in runner.command
+    assert "bypassPermissions" in runner.command and "--sandbox" in runner.command
     KimiAdapter(runner=runner).invoke(request(), route_for("kimi", "k3"))
     assert "--auto" in runner.command and "--output-format" in runner.command
 ```
