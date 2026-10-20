@@ -92,8 +92,8 @@ def failing_probe():
 #: La migración de credenciales exige dueño Windows: _migrate_batch rechaza
 #: POSIX antes de crear journal o tienda ("safe credential migration
 #: ownership unavailable"; no hay primitiva portable contra un escritor
-#: abierto). Los 21 casos que la ejercitan no corren fuera de Windows; los
-#: 16 restantes de la clase (lógica pura o con guardia propia) quedan.
+#: abierto). Los casos que la ejercitan no corren fuera de Windows; los
+#: restantes de la clase (lógica pura o con guardia propia) quedan.
 _MIGRACION_WINDOWS = unittest.skipUnless(
     os.name == "nt",
     "la migracion de credenciales es Windows-only: _migrate_batch rechaza"
