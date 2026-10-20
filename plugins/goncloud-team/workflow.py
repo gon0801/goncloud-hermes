@@ -142,32 +142,54 @@ AUTO_CLOSE_REASON = (
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
 
-#: State folders vendor CLIs create in their working directory. The same
-#: set the read-only guard ignores (local_orchestrator._CLI_STATE_DIRS);
-#: duplicated here because that module imports this one, not the reverse.
-_CLI_STATE_DIRS = frozenset(
+#: Whole-folder lines the r2 exclude wrote under the marker. Kept only to
+#: migrate an r2 file: `.claude/`, `.cursor/` and `.opencode/` can hold
+#: versioned config (skills, agents, commands, settings), so hiding the
+#: whole folder makes a new file there invisible to git.
+_CLI_STATE_EXCLUDE_OLD_LINES = frozenset(
     {
-        ".claude",
-        ".codex",
-        ".cursor",
-        ".gemini",
-        ".grok",
-        ".kimi",
-        ".muse",
-        ".opencode",
-        ".qwen",
+        ".claude/",
+        ".codex/",
+        ".cursor/",
+        ".gemini/",
+        ".grok/",
+        ".kimi/",
+        ".muse/",
+        ".opencode/",
+        ".qwen/",
     }
+)
+
+#: Lines for the common ``info/exclude``: only state subfolders of
+#: `.claude`, and the state-only folders of the other CLIs. Deliberately
+#: separate from local_orchestrator._CLI_STATE_DIRS — the read-only
+#: fingerprint filter (R1) and the close-out cleanup (R2) ignore those
+#: whole folders, but the exclude must not hide versionable config under
+#: `.claude/`, `.cursor/` or `.opencode/`.
+_CLI_STATE_EXCLUDE_LINES = (
+    ".claude/memory/",
+    ".claude/sessions/",
+    ".claude/state/",
+    ".codex/",
+    ".gemini/",
+    ".grok/",
+    ".kimi/",
+    ".muse/",
+    ".qwen/",
 )
 _CLI_STATE_EXCLUDE_MARKER = "# goncloud: carpetas de estado de los CLI"
 
 
 def _exclude_cli_state_dirs(repository: str) -> None:
-    """Add the CLI state folders to the repo's common ``info/exclude``.
+    """Add the CLI state lines to the repo's common ``info/exclude``.
 
-    One ``<folder>/`` line per folder, under the marker comment, only the
-    ones missing — idempotent across chains on the same repo. The exclude
-    lives in the common git dir, so it covers the main checkout and every
-    worktree at once and a stray ``git add -A`` never picks the state up.
+    One line per entry of ``_CLI_STATE_EXCLUDE_LINES``, under the marker
+    comment, only the ones missing — idempotent across chains on the same
+    repo. The exclude lives in the common git dir, so it covers the main
+    checkout and every worktree at once and a stray ``git add -A`` never
+    picks the state up. An r2 exclude that put a whole ``.claude/`` (or
+    ``.cursor/`` / ``.opencode/``) under the marker is migrated: those
+    managed lines are replaced by the new ones.
     Best effort: the chain's work does not depend on it (the read-only
     guard already filters this state), so a failure here never blocks it.
     """
@@ -192,14 +214,27 @@ def _exclude_cli_state_dirs(repository: str) -> None:
     except OSError:
         return
     present = text.splitlines()
-    missing = [
-        f"{name}/" for name in sorted(_CLI_STATE_DIRS) if f"{name}/" not in present
-    ]
-    if not missing and _CLI_STATE_EXCLUDE_MARKER in present:
+    if _CLI_STATE_EXCLUDE_MARKER in present:
+        marker_at = present.index(_CLI_STATE_EXCLUDE_MARKER)
+        before = present[:marker_at]
+        after = present[marker_at + 1 :]
+        managed = _CLI_STATE_EXCLUDE_OLD_LINES | set(_CLI_STATE_EXCLUDE_LINES)
+        rest = [line for line in after if line not in managed]
+        outside = set(before) | set(rest)
+        block = [line for line in _CLI_STATE_EXCLUDE_LINES if line not in outside]
+        migrated = before + [_CLI_STATE_EXCLUDE_MARKER] + block + rest
+        if migrated == present:
+            return
+        try:
+            exclude.write_text(
+                "".join(f"{line}\n" for line in migrated), encoding="utf-8"
+            )
+        except OSError:
+            return
         return
+    missing = [line for line in _CLI_STATE_EXCLUDE_LINES if line not in present]
     chunk = "" if not text or text.endswith("\n") else "\n"
-    if _CLI_STATE_EXCLUDE_MARKER not in present:
-        chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
+    chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
     chunk += "".join(f"{line}\n" for line in missing)
     try:
         with exclude.open("a", encoding="utf-8") as handle:

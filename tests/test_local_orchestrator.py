@@ -4429,14 +4429,7 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertIn("ignorados", receipt["worktree"]["reason"])
         self.assertTrue(worktree.is_dir())
 
-    # R4 — el exclude del git común trae las carpetas de estado CLI una
-    # sola vez aunque se creen dos cadenas, y git status no las ve.
-    def test_el_exclude_comun_ignora_el_estado_cli_una_sola_vez(self):
-        sha = self._git_repo()
-        first = self.start(request_key="exclude-1", revision=sha)
-        second = self.start(request_key="exclude-2", revision=sha)
-        self.assertEqual(first["outcome"], "delivered")
-        self.assertEqual(second["outcome"], "delivered")
+    def _common_exclude_path(self):
         comun = subprocess.run(
             ["git", "-C", str(self.repo), "rev-parse", "--git-common-dir"],
             check=True,
@@ -4446,40 +4439,117 @@ class ChainWorktreeTests(_OrchestratorHarness):
         comun_path = Path(comun)
         if not comun_path.is_absolute():
             comun_path = self.repo / comun_path
-        lineas = (
-            (comun_path / "info" / "exclude").read_text(encoding="utf-8").splitlines()
-        )
-        for carpeta in (
-            ".claude",
-            ".codex",
-            ".cursor",
-            ".gemini",
-            ".grok",
-            ".kimi",
-            ".muse",
-            ".opencode",
-            ".qwen",
+        return comun_path / "info" / "exclude"
+
+    def _common_exclude_lines(self):
+        return self._common_exclude_path().read_text(encoding="utf-8").splitlines()
+
+    def _git_status(self, cwd):
+        return subprocess.run(
+            ["git", "-C", str(cwd), "status", "--porcelain", "-uall"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    # R4 — el exclude del git común trae las carpetas de estado CLI una
+    # sola vez aunque se creen dos cadenas, y git status no las ve.
+    def test_el_exclude_comun_ignora_el_estado_cli_una_sola_vez(self):
+        sha = self._git_repo()
+        first = self.start(request_key="exclude-1", revision=sha)
+        second = self.start(request_key="exclude-2", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        self.assertEqual(second["outcome"], "delivered")
+        lineas = self._common_exclude_lines()
+        for linea in (
+            ".claude/memory/",
+            ".claude/sessions/",
+            ".claude/state/",
+            ".codex/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".qwen/",
         ):
             self.assertEqual(
-                lineas.count(f"{carpeta}/"),
+                lineas.count(linea),
                 1,
-                f"{carpeta}/ must appear exactly once in the common exclude",
+                f"{linea} must appear exactly once in the common exclude",
+            )
+        for linea in (".claude/", ".cursor/", ".opencode/"):
+            self.assertEqual(
+                lineas.count(linea),
+                0,
+                f"{linea} must not hide versionable config in the common exclude",
             )
         worktree = Path(first["worktree"])
-        estado = worktree / ".claude" / "x"
+        estado = worktree / ".claude" / "sessions" / "x"
         estado.parent.mkdir(parents=True, exist_ok=True)
         estado.write_text("estado del CLI\n", encoding="utf-8")
-        estado_principal = self.repo / ".claude" / "x"
+        estado_principal = self.repo / ".claude" / "sessions" / "x"
         estado_principal.parent.mkdir(parents=True, exist_ok=True)
         estado_principal.write_text("estado del CLI\n", encoding="utf-8")
         for cwd in (worktree, self.repo):
-            estado_git = subprocess.run(
-                ["git", "-C", str(cwd), "status", "--porcelain"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
-            self.assertNotIn(".claude", estado_git)
+            self.assertNotIn(".claude", self._git_status(cwd))
+
+    # R4b — `.claude/` entero no va en el exclude: una skill nueva sí se
+    # ve en git status; el estado de sesión, no.
+    def test_el_exclude_comun_deja_visible_una_skill_nueva(self):
+        sha = self._git_repo()
+        result = self.start(request_key="exclude-visible", revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = Path(result["worktree"])
+        skill = worktree / ".claude" / "skills" / "x.md"
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        skill.write_text("skill nueva\n", encoding="utf-8")
+        sesion = worktree / ".claude" / "sessions" / "y"
+        sesion.parent.mkdir(parents=True, exist_ok=True)
+        sesion.write_text("estado del CLI\n", encoding="utf-8")
+        estado_git = self._git_status(worktree)
+        self.assertIn(".claude/skills/x.md", estado_git)
+        self.assertNotIn(".claude/sessions/y", estado_git)
+
+    # R4b — un exclude viejo de r2 con `.claude/` entero bajo el marcador
+    # se migra a las líneas nuevas al arrancar la siguiente cadena.
+    def test_el_exclude_viejo_con_claude_entero_se_migra(self):
+        sha = self._git_repo()
+        exclude = self._common_exclude_path()
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        viejas = [
+            "# goncloud: carpetas de estado de los CLI",
+            ".claude/",
+            ".codex/",
+            ".cursor/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".opencode/",
+            ".qwen/",
+        ]
+        exclude.write_text("".join(f"{linea}\n" for linea in viejas), encoding="utf-8")
+        result = self.start(request_key="exclude-migra", revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        lineas = self._common_exclude_lines()
+        for linea in (".claude/", ".cursor/", ".opencode/"):
+            self.assertEqual(lineas.count(linea), 0, f"{linea} must be migrated out")
+        for linea in (
+            ".claude/memory/",
+            ".claude/sessions/",
+            ".claude/state/",
+            ".codex/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".qwen/",
+        ):
+            self.assertEqual(
+                lineas.count(linea),
+                1,
+                f"{linea} must appear exactly once after migration",
+            )
 
     # R5 — las tarjetas hijas apuntan su workspace_path al worktree de
     # la cadena; la raíz sigue en el repo original.
