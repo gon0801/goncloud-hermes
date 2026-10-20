@@ -4429,6 +4429,76 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertIn("ignorados", receipt["worktree"]["reason"])
         self.assertTrue(worktree.is_dir())
 
+    # R4 — el exclude del git común trae las carpetas de estado CLI una
+    # sola vez aunque se creen dos cadenas, y git status no las ve.
+    def test_el_exclude_comun_ignora_el_estado_cli_una_sola_vez(self):
+        sha = self._git_repo()
+        first = self.start(request_key="exclude-1", revision=sha)
+        second = self.start(request_key="exclude-2", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        self.assertEqual(second["outcome"], "delivered")
+        comun = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--git-common-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        comun_path = Path(comun)
+        if not comun_path.is_absolute():
+            comun_path = self.repo / comun_path
+        lineas = (
+            (comun_path / "info" / "exclude").read_text(encoding="utf-8").splitlines()
+        )
+        for carpeta in (
+            ".claude",
+            ".codex",
+            ".cursor",
+            ".gemini",
+            ".grok",
+            ".kimi",
+            ".muse",
+            ".opencode",
+            ".qwen",
+        ):
+            self.assertEqual(
+                lineas.count(f"{carpeta}/"),
+                1,
+                f"{carpeta}/ must appear exactly once in the common exclude",
+            )
+        worktree = Path(first["worktree"])
+        estado = worktree / ".claude" / "x"
+        estado.parent.mkdir(parents=True, exist_ok=True)
+        estado.write_text("estado del CLI\n", encoding="utf-8")
+        estado_principal = self.repo / ".claude" / "x"
+        estado_principal.parent.mkdir(parents=True, exist_ok=True)
+        estado_principal.write_text("estado del CLI\n", encoding="utf-8")
+        for cwd in (worktree, self.repo):
+            estado_git = subprocess.run(
+                ["git", "-C", str(cwd), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertNotIn(".claude", estado_git)
+
+    # R5 — las tarjetas hijas apuntan su workspace_path al worktree de
+    # la cadena; la raíz sigue en el repo original.
+    def test_las_hijas_apuntan_su_workspace_al_worktree(self):
+        sha = self._git_repo()
+        result = self.start(revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = Path(result["worktree"]).resolve()
+        with connect_closing(self.db) as conn:
+            raiz = get_task(conn, result["workflow_id"])
+            self.assertEqual(Path(raiz.workspace_path).resolve(), self.repo.resolve())
+            for stage in result["stages"].values():
+                tarjeta = get_task(conn, stage["id"])
+                self.assertEqual(
+                    Path(tarjeta.workspace_path).resolve(),
+                    worktree,
+                    "the child card must work in the chain worktree",
+                )
+
     # (d) — un repository que no es git conserva la conducta de hoy.
     def test_a_non_git_repository_keeps_todays_behavior(self):
         result = self.start()

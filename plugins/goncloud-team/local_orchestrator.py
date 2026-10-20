@@ -279,10 +279,23 @@ def _workspace_fingerprint(repository):
 
 
 def _cli_state_untracked(repository):
-    """Repo-relative untracked paths under CLI state folders, or None."""
+    """Repo-relative untracked paths under CLI state folders, or None.
+
+    ``--ignored`` also lists them as ``!!`` once the chain's common
+    exclude covers them (workflow R4); both marks are CLI state here.
+    """
     try:
         status = subprocess.run(
-            ["git", "-C", str(repository), "status", "--porcelain", "-z", "-uall"],
+            [
+                "git",
+                "-C",
+                str(repository),
+                "status",
+                "--porcelain",
+                "-z",
+                "-uall",
+                "--ignored",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -294,7 +307,7 @@ def _cli_state_untracked(repository):
     return {
         entry[3:]
         for entry in status.stdout.split("\0")
-        if entry.startswith("?? ") and entry[3:].split("/", 1)[0] in _CLI_STATE_DIRS
+        if entry[:3] in {"?? ", "!! "} and entry[3:].split("/", 1)[0] in _CLI_STATE_DIRS
     }
 
 

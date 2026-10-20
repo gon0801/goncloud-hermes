@@ -142,6 +142,71 @@ AUTO_CLOSE_REASON = (
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
 
+#: State folders vendor CLIs create in their working directory. The same
+#: set the read-only guard ignores (local_orchestrator._CLI_STATE_DIRS);
+#: duplicated here because that module imports this one, not the reverse.
+_CLI_STATE_DIRS = frozenset(
+    {
+        ".claude",
+        ".codex",
+        ".cursor",
+        ".gemini",
+        ".grok",
+        ".kimi",
+        ".muse",
+        ".opencode",
+        ".qwen",
+    }
+)
+_CLI_STATE_EXCLUDE_MARKER = "# goncloud: carpetas de estado de los CLI"
+
+
+def _exclude_cli_state_dirs(repository: str) -> None:
+    """Add the CLI state folders to the repo's common ``info/exclude``.
+
+    One ``<folder>/`` line per folder, under the marker comment, only the
+    ones missing — idempotent across chains on the same repo. The exclude
+    lives in the common git dir, so it covers the main checkout and every
+    worktree at once and a stray ``git add -A`` never picks the state up.
+    Best effort: the chain's work does not depend on it (the read-only
+    guard already filters this state), so a failure here never blocks it.
+    """
+    try:
+        probe = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return
+    common = Path(probe.stdout.strip())
+    if not common.is_absolute():
+        common = Path(repository) / common
+    exclude = common / "info" / "exclude"
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    except OSError:
+        return
+    present = text.splitlines()
+    missing = [
+        f"{name}/" for name in sorted(_CLI_STATE_DIRS) if f"{name}/" not in present
+    ]
+    if not missing and _CLI_STATE_EXCLUDE_MARKER in present:
+        return
+    chunk = "" if not text or text.endswith("\n") else "\n"
+    if _CLI_STATE_EXCLUDE_MARKER not in present:
+        chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
+    chunk += "".join(f"{line}\n" for line in missing)
+    try:
+        with exclude.open("a", encoding="utf-8") as handle:
+            handle.write(chunk)
+    except OSError:
+        return
+
 
 def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
     """(alive, stopped) according to the local driver's own result-file mark.
@@ -622,6 +687,18 @@ class WorkflowService:
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
+            if worktree is not None:
+                # R5: Hermes copia el workspace_path de la raíz (creada con
+                # el repo, línea de create_task de la raíz) a cada hija en
+                # decompose_triage_task, y su worker corre donde la tarjeta
+                # apunta. No hay API de Hermes para pasarlo por hija, así
+                # que se reapunta la columna aquí, igual que la migración
+                # del cuerpo de arriba — la raíz se queda en el repo.
+                for child_id in child_ids:
+                    conn.execute(
+                        "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                        (worktree, child_id),
+                    ).close()
             result = self._start_result(root_id, child_ids)
             if worktree is not None:
                 result["worktree"] = worktree
@@ -698,6 +775,7 @@ class WorkflowService:
 
         if wt_path.is_dir() and (wt_path / ".git").exists():
             # Misma clave (relanzamiento): el worktree ya es suyo.
+            _exclude_cli_state_dirs(repository)
             return str(wt_path), base_sha
         branch_exists = git("rev-parse", "--verify", "--quiet", branch)
         if branch_exists.returncode == 0:
@@ -720,6 +798,7 @@ class WorkflowService:
                 "git worktree add failed for chain "
                 f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
             )
+        _exclude_cli_state_dirs(repository)
         return str(wt_path), base_sha
 
     def _rama_base_del_repo(self, repository: str) -> str | None:
