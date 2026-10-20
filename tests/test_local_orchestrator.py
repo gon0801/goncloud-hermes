@@ -4008,10 +4008,9 @@ class LocalCloseHandlerTests(_OrchestratorHarness):
         self.assertIn("ps unavailable", reported["driver"]["pid_check"])
 
 
-class ChainWorktreeTests(_OrchestratorHarness):
-    """r-H-cadena-worktree: cada cadena trabaja en SU worktree (rama
-    cadena/<id>), jamás en el checkout que le pasan. Repos git reales
-    temporales."""
+class _ChainWorktreeHarnessMixin:
+    """Helpers de worktree sin pruebas propias (L2): las clases de
+    pruebas los mezclan sin heredar ni re-correr la batería ajena."""
 
     def _git_repo(self):
         """A real temp git repo with one commit; returns its base sha."""
@@ -4095,6 +4094,35 @@ class ChainWorktreeTests(_OrchestratorHarness):
             return original(request, route)
 
         return invoke, worked_in
+
+    def _common_exclude_path(self):
+        comun = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--git-common-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        comun_path = Path(comun)
+        if not comun_path.is_absolute():
+            comun_path = self.repo / comun_path
+        return comun_path / "info" / "exclude"
+
+    def _common_exclude_lines(self):
+        return self._common_exclude_path().read_text(encoding="utf-8").splitlines()
+
+    def _git_status(self, cwd):
+        return subprocess.run(
+            ["git", "-C", str(cwd), "status", "--porcelain", "-uall"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+
+class ChainWorktreeTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
+    """r-H-cadena-worktree: cada cadena trabaja en SU worktree (rama
+    cadena/<id>), jamás en el checkout que le pasan. Repos git reales
+    temporales."""
 
     # (a) — la cadena crea SU worktree en rama cadena/<id> y el checkout
     # original no cambia de rama, HEAD ni estado tras etapas que escriben
@@ -4435,6 +4463,123 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertIn("ignorados", receipt["worktree"]["reason"])
         self.assertTrue(worktree.is_dir())
 
+    # R4 — el exclude del git común trae las carpetas de estado CLI una
+    # sola vez aunque se creen dos cadenas, y git status no las ve.
+    def test_el_exclude_comun_ignora_el_estado_cli_una_sola_vez(self):
+        sha = self._git_repo()
+        first = self.start(request_key="exclude-1", revision=sha)
+        second = self.start(request_key="exclude-2", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        self.assertEqual(second["outcome"], "delivered")
+        lineas = self._common_exclude_lines()
+        for linea in (
+            ".claude/memory/",
+            ".claude/sessions/",
+            ".claude/state/",
+            ".codex/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".qwen/",
+        ):
+            self.assertEqual(
+                lineas.count(linea),
+                1,
+                f"{linea} must appear exactly once in the common exclude",
+            )
+        for linea in (".claude/", ".cursor/", ".opencode/"):
+            self.assertEqual(
+                lineas.count(linea),
+                0,
+                f"{linea} must not hide versionable config in the common exclude",
+            )
+        worktree = Path(first["worktree"])
+        estado = worktree / ".claude" / "sessions" / "x"
+        estado.parent.mkdir(parents=True, exist_ok=True)
+        estado.write_text("estado del CLI\n", encoding="utf-8")
+        estado_principal = self.repo / ".claude" / "sessions" / "x"
+        estado_principal.parent.mkdir(parents=True, exist_ok=True)
+        estado_principal.write_text("estado del CLI\n", encoding="utf-8")
+        for cwd in (worktree, self.repo):
+            self.assertNotIn(".claude", self._git_status(cwd))
+
+    # R4b — `.claude/` entero no va en el exclude: una skill nueva sí se
+    # ve en git status; el estado de sesión, no.
+    def test_el_exclude_comun_deja_visible_una_skill_nueva(self):
+        sha = self._git_repo()
+        result = self.start(request_key="exclude-visible", revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = Path(result["worktree"])
+        skill = worktree / ".claude" / "skills" / "x.md"
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        skill.write_text("skill nueva\n", encoding="utf-8")
+        sesion = worktree / ".claude" / "sessions" / "y"
+        sesion.parent.mkdir(parents=True, exist_ok=True)
+        sesion.write_text("estado del CLI\n", encoding="utf-8")
+        estado_git = self._git_status(worktree)
+        self.assertIn(".claude/skills/x.md", estado_git)
+        self.assertNotIn(".claude/sessions/y", estado_git)
+
+    # R4b — un exclude viejo de r2 con `.claude/` entero bajo el marcador
+    # se migra a las líneas nuevas al arrancar la siguiente cadena.
+    def test_el_exclude_viejo_con_claude_entero_se_migra(self):
+        sha = self._git_repo()
+        exclude = self._common_exclude_path()
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        viejas = [
+            "# goncloud: carpetas de estado de los CLI",
+            ".claude/",
+            ".codex/",
+            ".cursor/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".opencode/",
+            ".qwen/",
+        ]
+        exclude.write_text("".join(f"{linea}\n" for linea in viejas), encoding="utf-8")
+        result = self.start(request_key="exclude-migra", revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        lineas = self._common_exclude_lines()
+        for linea in (".claude/", ".cursor/", ".opencode/"):
+            self.assertEqual(lineas.count(linea), 0, f"{linea} must be migrated out")
+        for linea in (
+            ".claude/memory/",
+            ".claude/sessions/",
+            ".claude/state/",
+            ".codex/",
+            ".gemini/",
+            ".grok/",
+            ".kimi/",
+            ".muse/",
+            ".qwen/",
+        ):
+            self.assertEqual(
+                lineas.count(linea),
+                1,
+                f"{linea} must appear exactly once after migration",
+            )
+
+    # R5 — las tarjetas hijas apuntan su workspace_path al worktree de
+    # la cadena; la raíz sigue en el repo original.
+    def test_las_hijas_apuntan_su_workspace_al_worktree(self):
+        sha = self._git_repo()
+        result = self.start(revision=sha)
+        self.assertEqual(result["outcome"], "delivered")
+        worktree = Path(result["worktree"]).resolve()
+        with connect_closing(self.db) as conn:
+            raiz = get_task(conn, result["workflow_id"])
+            self.assertEqual(Path(raiz.workspace_path).resolve(), self.repo.resolve())
+            for stage in result["stages"].values():
+                tarjeta = get_task(conn, stage["id"])
+                self.assertEqual(
+                    Path(tarjeta.workspace_path).resolve(),
+                    worktree,
+                    "the child card must work in the chain worktree",
+                )
+
     # (d) — un repository que no es git conserva la conducta de hoy.
     def test_a_non_git_repository_keeps_todays_behavior(self):
         result = self.start()
@@ -4443,6 +4588,388 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertIsNone(result.get("worktree"))
         self.assertEqual([r.role for r in self.requests], ORDER)
         self.assertFalse(self.worktree_root().exists(), "no worktree root is created")
+
+
+class ReadOnlyHarnessStateTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
+    """Encargo H-readonly-harness: el estado que el propio CLI crea en su
+    cwd (.claude/, .codex/, ...) no es trabajo de la etapa de solo
+    lectura: no bloquea, no sale en la evidencia y se limpia al cerrar
+    la etapa; un archivo seguido bajo esas carpetas sí cuenta."""
+
+    def _git_repo(self, *, tracked_claude=False):
+        sha = super()._git_repo()
+        if not tracked_claude:
+            return sha
+        guia = self.repo / ".claude" / "skills" / "guia.md"
+        guia.parent.mkdir(parents=True)
+        guia.write_text("guia base\n", encoding="utf-8")
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("add", ".claude/skills/guia.md")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "skill seguida",
+        )
+        return git("rev-parse", "HEAD").stdout.strip()
+
+    def _scout_writes(self, *relpaths):
+        original = self.invoke
+
+        def invoke(request, route):
+            if request.role == "scout":
+                workspace = Path(request.workspace)
+                for rel in relpaths:
+                    destino = workspace / rel
+                    destino.parent.mkdir(parents=True, exist_ok=True)
+                    destino.write_text("estado del CLI\n", encoding="utf-8")
+            return original(request, route)
+
+        self.invoke = invoke
+
+    def _scout_edits(self, rel, texto):
+        original = self.invoke
+
+        def invoke(request, route):
+            if request.role == "scout":
+                (Path(request.workspace) / rel).write_text(texto, encoding="utf-8")
+            return original(request, route)
+
+        self.invoke = invoke
+
+    # (1) — solo estado del CLI: no bloquea y lo nuevo desaparece.
+    def test_solo_estado_del_cli_no_bloquea_y_se_borra(self):
+        sha = self._git_repo()
+        self._scout_writes(".claude/sessions/x")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "paused")
+        worktree = Path(result["worktree"])
+        self.assertFalse(
+            (worktree / ".claude" / "sessions" / "x").exists(),
+            "the CLI state created by the stage is cleaned at stage close",
+        )
+        self.assertFalse(
+            (worktree / ".claude").exists(),
+            "folders left empty by the cleanup go too",
+        )
+
+    # F6 — una skill nueva bajo .claude/ NO es estado: bloquea y el
+    # archivo se queda (la lista única ya no trata .claude/ entero ni
+    # .cursor/ ni .opencode/ como estado).
+    def test_una_skill_nueva_bajo_claude_si_bloquea_y_no_se_borra(self):
+        sha = self._git_repo()
+        self._scout_writes(".claude/skills/x.md")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "blocked")
+        skill = Path(result["worktree"]) / ".claude" / "skills" / "x.md"
+        self.assertTrue(skill.exists(), "versionable config is never cleaned")
+        self.assertEqual(skill.read_text(encoding="utf-8"), "estado del CLI\n")
+
+    # F6 (unidad) — .cursor/ y .opencode/ cuentan como cambio y no se
+    # limpian; .claude/sessions/ sigue siendo estado: no cuenta y se borra.
+    def test_cursor_y_opencode_cuentan_y_las_sesiones_no(self):
+        self._git_repo()
+        huella = local_orchestrator_module._workspace_fingerprint
+        for rel in (
+            ".claude/skills/x.md",
+            ".cursor/rules/x.md",
+            ".opencode/agente.md",
+        ):
+            destino = self.repo / rel
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_text("config nueva\n", encoding="utf-8")
+        con_config = huella(self.repo)
+        self.assertIsNotNone(con_config)
+        sesion = self.repo / ".claude" / "sessions" / "y"
+        sesion.parent.mkdir(parents=True, exist_ok=True)
+        sesion.write_text("estado del CLI\n", encoding="utf-8")
+        self.assertEqual(
+            con_config,
+            huella(self.repo),
+            "CLI session state must not change the fingerprint",
+        )
+        estado = local_orchestrator_module._cli_state_untracked(self.repo)
+        self.assertEqual(estado, {".claude/sessions/y"})
+        local_orchestrator_module._clean_new_cli_state(self.repo, set())
+        self.assertFalse(sesion.exists(), "new CLI state is cleaned")
+        for rel in (
+            ".claude/skills/x.md",
+            ".cursor/rules/x.md",
+            ".opencode/agente.md",
+        ):
+            self.assertTrue(
+                (self.repo / rel).exists(), f"{rel} must survive the cleanup"
+            )
+
+    # M1 — un nombre no-UTF-8 bajo el estado no tumba _cli_state_untracked:
+    # la salida -z se decodifica utf-8/surrogateescape y un
+    # UnicodeDecodeError (ValueError) se lee como None. Simulado: APFS no
+    # admite nombres no-UTF-8 en disco.
+    def test_cli_state_untracked_tolera_un_nombre_no_utf8(self):
+        capturado = {}
+
+        def fake_run(*args, **kwargs):
+            capturado.update(kwargs)
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="?? .claude/sessions/y\0!! .codex/state/z\0",
+                stderr="",
+            )
+
+        with patch.object(local_orchestrator_module.subprocess, "run", fake_run):
+            estado = local_orchestrator_module._cli_state_untracked(self.repo)
+
+        self.assertEqual(estado, {".claude/sessions/y", ".codex/state/z"})
+        self.assertEqual(capturado.get("encoding"), "utf-8")
+        self.assertEqual(capturado.get("errors"), "surrogateescape")
+        error = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        with patch.object(
+            local_orchestrator_module.subprocess, "run", side_effect=error
+        ):
+            self.assertIsNone(local_orchestrator_module._cli_state_untracked(self.repo))
+
+    # L3 — un symlink dentro del estado que apunta fuera del repo: la
+    # limpieza no sigue el enlace y el archivo externo sobrevive.
+    def test_un_enlace_en_el_estado_no_borra_el_archivo_externo(self):
+        sha = self._git_repo()
+        externo = self.root / "fuera-del-repo.txt"
+        externo.write_text("no tocar\n", encoding="utf-8")
+        original = self.invoke
+
+        def invoke(request, route):
+            if request.role == "scout":
+                destino = Path(request.workspace) / ".claude" / "sessions" / "evil"
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    destino.symlink_to(externo)
+                except OSError as exc:
+                    self.skipTest(f"sin symlinks en esta plataforma: {exc}")
+            return original(request, route)
+
+        self.invoke = invoke
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "paused")
+        self.assertTrue(externo.exists(), "the file outside the repo survives")
+        self.assertEqual(externo.read_text(encoding="utf-8"), "no tocar\n")
+
+    # (2) — editar un archivo real sigue bloqueando (control).
+    def test_editar_un_archivo_real_si_bloquea(self):
+        sha = self._git_repo()
+        self._scout_edits("README.md", "tocado por scout\n")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "blocked")
+        worktree = Path(result["worktree"])
+        self.assertEqual(
+            (worktree / "README.md").read_text(encoding="utf-8"),
+            "tocado por scout\n",
+            "a real edit is left for the owner to revert, never cleaned",
+        )
+
+    # (3) — un archivo SEGUIDO bajo .claude/ sí cuenta como cambio.
+    def test_modificar_un_seguido_bajo_claude_si_bloquea(self):
+        sha = self._git_repo(tracked_claude=True)
+        self._scout_edits(".claude/skills/guia.md", "guia tocada\n")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "blocked")
+
+    # (4) — lo que ya estaba antes de la etapa no se toca; lo nuevo sí
+    # se borra, en cualquier carpeta de estado.
+    def test_estado_previo_se_queda_y_el_nuevo_se_borra(self):
+        sha = self._git_repo()
+        created = self.orchestrator.create(
+            request_key="local-1",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect this repository without external actions.",
+            sources=SOURCES,
+            max_steps=17,
+        )
+        worktree = Path(created["worktree"])
+        previo = worktree / ".claude" / "sessions" / "viejo"
+        previo.parent.mkdir(parents=True)
+        previo.write_text("ya estaba\n", encoding="utf-8")
+        self._scout_writes(".claude/sessions/nuevo", ".codex/state/y")
+
+        result = self.orchestrator.resume(
+            created["workflow_id"], stop_after="scout", home=self.root
+        )
+
+        self.assertEqual(result["outcome"], "paused")
+        self.assertTrue(previo.exists(), "pre-existing CLI state is untouched")
+        self.assertFalse(
+            (worktree / ".claude" / "sessions" / "nuevo").exists(),
+            "state created during the stage is cleaned",
+        )
+        self.assertFalse(
+            (worktree / ".codex").exists(),
+            "folders left empty by the cleanup go too",
+        )
+
+    # R1 — la huella ignora lo no seguido del harness (y su evidencia
+    # tampoco lo lista), pero no un seguido bajo .claude/.
+    def test_la_huella_ignora_el_estado_no_seguido_y_no_al_seguido(self):
+        self._git_repo(tracked_claude=True)
+        antes = local_orchestrator_module._workspace_fingerprint(self.repo)
+        self.assertIsNotNone(antes)
+        sesiones = self.repo / ".claude" / "sessions"
+        sesiones.mkdir(parents=True)
+        (sesiones / "x").write_text("estado del CLI\n", encoding="utf-8")
+
+        despues = local_orchestrator_module._workspace_fingerprint(self.repo)
+
+        self.assertEqual(antes, despues, "untracked CLI state is not a change")
+        bloqueo = local_orchestrator_module._edited_by_read_only_stage(
+            "scout", antes, despues
+        )
+        self.assertNotIn(".claude", " ".join(bloqueo["evidence"]))
+
+        (self.repo / ".claude" / "skills" / "guia.md").write_text(
+            "guia tocada\n", encoding="utf-8"
+        )
+        tocada = local_orchestrator_module._workspace_fingerprint(self.repo)
+        self.assertNotEqual(despues, tocada, "a tracked file under .claude counts")
+        self.assertIn(".claude/skills/guia.md", tocada[1])
+
+    # L1 — probe_workspace tolera un cleanup que falla (en Windows un
+    # archivo abierto lanza PermissionError): no debe escapar de probe().
+    def test_probe_workspace_tolera_un_cleanup_que_falla(self):
+        from subscriptions import process as process_module
+
+        workspace = process_module.probe_workspace()
+        self.assertTrue(
+            workspace._ignore_cleanup_errors,
+            "probe_workspace must ignore cleanup errors",
+        )
+        (Path(workspace.name) / "probe.txt").write_text("x", encoding="utf-8")
+
+        def rmtree_que_falla(path, ignore_errors=False):
+            if not ignore_errors:
+                raise PermissionError("archivo abierto (simulado)")
+
+        with patch.object(
+            process_module.tempfile.TemporaryDirectory,
+            "_rmtree",
+            staticmethod(rmtree_que_falla),
+        ):
+            workspace.cleanup()
+
+    # R3/L4 — los probes de los 6 adaptadores corren en un directorio
+    # temporal, no en el cwd del proceso (que puede ser el checkout
+    # principal de la tarjeta). Muse incluido su camino WSL y opencode
+    # incluido _major().
+    def test_los_probes_corren_en_un_directorio_temporal(self):
+        from subscriptions.adapters.claude import ClaudeAdapter
+        from subscriptions.adapters.codex import CodexAdapter
+        from subscriptions.adapters.grok import GrokAdapter
+        from subscriptions.adapters.kimi import KimiAdapter
+        from subscriptions.adapters.muse import MuseAdapter
+        from subscriptions.adapters.opencode import OpenCodeAdapter
+        from subscriptions.types import RouteSpec
+
+        def grabadora(respuestas):
+            llamadas = []
+
+            def runner(command, **kwargs):
+                llamadas.append((list(command), kwargs.get("cwd")))
+                salida = respuestas(list(command))
+                return subprocess.CompletedProcess(command, 0, stdout=salida, stderr="")
+
+            return llamadas, runner
+
+        def ruta(adapter, model):
+            return RouteSpec(
+                slot=1,
+                label=f"{adapter}/x",
+                adapter=adapter,
+                model=model,
+                billing_mode="subscription",
+            )
+
+        oauth = json.dumps(
+            {
+                "loggedIn": True,
+                "authMethod": "oauth_token",
+                "apiProvider": "firstParty",
+            }
+        )
+        casos = [
+            ("claude", ClaudeAdapter, "claude", "x", lambda cmd: oauth),
+            (
+                "codex",
+                CodexAdapter,
+                "codex",
+                "x",
+                lambda cmd: "Logged in using ChatGPT\n",
+            ),
+            (
+                "grok",
+                GrokAdapter,
+                "grok",
+                "grok-4.6",
+                lambda cmd: "logged in, grok-4.6 disponible\n",
+            ),
+            ("kimi", KimiAdapter, "kimi", "x", lambda cmd: ""),
+            ("muse", MuseAdapter, "muse", "x", lambda cmd: "muse 1.0\n"),
+            (
+                "opencode",
+                OpenCodeAdapter,
+                "opencode_go",
+                "x",
+                lambda cmd: (
+                    "opencode v2.0.29\n"
+                    if cmd[:2] == ["opencode", "--version"]
+                    else "opencode go\n"
+                ),
+            ),
+        ]
+        for nombre, clase, adapter, model, respuestas in casos:
+            with self.subTest(adapter=nombre):
+                llamadas, runner = grabadora(respuestas)
+                instancia = clase(runner=runner)
+                health = instancia.probe(ruta(adapter, model))
+                self.assertTrue(health.ready, f"{nombre}: {health}")
+                if nombre == "opencode":
+                    self.assertEqual(instancia._major(), 2)
+                self.assertTrue(llamadas, f"{nombre}: el probe no corrio")
+                for comando, cwd in llamadas:
+                    self.assertIsNotNone(cwd, f"{nombre}: probe sin cwd")
+                    self.assertNotEqual(
+                        Path(cwd).resolve(),
+                        Path.cwd().resolve(),
+                        f"{nombre}: the probe must not run in the process cwd",
+                    )
+                    self.assertFalse(
+                        Path(cwd).exists(),
+                        f"{nombre}: the probe directory is gone afterwards",
+                    )
+                if nombre == "muse":
+                    self.assertEqual(
+                        llamadas[0][0][:4],
+                        ["wsl.exe", "-d", "Ubuntu", "--exec"],
+                        "muse probe must take its WSL path",
+                    )
 
 
 if __name__ == "__main__":

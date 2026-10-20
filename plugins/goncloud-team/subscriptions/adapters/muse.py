@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import SubscriptionProcessError, probe_workspace, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -37,13 +37,14 @@ class MuseAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Muse exposes no non-generative auth probe; report install state."""
         try:
-            evidence = run_cli(
-                ["wsl.exe", "-d", "Ubuntu", "--exec", _MUSE, "--version"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["wsl.exe", "-d", "Ubuntu", "--exec", _MUSE, "--version"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error("muse_cli", error)
         if evidence.returncode != 0:
