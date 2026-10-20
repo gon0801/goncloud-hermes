@@ -1099,10 +1099,17 @@ def jev_de_produccion():
 class LocalOrchestrator:
     """Resume from Kanban state; route all executable stages through its service."""
 
-    def __init__(self, *, service_factory=None, stage_runner=None, jev=None):
+    def __init__(
+        self, *, service_factory=None, stage_runner=None, jev=None, jev_config=None
+    ):
         self.jev = jev  # JevEtapa o None: sin JEV la etapa corre igual
+        # jev_config es la config JEV efectiva del gateway (puede ser None).
+        # El driver desacoplado no recibe este objeto: launch_detached la
+        # lleva serializada en el entorno (jev_cliente.entorno_jev) y el
+        # hijo la resuelve ahí con config_jev(), donde corre el router.
+        self.jev_config = jev_config
         self.services = service_factory or (
-            lambda role: WorkflowService(actor_role=role)
+            lambda role: WorkflowService(actor_role=role, jev_config=jev_config)
         )
         self.stage_runner = stage_runner or (
             lambda service, **assignment: service.subscription_run(**assignment)
@@ -1347,11 +1354,35 @@ class LocalOrchestrator:
             if os.name == "nt"
             else {"start_new_session": True}
         )
+        env = dict(os.environ)
+        try:
+            try:
+                from . import jev_cliente
+            except ImportError:
+                import jev_cliente  # type: ignore
+
+            if self.jev_config is not None:
+                # El hijo no tiene ctx: la config JEV efectiva viaja en el
+                # entorno y el router la resuelve ahí (jev_cliente.config_jev).
+                env.update(jev_cliente.entorno_jev(self.jev_config))
+            # La llave se resuelve en el padre y SOLO viaja en el entorno
+            # del hijo, jamás en argv (como jev_auto._comando_y_ambiente):
+            # en el gateway multiplexado vive en el secret_scope y el hijo,
+            # sin ctx, no puede resolverla por su cuenta (F11).
+            env.pop("TYPESAFE_API_KEY", None)
+            try:
+                clave = jev_cliente.obtener_llave()
+            except Exception:
+                clave = ""
+            if clave:
+                env["TYPESAFE_API_KEY"] = clave
+        except Exception:
+            pass
         try:
             process = subprocess.Popen(
                 argv,
                 cwd=str(home),
-                env=dict(os.environ),
+                env=env,
                 stdin=None,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

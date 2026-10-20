@@ -113,6 +113,15 @@ CREATE TABLE IF NOT EXISTS incidencias (
   created_at    TEXT NOT NULL,
   PRIMARY KEY (root_id, unit_id, attempt, incident_key)
 );
+CREATE TABLE IF NOT EXISTS jev_veredictos (
+  root_id       TEXT NOT NULL,
+  unit_id       TEXT NOT NULL,
+  attempt       INTEGER NOT NULL,
+  tarjeta_id    TEXT NOT NULL,
+  transporte    INTEGER NOT NULL,
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (root_id, unit_id, attempt)
+);
 CREATE TABLE IF NOT EXISTS efectos (
   root_id       TEXT NOT NULL,
   effect_id     TEXT NOT NULL,
@@ -2027,6 +2036,38 @@ class Store:
             self._rollback()
             raise
         return Ok(True)
+
+    def veredicto_jev(self, root_id, unit_id, attempt):
+        """El veredicto JEV/regla ya asentado para un intento, o None."""
+        fila = self._una_fila(
+            "SELECT tarjeta_id, transporte FROM jev_veredictos"
+            " WHERE root_id = ? AND unit_id = ? AND attempt = ?",
+            (root_id, unit_id, attempt),
+        )
+        if fila is None:
+            return None
+        return {"tarjeta": fila["tarjeta_id"], "transporte": bool(fila["transporte"])}
+
+    def asentar_veredicto_jev(self, root_id, unit_id, attempt, tarjeta_id, transporte):
+        """Asienta el primer veredicto de un intento; el persistido manda."""
+        self._begin()
+        try:
+            self._conexion.execute(
+                "INSERT OR IGNORE INTO jev_veredictos VALUES (?,?,?,?,?,?)",
+                (
+                    root_id,
+                    unit_id,
+                    attempt,
+                    tarjeta_id,
+                    1 if transporte else 0,
+                    self.reloj(),
+                ),
+            )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+        return self.veredicto_jev(root_id, unit_id, attempt)
 
     def registrar_incidencia(self, root_id, unit_id, attempt, clave, incidencia) -> Ok:
         self._begin()

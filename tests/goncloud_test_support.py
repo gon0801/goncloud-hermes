@@ -10,6 +10,13 @@ os.environ["GONCLOUD_MUSE_LOGIN"] = str(
     Path(__file__).parent / "fixtures" / "muse-login.json"
 )
 
+#: JEV apagado en toda la suite: ninguna prueba existente consulta TypeSafe
+#: de verdad ni anexa al registro del dueño (jev/decisiones.jsonl). Las
+#: pruebas de la capa JEV inyectan su JevConfig y no leen este entorno.
+os.environ["GONCLOUD_JEV_ROUTER_CLASIFICACION"] = "0"
+os.environ["GONCLOUD_JEV_MUSE_BRIDGE_CLASIFICACION"] = "0"
+os.environ["GONCLOUD_JEV_TICKER_INCIDENCIA"] = "0"
+
 
 def cleanup_temp_directory(directory):
     # Windows can briefly report a nonempty directory while file deletions

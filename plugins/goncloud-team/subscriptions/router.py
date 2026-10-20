@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import threading
 import time
 from collections import deque
@@ -22,7 +23,7 @@ from .catalog import (
     load_routing_source,
 )
 from .process import run_cli
-from .redaction import sanitize_result
+from .redaction import redact_text, sanitize_result
 from .state import SubscriptionBusy, SubscriptionStateStore, parse_iso
 from .types import (
     AdapterHealth,
@@ -93,6 +94,13 @@ _RATE_LIMIT_MAX_WAIT_SECONDS = 120
 # this long, a throttle advances without waiting.
 _RATE_LIMIT_STAGE_SLEEP_SECONDS = 180
 
+#: JEV (TypeSafe System One) re-clasifica una falla ejecutada con el estado
+#: concreto; la heurística de classify_failure sigue siendo la regla que gana
+#: bajo el umbral, sin respuesta o con el punto apagado (decisión de David,
+#: 2026-10-18). La clave del punto, la pregunta y las opciones viven en
+#: jev_cliente (una sola fuente; las comparte muse_bridge).
+_JEV_EVIDENCIA_CHARS = 1000
+
 
 def _throttle_wait(
     retries_spent: int, hint: Optional[float], stage_slept: float
@@ -108,9 +116,15 @@ def _throttle_wait(
     return wait
 
 
-def _bench_for(result: InvocationResult) -> Optional[timedelta]:
-    """How long later stages skip the account after an advancing failure."""
-    minutes = _COOLDOWN_MINUTES.get(result.failure)
+def _bench_for(
+    result: InvocationResult, regla: Optional[FailureKind] = None
+) -> Optional[timedelta]:
+    """How long later stages skip the account after an advancing failure.
+
+    The account cooldown follows the heuristic class (F14), never the
+    class JEV imposed: a transport read as quota benches nothing.
+    """
+    minutes = _COOLDOWN_MINUTES.get(regla if regla is not None else result.failure)
     if minutes is None:
         return None
     bench = timedelta(minutes=minutes)
@@ -377,6 +391,8 @@ class SubscriptionRouter:
         git: Optional[GitInspector] = None,
         health_ttl_seconds: int = 300,
         sleep: Callable[[float], None] = time.sleep,
+        jev_cliente=None,
+        jev_config=None,
     ) -> None:
         self.adapters = adapters if adapters is not None else build_adapter_registry()
         self.routing_source = (
@@ -391,6 +407,10 @@ class SubscriptionRouter:
             self.store = store
         self.health_ttl_seconds = health_ttl_seconds
         self.sleep = sleep
+        self._jev_cliente_inyectado = jev_cliente
+        self._jev_config_inyectada = jev_config
+        self._jev = None
+        self._jev_resuelto = False
 
     # -- execution --------------------------------------------------------
 
@@ -466,6 +486,12 @@ class SubscriptionRouter:
                     failure = (
                         FailureKind(latest["failure"]) if latest["failure"] else None
                     )
+                    # The heuristic class recorded beside the settled one
+                    # (F14): the guard decides with it, exactly as the live
+                    # run did. Rows written before it existed fall back to
+                    # the settled class.
+                    heuristica = latest.get("failure_heuristic") or latest["failure"]
+                    failure_heur = FailureKind(heuristica) if heuristica else None
                     # The recorded file lists mix what the stage inherited
                     # with what the attempt did, so they decide nothing here
                     # (owner, 2026-10-19). The live run recorded its own
@@ -488,7 +514,13 @@ class SubscriptionRouter:
                             latest["disposition"] != "skipped"
                             and (
                                 failure not in _ADVANCING_FAILURES
-                                or (failure in _BLOCK_AFTER_MUTATION and mutated)
+                                or (
+                                    mutated
+                                    and (
+                                        failure in _BLOCK_AFTER_MUTATION
+                                        or failure_heur in _BLOCK_AFTER_MUTATION
+                                    )
+                                )
                             )
                         )
                         or latest["slot"]
@@ -718,6 +750,14 @@ class SubscriptionRouter:
             except SubscriptionBusy:
                 return self._stage_busy()
             result = self._route_evidence(result, route, skipped_routes)
+            clase_regla = None
+            if disposition == "executed":
+                # The heuristic class is what governs the irreversible
+                # calls below: JEV re-classifies the evidence, but it must
+                # never lift a mutant failure out of the post-mutation
+                # block nor mark or quarantine the account on its own.
+                clase_regla = result.failure
+                result = self._aplicar_jev(result, route, attempt_no)
             revision, changed, _git_mutated = self.git.mutation_since(
                 request.workspace, attempt_baseline[0]
             )
@@ -753,6 +793,11 @@ class SubscriptionRouter:
                 # recovery reads the same delta instead of recounting
                 # inherited dirt. A skipped attempt never invoked: no delta.
                 mutated=mutated if disposition == "executed" else False,
+                # Persist the heuristic class beside JEV's (F14): the
+                # resume guard decides with it, exactly as this run did.
+                failure_heuristic=(
+                    clase_regla.value if clase_regla is not None else None
+                ),
             )
             if not recorded:
                 return self._stage_busy()
@@ -766,7 +811,7 @@ class SubscriptionRouter:
                 )
                 last_failure = self._route_evidence(result, route, skipped_routes)
                 continue
-            self._record_health(route.adapter, result)
+            self._record_health(route.adapter, result, clase_regla)
             if result.success:
                 return result
             last_failure = result
@@ -774,7 +819,12 @@ class SubscriptionRouter:
                 # The kinds that never auto-advance; the stage blocks
                 # with evidence and the next run continues from recorded state.
                 return result
-            if result.failure in _BLOCK_AFTER_MUTATION and mutated:
+            if mutated and (
+                result.failure in _BLOCK_AFTER_MUTATION
+                # The heuristic class blocks too (F12): a JEV re-classification
+                # never lifts a mutant failure out of the block.
+                or clase_regla in _BLOCK_AFTER_MUTATION
+            ):
                 return result
             if mutated:
                 own_stage_changes = True
@@ -802,7 +852,7 @@ class SubscriptionRouter:
                     throttle_retries[route.slot] = retries + 1
                     pending.appendleft(route)
                     continue
-            bench = _bench_for(result)
+            bench = _bench_for(result, clase_regla)
             if bench is not None:
                 self.store.set_cooldown(
                     route.adapter, until=datetime.now(timezone.utc) + bench
@@ -868,7 +918,14 @@ class SubscriptionRouter:
             )
 
         try:
-            result = self.adapters[route.adapter].invoke(request, route)
+            adapter = self.adapters[route.adapter]
+            if hasattr(adapter, "jev_config"):
+                # El adaptador (Muse) recibe la config JEV del router;
+                # clasificar sigue siendo solo del router (F6b).
+                resuelto = self._jev_resolver()
+                if resuelto is not None:
+                    adapter.jev_config = resuelto[2]
+            result = adapter.invoke(request, route)
         except Exception:
             return failed("subscription invocation failed", FailureKind.TASK_FAILURE)
         if request.result_transform is not None:
@@ -1039,7 +1096,80 @@ class SubscriptionRouter:
             detail=stored["detail"],
         )
 
-    def _record_health(self, adapter: str, result: InvocationResult) -> None:
+    def _jev_resolver(self):
+        """(módulo, cliente, config) de JEV, o None si no se pudo cargar."""
+        if self._jev_resuelto:
+            return self._jev
+        self._jev_resuelto = True
+        try:
+            plugin_dir = Path(__file__).resolve().parents[1]
+            if str(plugin_dir) not in sys.path:
+                sys.path.insert(0, str(plugin_dir))
+            import jev_cliente
+        except Exception:
+            return None
+        config = self._jev_config_inyectada
+        cliente = self._jev_cliente_inyectado
+        if cliente is None:
+            if config is None:
+                config = jev_cliente.config_jev()
+            cliente = jev_cliente.ClienteJev(config=config)
+        elif config is None:
+            config = getattr(cliente, "config", None) or jev_cliente.config_jev()
+        self._jev = (jev_cliente, cliente, config)
+        return self._jev
+
+    def _aplicar_jev(
+        self, result: InvocationResult, route: RouteSpec, attempt_no: int
+    ) -> InvocationResult:
+        """Re-clasifica una falla ejecutada con JEV; bajo el umbral, la regla.
+
+        La clasificación resultante es la que el router actúa: rate_limit
+        reintenta la misma posición y el resto avanza, con su cooldown.
+        Toda consulta (actúe JEV o la regla) queda en el registro.
+        """
+        if result.success or result.failure is None:
+            return result
+        resuelto = self._jev_resolver()
+        if resuelto is None:
+            return result
+        jev_cliente, cliente, config = resuelto
+        if not config.punto_activo(jev_cliente.PUNTO_ROUTER_CLASIFICACION):
+            return result
+        regla = result.failure
+        estado = "\n".join(
+            (
+                f"adapter: {route.adapter}",
+                f"model: {route.model}",
+                f"slot: {route.slot}",
+                f"attempt: {attempt_no}",
+                f"heuristic_classification: {regla.value}",
+                "evidence (tail, already redacted):",
+                redact_text(result.text)[-_JEV_EVIDENCIA_CHARS:],
+            )
+        )
+        nueva = jev_cliente.reclasificar_falla(
+            cliente,
+            config,
+            punto=jev_cliente.PUNTO_ROUTER_CLASIFICACION,
+            regla=regla.value,
+            estado=estado,
+            contexto={
+                "adapter": route.adapter,
+                "modelo": route.model,
+                "intento": attempt_no,
+            },
+        )
+        if nueva == regla.value:
+            return result
+        return replace(result, failure=FailureKind(nueva))
+
+    def _record_health(
+        self,
+        adapter: str,
+        result: InvocationResult,
+        regla: Optional[FailureKind] = None,
+    ) -> None:
         if result.success:
             self.store.save_health(
                 adapter,
@@ -1049,7 +1179,9 @@ class SubscriptionRouter:
                 lift_quarantine=True,
             )
             return
-        failure = result.failure
+        # The heuristic class, not JEV's re-classification, decides account
+        # health (F12): JEV never marks or quarantines an account on its own.
+        failure = regla if regla is not None else result.failure
         # A rejected envelope advances the slot but says nothing about the
         # account: the vendor answered. Keeping it ready avoids skipping the
         # primary position for the whole health window after one bad answer.

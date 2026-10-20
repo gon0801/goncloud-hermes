@@ -54,17 +54,35 @@ def _raiz_handler(ctx, funcion):
     return handle
 
 
+def _jev_config(ctx):
+    """La config JEV del plugin (plugin.yaml), o None si no se pudo leer."""
+    try:
+        try:
+            from . import jev_cliente
+        except ImportError:
+            import jev_cliente  # type: ignore
+        return jev_cliente.config_jev(ctx)
+    except Exception:
+        return None
+
+
 def _build_service(ctx):
     """Bind the durable service to the calling profile; test seam."""
-    return WorkflowService(actor_role=ctx.profile_name)
+    return WorkflowService(actor_role=ctx.profile_name, jev_config=_jev_config(ctx))
 
 
 def _build_orchestrator(ctx):
     """The proven local entry point a messaging transport submits to; test seam."""
-    del ctx
     from .local_orchestrator import LocalOrchestrator, jev_de_produccion
 
-    return LocalOrchestrator(jev=jev_de_produccion())
+    jev_config = _jev_config(ctx)
+    return LocalOrchestrator(
+        service_factory=lambda role: WorkflowService(
+            actor_role=role, jev_config=jev_config
+        ),
+        jev=jev_de_produccion(),
+        jev_config=jev_config,
+    )
 
 
 def _transport_handlers(ctx):
@@ -216,6 +234,7 @@ def register(ctx) -> None:
                 workspace=Path(str(arguments.get("workspace", ""))),
                 actor_role=ctx.profile_name,
                 max_steps=int(arguments.get("max_steps", 80)),
+                jev_config=_jev_config(ctx),
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except Exception as exc:

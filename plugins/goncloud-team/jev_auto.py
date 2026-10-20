@@ -212,7 +212,7 @@ def _clave_typesafe() -> str:
 
 
 def _secretos_del_scope() -> tuple[str, ...]:
-    """Los values() del scope del perfil (agent.secret_scope, Hermes 0.22).
+    """Los values() del scope del perfil; el helper común vive en jev_cliente.
 
     En el gateway multiplexado TODAS las llaves del perfil viven ahi, no en
     os.environ, y cualquiera pegada en el chat tampoco debe salir a
@@ -220,19 +220,11 @@ def _secretos_del_scope() -> tuple[str, ...]:
     registro.
     """
     try:
-        from agent.secret_scope import current_secret_scope
+        from . import jev_cliente
+    except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
+        import jev_cliente
 
-        alcance = current_secret_scope()
-    except Exception:
-        return ()
-    if alcance is None:
-        return ()
-    try:
-        return tuple(
-            valor for valor in alcance.values() if isinstance(valor, str) and valor
-        )
-    except Exception:
-        return ()
+    return jev_cliente.secretos_del_scope()
 
 
 def _banderas_del_grupo() -> dict:

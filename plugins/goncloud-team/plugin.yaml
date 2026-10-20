@@ -28,3 +28,28 @@ provides_hooks:
   - pre_llm_call
   - post_llm_call
   - transform_llm_output
+config_schema:
+  jev_umbral:
+    type: float
+    default: 0.85
+    description: Probabilidad mínima de JEV para actuar con su respuesta; por debajo gana la regla actual
+  jev_timeout_seconds:
+    type: float
+    default: 3.0
+    description: Tope de cada consulta a TypeSafe; al vencer gana la regla actual
+  jev_router_clasificacion:
+    type: bool
+    default: true
+    description: Interruptor del punto router_clasificacion (clasificación de fallas del router de suscripciones)
+  jev_muse_bridge_clasificacion:
+    type: bool
+    default: true
+    description: Interruptor del punto muse_bridge_clasificacion (clasificación de fallas de la delegación a Muse)
+  jev_ticker_incidencia:
+    type: bool
+    default: true
+    description: Interruptor del punto ticker_incidencia (transporte caído vs resultado inválido en el ticker de raíces)
+  jev_registro:
+    type: str
+    default: ""
+    description: Ruta del registro jev/decisiones.jsonl; vacío usa <home del perfil o del root>/jev/decisiones.jsonl
