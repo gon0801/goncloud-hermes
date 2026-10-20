@@ -923,6 +923,46 @@ class HijoRealTests(Base):
         # S1: gate tal cual y fit = fits[sugerida], no el de otra skill.
         self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.9, 0.87))
 
+    ROUTER_CON_CONFIG = (
+        "CFG = {'deny': ['web-navigation'], 'gate': 0.33}\n"
+        "\n"
+        "def load_roster():\n"
+        "    return [{'name': 'web-navigation'}, {'name': 'otra'}]\n"
+        "\n"
+        "def load_config():\n"
+        "    return CFG\n"
+        "\n"
+        "def filter_roster(roster, cfg):\n"
+        "    return [r for r in roster if r['name'] not in cfg['deny']]\n"
+        "\n"
+        "def suggest(request, roster, cfg=None):\n"
+        "    if cfg is None:\n"
+        "        return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': 0.5}\n"
+        "    return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': cfg['gate'], 'fits': {roster[0]['name']: 0.9}}\n"
+    )
+
+    def test_el_hijo_aplica_config_y_filtro_del_router(self):
+        # Hueco B: allow/deny y jev-skill-router.json valen en la ruta
+        # automatica; sin ellos sugeriria la skill vetada.
+        self.escribir_router(self.ROUTER_CON_CONFIG)
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual(veredicto["skill"], "otra")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.33, 0.9))
+
+    def test_plugin_viejo_sin_config_ni_filtro_cae_a_la_llamada_de_siempre(self):
+        for faltante in ("load_config", "filter_roster"):
+            with self.subTest(sin=faltante):
+                self.escribir_router(self.ROUTER_CON_CONFIG + f"del {faltante}\n")
+                with self.con_respaldo():
+                    veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+                self.assertEqual(veredicto["estado"], "ok")
+                self.assertEqual(veredicto["skill"], "web-navigation")
+                self.assertEqual(veredicto["gate"], 0.5)
+
     def test_el_hijo_sin_fits_deja_fit_none_y_gate_pasa(self):
         self.escribir_router(
             "def load_roster():\n"
@@ -1087,7 +1127,7 @@ class HogarTests(Base):
 
     def test_la_ruta_del_plugin_deriva_el_perfil_del_despliegue(self):
         # El layout vivo de la PC: <perfil>/plugins/goncloud-team/jev_auto.py
-        # sube dos niveles al perfil, como el parche 0002-skills-root.
+        # sube dos niveles al perfil, como el _skills_root() del router.
         copia = self.cargar_copia(
             self.hogar / "perfil" / "plugins" / "goncloud-team" / "jev_auto.py",
             "jev_auto_derivacion",

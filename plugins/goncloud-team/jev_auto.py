@@ -125,8 +125,17 @@ _HIJO = """
 import json, sys
 try:
     texto = sys.stdin.buffer.read().decode("utf-8")
-    from jev_skill_router.mcp_server import load_roster, suggest
-    datos = suggest(texto, load_roster())
+    from jev_skill_router import mcp_server
+    roster = mcp_server.load_roster()
+    cargar = getattr(mcp_server, "load_config", None)
+    filtrar = getattr(mcp_server, "filter_roster", None)
+    if cargar is not None and filtrar is not None:
+        # allow/deny y $HERMES_HOME/jev-skill-router.json valen tambien aqui.
+        cfg = cargar()
+        datos = mcp_server.suggest(texto, filtrar(roster, cfg), cfg)
+    else:
+        # Plugin instalado viejo: sin config ni filtro, la llamada de siempre.
+        datos = mcp_server.suggest(texto, roster)
     sugerida = datos.get("suggested")
     fits = datos.get("fits")
     fit = fits.get(sugerida) if isinstance(fits, dict) and sugerida else None
@@ -258,7 +267,7 @@ def _comando_y_ambiente(raiz: Path, hogar, clave: str):
         env["JEV_TYPESAFE_API_KEY"] = clave
     if hogar is not None:
         # El roster del router: mismo orden de preferencia que su parche
-        # 0002-skills-root, pero resuelto aqui para no depender del gateway.
+        # el skills-root del router, pero resuelto aqui para no depender del gateway.
         env["HERMES_HOME"] = str(hogar)
         env["JEV_SKILLS_ROOT"] = str(Path(hogar) / "skills")
     env["PYTHONUTF8"] = "1"
