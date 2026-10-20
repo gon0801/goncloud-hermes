@@ -85,6 +85,19 @@ def parse_grok_ndjson(output: str) -> dict:
     }
 
 
+#: Roles that mutate the workspace, mirroring Claude's writing set
+#: (adapters/claude.py). Only they get bypassPermissions: Grok offers no
+#: per-tool allowlist, so a non-writing role's only in-run restriction is
+#: the permission mode itself — dontAsk denies what it would ask about, and
+#: the route then advances by failover, as it did before bypassPermissions.
+_WRITING_ROLES = frozenset({"implementer", "entrega", "adversary"})
+
+
+def permission_mode_for(role: str) -> str:
+    """The narrowest --permission-mode that lets one stage role work."""
+    return "bypassPermissions" if role in _WRITING_ROLES else "dontAsk"
+
+
 class GrokAdapter(SubscriptionAdapter):
     """Run one stage on the grok.com subscription, sandboxed, prompt by file."""
 
@@ -126,7 +139,7 @@ class GrokAdapter(SubscriptionAdapter):
             "--output-format",
             "streaming-json",
             "--permission-mode",
-            "bypassPermissions",
+            permission_mode_for(request.role),
             "--sandbox",
             "workspace",
             "--model",

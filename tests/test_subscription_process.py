@@ -247,6 +247,23 @@ class SafeProcessTests(unittest.TestCase):
                 runner=FakeRunner(),
             )
 
+    def test_assignment_prompt_is_redacted_before_the_output_cap(self):
+        # Redaction after the cap cannot work: the cap drops the middle of
+        # stderr, so a long echoed assignment loses its start and the literal
+        # prompt no longer matches, leaving its tail in the evidence. The
+        # prompt must be a secret of run_cli itself, redacted before _cap.
+        prompt = "Assign the fixture deadline. " * 400  # ~11,600 chars
+        runner = FakeRunner(
+            stdout="", stderr="v" * 11_000 + prompt + " vendor died", returncode=1
+        )
+
+        evidence = run_cli(["vendor"], prompt, self.workspace, timeout=5, runner=runner)
+
+        windows = [prompt[i : i + 40] for i in range(0, len(prompt) - 40, 97)]
+        for window in windows:
+            self.assertNotIn(window, evidence.stderr)
+        self.assertIn("vendor died", evidence.stderr)
+
     def test_output_is_capped_to_bound_evidence_size(self):
         runner = FakeRunner(stdout="x" * 200_000, stderr="y" * 200_000)
 

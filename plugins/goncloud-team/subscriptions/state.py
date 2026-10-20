@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS subscription_attempts (
     owner TEXT NOT NULL DEFAULT '',
     terminal INTEGER NOT NULL DEFAULT 0,
     disposition TEXT NOT NULL DEFAULT 'executed',
+    mutated INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(workflow_id, stage_id, slot, attempt)
 );
@@ -87,6 +88,7 @@ _ATTEMPT_COLUMNS = (
     "status",
     "terminal",
     "disposition",
+    "mutated",
     "generation",
     "created_at",
 )
@@ -187,6 +189,13 @@ class SubscriptionStateStore:
             if "generation" not in columns:
                 conn.execute(
                     "ALTER TABLE subscription_attempts ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mutated" not in columns:
+                # The attempt's own mutation verdict, recorded by the live
+                # run that read it. NULL on rows written before it existed:
+                # their recovery falls back to the old recomputation.
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN mutated INTEGER"
                 )
             health_columns = {
                 row["name"]
@@ -441,6 +450,7 @@ class SubscriptionStateStore:
         status: str = "completed",
         owner: str = "",
         disposition: str = "executed",
+        mutated: Optional[bool] = None,
     ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -450,8 +460,8 @@ class SubscriptionStateStore:
                 "INSERT INTO subscription_attempts "
                 "(workflow_id, stage_id, slot, attempt, adapter, model, "
                 "billing_mode, mode, success, failure, session_id, "
-                "start_revision, end_revision, changed_files, detail, status, owner, disposition, generation) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "start_revision, end_revision, changed_files, detail, status, owner, disposition, generation, mutated) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     workflow_id,
                     stage_id,
@@ -472,6 +482,7 @@ class SubscriptionStateStore:
                     owner,
                     disposition,
                     self._generation_locked(conn, workflow_id, stage_id),
+                    None if mutated is None else int(mutated),
                 ),
             )
             conn.commit()
@@ -491,6 +502,7 @@ class SubscriptionStateStore:
         changed_files: list[str],
         detail: str,
         disposition: str = "executed",
+        mutated: Optional[bool] = None,
     ) -> bool:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -498,7 +510,8 @@ class SubscriptionStateStore:
                 return False
             updated = conn.execute(
                 "UPDATE subscription_attempts SET success = ?, failure = ?, session_id = ?, "
-                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed', disposition = ? "
+                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed', disposition = ?, "
+                "mutated = COALESCE(?, mutated) "
                 "WHERE workflow_id = ? AND stage_id = ? AND slot = ? AND attempt = ? "
                 "AND owner = ? AND status = 'running'",
                 (
@@ -509,6 +522,7 @@ class SubscriptionStateStore:
                     json.dumps(redact_data(sorted(changed_files)), ensure_ascii=False),
                     redact_text(detail),
                     disposition,
+                    None if mutated is None else int(mutated),
                     workflow_id,
                     stage_id,
                     slot,
