@@ -37,7 +37,9 @@ TOPE_CADENAS = 5
 TOPE_ARCHIVO = 2_000_000
 
 # Frases tipicas, ya sin acentos ni signos. El segundo valor exige "?": sin el,
-# "sigue" o "ya quedo" son ordenes o afirmaciones, no preguntas.
+# "sigue" o "ya quedo" son ordenes o afirmaciones, no preguntas. Fuera de la
+# regla a proposito: "seguimos", "va", "vamos", "ya esta", "ya va" (tambien
+# pueden ser "si, continua"): sin mas contexto no son avance.
 _CORTAS = (
     (
         re.compile(
@@ -50,15 +52,15 @@ _CORTAS = (
     ),
     (
         re.compile(
-            r"(?:y )?(?:sigue|siguen|sigues|seguimos|continua|continuan|avanza|"
-            r"avanzan|va|vamos)(?: (?:vivo|viva|eso|todo|ahi|en pie))?"
+            r"(?:y )?(?:sigue|siguen|sigues|continua|continuan|avanza|avanzan)"
+            r"(?: (?:vivo|viva|eso|todo|ahi|en pie))?"
         ),
         True,
     ),
     (
         re.compile(
-            r"(?:y )?ya (?:quedo|quedaron|termino|terminaron|acabo|esta|estan|"
-            r"salio|va|vamos)(?: (?:todo|listo|listos|eso|ya))?"
+            r"(?:y )?ya (?:quedo|quedaron|termino|terminaron|acabo|salio)"
+            r"(?: (?:todo|listo|listos|eso|ya))?"
         ),
         True,
     ),
@@ -108,6 +110,7 @@ _ROLES = {
 }
 _ACTIVAS = ("running", "pending")
 _DETENIDAS = ("blocked", "paused", "waiting", "error")
+_TERMINALES = ("delivered", "closed", "error")
 
 
 def _plano(texto: str) -> str:
@@ -133,6 +136,15 @@ def clasificar_texto(texto) -> str | None:
     if _OLOR.search(base) or (pregunta and _OLOR_DEBIL.search(base)):
         return "consultar"
     return None
+
+
+_ID_CADENA = re.compile(r"\bt_[a-z0-9]+\b")
+
+
+def id_en_texto(texto) -> str | None:
+    """La cadena que nombra el mensaje ("como va la cadena t_x"), o None."""
+    encontrada = _ID_CADENA.search(_plano(texto))
+    return encontrada.group(0) if encontrada else None
 
 
 # --- lectura del estado real -------------------------------------------------
@@ -162,8 +174,13 @@ def _abrir_seguro(ruta):
         return None
 
 
-def _marcas(carpetas, ahora: float, horas: int):
-    """Resultados/marcas de driver tocados en las ultimas `horas`, uno por cadena."""
+def _marcas(carpetas, ahora: float, horas, solo=None):
+    """Resultados/marcas de driver, uno por cadena.
+
+    La ventana de `horas` aplica solo a las terminales (entregada, cerrada, con
+    error): una cadena viva o detenida cuenta por vieja que sea su marca.
+    `horas=None` quita la ventana; `solo` deja una sola cadena.
+    """
     vistas: dict = {}
     for carpeta in carpetas:
         try:
@@ -173,10 +190,7 @@ def _marcas(carpetas, ahora: float, horas: int):
         for archivo in archivos:
             try:
                 estado = archivo.stat()
-                if (
-                    estado.st_size > TOPE_ARCHIVO
-                    or ahora - estado.st_mtime > horas * 3600
-                ):
+                if estado.st_size > TOPE_ARCHIVO:
                     continue
                 datos = json.loads(archivo.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -184,6 +198,14 @@ def _marcas(carpetas, ahora: float, horas: int):
             if not isinstance(datos, dict):
                 continue
             cadena = str(datos.get("workflow_id") or archivo.stem)
+            if solo and cadena.lower() != solo:
+                continue
+            if (
+                horas is not None
+                and str(datos.get("outcome") or "") in _TERMINALES
+                and ahora - estado.st_mtime > horas * 3600
+            ):
+                continue
             datos["_mtime"] = estado.st_mtime
             if cadena not in vistas or vistas[cadena]["_mtime"] < estado.st_mtime:
                 vistas[cadena] = {**datos, "workflow_id": cadena}
@@ -231,15 +253,34 @@ def _una_linea(texto, tope: int = 100) -> str:
     return " ".join(redact_text(str(texto or ""), ()).split())[:tope]
 
 
+def _motivo_de_etapas(marca) -> str:
+    """El resumen de la etapa que se trabo, tal como lo dejo el resultado."""
+    for grupo in ("stages", "corrective_stages"):
+        etapas = marca.get(grupo)
+        if not isinstance(etapas, dict):
+            continue
+        for etapa in etapas.values():
+            if not isinstance(etapa, dict) or etapa.get("status") != "blocked":
+                continue
+            terminal = etapa.get("terminal")
+            resumen = terminal.get("summary") if isinstance(terminal, dict) else None
+            if resumen:
+                return str(resumen)
+    return ""
+
+
 def leer_cadenas(
-    carpetas, db_router, kanban, ahora: float, vivo, horas=HORAS_RECIENTES
+    carpetas, db_router, kanban, ahora: float, vivo, horas=HORAS_RECIENTES, solo=None
 ):
-    """Las cadenas activas o recientes con lo que hace falta para contarlas."""
+    """Las cadenas activas o recientes con lo que hace falta para contarlas.
+
+    `solo` (un id de cadena) deja esa cadena, sin ventana de tiempo.
+    """
     router = _abrir_seguro(db_router)
     kanban_conn = _abrir_seguro(kanban)
     cadenas = []
     try:
-        for marca in _marcas(carpetas, ahora, horas):
+        for marca in _marcas(carpetas, ahora, None if solo else horas, solo):
             cadena = marca["workflow_id"]
             salida = str(marca.get("outcome") or "")
             intento = None
@@ -264,24 +305,28 @@ def leer_cadenas(
                 "motivo": None,
                 "vivo": None,
             }
-            if intento:
-                desde = _epoch(intento[5])
-                if desde is not None:
-                    info["minutos"] = max(0, int((ahora - desde) // 60))
+            desde = _epoch(intento[5]) if intento else None
             if salida == "running":
                 try:
                     info["vivo"] = bool(vivo(dict(marca)))
                 except Exception:  # noqa: BLE001 - sin comprobar: se dice, no se inventa
                     info["vivo"] = None
             if salida in _DETENIDAS or (salida == "running" and info["vivo"] is False):
+                # El tiempo cuenta desde la detencion (la marca), no desde que
+                # arranco la etapa.
+                if intento:
+                    desde = max(desde or 0, marca["_mtime"])
                 info["motivo"] = (
                     _una_linea(
                         (intento[4] if intento else None)
+                        or _motivo_de_etapas(marca)
                         or marca.get("motivo")
                         or marca.get("error")
                     )
                     or None
                 )
+            if desde is not None:
+                info["minutos"] = max(0, int((ahora - desde) // 60))
             cadenas.append(info)
     finally:
         for conn in (router, kanban_conn):
@@ -305,8 +350,13 @@ def _hace(minutos) -> str:
 
 
 def _orden(info) -> tuple:
+    salida = info["salida"]
     grupo = (
-        0 if info["salida"] in _ACTIVAS else 1 if info["salida"] in _DETENIDAS else 2
+        0
+        if salida in _ACTIVAS
+        else 1
+        if salida in _DETENIDAS and salida not in _TERMINALES
+        else 2
     )
     return (grupo, -info["mtime"])
 
@@ -337,18 +387,27 @@ def _linea(info, ahora: float) -> str:
         estado = "en pausa" if salida in ("paused", "waiting") else "trabada"
         motivo = f" Motivo: {info['motivo']}." if info["motivo"] else ""
         return f"• {nombre}: {estado} en {etapa}{modelo}{tiempo}.{motivo}"
-    if salida == "delivered":
+    if salida in ("delivered", "closed"):
         hace = _hace(max(0, int((ahora - info["mtime"]) // 60)))
-        return f"• {nombre}: entregada hace {hace}."
+        cierre = "entregada" if salida == "delivered" else "cerrada"
+        return f"• {nombre}: {cierre} hace {hace}."
     return f"• {nombre}: en curso en {etapa}{modelo}{tiempo}."
 
 
-def armar_respuesta(cadenas, ahora: float) -> str:
-    """El mensaje para David: corto, en español y sin tecnicismos."""
+def armar_respuesta(cadenas, ahora: float, solo=None) -> str:
+    """El mensaje para David: corto, en español y sin tecnicismos.
+
+    El tope recorta solo las terminales: una cadena viva o detenida siempre sale.
+    """
     if not cadenas:
+        if solo:
+            return f"No encontré la cadena {solo}."
         return f"No hay cadenas activas ni recientes (últimas {HORAS_RECIENTES} h)."
     ordenadas = sorted(cadenas, key=_orden)
-    lineas = [_linea(info, ahora) for info in ordenadas[:TOPE_CADENAS]]
-    if len(ordenadas) > TOPE_CADENAS:
-        lineas.append(f"… y {len(ordenadas) - TOPE_CADENAS} más.")
+    vivas = [i for i in ordenadas if i["salida"] not in _TERMINALES]
+    terminales = [i for i in ordenadas if i["salida"] in _TERMINALES]
+    cupo = max(0, TOPE_CADENAS - len(vivas))
+    lineas = [_linea(info, ahora) for info in (*vivas, *terminales[:cupo])]
+    if len(terminales) > cupo:
+        lineas.append(f"… y {len(terminales) - cupo} más ya terminadas.")
     return "Así van las cadenas:\n" + "\n".join(lineas)

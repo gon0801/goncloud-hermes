@@ -101,6 +101,8 @@ CLAVE_VISIBLE = "jev_auto_visible"
 APAGADORES = frozenset({"0", "false", "no", "off"})
 VAR_AVANCE = "GONCLOUD_JEV_AVANCE_RAPIDO"
 CLAVE_AVANCE = "jev_avance_rapido"
+TTL_AVANCE_S = 3600  # un "como va" contestado hace mas que esto ya no es contexto
+TOPE_AVANCE_CTX = 1200  # lo que cabe de la respuesta enviada en el siguiente turno
 TOPE_AVANCE_S = 2.0  # tope total de la respuesta rapida; pasado esto corre el LLM
 TOPE_BUCLES_POR_TURNO = 3  # consultas de bucle por turno: ahorro
 TOPE_FICHA = 1500
@@ -438,6 +440,8 @@ class JevAuto:
         self._cierres_fin: set = set()  # turnos que ya evaluaron quedo/seguir/bloqueado
         self._correcciones: dict = {}  # session_id -> {texto, sugerido, despachos, ...}
         self._turno_de: dict = {}  # session_id -> turn_id de la ultima herramienta
+        # user_id -> [(epoch, pregunta, respuesta)] de "como va" ya contestados sin LLM
+        self._avance_enviado: dict = {}
         self.hilos: list = []  # hilos de fondo (bucle, fin); las pruebas los esperan
 
     def _nuevo_turno(self, session_id: str) -> None:
@@ -470,7 +474,10 @@ class JevAuto:
         if llave in self._clasificados:
             return self._contexto_clasificado(llave)
         self._nuevo_turno(sesion)
-        avisos = self._avisos.pop(sesion, [])
+        avisos = [
+            *self._avance_contexto(str(kwargs.get("sender_id") or "")),
+            *self._avisos.pop(sesion, []),
+        ]
         texto = jev_texto.limpiar(mensaje)
         # La senal explicita de David se consume antes del corte de ahorro:
         # confirma el pendiente (con su texto original) y este mensaje ya no
@@ -499,6 +506,16 @@ class JevAuto:
         ]
         self._podar()
         return {"context": self._contexto(llave, veredicto)}
+
+    def _avance_contexto(self, usuario: str) -> list:
+        """Lo que JEV ya contesto sin LLM a este usuario, para que el LLM no lo pierda."""
+        cola = self._avance_enviado.pop(usuario, [])
+        vigentes = [x for x in cola if time.time() - x[0] <= TTL_AVANCE_S]
+        return [
+            f"[JEV] Ya respondí sin LLM a «{pregunta[:120]}» con esto "
+            f"(no lo repitas):\n{respuesta[:TOPE_AVANCE_CTX]}"
+            for _, pregunta, respuesta in vigentes
+        ]
 
     def _contexto_clasificado(self, llave):
         lineas = self._clasificados.get(llave) or []
@@ -921,6 +938,13 @@ class JevAuto:
             )
             if respuesta is None:
                 return None
+            # handled sale antes del transcript de la sesion: el LLM no veria
+            # este cruce. El siguiente turno lo recibe como contexto.
+            usuario = origen.get("user_id") if isinstance(origen, dict) else None
+            cola = self._avance_enviado.setdefault(str(usuario or ""), [])
+            cola.append((time.time(), texto, respuesta))
+            del cola[:-3]
+            self._podar()
             return {"action": "handled", "reply": respuesta}
         except Exception:
             return None  # JEV es un apoyo: ningun fallo suyo bloquea el turno
@@ -942,14 +966,16 @@ class JevAuto:
                 if decision.opcion != "avance" or not decision.sigue:
                     return None, confianza, "duda", None
             ahora = float(self.avance.get("ahora") or time.time())
+            solo = jev_avance.id_en_texto(texto)
             cadenas = jev_avance.leer_cadenas(
                 self._carpetas_avance(),
                 self.avance["db"] if "db" in self.avance else _db_del_router(),
                 self.kanban or self._kanban_de_avance(),
                 ahora,
                 self.avance.get("vivo") or _driver_vivo,
+                solo=solo,
             )
-            cuerpo = jev_avance.armar_respuesta(cadenas, ahora)
+            cuerpo = jev_avance.armar_respuesta(cadenas, ahora, solo=solo)
             pie = f"JEV: respuesta rápida (confianza {confianza:.2f})"
             return f"{cuerpo}\n\n{pie}", confianza, None, len(cadenas)
         except Exception as exc:  # noqa: BLE001 - fail-open: el LLM responde
@@ -983,6 +1009,7 @@ class JevAuto:
         """Una linea JSONL por consulta candidata: mide cuantos se resolvieron sin LLM."""
         entrada = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "respuesta": respuesta,
             "resuelto": respuesta is not None,
             "via": via,
             "confianza": confianza,
@@ -1018,6 +1045,7 @@ class JevAuto:
             self._ultima,
             self._bucles_turno,
             self._turno_de,
+            self._avance_enviado,
         ):
             while len(libro) > 16:
                 libro.pop(next(iter(libro)))

@@ -49,6 +49,12 @@ NO_INTERCEPTAR = (
     "cierra la cadena",
     "Sigue",
     "Como va la cadena? Cierrala si ya acabo",
+    # ambiguas: pueden ser "si, continua"; no son avance sin mas contexto
+    "¿Seguimos?",
+    "¿Va?",
+    "Va?",
+    "¿Vamos?",
+    "¿Ya está?",
 )
 
 
@@ -173,6 +179,7 @@ class ClasificacionTests(unittest.TestCase):
 class HookTests(Base):
     def test_cada_frase_de_avance_responde_sin_llm_y_sin_consultar_a_jev(self):
         self.cadena("t_a1", "running", rol="implementer")
+        self.cadena("t_abc123", "running", rol="implementer")
         auto = self.auto()
         for frase in AVANCE_REAL:
             respuesta = self.pregunta(auto, frase)
@@ -266,6 +273,42 @@ class HookTests(Base):
         )
         self.assertNotIn("Como va", json.dumps(linea))
 
+    def test_la_respuesta_enviada_queda_en_el_registro_y_llega_al_siguiente_turno(self):
+        self.cadena("t_a1", "running", rol="implementer")
+        auto = self.auto()
+        respuesta = self.pregunta(
+            auto, "Como va?", source={"chat_type": "dm", "user_id": "u1"}
+        )["reply"]
+        self.assertEqual(self.registro()[-1]["respuesta"], respuesta)
+        # otro usuario no recibe ese contexto
+        ajeno = auto.pre_llm_call(
+            user_message="ok dale",
+            session_id="s",
+            turn_id="t0",
+            platform="telegram",
+            sender_id="u2",
+        )
+        self.assertIsNone(ajeno)
+        contexto = auto.pre_llm_call(
+            user_message="ok dale",
+            session_id="s",
+            turn_id="t1",
+            platform="telegram",
+            sender_id="u1",
+        )["context"]
+        self.assertIn("Como va?", contexto)
+        self.assertIn(respuesta.splitlines()[1], contexto)
+        # se entrega una sola vez
+        self.assertIsNone(
+            auto.pre_llm_call(
+                user_message="ok dale",
+                session_id="s",
+                turn_id="t2",
+                platform="telegram",
+                sender_id="u1",
+            )
+        )
+
     def test_es_de_solo_lectura(self):
         self.cadena("t_a1", "running", rol="implementer")
         self.cadena("t_a2", "delivered", edad_min=35)
@@ -328,7 +371,7 @@ class RespuestaTests(Base):
         self.assertIn("entregada hace 35 min", reply)
         self.assertNotIn("t_viejo", reply)
 
-    def test_orden_activas_primero_y_tope(self):
+    def test_orden_activas_primero_y_el_tope_solo_recorta_terminales(self):
         self.cadena("t_e", "delivered", repo="C:/x/Entregada", edad_min=5)
         for i in range(6):
             self.cadena(
@@ -336,8 +379,69 @@ class RespuestaTests(Base):
             )
         reply = self.texto()
         self.assertLess(reply.index("Repo0"), reply.index("Repo1"))
+        for i in range(6):  # ninguna cadena viva se oculta por el tope
+            self.assertIn(f"Repo{i}", reply)
         self.assertNotIn("Entregada", reply)
-        self.assertIn("y 2 más", reply)
+        self.assertIn("y 1 más ya terminadas", reply)
+
+    def test_cadena_no_terminal_vieja_no_desaparece(self):
+        for wf, salida in (
+            ("t_v1", "running"),
+            ("t_v2", "blocked"),
+            ("t_v3", "paused"),
+            ("t_v4", "waiting"),
+        ):
+            self.cadena(
+                wf, salida, repo=f"C:/x/Vieja{wf}", rol="scout", edad_min=30 * 60
+            )
+        self.cadena("t_t1", "delivered", repo="C:/x/TermVieja", edad_min=30 * 60)
+        self.cadena("t_t2", "closed", repo="C:/x/CerrVieja", edad_min=30 * 60)
+        self.cadena("t_t3", "error", repo="C:/x/ErrVieja", edad_min=30 * 60)
+        reply = self.texto()
+        for wf in ("t_v1", "t_v2", "t_v3", "t_v4"):
+            self.assertIn(f"Vieja{wf}", reply)
+        self.assertNotIn("No hay cadenas", reply)
+        for terminal in ("TermVieja", "CerrVieja", "ErrVieja"):
+            self.assertNotIn(terminal, reply)
+
+    def test_motivo_de_la_traba_sale_del_resumen_de_la_etapa(self):
+        self.cadena(
+            "t_a1",
+            "blocked",
+            rol="verifier",
+            extra={
+                "stages": {
+                    "verifier": {
+                        "status": "blocked",
+                        "terminal": {"summary": "faltan\npermisos de red"},
+                    }
+                }
+            },
+        )
+        self.assertIn("Motivo: faltan permisos de red.", self.texto())
+
+    def test_pausada_cuenta_desde_la_detencion_no_desde_el_inicio_de_la_etapa(self):
+        self.cadena("t_p1", "paused", rol="scout", minutos=300, edad_min=7)
+        reply = self.texto()
+        self.assertIn("desde hace 7 min", reply)
+        self.assertNotIn("5 h", reply)
+
+    def test_como_va_la_cadena_x_muestra_solo_esa(self):
+        self.cadena("t_uno", "running", repo="C:/x/RepoUno", rol="scout")
+        self.cadena("t_dos", "running", repo="C:/x/RepoDos", rol="scout")
+        self.cadena("t_viejo", "delivered", repo="C:/x/RepoViejo", edad_min=40 * 60)
+        auto = self.auto()
+        reply = self.pregunta(auto, "como va la cadena t_uno?")["reply"]
+        self.assertIn("RepoUno", reply)
+        self.assertNotIn("RepoDos", reply)
+        # la cadena nombrada sale aunque sea terminal y vieja
+        self.assertIn(
+            "RepoViejo", self.pregunta(auto, "como va la cadena t_viejo?")["reply"]
+        )
+        self.assertIn(
+            "No encontré la cadena t_nada",
+            self.pregunta(auto, "como va la cadena t_nada?")["reply"],
+        )
 
     def test_sin_kanban_ni_router_usa_el_id_y_no_inventa(self):
         self.cadena("t_a1", "running")
