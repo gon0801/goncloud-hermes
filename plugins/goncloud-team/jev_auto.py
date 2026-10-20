@@ -14,7 +14,9 @@ patches/claw: este modulo jamas lo parcha ni lo reimplementa), lanzada por
 `uv run --project <plugin>` o, sin uv, por el Python del proceso con
 <plugin>/src en PYTHONPATH. El texto del mensaje viaja por stdin (nunca por
 argv, que queda visible en la lista de procesos) y la respuesta del hijo es
-un JSON minimo: sugerencia, decision y nada mas.
+un JSON minimo: sugerencia, decision, gate y fit (fits[sugerida]) y nada
+mas. Con fit >= UMBRAL_SKILL_FIT la linea dice "(cárgala)"; debajo o sin
+fit dice "posible ...: decide tú" y el pie marca la skill como dudosa.
 
 La llave JEV_TYPESAFE_API_KEY se resuelve en tiempo de ejecucion como hace
 el parche de jev (agent.secret_scope.get_secret con os.environ de respaldo)
@@ -44,6 +46,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
@@ -87,6 +90,7 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
 DIRECTOR = "claw"
 PLATAFORMAS = frozenset({"telegram", "cli"})
 TOPE_S = 8.0
+UMBRAL_SKILL_FIT = 0.6  # provisional: fit >= esto se carga; debajo decide claw
 TOPE_MENSAJE = 4000
 ROUTER = "jev-skill-router-mcp"
 VAR_VISIBLE = "GONCLOUD_JEV_AUTO_VISIBLE"
@@ -122,9 +126,14 @@ try:
     texto = sys.stdin.buffer.read().decode("utf-8")
     from jev_skill_router.mcp_server import load_roster, suggest
     datos = suggest(texto, load_roster())
+    sugerida = datos.get("suggested")
+    fits = datos.get("fits")
+    fit = fits.get(sugerida) if isinstance(fits, dict) and sugerida else None
     print(json.dumps({
-        "suggested": datos.get("suggested"),
+        "suggested": sugerida,
         "decision": datos.get("decision"),
+        "gate": datos.get("gate"),
+        "fit": fit,
     }))
 except Exception as exc:
     print(json.dumps({"error": str(exc)[:200]}))
@@ -137,6 +146,21 @@ def _acotar(texto, tope: int = 80) -> str:
     """Un motivo de una linea y de largo acotado, para contexto y registro."""
     limpio = " ".join(str(texto).split())
     return limpio[:tope]
+
+
+def _probabilidad(valor) -> float | None:
+    """gate/fit del hijo: numero finito en [0, 1]; cualquier otra cosa, None."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return None
+    numero = float(valor)
+    if not math.isfinite(numero):
+        return None
+    return max(0.0, min(1.0, numero))
+
+
+def _fit_confiable(veredicto: dict) -> bool:
+    fit = _probabilidad(veredicto.get("fit"))
+    return fit is not None and fit >= UMBRAL_SKILL_FIT
 
 
 def _hogar_perfil() -> Path:
@@ -248,7 +272,7 @@ def _comando_y_ambiente(raiz: Path, hogar, clave: str):
 
 
 def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
-    """Una consulta al router: {estado, skill, motivo, ms}. Nunca lanza."""
+    """Una consulta al router: {estado, skill, motivo, ms, gate, fit}. Nunca lanza."""
     inicio = time.monotonic()
 
     def fallo(motivo: str) -> dict:
@@ -257,6 +281,8 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
             "skill": None,
             "motivo": motivo,
             "ms": int((time.monotonic() - inicio) * 1000),
+            "gate": None,
+            "fit": None,
         }
 
     # El home se resuelve UNA vez: con el van la ubicacion del plugin y el
@@ -316,18 +342,23 @@ def _ejecutar_router(texto: str, hogar, tope_s: float = TOPE_S) -> dict:
     if isinstance(datos, dict) and datos.get("error"):
         return fallo(_acotar(datos["error"]))
     sugerida = datos.get("suggested") if isinstance(datos, dict) else None
+    gate = _probabilidad(datos.get("gate")) if isinstance(datos, dict) else None
     if isinstance(datos, dict) and datos.get("decision") == "suggest" and sugerida:
         return {
             "estado": "ok",
             "skill": str(sugerida),
             "motivo": None,
             "ms": int((time.monotonic() - inicio) * 1000),
+            "gate": gate,
+            "fit": _probabilidad(datos.get("fit")),
         }
     return {
         "estado": "vacio",
         "skill": None,
         "motivo": None,
         "ms": int((time.monotonic() - inicio) * 1000),
+        "gate": gate,
+        "fit": None,
     }
 
 
@@ -335,7 +366,14 @@ def _linea_contexto(veredicto: dict) -> str:
     """La linea que entra al mensaje del usuario de ese turno."""
     estado = veredicto.get("estado")
     if estado == "ok":
-        return f"JEV skill_select: {veredicto.get('skill')} (cárgala)"
+        if _fit_confiable(veredicto):
+            return f"JEV skill_select: {veredicto.get('skill')} (cárgala)"
+        fit = _probabilidad(veredicto.get("fit"))
+        fit_txt = f"{fit:.2f}" if fit is not None else "?"
+        return (
+            f"JEV skill_select: posible {veredicto.get('skill')} "
+            f"(fit {fit_txt}): decide tú"
+        )
     if estado == "vacio":
         return "JEV skill_select: ninguna"
     return f"JEV skill_select no respondió ({veredicto.get('motivo')}): decide tú"
@@ -345,7 +383,9 @@ def _pie_visible(veredicto: dict) -> str:
     """La linea que se agrega al final de la respuesta del mismo turno."""
     estado = veredicto.get("estado")
     if estado == "ok":
-        return f"JEV: {veredicto.get('skill')}"
+        if _fit_confiable(veredicto):
+            return f"JEV: {veredicto.get('skill')}"
+        return f"JEV: {veredicto.get('skill')}? (dudosa)"
     if estado == "vacio":
         return "JEV: ninguna"
     return "JEV: no respondió"
@@ -813,6 +853,8 @@ class JevAuto:
         veredicto.setdefault("skill", None)
         veredicto.setdefault("motivo", None)
         veredicto.setdefault("ms", 0)
+        veredicto.setdefault("gate", None)
+        veredicto.setdefault("fit", None)
         return veredicto
 
     def _pie_encendido(self) -> bool:
@@ -849,6 +891,8 @@ class JevAuto:
             "platform": plataforma,
             "consultado": veredicto.get("estado") != "fallo",
             "resultado": _resultado(veredicto),
+            "gate": _probabilidad(veredicto.get("gate")),
+            "fit": _probabilidad(veredicto.get("fit")),
             "error": (
                 veredicto.get("motivo") if veredicto.get("estado") == "fallo" else None
             ),

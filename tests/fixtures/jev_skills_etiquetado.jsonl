@@ -1,0 +1,34 @@
+{"mensaje": "hay recolección de Amazon hoy en la tarde?", "esperado": "amazon-seller-orders"}
+{"mensaje": "cuántas órdenes de flex tengo para mañana", "esperado": "amazon-seller-orders"}
+{"mensaje": "contéstale a los compradores de Mercado Libre", "esperado": "mercadolibre"}
+{"mensaje": "cómo van las ventas en Mercado Libre esta semana", "esperado": "mercadolibre-api"}
+{"mensaje": "entró un pedido personalizado nuevo, ¿lo ves?", "esperado": "amazon-seller-orders"}
+{"mensaje": "hay personalizadas por hacer hoy?", "esperado": "ninguna"}
+{"mensaje": "revisa mi bandeja y dime qué es importante", "esperado": "email-inbox-triage"}
+{"mensaje": "bórrame todos los newsletters del correo", "esperado": "Limpieza de inbox Gmail"}
+{"mensaje": "cuánto inventario queda en Odoo de la taza blanca", "esperado": "odoo"}
+{"mensaje": "hazme una cotización en Odoo para 50 tazas", "esperado": "odoo"}
+{"mensaje": "el contenedor de n8n se cayó, revísalo en el servidor", "esperado": "goncloud-machines"}
+{"mensaje": "arregla el bug del bridge que no manda los mensajes", "esperado": "systematic-debugging"}
+{"mensaje": "pon un filtro por fecha en la pantalla de fotos", "esperado": "ninguna"}
+{"mensaje": "cambia el color del botón de pagar en Orbit", "esperado": "ninguna"}
+{"mensaje": "haz un plugin para la API de Skydropx", "esperado": "wrap-api-as-plugin"}
+{"mensaje": "quiero diseñar un bot que conteste WhatsApp", "esperado": "architect"}
+{"mensaje": "cómo va la cadena que lanzaste hace rato", "esperado": "goncloud-local-chains"}
+{"mensaje": "ok, dale con lo que propusiste ayer", "esperado": "recall"}
+{"mensaje": "buenos días, qué tenemos pendiente hoy", "esperado": "ninguna"}
+{"mensaje": "revisa cómo está el mercado de arras", "esperado": "tavily-web"}
+{"mensaje": "preguntas pendientes de MeLi", "esperado": "mercadolibre-api"}
+{"mensaje": "llegó una personalizada", "esperado": "ninguna"}
+{"mensaje": "agrega un botón en la app de fotos", "esperado": "ninguna"}
+{"mensaje": "revisa las ordenes flex para hoy y las recolecciones de Sell", "esperado": "amazon-seller-orders"}
+{"mensaje": "revisa los correos de Gmail de hoy", "esperado": "email-inbox-triage"}
+{"mensaje": "limpia las promos y newsletters de Gmail", "esperado": "Limpieza de inbox Gmail"}
+{"mensaje": "cuantas cajas quedan en Odoo", "esperado": "odoo"}
+{"mensaje": "revisa el servidor goncloud por SSH, contenedores y logs", "esperado": "goncloud-machines"}
+{"mensaje": "hay errores en el bridge de OpenClaw, revisalo", "esperado": "systematic-debugging"}
+{"mensaje": "¿cómo va lo que te encargue ayer?", "esperado": "recall"}
+{"mensaje": "revisa los crons de Hermes que fallaron anoche", "esperado": "hermes-cron-ops"}
+{"mensaje": "sube los cambios a git en todas las máquinas", "esperado": "multi-machine-repo-sync"}
+{"mensaje": "humaniza este texto para un correo a un cliente", "esperado": "humanizer"}
+{"mensaje": "recuérdame mañana a las 9 pagar la luz", "esperado": "apple-reminders"}
