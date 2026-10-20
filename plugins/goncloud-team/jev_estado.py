@@ -98,10 +98,11 @@ def _relevante(conn, tarea) -> str | None:
 def _reporte(conn, tarea_id: str, payload) -> str:
     """Lo que la tarjeta dijo al terminar, segun el kanban real.
 
-    No hay columnas summary/error en task_runs: el resultado queda en
-    tasks.result, la corrida cierra con su metadata (el "terminal" de
-    goncloud_local) y el evento trae payload ({"result": ...} al
-    completar, {"reason": ..., "kind": ...} al bloquear).
+    El resumen de goncloud_local vive en task_runs.metadata (el
+    "terminal"), aunque el esquema real tambien tenga summary/error en
+    task_runs: el resultado queda en tasks.result y el evento trae
+    payload ({"result": ...} al completar, {"reason": ..., "kind": ...}
+    al bloquear).
     """
     partes = []
     fila = conn.execute("SELECT result FROM tasks WHERE id = ?", (tarea_id,)).fetchone()

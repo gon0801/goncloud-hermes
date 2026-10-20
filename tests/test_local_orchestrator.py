@@ -2170,6 +2170,12 @@ class LocalCliTests(unittest.TestCase):
         self.cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.cli)
 
+    def test_el_orquestador_del_cli_cablea_jev_en_las_etapas(self):
+        # El CLI documentado debe construir igual que _build_orchestrator:
+        # con jev_de_produccion, no con jev=None.
+        orchestrator = self.cli._orchestrator()
+        self.assertIsNotNone(orchestrator.jev)
+
     def test_stdin_is_forwarded_privately_and_stdout_is_clean_json(self):
         calls = []
 

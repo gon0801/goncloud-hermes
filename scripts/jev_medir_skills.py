@@ -40,9 +40,13 @@ def cargar_casos(ruta) -> list[dict]:
         if not linea:
             continue
         dato = json.loads(linea)
+        if not isinstance(dato, dict):
+            continue
         mensaje = dato.get("mensaje") or dato.get("texto") or dato.get("message")
         esperado = dato.get("esperado") or dato.get("skill") or dato.get("correcto")
-        casos.append({"mensaje": str(mensaje or ""), "esperado": str(esperado or "")})
+        if not mensaje or not esperado:
+            continue
+        casos.append({"mensaje": str(mensaje), "esperado": str(esperado)})
     return casos
 
 
@@ -95,7 +99,7 @@ def medir(corredor, casos: list[dict], umbrales=UMBRALES) -> dict:
                 "suggested": sugerida,
                 "gate": gate,
                 "fit": fit,
-                "acierto": (sugerida or SIN_SKILL) == esperado,
+                "acierto": error is None and (sugerida or SIN_SKILL) == esperado,
                 "error": error,
             }
         )

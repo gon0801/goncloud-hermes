@@ -3,8 +3,8 @@
 Criterios: un mensaje simulado produce skill_select + ruteo sin que el modelo
 lo pida; la etapa o tarjeta que termino (incluido blocked) trae su cierre en
 el turno siguiente; JEV caido, lento o respondiendo mal no bloquea el turno;
-el umbral 0.85 manda; cada decision deja su linea en decisiones.jsonl sin el
-texto del mensaje.
+el umbral 0.85 manda; cada decision deja su linea en decisiones.jsonl con el
+input acotado a 200 caracteres tachados y rawLen, sin llaves.
 """
 
 from __future__ import annotations
@@ -306,7 +306,7 @@ class RuteoPorMensajeTests(Base):
             respuesta, {"context": "JEV skill_select: web-navigation (cárgala)"}
         )
 
-    def test_el_registro_de_ruteo_no_lleva_el_texto_del_mensaje(self):
+    def test_el_registro_de_ruteo_lleva_el_input_acotado_y_rawlen(self):
         self.auto().pre_llm_call(**turno())
         (fila,) = self.decisiones()
         self.assertEqual(fila["pregunta"], "ruteo")
@@ -684,6 +684,38 @@ class MedirRuteoTests(Base):
         self.assertEqual(resultado["aciertos"], 3)
         self.assertEqual(resultado["sobre_umbral"], 3)
         self.assertIn("aciertos: 3/4", medir_mod.formatear(resultado))
+
+    def test_una_respuesta_sin_confianza_no_cuenta_como_acierto(self):
+        medir_mod = _cargar_medir()
+
+        def llamar(state, preguntas, timeout):
+            # choice sin confidence: _consultar la marca "sin confianza"
+            return {"answers": {"ruteo": {"type": "choice", "choice": "meli"}}}
+
+        decisor = jev_decisiones.Decisor(self.claw, llamar=llamar)
+        resultado = medir_mod.medir(
+            decisor, [{"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"}]
+        )
+        self.assertFalse(resultado["filas"][0]["acierto"])
+        self.assertEqual(resultado["aciertos"], 0)
+        self.assertIn("error: respuesta sin confianza", medir_mod.formatear(resultado))
+
+    def test_cargar_casos_salta_lineas_que_no_son_objeto_o_sin_datos(self):
+        medir_mod = _cargar_medir()
+        ruta = self.claw / "casos.jsonl"
+        ruta.write_text(
+            '{"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"}\n'
+            "42\n"
+            '["no", "objeto"]\n'
+            '{"mensaje": "sin esperado"}\n'
+            '{"esperado": "meli"}\n'
+            "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            medir_mod.cargar_casos(ruta),
+            [{"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"}],
+        )
 
 
 class RegistrarTests(Base):
