@@ -106,6 +106,12 @@ BUCLE = {
     "bucle": "se repite la misma llamada sin avanzar: un bucle",
     "avanza": "la repeticion es normal: cada llamada trae algo distinto",
 }
+AVANCES = {
+    "avance": "David solo pregunta como va, si sigue o si ya quedo el trabajo en "
+    "curso (las cadenas); no pide hacer, cambiar ni explicar nada",
+    "otra": "pide algo mas que el estado: hacer, cerrar, arreglar, explicar, "
+    "decidir, o habla de otro tema",
+}
 UMBRAL_BUCLE = 0.9
 N_EJEMPLOS = 15
 TOPE_CORRECCIONES = 200  # lineas del archivo; pasado esto se rota
@@ -364,6 +370,19 @@ class Decisor:
             "elige claw para que el decida el reparto." + ejemplos_de(self.hogar),
             RUTAS,
             entrada,
+            clave=clave,
+            secretos=secretos,
+        )
+
+    def avance(self, texto: str, clave=None, secretos=None, crudo=None) -> Decision:
+        """avance | otra: solo 'avance' con confianza >= UMBRAL responde sin LLM."""
+        return self._decidir(
+            "avance",
+            "Mensaje de David al director (claw):\n" + texto,
+            "Este mensaje solo pregunta por el avance del trabajo en curso, "
+            "o pide algo mas? Ante la duda, otra.",
+            AVANCES,
+            self._entrada_texto(texto, crudo, clave, secretos),
             clave=clave,
             secretos=secretos,
         )

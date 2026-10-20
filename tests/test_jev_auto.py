@@ -1311,6 +1311,7 @@ class CableadoTests(unittest.TestCase):
         self.assertEqual(
             sorted(ctx.hooks),
             [
+                "post_gateway_admission",
                 "post_llm_call",
                 "post_tool_call",
                 "pre_llm_call",
@@ -1371,6 +1372,7 @@ class CableadoTests(unittest.TestCase):
         self.assertEqual(
             sorted(funcion.__name__ for funcion in jev),
             [
+                "post_gateway_admission",
                 "post_llm_call",
                 "post_tool_call",
                 "pre_llm_call",

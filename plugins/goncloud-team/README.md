@@ -66,6 +66,21 @@ Durably enforced by the database graph:
   environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
   with no message text (just its length and a short sha256), no key, and
   the router's `gate`/`fit` fields.
+- a `post_gateway_admission` hook (the gateway's supported consume-before-LLM
+  hook, hooks.md) answers "how is it going?" from the owner on telegram DM
+  to claw without the director's model: `jev_avance.py` reads, read-only,
+  `goncloud-local/<workflow>.json`, `subscription-router.db` and `kanban.db`
+  and writes a short Spanish status per active or recent (12 h) chain —
+  repo, stage, model, minutes in stage, driver alive, stuck reason —
+  footed `JEV: respuesta rápida (confianza X)`. Typical short phrases
+  ("Como va?", "Sigue?") match by rule; a longer message that smells like
+  status needs JEV (`Decisor.avance`) at confidence >= 0.85; action verbs
+  ("cierra", "arregla") veto it. Any doubt, error or a 2 s overrun returns
+  nothing and the normal LLM turn runs (fail-open). Off with the plugin
+  config key `jev_avance_rapido` or `GONCLOUD_JEV_AVANCE_RAPIDO=off`; each
+  candidate lands in `<claw home>/jev/avance_rapido.jsonl` (resolved, via,
+  confidence, ms; no message text). It does not fire while a turn of that
+  chat is still running (the gateway's busy lane goes first).
 - the same hook also routes the message (claw direct, one of the specialists,
   or the engineering chain) in parallel with `skill_select` and adds
   `Jev sugiere: X (conf)`; Goncloud stage cards and specialist cards that

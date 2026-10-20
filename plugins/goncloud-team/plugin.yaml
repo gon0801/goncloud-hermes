@@ -28,6 +28,7 @@ provides_hooks:
   - pre_llm_call
   - post_llm_call
   - transform_llm_output
+  - post_gateway_admission
 config_schema:
   jev_umbral:
     type: float
@@ -49,6 +50,10 @@ config_schema:
     type: bool
     default: true
     description: Interruptor del punto ticker_incidencia (transporte caído vs resultado inválido en el ticker de raíces)
+  jev_avance_rapido:
+    type: bool
+    default: true
+    description: Interruptor de la respuesta rápida de "cómo va" (post_gateway_admission; sin LLM, solo claw en Telegram DM)
   jev_registro:
     type: str
     default: ""

@@ -44,6 +44,7 @@ con tope de 2 s y fail-open (jev_decisiones.py).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -59,7 +60,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from . import jev_estado, jev_texto
+    from . import jev_avance, jev_estado, jev_texto
     from .jev_decisiones import (
         ESPECIALISTAS,
         TOPE_JEV_S,
@@ -73,6 +74,7 @@ try:
     )
     from .subscriptions.redaction import redact_text, sensitive_values
 except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
+    import jev_avance
     import jev_estado
     import jev_texto
     from jev_decisiones import (
@@ -97,6 +99,9 @@ ROUTER = "jev-skill-router-mcp"
 VAR_VISIBLE = "GONCLOUD_JEV_AUTO_VISIBLE"
 CLAVE_VISIBLE = "jev_auto_visible"
 APAGADORES = frozenset({"0", "false", "no", "off"})
+VAR_AVANCE = "GONCLOUD_JEV_AVANCE_RAPIDO"
+CLAVE_AVANCE = "jev_avance_rapido"
+TOPE_AVANCE_S = 2.0  # tope total de la respuesta rapida; pasado esto corre el LLM
 TOPE_BUCLES_POR_TURNO = 3  # consultas de bucle por turno: ahorro
 TOPE_FICHA = 1500
 # Herramientas de claw cuyo uso es un despacho (correcciones del ruteo).
@@ -405,9 +410,19 @@ class JevAuto:
     """Los dos ganchos: consultar en pre_llm_call, pie en transform_llm_output."""
 
     def __init__(
-        self, perfil, hogar=None, corredor=None, visible=None, decisor=None, kanban=None
+        self,
+        perfil,
+        hogar=None,
+        corredor=None,
+        visible=None,
+        decisor=None,
+        kanban=None,
+        avance_rapido=None,
+        avance=None,
     ):
         self.perfil = str(perfil or "")
+        self.avance_rapido = avance_rapido  # None: decide la variable de entorno
+        self.avance = avance or {}  # fuentes de la respuesta rapida (pruebas)
         self.hogar = hogar
         self.corredor = corredor or _ejecutar_router
         self.visible = visible  # None: decide la variable de entorno por turno
@@ -864,6 +879,129 @@ class JevAuto:
             return self.visible
         return os.environ.get(VAR_VISIBLE, "").strip().lower() not in APAGADORES
 
+    # --- "como va" sin LLM: post_gateway_admission ------------------------------
+
+    def _avance_encendido(self) -> bool:
+        if isinstance(self.avance_rapido, bool):
+            return self.avance_rapido
+        return os.environ.get(VAR_AVANCE, "").strip().lower() not in APAGADORES
+
+    async def post_gateway_admission(self, **kwargs):
+        """Pregunta de avance de David -> respuesta armada por codigo, sin LLM.
+
+        Fail-open: cualquier duda, error, timeout o pedido de algo mas que el
+        estado devuelve None y el turno normal del LLM corre igual.
+        """
+        try:
+            if self.perfil != DIRECTOR or not self._avance_encendido():
+                return None
+            plataforma = str(kwargs.get("platform") or "").strip().lower()
+            origen = kwargs.get("source")
+            tipo = origen.get("chat_type") if isinstance(origen, dict) else None
+            if plataforma != "telegram" or (tipo or "dm") != "dm":
+                return None
+            crudo = kwargs.get("text")
+            if not isinstance(crudo, str) or not crudo.strip():
+                return None
+            texto = jev_texto.limpiar(crudo)
+            via = jev_avance.clasificar_texto(texto)
+            if via is None:
+                return None
+            inicio = time.monotonic()
+            try:
+                respuesta, confianza, motivo, cadenas = await asyncio.wait_for(
+                    asyncio.to_thread(self._responder_avance, texto, via, len(crudo)),
+                    TOPE_AVANCE_S,
+                )
+            except asyncio.TimeoutError:
+                respuesta, confianza, motivo, cadenas = None, None, "timeout", None
+            ms = int((time.monotonic() - inicio) * 1000)
+            self._registrar_avance(
+                texto, via, respuesta, confianza, motivo, cadenas, ms
+            )
+            if respuesta is None:
+                return None
+            return {"action": "handled", "reply": respuesta}
+        except Exception:
+            return None  # JEV es un apoyo: ningun fallo suyo bloquea el turno
+
+    def _responder_avance(self, texto: str, via: str, largo: int):
+        """(respuesta|None, confianza, motivo, n_cadenas). Corre en un hilo."""
+        try:
+            confianza = 1.0
+            if via != "regla":
+                if self.decisor is None:
+                    return None, None, "sin decisor", None
+                clave, secretos = self.decisor.resuelva()
+                decision = self.decisor.avance(
+                    texto, clave=clave, secretos=secretos, crudo=largo
+                )
+                confianza = decision.confianza
+                if decision.error is not None:
+                    return None, confianza, f"jev: {decision.error}", None
+                if decision.opcion != "avance" or not decision.sigue:
+                    return None, confianza, "duda", None
+            ahora = float(self.avance.get("ahora") or time.time())
+            cadenas = jev_avance.leer_cadenas(
+                self._carpetas_avance(),
+                self.avance["db"] if "db" in self.avance else _db_del_router(),
+                self.kanban or self._kanban_de_avance(),
+                ahora,
+                self.avance.get("vivo") or _driver_vivo,
+            )
+            cuerpo = jev_avance.armar_respuesta(cadenas, ahora)
+            pie = f"JEV: respuesta rápida (confianza {confianza:.2f})"
+            return f"{cuerpo}\n\n{pie}", confianza, None, len(cadenas)
+        except Exception as exc:  # noqa: BLE001 - fail-open: el LLM responde
+            return None, None, _acotar(f"error: {exc}"), None
+
+    def _raiz_hermes(self):
+        try:
+            return _raiz_del_hogar(self._casa())
+        except Exception:
+            return None
+
+    def _kanban_de_avance(self):
+        raiz = self._raiz_hermes()
+        return jev_estado.ruta_del_kanban(raiz) if raiz is not None else None
+
+    def _carpetas_avance(self):
+        if "carpetas" in self.avance:
+            return list(self.avance["carpetas"])
+        carpetas = []
+        raiz = self._raiz_hermes()
+        if raiz is not None:
+            carpetas.append(Path(raiz) / "goncloud-local")
+        local = os.environ.get("LOCALAPPDATA")
+        carpetas.append(
+            (Path(local) / "hermes" if local else Path.home() / ".hermes")
+            / "goncloud-local"
+        )
+        return carpetas
+
+    def _registrar_avance(self, texto, via, respuesta, confianza, motivo, cadenas, ms):
+        """Una linea JSONL por consulta candidata: mide cuantos se resolvieron sin LLM."""
+        entrada = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "resuelto": respuesta is not None,
+            "via": via,
+            "confianza": confianza,
+            "motivo": motivo,
+            "cadenas": cadenas,
+            "ms": ms,
+            "msg_len": len(texto),
+            "msg_sha256": hashlib.sha256(texto.encode("utf-8")).hexdigest()[:12],
+        }
+        try:
+            ruta = self._casa() / "jev" / "avance_rapido.jsonl"
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+            with ruta.open("a", encoding="utf-8", newline="\n") as archivo:
+                archivo.write(
+                    json.dumps(entrada, ensure_ascii=False, sort_keys=True) + "\n"
+                )
+        except Exception:
+            pass  # el registro jamas rompe el turno
+
     def _podar(self) -> None:
         """Los dos libros acotados: memoria plana, sin fuga por turnos largos."""
         while len(self._pendiente) > 16:
@@ -921,6 +1059,27 @@ def _visible_de_llave(bruto) -> bool:
     return bool(bruto)
 
 
+def _db_del_router():
+    """La base del router de suscripciones (solo se lee), o None si no se sabe."""
+    try:
+        try:
+            from .subscriptions import router
+        except ImportError:
+            from subscriptions import router
+        return router.default_db_path()
+    except Exception:
+        return None
+
+
+def _driver_vivo(marca: dict) -> bool:
+    """El mismo criterio del orquestador: el pid de la marca sigue siendo el suyo."""
+    try:
+        from . import local_orchestrator
+    except ImportError:
+        import local_orchestrator
+    return local_orchestrator.driver_mark_live(marca)
+
+
 def registrar(ctx):
     """Registra los dos ganchos con el perfil del contexto; devuelve la instancia."""
     config = getattr(ctx, "plugin_config", None)
@@ -930,12 +1089,21 @@ def registrar(ctx):
     perfil = str(getattr(ctx, "profile_name", "") or "")
     # Tanda 2: TODOS los perfiles llevan decisor (clasifican y evaluan el fin);
     # solo el director rutea, cierra tarjetas y aprende de las correcciones.
-    auto = JevAuto(perfil=perfil, visible=visible, decisor=Decisor())
+    avance_rapido = None
+    if isinstance(config, dict) and CLAVE_AVANCE in config:
+        avance_rapido = _visible_de_llave(config[CLAVE_AVANCE])
+    auto = JevAuto(
+        perfil=perfil,
+        visible=visible,
+        decisor=Decisor(),
+        avance_rapido=avance_rapido,
+    )
     ctx.register_hook("pre_llm_call", auto.pre_llm_call)
     ctx.register_hook("post_llm_call", auto.post_llm_call)
     ctx.register_hook("pre_tool_call", auto.pre_tool_call)
     ctx.register_hook("post_tool_call", auto.post_tool_call)
     ctx.register_hook("transform_llm_output", auto.transform_llm_output)
+    ctx.register_hook("post_gateway_admission", auto.post_gateway_admission)
     return auto
 
 

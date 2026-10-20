@@ -743,6 +743,7 @@ class RegistrarTests(Base):
         self.assertEqual(
             sorted(director.hooks),
             [
+                "post_gateway_admission",
                 "post_llm_call",
                 "post_tool_call",
                 "pre_llm_call",
