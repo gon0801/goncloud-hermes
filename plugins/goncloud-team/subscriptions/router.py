@@ -116,9 +116,15 @@ def _throttle_wait(
     return wait
 
 
-def _bench_for(result: InvocationResult) -> Optional[timedelta]:
-    """How long later stages skip the account after an advancing failure."""
-    minutes = _COOLDOWN_MINUTES.get(result.failure)
+def _bench_for(
+    result: InvocationResult, regla: Optional[FailureKind] = None
+) -> Optional[timedelta]:
+    """How long later stages skip the account after an advancing failure.
+
+    The account cooldown follows the heuristic class (F14), never the
+    class JEV imposed: a transport read as quota benches nothing.
+    """
+    minutes = _COOLDOWN_MINUTES.get(regla if regla is not None else result.failure)
     if minutes is None:
         return None
     bench = timedelta(minutes=minutes)
@@ -480,6 +486,12 @@ class SubscriptionRouter:
                     failure = (
                         FailureKind(latest["failure"]) if latest["failure"] else None
                     )
+                    # The heuristic class recorded beside the settled one
+                    # (F14): the guard decides with it, exactly as the live
+                    # run did. Rows written before it existed fall back to
+                    # the settled class.
+                    heuristica = latest.get("failure_heuristic") or latest["failure"]
+                    failure_heur = FailureKind(heuristica) if heuristica else None
                     # The recorded file lists mix what the stage inherited
                     # with what the attempt did, so they decide nothing here
                     # (owner, 2026-10-19). The live run recorded its own
@@ -502,7 +514,13 @@ class SubscriptionRouter:
                             latest["disposition"] != "skipped"
                             and (
                                 failure not in _ADVANCING_FAILURES
-                                or (failure in _BLOCK_AFTER_MUTATION and mutated)
+                                or (
+                                    mutated
+                                    and (
+                                        failure in _BLOCK_AFTER_MUTATION
+                                        or failure_heur in _BLOCK_AFTER_MUTATION
+                                    )
+                                )
                             )
                         )
                         or latest["slot"]
@@ -775,6 +793,11 @@ class SubscriptionRouter:
                 # recovery reads the same delta instead of recounting
                 # inherited dirt. A skipped attempt never invoked: no delta.
                 mutated=mutated if disposition == "executed" else False,
+                # Persist the heuristic class beside JEV's (F14): the
+                # resume guard decides with it, exactly as this run did.
+                failure_heuristic=(
+                    clase_regla.value if clase_regla is not None else None
+                ),
             )
             if not recorded:
                 return self._stage_busy()
@@ -829,7 +852,7 @@ class SubscriptionRouter:
                     throttle_retries[route.slot] = retries + 1
                     pending.appendleft(route)
                     continue
-            bench = _bench_for(result)
+            bench = _bench_for(result, clase_regla)
             if bench is not None:
                 self.store.set_cooldown(
                     route.adapter, until=datetime.now(timezone.utc) + bench

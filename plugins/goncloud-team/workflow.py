@@ -1401,6 +1401,12 @@ class WorkflowService:
                         "mode": attempt["mode"],
                         "success": attempt["success"],
                         "failure": attempt["failure"],
+                        # Both classes, never blended (F14): the settled
+                        # one the router acted on and the heuristic it
+                        # read first. Old rows show the settled one twice.
+                        "failure_heuristic": (
+                            attempt.get("failure_heuristic") or attempt["failure"]
+                        ),
                     }
                 )
                 if attempt["success"]:

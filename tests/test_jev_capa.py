@@ -413,6 +413,92 @@ class RouterJevTests(unittest.TestCase):
         self.assertEqual(decision["actuo"], "jev")
         self.assertEqual(decision["respuesta"], "quota")
 
+    def test_reanudacion_tras_mutante_reclasificado_no_avanza_ni_cooldownea(self):
+        # F14: la heurística dejó transport (bloquea tras mutación) con el
+        # workspace ya cambiado; JEV reclama quota 0.99 y la corrida bloquea
+        # (F12). Lo asentado guarda AMBAS clases: al reanudar, la guarda lee
+        # la heurística y NO salta al siguiente slot con continue sobre la
+        # mutación sin reportar. Y el cooldown de la cuenta va con la
+        # heurística: transport no cooldownea, quota sí lo haría.
+        subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
+
+        def muta_y_transport(request, route):
+            (request.workspace / "parcial.py").write_text("medio\n", encoding="utf-8")
+            return failed(
+                FailureKind.TRANSPORT,
+                adapter="opencode_go",
+                text="connection reset before an answer",
+            )
+
+        self.adapters["opencode_go"].result = muta_y_transport
+        self.adapters["claude"].result = completed()
+        transporte = TransporteFalso(answers_choice("quota", 0.99))
+        router = self.router(transporte)
+        peticion = InvocationRequest(
+            workflow_id="wf-jev",
+            stage_id="st-jev",
+            role="implementer",
+            prompt="Do it once.",
+            workspace=self.workspace,
+            start_revision="",
+            current_revision="",
+            result_transform=lambda result: result,
+        )
+        resultado = router.run(peticion, self.rutas())
+        self.assertFalse(resultado.success)
+        self.assertEqual(resultado.failure, FailureKind.QUOTA)
+        self.assertEqual(self.adapters["claude"].requests, [])
+        (intento,) = router.store.stage_attempts("wf-jev", "st-jev")
+        self.assertEqual(intento["failure"], "quota")
+        self.assertEqual(intento.get("failure_heuristic"), "transport")
+
+        reanudado = self.router(TransporteFalso(answers_choice("quota", 0.99)))
+        resultado2 = reanudado.run(peticion, self.rutas())
+        self.assertFalse(resultado2.success)
+        self.assertEqual(resultado2.failure, FailureKind.QUOTA)
+        self.assertEqual(self.adapters["claude"].requests, [])
+
+        # Cooldown con la heurística: transport sin mutación que JEV lee
+        # quota avanza al siguiente slot, pero la cuenta no queda bencheada.
+        config = jev_cliente.JevConfig(registro_path=self.registro)
+        cliente = jev_cliente.ClienteJev(
+            transporte=TransporteFalso(answers_choice("quota", 0.99)),
+            obtener_llave=lambda: LLAVE_FALSA,
+            config=config,
+        )
+        router_bench = SubscriptionRouter(
+            adapters=self.adapters,
+            db_path=self.workspace / "bench.db",
+            routing_source=SOURCE,
+            sleep=self.sleeps.append,
+            jev_cliente=cliente,
+            jev_config=config,
+        )
+        self.adapters["opencode_go"].result = failed(
+            FailureKind.TRANSPORT,
+            adapter="opencode_go",
+            text="connection reset before an answer",
+        )
+        # Workspace aparte y limpio, fuera del repo: en el principal viven
+        # la db y el registro del propio router, que contarían como mutación.
+        tmp_bench = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, tmp_bench)
+        workspace_bench = Path(tmp_bench.name).resolve()
+        peticion_bench = InvocationRequest(
+            workflow_id="wf-jev",
+            stage_id="st-bench",
+            role="implementer",
+            prompt="Do it once.",
+            workspace=workspace_bench,
+            start_revision="",
+            current_revision="",
+        )
+        self.assertTrue(router_bench.run(peticion_bench, self.rutas()).success)
+        self.assertIsNone(router_bench.store.cooldown_until("opencode_go"))
+        (intento_bench,) = router_bench.store.stage_attempts("wf-jev", "st-bench")[:1]
+        self.assertEqual(intento_bench["failure"], "quota")
+        self.assertEqual(intento_bench.get("failure_heuristic"), "transport")
+
     def test_jev_caido_o_lento_gana_heuristica(self):
         for error in (TimeoutError("tope de 3s"), RuntimeError("typesafe caido")):
             with self.subTest(error=repr(error)):
