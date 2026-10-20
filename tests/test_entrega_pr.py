@@ -276,6 +276,44 @@ class PublicacionTests(_TableroGit):
 
         self.assertIn("push rechazado", resultado["pr_no_abierto"])
 
+    def test_un_cuerpo_de_error_ilegible_no_escapa_de_publicar(self):
+        # H56 F7: todos los demás tests mockean _api entero; aquí urlopen
+        # lanza un HTTPError cuyo read() se corta (IncompleteRead) y
+        # publicar debe devolver el motivo, no propagar la excepción.
+        import http.client
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/acme/repo/pulls",
+            500,
+            "fallo",
+            {},
+            None,
+        )
+
+        def read_que_se_corta(*args, **kwargs):
+            raise http.client.IncompleteRead(b"parcial")
+
+        error.read = read_que_se_corta
+
+        def urlopen_que_falla(pedido, timeout=None):
+            raise error
+
+        with (
+            mock.patch.object(entrega_pr, "_credencial", return_value=TOKEN),
+            mock.patch.object(
+                entrega_pr, "_dueño_y_repo", return_value=("acme", "repo")
+            ),
+            mock.patch.object(entrega_pr.urllib.request, "urlopen", urlopen_que_falla),
+        ):
+            resultado = entrega_pr.publicar(
+                "t_x", worktree=self.worktree, summary="panel arreglado"
+            )
+
+        self.assertIn("pr_no_abierto", resultado)
+        self.assertIn("500", resultado["pr_no_abierto"])
+        self.assertTrue(self.la_rama_esta_en_el_origen())
+
     def test_el_token_nunca_sale_en_el_resultado(self):
         falso, _ = self.api_falsa(
             {

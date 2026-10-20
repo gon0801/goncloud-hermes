@@ -54,7 +54,10 @@ import time
 import types
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+# B3-3: este módulo también se importa como módulo de primer nivel
+# (sys.path del plugin), y ese __name__ queda fuera del árbol
+# hermes_plugins.* que Hermes sí escribe en sus .log. Nombre fijo.
+logger = logging.getLogger("hermes_plugins.goncloud_team.avisos_sesion")
 
 _PLUGIN = Path(__file__).resolve().parent
 if str(_PLUGIN) not in sys.path:
@@ -87,6 +90,7 @@ def _centinela():
             ("candado_arranque", threading.Lock),
             ("encolados_propios", set),
             ("reencolados", set),
+            ("vigilantes", dict),
         ):
             if not hasattr(existente, atributo):
                 setattr(existente, atributo, fabrica())
@@ -101,6 +105,7 @@ def _centinela():
     nuevo.hilo = None
     nuevo.encolados_propios = set()
     nuevo.reencolados = set()
+    nuevo.vigilantes = {}
     return sys.modules.setdefault("goncloud_avisos_vigilante", nuevo)
 
 
@@ -136,6 +141,14 @@ def _ruta_desde_session_key(session_key: str) -> dict:
     if len(partes) > 5 and partes[5]:
         ruta["thread_id"] = partes[5]
     return ruta
+
+
+def _clave_para_log(session_key: str) -> str:
+    """La session_key para el log sin el chat id (cr 4320005117)."""
+    ruta = _ruta_desde_session_key(session_key)
+    if not ruta:
+        return "***" if str(session_key or "").strip() else ""
+    return f"{ruta['platform']}:{ruta['chat_type']}:***"
 
 
 def construir_evento(aviso: dict, *, nombre: str = "") -> dict | None:
@@ -254,7 +267,7 @@ def entregar_avisos(buzon, cola) -> int:
             logger.info(
                 "aviso encolado %s -> %s",
                 ruta.name,
-                evento.get("session_key", ""),
+                _clave_para_log(evento.get("session_key", "")),
             )
             encolados += 1
     return encolados
@@ -294,7 +307,7 @@ def reencolar_encolados(buzon, cola) -> int:
             logger.info(
                 "aviso re-encolado %s -> %s",
                 nombre_json,
-                evento.get("session_key", ""),
+                _clave_para_log(evento.get("session_key", "")),
             )
             encolados += 1
     return encolados
@@ -437,13 +450,11 @@ def iniciar_vigilante(
     global _hilo
     if exigir_gateway and not es_proceso_gateway():
         return None
-    # Un vigilante por PROCESO, no por copia del módulo: el hilo vive en
-    # el centinela común y el candado de arranque serializa a las copias.
+    # Un vigilante por (buzón, cola), no por copia del módulo: el registro
+    # vive en el centinela común y el candado de arranque serializa a las
+    # copias. F3: adoptar el hilo vivo solo si vigila ESTE buzón en ESTA
+    # cola; otro buzón arranca el suyo, no queda sin vigilar.
     with _CENTINELA.candado_arranque:
-        vivo = getattr(_CENTINELA, "hilo", None)
-        if vivo is not None and vivo.is_alive():
-            _hilo = vivo
-            return _hilo
         if cola is None:
             cola = _cola_del_gateway()
         if cola is None:
@@ -453,6 +464,16 @@ def iniciar_vigilante(
         if buzon is None:
             return None
         buzon = Path(buzon)
+        vigilantes = getattr(_CENTINELA, "vigilantes", None)
+        if vigilantes is None:
+            vigilantes = _CENTINELA.vigilantes = {}
+        clave = (str(buzon), id(cola))
+        vivo = vigilantes.get(clave)
+        if vivo is not None and vivo.is_alive():
+            _hilo = vivo
+            return _hilo
+        # Un hilo suelto sin clave registrada (centinela viejo) no se
+        # adopta a ciegas: no hay forma de probar qué buzón vigila.
         alto = detener if detener is not None else threading.Event()
 
         def vigilar():
@@ -473,6 +494,7 @@ def iniciar_vigilante(
             target=vigilar, name="goncloud-avisos-sesion", daemon=True
         )
         _CENTINELA.hilo = _hilo
+        vigilantes[clave] = _hilo
         _hilo.start()
         logger.info("vigilante de avisos arrancado pid=%s buzon=%s", os.getpid(), buzon)
         return _hilo

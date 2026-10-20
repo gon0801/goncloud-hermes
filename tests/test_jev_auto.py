@@ -1174,6 +1174,29 @@ class MedirSkillsTests(unittest.TestCase):
             por_mensaje["recuérdame mañana a las 9 pagar la luz"], "apple-reminders"
         )
 
+    def test_cargar_casos_salta_una_linea_con_json_malformado(self):
+        # H67: igual que en jev_medir_ruteo, una línea malformada no aborta.
+        medir_mod = _cargar_medir_skills()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "casos.jsonl"
+            ruta.write_text(
+                '{"mensaje": "pon un recordatorio", "esperado": "apple-reminders"}\n'
+                '{"mensaje": "x",}\n'
+                "42\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                medir_mod.cargar_casos(ruta),
+                [
+                    {
+                        "mensaje": "pon un recordatorio",
+                        "esperado": "apple-reminders",
+                    }
+                ],
+            )
+
     def test_medir_y_la_tabla_por_umbral_con_runner_doble(self):
         medir_mod = _cargar_medir_skills()
         respuestas = {

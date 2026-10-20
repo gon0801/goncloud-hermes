@@ -61,6 +61,10 @@ def _redacta(texto) -> str:
     return " ".join(redaccion.redact_text(str(texto or "")).split())
 
 
+#: El link de un PR no es un motivo cualquiera: cortarlo lo deja inservible.
+AVISO_LINK_CHARS = 300
+
+
 def _motivo_corto(motivo) -> str:
     """El motivo acotado y sin secretos: misma redacción que el buzón.
 
@@ -69,6 +73,20 @@ def _motivo_corto(motivo) -> str:
     una línea), y ningún blanco de control sobrevive al titular.
     """
     texto = _redacta(motivo).rstrip(".")
+    if texto.startswith("https://github.com/") and " " not in texto:
+        # F6: la URL del PR (owner+repo largos) puede pasar de 160; con un
+        # tope propio sigue entera en vez de llegar truncada con «…».
+        if len(texto) > AVISO_LINK_CHARS:
+            texto = texto[: AVISO_LINK_CHARS - 1].rstrip() + "…"
+        return texto
+    if len(texto) > AVISO_MOTIVO_CHARS:
+        texto = texto[: AVISO_MOTIVO_CHARS - 1].rstrip() + "…"
+    return texto
+
+
+def _campo_corto(valor) -> str:
+    """Un campo del titular redactado y acotado como el motivo (F4)."""
+    texto = _redacta(valor)
     if len(texto) > AVISO_MOTIVO_CHARS:
         texto = texto[: AVISO_MOTIVO_CHARS - 1].rstrip() + "…"
     return texto
@@ -82,7 +100,7 @@ def linea_de_aviso(aviso: dict) -> str | None:
     o quedó corriendo sin terminar, y claw debe saberlo, con el mismo techo
     de motivo.
     """
-    cadena = str(aviso.get("workflow_id") or "").strip()
+    cadena = _campo_corto(aviso.get("workflow_id"))
     if not cadena:
         return None
     repo = _redacta(aviso.get("repo"))
@@ -95,7 +113,7 @@ def linea_de_aviso(aviso: dict) -> str | None:
         # no se abrió — sin él, claw se enteraba de la entrega pero no del PR.
         return f"Cadena {lugar} entregada{detalle}."
     if outcome == "blocked":
-        etapa = str(aviso.get("etapa") or "").strip()
+        etapa = _campo_corto(aviso.get("etapa"))
         traba = f"se trabó en {etapa}" if etapa else "se trabó"
         return f"Cadena {lugar} {traba}{detalle}."
     if outcome == "error":

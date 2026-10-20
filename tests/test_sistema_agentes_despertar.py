@@ -388,6 +388,47 @@ class Cadenas(Escenario):
             ],
         )
 
+    def test_el_titular_sanea_y_acota_workflow_y_etapa(self):
+        # H45 F4: un aviso de otra mano con saltos en workflow_id/etapa no
+        # debe inyectar líneas extra ni una línea arbitrariamente larga.
+        self.avisar(
+            {
+                "workflow_id": "t_malo\nlinea inyectada " + "x" * 300,
+                "repo": "owner-01/repo-a",
+                "outcome": "blocked",
+                "etapa": "implementer\nsegunda linea " + "y" * 300,
+                "motivo": "falla",
+                "fecha": "2026-10-19T00:00:00+00:00",
+            },
+            nombre="t_malo-run-blocked.json",
+        )
+        self.correr()
+        self.assertEqual(len(self.impresos), 1)
+        linea = self.impresos[0]
+        self.assertNotIn("\n", linea)
+        self.assertLessEqual(len(linea), 500)
+
+    def test_el_link_largo_del_pr_no_se_corta_a_160(self):
+        # H56 F6: owner/repo largos hacen la URL >160; claw necesita el link
+        # entero, sin la elipsis que lo deja inservible.
+        url = "https://github.com/" + "o" * 39 + "/" + "r" * 100 + "/pull/9"
+        self.assertGreater(len(url), 160)
+        self.avisar(
+            {
+                "workflow_id": "t_pr_largo",
+                "repo": "owner-01/repo-a",
+                "outcome": "delivered",
+                "etapa": None,
+                "motivo": url,
+                "fecha": "2026-10-19T00:00:00+00:00",
+            }
+        )
+        self.correr()
+        self.assertEqual(
+            self.impresos,
+            [f"Cadena t_pr_largo (owner-01/repo-a) entregada: {url}."],
+        )
+
     def test_el_aviso_delivered_trae_el_motivo_del_pr_no_abierto(self):
         self.avisar(
             {
