@@ -635,11 +635,11 @@ class KimiGrokTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertEqual(command[command.index("--max-turns") + 1], "17")
         self.assertIn("Maximum autonomous steps: 17", captured["text"])
-        # bypassPermissions (2026-10-19) is the writing roles' mode: dontAsk
-        # niega lo que querria preguntar en una corrida headless ("permission
-        # required ... was not run"), y el sandbox workspace sigue
-        # confinando archivos y red. Los roles que no escriben usan dontAsk
-        # (test_grok_permission_mode_follows_the_role).
+        # bypassPermissions (2026-10-19) en todos los roles: dontAsk niega lo
+        # que querria preguntar en una corrida headless ("permission required
+        # ... was not run") y Grok no tiene allowlist; el sandbox workspace
+        # sigue confinando archivos y red
+        # (test_grok_runs_bypass_in_every_role_inside_the_sandbox).
         self.assertEqual(
             command[command.index("--permission-mode") + 1], "bypassPermissions"
         )
