@@ -707,6 +707,7 @@ class MedirRuteoTests(Base):
             '{"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"}\n'
             "42\n"
             '["no", "objeto"]\n'
+            '{"mensaje": "x",}\n'
             '{"mensaje": "sin esperado"}\n'
             '{"esperado": "meli"}\n'
             "\n",

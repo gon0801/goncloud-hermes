@@ -3,7 +3,8 @@
 que la lanzó, no al Bot Chat genérico.
 
 (a) cadena lanzada con session_key -> al quedar blocked se encola un evento
-    con esa session_key y el aviso queda .entregado;
+    con esa session_key y el aviso queda .encolado (no .entregado: el
+    evento solo vive en la cola en memoria hasta que el gateway lo drena);
 (b) aviso sin session_key -> el vigilante del gateway lo deja para el
     despertar de hoy;
 (c) el despertar ignora los avisos que traen session_key (no duplica);
@@ -499,6 +500,67 @@ class VigilanteUnicoTests(unittest.TestCase):
             alto2.set()
             for hilo in self._hilos_vivos():
                 hilo.join(timeout=5)
+
+    def test_un_segundo_buzon_no_adopta_el_vigilante_del_primero(self):
+        # H62 F3: el fallback por nombre de hilo adoptaba cualquier
+        # vigilante vivo; una copia con otro buzón/cola recibía el hilo del
+        # primero y su buzón quedaba sin vigilar.
+        otro_buzon = Path(self._tmp.name) / "otro" / "avisos"
+        otro_buzon.mkdir(parents=True)
+        escribir_aviso(otro_buzon, "t_xyz-run-blocked.json", AVISO_CON_ORIGEN)
+        cola1, cola2 = ColaFalsa(), ColaFalsa()
+        alto1, alto2 = threading.Event(), threading.Event()
+        hilo1 = avisos_sesion.iniciar_vigilante(
+            self.buzon,
+            cola=cola1,
+            intervalo=0.05,
+            detener=alto1,
+            exigir_gateway=False,
+        )
+        try:
+            hilo2 = avisos_sesion.iniciar_vigilante(
+                otro_buzon,
+                cola=cola2,
+                intervalo=0.05,
+                detener=alto2,
+                exigir_gateway=False,
+            )
+            self.assertIsNotNone(hilo1)
+            self.assertIsNotNone(hilo2)
+            self.assertIsNot(hilo1, hilo2)
+            # El segundo buzón sí se vigila: su aviso llega a su cola.
+            for _ in range(100):
+                if cola2.eventos:
+                    break
+                threading.Event().wait(0.05)
+            self.assertEqual(len(cola2.eventos), 1)
+            self.assertEqual(cola2.eventos[0]["session_key"], SESSION_KEY)
+        finally:
+            alto1.set()
+            alto2.set()
+            for hilo in self._hilos_vivos():
+                hilo.join(timeout=5)
+
+    def test_el_logger_cae_en_el_arbol_que_hermes_escribe(self):
+        # H62 B3-3: importado como módulo de primer nivel, __name__ queda
+        # fuera de hermes_plugins.* y Hermes no escribe esos .log.
+        self.assertTrue(
+            avisos_sesion.logger.name.startswith("hermes_plugins."),
+            avisos_sesion.logger.name,
+        )
+
+    def test_el_log_del_aviso_no_expone_la_session_key_completa(self):
+        # cr 4320005117: el chat id de la session_key no va al log; se
+        # conserva plataforma y tipo para poder seguir el aviso.
+        escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = ColaFalsa()
+        with self.assertLogs(avisos_sesion.logger, level="INFO") as capturado:
+            self.assertEqual(avisos_sesion.entregar_avisos(self.buzon, cola), 1)
+        texto = "\n".join(capturado.output)
+        self.assertNotIn(SESSION_KEY, texto)
+        self.assertNotIn("6470689715", texto)
+        self.assertIn("telegram", texto)
+        self.assertIn("dm", texto)
 
     def test_dos_hilos_mismo_buzon_exactamente_un_put(self):
         escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)

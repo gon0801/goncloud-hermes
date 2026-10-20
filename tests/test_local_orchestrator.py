@@ -387,6 +387,86 @@ class TransportEntryPointTests(unittest.TestCase):
             {"todo"},
         )
 
+    def test_un_relanzamiento_sin_sesion_limpia_el_origen_viejo(self):
+        # H58 F5: create solo reescribía el origen si traía session_key; un
+        # relanzamiento por CLI (sin sesión) conservaba la sesión vieja y sus
+        # avisos se seguían inyectando ahí en vez de volver al despertar.
+        creada = self.orchestrator.create(
+            **self.assignment(
+                origin_session_key="agent:claw:telegram:dm:123",
+                origin_routing={"platform": "telegram"},
+            )
+        )
+        contrato, _ = self.orchestrator._context(creada["workflow_id"])
+        self.assertEqual(
+            contrato.get("origin_session_key"), "agent:claw:telegram:dm:123"
+        )
+
+        otra = self.orchestrator.create(**self.assignment())
+
+        self.assertEqual(otra["workflow_id"], creada["workflow_id"])
+        contrato, _ = self.orchestrator._context(creada["workflow_id"])
+        self.assertNotIn("origin_session_key", contrato)
+        self.assertNotIn("origin_routing", contrato)
+
+    def test_la_tabla_pre_origen_se_migra_y_se_lee(self):
+        # H58 F7: la tabla de dos columnas (pre-origen) gana las columnas de
+        # origen por ALTER sin tocar sus filas, y _context la lee sin origen.
+        import sqlite3
+
+        creada = self.orchestrator.create(**self.assignment())
+        workflow_id = creada["workflow_id"]
+        # Reconstruye la tabla tal como la dejaban las cadenas pre-origen.
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("DROP TABLE goncloud_local_workflows")
+            conn.execute(
+                "CREATE TABLE goncloud_local_workflows "
+                "(workflow_id TEXT PRIMARY KEY, max_steps INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO goncloud_local_workflows VALUES (?, ?)",
+                (workflow_id, 20),
+            )
+        with sqlite3.connect(self.db) as conn:
+            local_orchestrator_module._asegurar_contrato_local(conn)
+            columnas = {
+                fila[1]
+                for fila in conn.execute("PRAGMA table_info(goncloud_local_workflows)")
+            }
+            fila = conn.execute(
+                "SELECT max_steps, origin_session_key, origin_routing "
+                "FROM goncloud_local_workflows WHERE workflow_id=?",
+                (workflow_id,),
+            ).fetchone()
+        self.assertLessEqual(
+            {"workflow_id", "max_steps", "origin_session_key", "origin_routing"},
+            columnas,
+        )
+        self.assertEqual(fila, (20, "", ""))
+        contrato, max_steps = self.orchestrator._context(workflow_id)
+        self.assertEqual(max_steps, 20)
+        self.assertNotIn("origin_session_key", contrato)
+
+    def test_la_rama_base_tolera_un_timeout_en_el_probe_de_head(self):
+        # H56 F8: revertir el except de _rama_base_del_repo no rompía nada
+        # porque el test del probe fallido moría antes, en _ensure_worktree.
+        # Aquí el timeout cae justo en rev-parse --abbrev-ref HEAD.
+        servicio = WorkflowService(actor_role="claw", db_path=self.db)
+
+        def se_agota(comando, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=comando, timeout=60)
+
+        with patch("workflow.subprocess.run", se_agota):
+            self.assertIsNone(servicio._rama_base_del_repo(str(self.repo)))
+
+        def cabeza_despegada(comando, **kwargs):
+            if "--abbrev-ref" in comando:
+                return subprocess.CompletedProcess(comando, 0, stdout="HEAD\n")
+            raise subprocess.TimeoutExpired(cmd=comando, timeout=60)
+
+        with patch("workflow.subprocess.run", cabeza_despegada):
+            self.assertIsNone(servicio._rama_base_del_repo(str(self.repo)))
+
     def test_create_names_a_missing_repository_before_anything_else(self):
         # The director mangled a path once and got "revision is required"
         # back, because the revision was derived from a directory that does
@@ -586,6 +666,11 @@ class DriverBootstrapTests(unittest.TestCase):
         self.assertEqual(result["stop_after"], "scout")
 
     def test_an_unloadable_driver_still_leaves_an_error_result(self):
+        # H45 F5: el resultado va anidado en goncloud-local como en
+        # producción; con out en la raíz temporal el aviso de boot-error
+        # caía fuera del TemporaryDirectory (/tmp/goncloud-local/avisos).
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
         # Failing to load must surface in goncloud_local_status as an error,
         # never as a driver that vanished with the workflow still pending.
         cases = {
@@ -661,6 +746,28 @@ class DriverBootstrapTests(unittest.TestCase):
             [p.name for p in sorted(avisos.iterdir())],
             ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
         )
+
+    def test_bootstrap_que_falla_al_importar_tambien_deja_el_aviso(self):
+        # H54 F1: hermes_bootstrap existe pero su import falla (dep rota):
+        # el plugin nunca entraba en sys.path, `from carpetas import ...`
+        # lanzaba ImportError fuera del except OSError y el aviso se perdía.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
+        (self.hermes / "hermes_bootstrap.py").write_text(
+            "import missing_vendor_package\n", encoding="utf-8"
+        )
+        self.write_plugin("")
+
+        run = self.run_driver()
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        avisos = self.root / "goncloud-local" / "avisos"
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.json"],
+        )
+        result = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(result["outcome"], "error")
 
     def test_a_healthy_delivered_run_ends_clean_with_its_result_and_aviso(self):
         # Live F1 (High): the bootstrap read result['error'] after EVERY
@@ -777,6 +884,28 @@ class CarpetasPrivadasTests(unittest.TestCase):
 
         # Sin mode: la carpeta hereda la DACL del padre.
         mkdir.assert_called_once_with(ruta, parents=True, exist_ok=True)
+
+    def test_en_windows_una_carpeta_ya_creada_repara_su_dacl(self):
+        # H54 F2: con exist_ok la carpeta creada por el código viejo (DACL
+        # protegida sin herencia) quedaba rota para siempre; al reutilizarla
+        # en Windows hay que resetear su DACL una vez.
+        carpetas = self.carpetas()
+        ruta = self.root / "avisos"
+        ruta.mkdir()
+        stub = Mock()
+        stub.name = "nt"
+        with (
+            patch.object(carpetas, "os", stub),
+            patch.object(Path, "mkdir", autospec=True),
+            patch.object(carpetas, "subprocess") as subproceso,
+        ):
+            carpetas.mkdir_privado(ruta)
+
+        subproceso.run.assert_called_once()
+        argv = subproceso.run.call_args.args[0]
+        self.assertEqual(argv[0], "icacls")
+        self.assertIn(str(ruta), argv)
+        self.assertIn("/reset", argv)
 
     def test_en_posix_la_carpeta_conserva_0o700(self):
         carpetas = self.carpetas()

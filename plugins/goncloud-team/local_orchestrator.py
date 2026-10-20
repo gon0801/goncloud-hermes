@@ -384,6 +384,9 @@ _DRIVER_BOOTSTRAP = (
     "stop_after = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None\n"
     "launch_run_id = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None\n"
     "sys.path.insert(0, hermes)\n"
+    "# H54 F1: el plugin entra en sys.path ANTES de hermes_bootstrap; si ese\n"
+    "# import falla, el aviso de boot-error aún puede importar carpetas.\n"
+    "sys.path.insert(0, plugin)\n"
     "# F3: el origen de la cadena vive en la marca running que el lanzador\n"
     "# dejó en out; se lee ANTES de que resume la sobrescriba, para que el\n"
     "# aviso de boot-error lo herede y también llegue a la sesión.\n"
@@ -404,7 +407,6 @@ _DRIVER_BOOTSTRAP = (
     "    except ModuleNotFoundError as exc:\n"
     "        if exc.name != 'hermes_bootstrap':\n"
     "            raise\n"
-    "    sys.path.insert(0, plugin)\n"
     "    import local_orchestrator as lo\n"
     "    jev = getattr(lo, 'jev_de_produccion', lambda: None)()\n"
     "    driver = lo.LocalOrchestrator(jev=jev) if jev else lo.LocalOrchestrator()\n"
@@ -430,7 +432,10 @@ _DRIVER_BOOTSTRAP = (
     "# file above is the evidence that must survive.\n"
     "if fallo:\n"
     "    try:\n"
-    "        from carpetas import mkdir_privado\n"
+    "        try:\n"
+    "            from carpetas import mkdir_privado\n"
+    "        except (OSError, ImportError):\n"
+    "            mkdir_privado = lambda ruta: os.makedirs(ruta, exist_ok=True)\n"
     "        hogar = os.path.dirname(os.path.dirname(out))\n"
     "        if os.path.basename(os.path.dirname(hogar)) == 'profiles':\n"
     "            hogar = os.path.dirname(os.path.dirname(hogar))\n"
@@ -445,7 +450,7 @@ _DRIVER_BOOTSTRAP = (
     "            with open(parcial, 'w', encoding='utf-8') as handle:\n"
     "                json.dump(evento, handle, ensure_ascii=True)\n"
     "            os.replace(parcial, nombre)\n"
-    "    except OSError:\n"
+    "    except (OSError, ImportError):\n"
     "        pass\n"
 )
 
@@ -1257,6 +1262,14 @@ class LocalOrchestrator:
                         json.dumps(routing, ensure_ascii=True, sort_keys=True),
                         workflow_id,
                     ),
+                ).close()
+            else:
+                # F5: un relanzamiento sin sesión (CLI) no hereda el origen
+                # viejo — sus avisos vuelven al despertar, no a esa sesión.
+                conn.execute(
+                    "UPDATE goncloud_local_workflows SET origin_session_key='', "
+                    "origin_routing='' WHERE workflow_id=?",
+                    (workflow_id,),
                 ).close()
         result = {"workflow_id": workflow_id, "stages": dict(started["stages"])}
         # Encargo H punto 2 (r6): la cadena vieja parada se cerró sola y la

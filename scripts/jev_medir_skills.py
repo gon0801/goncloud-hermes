@@ -39,7 +39,10 @@ def cargar_casos(ruta) -> list[dict]:
         linea = linea.strip()
         if not linea:
             continue
-        dato = json.loads(linea)
+        try:
+            dato = json.loads(linea)
+        except json.JSONDecodeError:
+            continue  # una línea malformada no aborta la medición (H67)
         if not isinstance(dato, dict):
             continue
         mensaje = dato.get("mensaje") or dato.get("texto") or dato.get("message")
