@@ -15,6 +15,7 @@ provides_tools:
   - goncloud_subscription_status
   - goncloud_local_run
   - goncloud_local_status
+  - goncloud_local_close
   - goncloud_root_submit
   - goncloud_root_read
   - goncloud_root_control
@@ -23,7 +24,9 @@ provides_tools:
   - goncloud_root_reconcile
 provides_hooks:
   - pre_tool_call
+  - post_tool_call
   - pre_llm_call
+  - post_llm_call
   - transform_llm_output
 config_schema:
   jev_umbral:

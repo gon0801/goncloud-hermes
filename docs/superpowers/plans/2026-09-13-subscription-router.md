@@ -351,9 +351,12 @@ def test_only_deepseek_is_api_billed(adapters):
     assert adapters["deepseek"].billing_mode == "api"
 
 
-def test_grok_keeps_sandbox_and_kimi_uses_auto(runner):
+def test_grok_runs_bypass_in_every_role_inside_the_sandbox(runner):
     GrokAdapter(runner=runner).invoke(request(), route_for("grok", "grok-4.6"))
-    assert "dontAsk" in runner.command and "--sandbox" in runner.command
+    # Grok runs bypassPermissions in every role, always inside --sandbox
+    # workspace: it has no per-tool allowlist and dontAsk denies a scout's
+    # read-only commands (#57). Read-only roles are held by the read-only guard.
+    assert "bypassPermissions" in runner.command and "--sandbox" in runner.command
     KimiAdapter(runner=runner).invoke(request(), route_for("kimi", "k3"))
     assert "--auto" in runner.command and "--output-format" in runner.command
 ```
@@ -364,7 +367,7 @@ Run: `python -m pytest tests/test_subscription_vendor_adapters.py -q`
 
 - [ ] **Step 3: Implement adapters**
 
-Use Kimi stream JSON and auto mode with private prompt transport. Use Grok streaming JSON, `dontAsk`, a workspace sandbox, and `--prompt-file`. Pass Z.AI and DeepSeek secrets only through child environment variables. Normalize every result and label DeepSeek visibly as API-billed.
+Use Kimi stream JSON and auto mode with private prompt transport. Use Grok streaming JSON, `bypassPermissions` in every role (Grok has no per-tool allowlist and `dontAsk` denies a scout's read-only commands; read-only roles are held by `--sandbox workspace` and the orchestrator's read-only guard), a workspace sandbox, and `--prompt-file`. Pass Z.AI and DeepSeek secrets only through child environment variables. Normalize every result and label DeepSeek visibly as API-billed.
 
 - [ ] **Step 4: Confirm GREEN**
 

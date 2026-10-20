@@ -22,6 +22,9 @@ from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 INSTALADOR = REPO / "scripts" / "instalar_raices.py"
 FIXTURE_JOBS = REPO / "tests" / "fixtures" / "hermes-cron-jobs.json"
 ID_FALSO = "aa11bb22cc33"
@@ -160,7 +163,7 @@ class CreateEscribeBytesRotos(HermesFalsoDeCrones):
 class InstaladorDeRaices(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir(parents=True)
         self.modulo = cargar_instalador()
@@ -547,7 +550,7 @@ class Aplicar(InstaladorDeRaices):
             "los datos del operador son sagrados",
         )
         otro = tempfile.TemporaryDirectory()
-        self.addCleanup(otro.cleanup)
+        self.addCleanup(cleanup_temp_directory, otro)
         home2 = Path(otro.name) / "hermes"
         home2.mkdir()
         self.modulo.main(

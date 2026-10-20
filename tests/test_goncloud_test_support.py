@@ -86,8 +86,11 @@ def unguarded_temp_cleanups(source: str) -> list[str]:
 
     Those bypass `cleanup_temp_directory`, so Windows delete-pending windows
     turn into WinError 145 teardown errors that fail an otherwise green test.
+    Cubre atributos (self.tmp), variables locales (temporal, otro) y el
+    registro de clase (addClassCleanup): la forma cruda es la misma y el
+    reintento se salta igual (F6 de #47).
     """
-    pattern = re.compile(r"addCleanup\(\s*self\.\w+" + re.escape(".cleanup") + r"\s*\)")
+    pattern = re.compile(r"(?:addCleanup|addClassCleanup)\(\s*[\w.]+\.cleanup\s*\)")
     return pattern.findall(source)
 
 
@@ -111,6 +114,45 @@ class NoUnguardedTempCleanupTestCase(unittest.TestCase):
         source = "        self.addCleanup(self.tmp" + ".cleanup)\n"
 
         self.assertEqual(len(unguarded_temp_cleanups(source)), 1)
+
+    def test_the_guard_detects_local_variables_and_class_registrations(self) -> None:
+        # F6 de #47: la forma con variable local (temporal.cleanup) y la de
+        # clase (addClassCleanup) saltan el mismo reintento de WinError 145.
+        for source in (
+            "        self.addCleanup(temporal" + ".cleanup)\n",
+            "        cls.addClassCleanup(tmp" + ".cleanup)\n",
+        ):
+            with self.subTest(source=source.strip()):
+                self.assertEqual(len(unguarded_temp_cleanups(source)), 1)
+        self.assertEqual(
+            unguarded_temp_cleanups(
+                "        self.addCleanup(cleanup_temp_directory, temporal)\n"
+            ),
+            [],
+        )
+
+    def test_cleanup_temp_directory_receives_the_directory_not_the_method(self) -> None:
+        """cleanup_temp_directory llama .cleanup() sobre lo que recibe.
+
+        Si le pasan el metodo bound (cleanup_temp_directory, self.tmp.cleanup)
+        el teardown revienta con AttributeError en cada prueba: asi entraron
+        los 440 errores de la mitad sistema en #47 r3.
+        """
+        misuse = {}
+        for path in sorted((ROOT / "tests").glob("test_*.py")):
+            if path.resolve() == Path(__file__).resolve():
+                continue
+            found = re.compile(
+                r"cleanup_temp_directory[,(]\s*[\w.]*\.cleanup\b"
+            ).findall(path.read_text(encoding="utf-8"))
+            if found:
+                misuse[path.name] = found
+
+        self.assertEqual(
+            misuse,
+            {},
+            "pasa el TemporaryDirectory a cleanup_temp_directory, no su .cleanup",
+        )
 
 
 if __name__ == "__main__":

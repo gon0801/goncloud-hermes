@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import SubscriptionProcessError, probe_workspace, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -41,13 +41,14 @@ class MuseAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Muse exposes no non-generative auth probe; report install state."""
         try:
-            evidence = run_cli(
-                ["wsl.exe", "-d", "Ubuntu", "--exec", _MUSE, "--version"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["wsl.exe", "-d", "Ubuntu", "--exec", _MUSE, "--version"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error("muse_cli", error)
         if evidence.returncode != 0:
@@ -77,19 +78,29 @@ class MuseAdapter(SubscriptionAdapter):
                 clasificar_con_jev=False,
             )
         except MuseBridgeError as error:
-            return self._failed_result(route, error.failure)
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         if outcome.get("model") != route.model:
-            return self._failed_result(route, FailureKind.MODEL_UNAVAILABLE)
+            return self._failed_result(
+                route, FailureKind.MODEL_UNAVAILABLE, request=request
+            )
         if not isinstance(outcome.get("text"), str) or not outcome["text"].strip():
-            return self._failed_result(route, FailureKind.TASK_FAILURE)
+            return self._failed_result(route, FailureKind.TASK_FAILURE, request=request)
         if outcome.get("terminal") != "completed":
             detail = (
                 str(outcome.get("terminal") or ""),
                 str(outcome.get("text") or ""),
             )
             failure = classify_failure(1, detail[1], detail[0])
-            return self._failed_result(route, failure, evidence=detail)
+            return self._failed_result(
+                route,
+                failure,
+                request=request,
+                evidence=detail,
+                channel_labels=("terminal", "output"),
+            )
         return InvocationResult(
             success=True,
             text=str(outcome.get("text") or ""),

@@ -19,6 +19,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 store = importlib.import_module("raices.store")
 decidir = importlib.import_module("raices.decidir")
@@ -261,7 +263,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
 
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
 
     @property
     def dir_de_instrucciones(self):
@@ -720,7 +722,7 @@ class LaDecisionDeDecidirLaAceptaElStore(unittest.TestCase):
     def test_dos_raices_sobre_el_mismo_repo_alternan_sin_conflicto(self):
         RAIZ_B = "root-prop-b"
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         tienda = store.Store(self.directorio.name + "/dos-raices.db")
         self.addCleanup(tienda.cerrar)
         self.assertIsInstance(

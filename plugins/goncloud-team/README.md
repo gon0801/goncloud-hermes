@@ -13,6 +13,13 @@ This native Hermes plugin registers these tools in the `goncloud_team` toolset:
   corrective review chain.
 - `goncloud_muse_delegate` sends a complete specialist assignment to the owner's
   authenticated Muse CLI through WSL, using standard input and Muse's own sandbox.
+- `goncloud_local_close` closes a local chain whose driver already stopped
+  (archives the director root and the stages that are not done, keeps the
+  done stages as evidence, and records the reason on the root) so the
+  repository accepts new chains again. Claw-only, idempotent; it refuses a
+  chain whose driver may still be running (requires one of the driver's own
+  stopped outcomes — paused, blocked, waiting or error — and no live lease)
+  and it also frees a root stuck in triage without a graph.
 
 The adapter uses `hermes_cli.kanban_db_connect.connect_closing`, public native
 Kanban operations, and the native atomic decomposition builder. The local runner
@@ -41,7 +48,10 @@ Durably enforced by the database graph:
   bot-chat, kanban or subagents): the suggested skill rides the turn context
   as a `JEV skill_select: ...` line — the old rule "consult before loading a
   skill" becomes "the platform already consulted: use the context's
-  suggestion" — and a `transform_llm_output` hook appends a `JEV: ...` footer
+  suggestion" — with fit >= `UMBRAL_SKILL_FIT` (0.6) the line says
+  `(cárgala)` and the footer is `JEV: X`; below that (or with no fit) the
+  line says `posible X (fit …): decide tú` and the footer marks it
+  `JEV: X? (dudosa)` — and a `transform_llm_output` hook appends a `JEV: ...` footer
   to that same turn's reply, once per turn and switchable off with the
   plugin config key `jev_auto_visible` or the `GONCLOUD_JEV_AUTO_VISIBLE`
   variable (on by default, same `false`/`0`/`no`/`off` parsing for both).
@@ -54,7 +64,52 @@ Durably enforced by the database graph:
   fail-open with a bounded reason), `JEV_TYPESAFE_API_KEY` resolves through
   `agent.secret_scope.get_secret` and only ever travels to the child
   environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
-  with no message text (just its length and a short sha256) and no key.
+  with no message text (just its length and a short sha256), no key, and
+  the router's `gate`/`fit` fields.
+- the same hook also routes the message (claw direct, one of the specialists,
+  or the engineering chain) in parallel with `skill_select` and adds
+  `Jev sugiere: X (conf)`; Goncloud stage cards and specialist cards that
+  finished since the previous turn add `Jev cierre: X (conf)`: a completed
+  card only when it left a report (and it can only come out
+  quedo/corregir), a blocked card as corregir/bloqueado (cursor in
+  `<claw home>/jev/cierre-cursor.json`). Confidence >= 0.85 is followed, below
+  it claw decides. Every JEV call has a hard 2 s cap, no retries, and fails
+  open; each decision is one line in `<claw home>/jev/decisiones.jsonl`
+  (`input` capped at 200 redacted chars and `rawLen`, output, confidence,
+  latency, error).
+
+### JEV tanda 2: todos los perfiles (David 2026-10-19)
+
+The OpenClaw `jev-auto` improvements, by code and on Hermes hooks. The
+5-minute watchdog stays OUT (the event notice replaces it): do not bring it
+back. Which Hermes hook backs each point:
+
+| Point | Hook | Where |
+| --- | --- | --- |
+| Classify tipo (codigo/diagnostico/operacion/comunicacion/investigacion/consulta) and modo (directo/investigar/aclarar), inject `Jev sugiere: tipo=.., modo=..` | `pre_llm_call` (every profile; claw keeps routing) | `jev_auto.py` |
+| Evaluate quedo/seguir/bloqueado at the end and log it | `post_llm_call` (background thread, never holds the turn) | `jev_auto.py` |
+| Loop detector: same tool as the previous call -> JEV asks bucle/avanza; >= 0.9 queues `Jev advierte:` for the NEXT turn, never blocks | `pre_tool_call` (always returns `None`; JEV runs in a daemon thread; max 3 queries per turn) | `jev_auto.py` |
+| Learn from corrections: JEV suggested X, claw dispatched Y (`kanban_create` to a specialist, `goncloud_local_run` = ingenieria) or solved it alone -> `{texto,sugerido,correcto,confirmada:false}` in `<claw home>/jev/correcciones.jsonl`. Recorded corrections are NOT examples: only when David explicitly confirms ("eso era para X" / "no, eso va con X") is one stored `confirmada:true`, and only the last 15 confirmed become examples in routing questions | `post_tool_call` + `post_llm_call` + `pre_llm_call` (claw only) | `jev_auto.py`, `jev_decisiones.py` |
+| Chain stages (scout, ingenieria, implementer, verifier, adversary, reviewer, entrega) | NO Hermes hook exists: stages run in subscription CLIs outside Hermes (no turn, no tool hooks). `Jev sugiere` is injected when the driver composes the stage prompt and the end is logged when the stage finishes; the loop detector does not apply inside stages. | `JevEtapa`, `local_orchestrator.py` |
+
+Clean text: before any query `jev_texto.limpiar` keeps only the current user
+message (no `[Replying to: ..]`, media/system notes, `[Sender]`, Telegram
+headers, fenced metadata blocks, nor our own
+`JEV skill_select:`/`Jev sugiere:` lines). `decisiones.jsonl` records
+`input` (first 200 chars, redacted) and `rawLen` (length before cleaning).
+Savings: texts under 15 characters skip JEV, and the same question is not
+asked twice in one turn. JEV down, slow (2 s cap) or answering badly never
+blocks a turn (all hooks are fail-open).
+
+Non-claw profiles do not install the `jev` plugin: they read claw's
+`client.py` read-only and need their own `TYPESAFE_API_KEY` (profile `.env` or
+scope); without it JEV fails open and the turn goes on. The `jev` plugin
+versions are NOT changed here.
+
+Activating it: restart the gateway FROM OUTSIDE a turn (from a terminal or
+the service manager), never from a turn or from a subagent: `plugins reload`
+fails in "drain" while a turn is running, and a subagent that restarts the
+gateway kills its own run.
 
 The tool handlers bind authorization to `PluginContext.profile_name`, so callers
 cannot supply a role argument. This is a trusted-single-user application guard,
@@ -144,12 +199,16 @@ ambos con las mismas garantías que ticker-raices.
 
 La convencion de salida es la de los scripts `no_agent`: nada si la vuelta salio
 bien, una linea `ERROR ticker raices: ...` y salida 1 si fallo. Con la ruta de
-raices cerrada (H4a: capacidad faltante, par incierto o par sin certificar en
-`raices/certificadas.json`) el cron avisa `CAPACIDAD_INCIERTA` una vez por
+raices cerrada (H4a: capacidad faltante o par incierto) el cron avisa
+`CAPACIDAD_INCIERTA` una vez por
 cambio de causa y sale 0; la vuelta sigue corriendo cerrada, con bloqueos y
 conciliacion pero sin decidir ni despachar ni correr la pasada del emisor, y si
-falta una capacidad ni siquiera abre el store. `goncloud_root_submit` responde
-`ruta-cerrada` con la causa; el par nuevo se acredita con `raices/certificar.py`
+falta una capacidad ni siquiera abre el store. Una version sin certificar en
+`raices/certificadas.json` ya no cierra (encargo H punto 3): la puerta abre con
+aviso, el cron imprime `AVISO` una vez por cambio de causa y la vuelta corre
+abierta. `goncloud_root_submit` responde
+`ruta-cerrada` con la causa cuando la puerta cierra, y lleva el `aviso` en el
+recibo cuando abre con uno; el par nuevo se acredita con `raices/certificar.py`
 en la PC y entra por PR. El store vive en la raíz del home de Hermes
 (`raices/hogar.py` la resuelve con `hermes_constants`: el home de perfil del
 gateway y el del cron suben a la misma raíz); el kanban, `HERMES_KANBAN_DB` o
@@ -188,6 +247,16 @@ and persists with the workflow. `--affects-business-rules` enables the existing
 business acceptance direction. Use the same Kanban database and subscription
 database across commands (`HERMES_KANBAN_DB` and `GONCLOUD_SUBSCRIPTION_DB` can
 select isolated local stores).
+
+If the repository is a Git repo, each chain works in its OWN worktree: branch
+`cadena/<workflow_id>`, created from `--revision` at start time, so the
+checkout you pass is never touched (no checkout, no commit, no reset — it is
+only the origin). `GONCLOUD_WORKTREE_ROOT` selects where those worktrees are
+created (expanded and resolved; it must stay outside the repository); the
+default is a `wt` folder next to the repository, e.g. `C:\dev\wt\`. The
+status reports the worktree path and its branch. At close time the worktree
+is preserved when the chain left its own commits, and removed when it is
+clean with none.
 
 Repeated starts with the same request key reuse the original revision and
 source observation time when those flags are omitted. Explicit revision/source
@@ -229,7 +298,69 @@ metadata. A first high/critical rejection opens exactly one corrective
 review blocks delivery. Other rejected or blocked stages stop the runner.
 External dependencies return `waiting`; concurrent router ownership returns
 `running`. A checkpoint returns `paused`; `resume` continues from durable state.
+Every driver start — a detached launch and a CLI `resume` alike — first
+overwrites that result file with a `running` mark (its own `run_id` and pid)
+and writes its outcome under the same `run_id` — signed with the writer's
+pid (review F12) — when it quits, so a stopped outcome is only evidence
+while it is the file's last write: a relaunched chain refuses the close
+until its own driver stops. A driver that dies without writing its outcome
+leaves the mark in `running`; one more `resume` produces a fresh outcome. A
+`running` mark is read through its pid (encargo H punto 4): the marked
+process must predate its own mark, so a dead pid — or one recycled by a
+process born after the mark — reads as a stopped driver, while a live pid
+keeps the close refused and a relaunch answered busy. The report signs the
+same `started_at` stamp as the launch mark (review F18), so a recycled pid
+reads dead even there. A `running` mark without a usable pid has no driver
+behind it — every driver signs its launch and its report — so it reads as
+driverless (review F12): the chain stays closable and relaunchable instead
+of jamming the repository, and an unreadable result file reads the same
+way (a foreign state: every write is atomic). The pid check itself only
+accepts "no such process" (ps exits non-zero with nothing to say) as a
+dead pid; a ps that fails otherwise — an option it does not serve — is
+unchecked ground and the mark reads live (review F19).
+Relaunching is retrying (encargo H punto 1): a run whose request key lands
+on a chain with blocked stages and a stopped driver unblocks those stages
+with the native unblock and opens a new attempt generation for each, so the
+router calls the model again instead of replaying the recorded result. Done
+stages are respected; reviewer stages stay closed (the two-round ceiling and
+its durable decision are contracts); there is no retry cap. A read-only
+stage (scout/ingenieria) blocked by the mutation guard keeps its block
+across relaunches (cr:4314695530) — its own block reason says the stage
+changed the repository it must only read, and retrying would run it again
+over its own edit: it stays blocked until the owner reverts.
 Delivery closes the director root after all stages and review gates finish.
+The repository keeps ONE active chain, and the queue is gone (decisión del
+lead, r6 — it produced a new High every round: F16, F17, F20). The
+contract of `start` / `goncloud_local_run` on a repository that already
+has a chain: (a) the other chain carries stop evidence — a final outcome,
+a dead or recycled pid, a pidless running mark — and it closes itself
+automatically (atomic, the same native path `goncloud_local_close` uses)
+while the new chain starts; (b) the other chain is still alive and
+NOTHING is created — the answer is clear, without a generic error:
+`{"busy": true, "repo": ..., "cadena_viva": <id>, "mensaje": "El repo ya
+tiene la cadena <id> trabajando; cuando termine te llega su aviso y la
+relanzas"}`. Relaunching the live chain's own request key spawns no second
+driver and answers the same busy. Two drivers never edit the same checkout
+at once: the launch guard refuses a live chain's own relaunch, and the
+aviso a claw (encargo H) is what asks for the relaunch when the chain
+frees the repository.
+The claw profile can still release a chain with `goncloud_local_close`
+(`workflow_id`, `reason`): the tool requires durable evidence that the
+driver is gone — one
+of the driver's own stopped outcomes (paused, blocked, waiting or error)
+as
+the result file's last write, a running mark whose pid is gone, and no live
+subscription lease — and it
+archives the root and the stages that are not done through the native
+`archive` (one native transaction per task, never nested in one of its own),
+keeps the done stages as evidence,
+records the reason as a comment on the root, and returns a receipt derived
+from the resulting durable state, so closing an already-closed chain returns
+the same receipt. A root stuck in `triage` without its stage graph (a
+decomposition that failed after the root insert) closes the same way, since
+it never had a driver. `goncloud_local_status` announces the close with a
+`close_hint` only under the same evidence: a live lease or a live driver
+never advertises the close.
 
 Reviewer envelopes remain available as bounded handoff/status evidence,
 including evidence needed by a corrective implementer. Decisions still come

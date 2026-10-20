@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import closing
@@ -23,7 +24,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from subscriptions.catalog import compile_profile_routes  # noqa: E402
-from subscriptions.adapters.opencode import OpenCodeAdapter  # noqa: E402
 from subscriptions.router import GitInspector, SubscriptionRouter  # noqa: E402
 from subscriptions.state import SubscriptionStateStore  # noqa: E402
 from subscriptions.types import (  # noqa: E402
@@ -528,6 +528,37 @@ class FailoverTests(RouterTestCase):
         self.assertNotIn("sk-sensitive", repr(health))
         self.assertNotIn("sk-sensitive", repr(status))
 
+    def test_assignment_prompt_is_redacted_from_detail_attempts_and_status(self):
+        # The failure detail is the one evidence channel that carries vendor
+        # output; sanitize_result must keep stripping the assignment prompt
+        # from it at every boundary a reader can reach. Dropping "detail"
+        # from its redaction tuple turns this test red.
+        prompt = "Move the fixture-echo-prompt file into place."
+        marker = "fixture-echo-prompt"
+        router = self.router()
+        self.fake_adapters["opencode_go"].result = replace(
+            failed(FailureKind.TIMEOUT, "opencode_go"),
+            detail=(
+                "opencode_go invocation failed (timeout)\n"
+                f"stderr tail: vendor died reading the assignment: {prompt}"
+            ),
+        )
+
+        result = router.run(
+            replace(request(self.workspace), prompt=prompt), routes_for_main()[:1]
+        )
+        attempts = router.store.stage_attempts("wf-6", "st-6")
+        status = router.status("claw", workflow_id="wf-6", stage_id="st-6")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        # The evidence survives redacted, the prompt does not survive at all.
+        self.assertIn("stderr tail:", result.detail)
+        self.assertIn("[redacted]", result.detail)
+        self.assertNotIn(marker, result.detail)
+        self.assertNotIn(marker, repr(attempts))
+        self.assertNotIn(marker, repr(status))
+
     def test_absent_health_probes_once_and_persists_result(self):
         router = self.router()
         go = self.fake_adapters["opencode_go"]
@@ -637,15 +668,19 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(result.text, "ok")
         self.assertEqual(router.calls, ["opencode_go", "claude", "muse"])
 
-    def test_timeout_without_mutation_advances(self):
+    def test_a_timeout_failure_blocks_the_stage_instead_of_advancing(self):
+        # Stages have no deadline anymore (owner, 2026-10-19), so no route may
+        # hand the stage to the next model "for time". A timeout result is
+        # owner evidence, never an automatic advance.
         router = self.router()
         self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
-        self.fake_adapters["claude"].result = completed("zen ok", "claude")
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertTrue(result.success)
-        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertEqual(router.calls, ["opencode_go"])
 
     def test_transport_failure_without_mutation_advances(self):
         router = self.router()
@@ -774,9 +809,11 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
         self.assertEqual(router.calls, ["opencode_go"])
 
-    def test_timeout_then_rejected_envelope_advances_to_the_third_position(self):
+    def test_quota_then_rejected_envelope_advances_to_the_third_position(self):
+        # The chain still advances through advancing failures across slots;
+        # a timeout is not one of them anymore (it blocks, see above).
         router = self.router()
-        self.fake_adapters["opencode_go"].result = failed(FailureKind.TIMEOUT)
+        self.fake_adapters["opencode_go"].result = failed(FailureKind.QUOTA)
         self.fake_adapters["claude"].result = failed(FailureKind.INVALID_TERMINAL)
         self.fake_adapters["muse"].result = completed("muse ok", "muse")
 
@@ -789,7 +826,7 @@ class FailoverTests(RouterTestCase):
         self.assertEqual(
             result.skipped_routes,
             (
-                SkippedRoute(0, "opencode_go", FailureKind.TIMEOUT),
+                SkippedRoute(0, "opencode_go", FailureKind.QUOTA),
                 SkippedRoute(1, "claude", FailureKind.INVALID_TERMINAL),
             ),
         )
@@ -860,10 +897,11 @@ class FailoverTests(RouterTestCase):
         )
         self.assertTrue(router.store.health("opencode_go")["ready"])
 
-    def test_timeout_cools_the_account_so_a_hung_endpoint_is_skipped(self):
-        # opencode_go hangs to its 300s deadline at slot 0 of nearly every
-        # chain. A timeout must cool the account down like quota so the next
-        # stage skips it instead of hanging the full deadline again.
+    def test_a_timeout_failure_leaves_no_cooldown_bench(self):
+        # The bench existed so a hung endpoint would not re-eat the old 300 s
+        # deadline at slot 0 of every stage. With no stage deadline there is
+        # no hung-at-the-deadline pattern left, and time never advances a
+        # stage: the timeout result itself is the owner's evidence.
         self.fake_adapters["opencode_go"].result = failed(
             FailureKind.TIMEOUT, adapter="opencode_go"
         )
@@ -872,40 +910,10 @@ class FailoverTests(RouterTestCase):
 
         result = router.run(request(self.workspace), routes_for_main())
 
-        self.assertTrue(result.success)
-        self.assertIsNotNone(router.store.cooldown_until("opencode_go"))
-
-    def test_a_timeout_cooldown_is_recorded_as_timeout_not_quota(self):
-        # Live 2026-09-27: one Opus timeout benched it and every later skip
-        # read "quota", so a healthy account looked exhausted.
-        self.fake_adapters["opencode_go"].result = failed(
-            FailureKind.TIMEOUT, adapter="opencode_go"
-        )
-        self.fake_adapters["claude"].result = completed(adapter="claude")
-        router = self.router()
-        router.run(request(self.workspace), routes_for_main())
-
-        router.run(
-            replace(request(self.workspace), workflow_id="wf-7", stage_id="st-7"),
-            routes_for_main(),
-        )
-
-        skipped = router.store.stage_attempts("wf-7", "st-7")[0]
-        self.assertEqual(skipped["disposition"], "skipped")
-        self.assertEqual(skipped["failure"], "timeout")
-
-    def test_a_workflow_timeout_still_benches_a_hung_endpoint(self):
-        self.fake_adapters["opencode_go"].result = failed(
-            FailureKind.TIMEOUT, adapter="opencode_go"
-        )
-        self.fake_adapters["claude"].result = completed(adapter="claude")
-        router = self.router()
-        before = datetime.now(timezone.utc)
-
-        router.run(request(self.workspace), routes_for_main())
-
-        until = router.store.cooldown_until("opencode_go")
-        self.assertGreaterEqual(until - before, timedelta(minutes=14))
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertEqual(router.calls, ["opencode_go"])
+        self.assertIsNone(router.store.cooldown_until("opencode_go"))
 
     def test_a_persistent_throttle_benches_the_account_briefly_and_keeps_it_ready(
         self,
@@ -1278,6 +1286,45 @@ class MutationContinuationTests(RouterTestCase):
             evidence["end_revision"], self._run_git("rev-parse", "HEAD").stdout.strip()
         )
 
+    def test_recovered_failure_keeps_diagnostics_out_of_the_public_text(self):
+        # A blocking failure recovered from the durable record must return the
+        # short public text; the vendor diagnostics ride in detail and stay in
+        # the normalized attempt row.
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        def commit_then_fail(request, route):
+            (self.git_repo / "changed.py").write_text("new\n", encoding="utf-8")
+            self._run_git("add", "changed.py")
+            self._run_git("commit", "-q", "-m", "changed")
+            return replace(
+                failed(FailureKind.TRANSPORT, route.adapter),
+                detail=(
+                    "opencode_go invocation failed (transport)\n"
+                    "stderr tail: connection reset by peer"
+                ),
+            )
+
+        self.fake_adapters["opencode_go"].result = commit_then_fail
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        blocked = self.router().run(assignment, routes_for_main())
+        self.assertFalse(blocked.success)
+
+        resumed_router = self.router()
+        resumed = resumed_router.run(assignment, routes_for_main())
+
+        self.assertFalse(resumed.success)
+        self.assertEqual(resumed.failure, FailureKind.TRANSPORT)
+        self.assertEqual(resumed.text, "opencode_go invocation failed (transport)")
+        self.assertIn("connection reset by peer", resumed.detail)
+        attempt = resumed_router.store.stage_attempts("wf-6", "st-6")[-1]
+        self.assertIn("invocation failed (transport)", attempt["detail"])
+        self.assertIn("connection reset by peer", attempt["detail"])
+
     def test_a_throttle_after_a_mutation_retries_the_route_as_a_continuation(self):
         router = self.router()
         start = self._run_git("rev-parse", "HEAD").stdout.strip()
@@ -1380,31 +1427,24 @@ class MutationContinuationTests(RouterTestCase):
 
         self.assertEqual(absorbed.mode, "start")
 
-    def test_a_dirty_tree_blocks_at_slot_zero_without_a_false_continuation(self):
-        """Attempt 0 tells the truth about the tree, and still refuses to advance.
+    def test_pre_existing_dirt_advances_when_the_attempt_touches_nothing(self):
+        """Attempt 0 tells the truth about the tree, and a clean failure advances.
 
         Two separate questions. The owner's uncommitted files must never be
-        reported to the model as a previous worker's mutation, which is what
-        broke the real chain. Whether to fail over on top of them is answered
-        conservatively: blocking a stage is recoverable, overwriting a worker's
-        edits is not, so with the tree dirty the stage stops with evidence.
+        reported to the model as a previous worker's mutation, and they must
+        not read as THIS attempt's mutation either: the attempt's verdict is
+        its own delta against the baseline it started from (owner,
+        2026-10-19; live t_464d20e7, uv.lock dirty before the attempt). What
+        still blocks is an attempt that changed something and then failed.
         """
         start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
         (self.git_repo / "owner-wip.py").write_text("my own edit", encoding="utf-8")
-        partial = '{"type":"part","part":{"type":"text","text":"partial"}}'
 
-        def exits_zero_without_terminal(command, **kwargs):
-            return subprocess.CompletedProcess(
-                list(command), 0, stdout=partial, stderr=""
-            )
-
-        self.fake_adapters["opencode_go"] = OpenCodeAdapter(
-            runner=exits_zero_without_terminal
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
         )
-        self.fake_adapters["claude"].result = completed("must not run", "claude")
-        SubscriptionStateStore(self.db_path).save_health(
-            "opencode_go", ready=True, account_class="subscription"
-        )
+        self.fake_adapters["claude"].result = completed("clean failover", "claude")
 
         router = self.router()
         result = router.run(
@@ -1412,19 +1452,188 @@ class MutationContinuationTests(RouterTestCase):
                 request(self.git_repo),
                 start_revision=start,
                 current_revision=start,
-                result_transform=lambda value: value,
             ),
             primary_and_next(),
         )
 
-        self.assertFalse(result.success)
-        # Reclassified: the CLI answered, just not in the terminal contract.
-        self.assertEqual(result.failure, FailureKind.INVALID_TERMINAL)
-        self.assertEqual(self.fake_adapters["claude"].requests, [])
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "clean failover")
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
         attempt = router.store.stage_attempts("wf-6", "st-6")[0]
-        self.assertEqual(attempt["failure"], "invalid_terminal")
+        self.assertEqual(attempt["failure"], "task_failure")
         # The part that matters: no invented continuation on the first attempt.
         self.assertEqual(attempt["mode"], "start")
+
+    def test_restart_recovery_uses_the_attempts_own_recorded_verdict(self):
+        """A crash between slots must not recount inherited dirt as mutation.
+
+        Slot 0 fails clean over the owner's dirty tree and the process dies
+        before slot 1. On restart the recovery path used to recompute
+        ``mutated`` with ``mutation_since``, which counts ANY dirty file —
+        including the inherited one — so the clean failure blocked instead
+        of resuming at the next slot. The attempt's own verdict, recorded
+        when it finished, is the delta the live decision read.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed("resumed slot", "claude")
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        router = self.router()
+        availability = router._availability
+
+        def crash(route):
+            if route.slot == 1:
+                raise KeyboardInterrupt
+            return availability(route)
+
+        with patch.object(router, "_availability", side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                router.run(assignment, primary_and_next())
+
+        resumed = self.router().run(assignment, primary_and_next())
+
+        self.assertTrue(resumed.success)
+        self.assertEqual(resumed.text, "resumed slot")
+        self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
+        attempt = self.router().store.stage_attempts("wf-6", "st-6")[0]
+        self.assertEqual(attempt["mutated"], 0)
+
+    def test_fila_vieja_sin_mutated_recalcula_con_mutation_since(self):
+        """H71 L3: una fila completada antes de la columna `mutated` (NULL).
+
+        La rama de compatibilidad recalcula con mutation_since: sobre el
+        árbol sucio heredado eso da mutado, así que la falla que bloquea
+        tras mutación se recupera (bloquea) en vez de avanzar — al revés
+        que la fila nueva con veredicto grabado en 0 del caso anterior.
+        Se siembra una BD vieja SIN la columna; el store la migra a NULL.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE subscription_attempts ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, "
+                "stage_id TEXT NOT NULL, slot INTEGER NOT NULL, attempt INTEGER NOT NULL, "
+                "adapter TEXT NOT NULL, model TEXT NOT NULL, billing_mode TEXT NOT NULL, "
+                "mode TEXT NOT NULL, success INTEGER NOT NULL, failure TEXT, "
+                "session_id TEXT NOT NULL DEFAULT '', start_revision TEXT NOT NULL DEFAULT '', "
+                "end_revision TEXT NOT NULL DEFAULT '', changed_files TEXT NOT NULL DEFAULT '[]', "
+                "detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'completed', "
+                "owner TEXT NOT NULL DEFAULT '', terminal INTEGER NOT NULL DEFAULT 0, "
+                "disposition TEXT NOT NULL DEFAULT 'executed', generation INTEGER NOT NULL DEFAULT 0, "
+                "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+                "UNIQUE(workflow_id, stage_id, slot, attempt))"
+            )
+            conn.execute(
+                "INSERT INTO subscription_attempts "
+                "(workflow_id, stage_id, slot, attempt, adapter, model, billing_mode, "
+                "mode, success, failure, start_revision, end_revision, changed_files) "
+                "VALUES ('wf-6','st-6',0,0,'opencode_go','model-x','subscription',"
+                "'start',0,'task_failure',?,?, '[]')",
+                (start, start),
+            )
+            conn.commit()
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        router = self.router()
+        # La migración añadió la columna y la fila vieja quedó en NULL.
+        self.assertIsNone(router.store.stage_attempts("wf-6", "st-6")[0]["mutated"])
+        result = router.run(assignment, primary_and_next())
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(self.fake_adapters["claude"].requests, [])
+
+    def test_skipped_rows_span_is_not_own_stage_work_on_a_retry(self):
+        """A skipped row records stage baseline -> current HEAD as its span.
+
+        That span is inherited commits (a verifier running over the
+        implementer's work), not this stage's own work. Counting it in
+        ``own_stage_changes`` turned a clean failure on a same-generation
+        retry into a blocking mutation.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "implemented.py").write_text("stage work\n", encoding="utf-8")
+        self._run_git("add", "implemented.py")
+        self._run_git("commit", "-q", "-m", "implementer stage")
+
+        router = self.router()
+        router.store.set_cooldown("opencode_go", hours=1)
+        self.fake_adapters["claude"].result = failed(FailureKind.TASK_FAILURE, "claude")
+        assignment = replace(
+            request(self.git_repo), start_revision=start, current_revision=start
+        )
+        first = router.run(assignment, primary_and_next())
+        self.assertFalse(first.success)
+        rows = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual([row["disposition"] for row in rows], ["skipped", "executed"])
+        self.assertNotEqual(rows[0]["end_revision"], rows[0]["start_revision"])
+
+        # Retry in the same generation: slot 0 fails clean, slot 1 fails
+        # clean, and slot 2 must still get its turn.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["muse"].result = completed("third slot", "muse")
+        resumed = self.router().run(assignment, routes_for_main())
+
+        self.assertTrue(resumed.success)
+        self.assertEqual(resumed.text, "third slot")
+        self.assertEqual(len(self.fake_adapters["muse"].requests), 1)
+
+    def test_inherited_stage_changes_no_longer_block_a_clean_failed_attempt(self):
+        """A stage that inherits another stage's work advances on a clean failure.
+
+        Live 2026-10-19 (t_9df6342d verifier over grok; t_464d20e7 scout): the
+        attempt carried the whole inherited file list in its record, read it
+        back as its own mutation, and blocked the stage although the attempt
+        touched nothing. The inherited files stay in the record as evidence;
+        only the attempt's own delta decides advance or block.
+        """
+        (self.git_repo / "implemented.py").write_text("stage work\n", encoding="utf-8")
+        self._run_git("add", "implemented.py")
+        self._run_git("commit", "-q", "-m", "implementer stage")
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed("verifier next slot", "claude")
+
+        router = self.router()
+        result = router.run(
+            replace(
+                request(self.git_repo),
+                start_revision=start,
+                current_revision=start,
+                mode="continue",
+                changed_files=("implemented.py", "uv.lock"),
+            ),
+            primary_and_next(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.text, "verifier next slot")
+        self.assertEqual(router.calls, ["opencode_go", "claude"])
+        attempt = router.store.stage_attempts("wf-6", "st-6")[0]
+        self.assertEqual(attempt["failure"], "task_failure")
+        # The evidence keeps the inherited union even though the verdict used
+        # only this attempt's delta (nothing).
+        self.assertEqual(attempt["changed_files"], ["implemented.py", "uv.lock"])
+        # The record names the attempt's own baseline, not the stage's.
+        self.assertEqual(attempt["start_revision"], start)
 
     def test_a_worker_rewriting_an_already_dirty_file_counts_as_mutation(self):
         """A worker editing an already-dirty file must not read as "nothing changed".
@@ -1786,6 +1995,23 @@ class StateStoreTests(RouterTestCase):
         )
         self.assertEqual(store.latest_success("wf", "st")["detail"], "done")
 
+    def test_a_lease_with_an_unreadable_expiry_counts_as_live(self):
+        # Live review F7: claim_stage treats an unparsable expires_at as a
+        # live lease (it refuses to take the stage over); active_leases —
+        # the side that authorizes the close — must agree instead of
+        # dropping the lease and failing open.
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf", "st", "owner", 60))
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE subscription_stage_leases SET expires_at = 'not-a-date'"
+            )
+            conn.commit()
+        self.assertEqual(
+            [item["owner"] for item in store.active_leases("wf")], ["owner"]
+        )
+        self.assertFalse(store.claim_stage("wf", "st", "other", 60))
+
     def test_expired_lease_is_recoverable_and_wrong_owner_cannot_release(self):
         store = SubscriptionStateStore(self.db_path)
         self.assertTrue(store.claim_stage("wf", "st", "old", 60))
@@ -1804,6 +2030,40 @@ class StateStoreTests(RouterTestCase):
         self.assertFalse(store.claim_stage("wf", "st", "third", 60))
         reopened.release_stage("wf", "st", "new")
         self.assertTrue(store.claim_stage("wf", "st", "third", 60))
+
+    def test_reclaiming_a_stage_closes_running_attempts_of_dead_owners_as_abandoned(
+        self,
+    ):
+        """A running attempt whose owner no longer exists closes with a cause.
+
+        Live 2026-10-19 (claw point 9, t_70e4ed2c kimi slot 1): rows stayed
+        success=0, failure NULL, detail "attempt running" forever when their
+        owner vanished without a lease row to name. Reopening the stage must
+        close them as abandoned with a readable reason, never NULL.
+        """
+        store = SubscriptionStateStore(self.db_path)
+        # A row found in the wild: running, no failure, and no lease row left
+        # naming its owner (an expired lease of another owner would already
+        # interrupt its own rows; this owner matches nothing).
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO subscription_attempts (workflow_id, stage_id, slot, "
+                "attempt, adapter, model, billing_mode, mode, success, failure, "
+                "session_id, start_revision, end_revision, changed_files, detail, "
+                "status, owner, disposition) VALUES "
+                "('wf', 'st', 1, 0, 'kimi', 'k3', 'subscription', 'start', 0, "
+                "NULL, '', 'r0', 'r0', '[]', 'attempt running', 'running', "
+                "'ghost', 'executed')"
+            )
+            conn.commit()
+
+        self.assertTrue(store.claim_stage("wf", "st", "fresh", 60))
+
+        row = store.stage_attempts("wf", "st")[0]
+        self.assertEqual(row["status"], "abandoned")
+        self.assertEqual(row["failure"], "task_failure")
+        self.assertIn("abandoned", row["detail"])
+        self.assertNotEqual(row["detail"], "attempt running")
 
     def test_duplicate_attempt_is_rejected_instead_of_silently_hidden(self):
         store = SubscriptionStateStore(self.db_path)
@@ -1912,6 +2172,28 @@ class GitInspectorTests(unittest.TestCase):
             ["git", *args], cwd=self.repo, capture_output=True, text=True, check=True
         )
 
+    def _con_watchdog(self, funcion, *, segundos=10):
+        # T2 (#73): si una regresión reintroduce un open() bloqueante, la
+        # llamada debe dar rojo por timeout, no colgar la suite entera.
+        resultado = {}
+
+        def correr():
+            try:
+                resultado["valor"] = funcion()
+            except BaseException as exc:  # noqa: BLE001 - se relanza abajo
+                resultado["error"] = exc
+
+        hilo = threading.Thread(target=correr, daemon=True)
+        hilo.start()
+        hilo.join(timeout=segundos)
+        if hilo.is_alive():
+            self.fail(
+                f"la llamada no termino en {segundos}s: posible open() bloqueante"
+            )
+        if "error" in resultado:
+            raise resultado["error"]
+        return resultado.get("valor")
+
     def test_non_git_workspace_reports_no_mutation(self):
         inspector = GitInspector()
 
@@ -1931,6 +2213,100 @@ class GitInspectorTests(unittest.TestCase):
         self.assertEqual(inspector.changed_files(self.repo), ())
         (self.repo / "new.py").write_text("x", encoding="utf-8")
         self.assertEqual(inspector.changed_files(self.repo), ("new.py",))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires a POSIX fifo")
+    def test_fingerprint_never_reads_special_files_or_follows_symlinks(self):
+        # A dirty FIFO would block read_bytes() forever and a dirty symlink
+        # to /dev/zero would read forever; the fingerprint must classify
+        # both from lstat/readlink instead of opening them, and cap what it
+        # reads from a regular file. This test completing at all is half of
+        # the assertion; the other half is that the entries still compare.
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "t")
+        (self.repo / "base.txt").write_text("hi", encoding="utf-8")
+        self._git("add", "base.txt")
+        self._git("commit", "-q", "-m", "base")
+        (self.repo / "dirty.txt").write_text("dirty", encoding="utf-8")
+        os.mkfifo(self.repo / "a-pipe")
+        os.symlink("/dev/zero", self.repo / "a-link")
+        os.symlink(self.repo / "a-pipe", self.repo / "a-pipe-link")
+        inspector = GitInspector()
+        # The FIFO itself never reaches the reader: it is classified from
+        # lstat alone, and git only ever names it through the symlink.
+        fifo_digest, _ = GitInspector._dirty_digest(self.repo / "a-pipe", 1024)
+        self.assertTrue(fifo_digest.startswith("special:"))
+
+        first = inspector.tree_fingerprint(self.repo)
+        second = inspector.tree_fingerprint(self.repo)
+
+        self.assertEqual(first, second)
+        names = [name for name, _ in first[1]]
+        self.assertIn("a-pipe-link", names)
+        self.assertIn("a-link", names)
+        # Retargeting the link is a change the fingerprint must see, without
+        # ever reading through it.
+        (self.repo / "a-link").unlink()
+        os.symlink("/dev/null", self.repo / "a-link")
+        self.assertNotEqual(inspector.tree_fingerprint(self.repo), first)
+        # Editing the regular dirty file still changes its entry. H71 F5:
+        # compare against the fingerprint taken after the link retarget,
+        # not the original: against `first` this would pass even if the
+        # edit went unseen, because the link already differs.
+        after_link = inspector.tree_fingerprint(self.repo)
+        (self.repo / "dirty.txt").write_text("edited", encoding="utf-8")
+        self.assertNotEqual(inspector.tree_fingerprint(self.repo), after_link)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NOFOLLOW"),
+        "requires POSIX fifo and O_NOFOLLOW",
+    )
+    def test_dirty_digest_no_se_bloquea_si_el_fichero_se_vuelve_fifo(self):
+        # H71 L2: entre el lstat (regular) y el open, otra mano puede
+        # cambiar el fichero por un FIFO: abrirlo sin O_NONBLOCK se
+        # bloquearía para siempre. La digest debe clasificarlo sin abrirlo
+        # a ciegas (fstat tras abrir y descartar si no es regular).
+        target = self.repo / "swap.txt"
+        target.write_text("x", encoding="utf-8")
+        real_lstat = Path.lstat
+        swapped = False
+
+        def racy_lstat(path):
+            nonlocal swapped
+            info = real_lstat(path)
+            if path == target and not swapped:
+                swapped = True
+                target.unlink()
+                os.mkfifo(target)
+            return info
+
+        with patch.object(Path, "lstat", racy_lstat):
+            digest, _ = self._con_watchdog(
+                lambda: GitInspector._dirty_digest(target, 1024)
+            )
+        self.assertTrue(swapped)
+        self.assertTrue(digest.startswith("special:"), digest)
+        # Same race with a symlink to /dev/zero: O_NOFOLLOW refuses it
+        # instead of streaming zeros into the hash.
+        target2 = self.repo / "swap2.txt"
+        target2.write_text("x", encoding="utf-8")
+        swapped2 = False
+
+        def racy_lstat2(path):
+            nonlocal swapped2
+            info = real_lstat(path)
+            if path == target2 and not swapped2:
+                swapped2 = True
+                target2.unlink()
+                os.symlink("/dev/zero", target2)
+            return info
+
+        with patch.object(Path, "lstat", racy_lstat2):
+            digest2, _ = self._con_watchdog(
+                lambda: GitInspector._dirty_digest(target2, 1024)
+            )
+        self.assertTrue(swapped2)
+        self.assertEqual(digest2, "")
 
     def test_unstaged_and_renamed_paths_preserve_spaces_and_unicode(self):
         self._git("init", "-q")
@@ -1994,25 +2370,38 @@ class InvalidTerminalTests(RouterTestCase):
             text="not an envelope", adapter="opencode_go"
         )
         self.fake_adapters["claude"].result = completed(adapter="claude")
-        mutated_git = type(
-            "Git",
-            (),
-            {
-                "current_revision": lambda _, workspace: "r1",
-                "resolve_revision": lambda _, workspace, revision: "r0",
-                "changed_files": lambda _, workspace: ("a.txt",),
-                "mutation_since": lambda _, workspace, revision: (
-                    "r1",
-                    ("a.txt",),
-                    True,
-                ),
-            },
-        )()
+
+        class MutatedGit:
+            """A tree that moves between the attempt's baseline and its verdict."""
+
+            def __init__(self):
+                self.reads = 0
+
+            def current_revision(self, workspace):
+                return "r1"
+
+            def resolve_revision(self, workspace, revision):
+                return "r0"
+
+            def changed_files(self, workspace):
+                return ("a.txt",)
+
+            def mutation_since(self, workspace, revision):
+                return "r1", ("a.txt",), True
+
+            def tree_fingerprint(self, workspace):
+                # First read: the attempt's baseline. Second: the verdict, a
+                # file changed in between.
+                self.reads += 1
+                if self.reads == 1:
+                    return "r0", ()
+                return "r1", (("a.txt", "d"),)
+
         router = SubscriptionRouter(
             adapters=self.fake_adapters,
             db_path=self.db_path,
             routing_source=SOURCE,
-            git=mutated_git,
+            git=MutatedGit(),
         )
 
         result = router.run(
@@ -2158,7 +2547,9 @@ class QuarantineExpiryTests(RouterTestCase):
             FailureKind.TASK_FAILURE,
             FailureKind.INVALID_REQUEST,
             FailureKind.AUTH,
-            FailureKind.TIMEOUT,
+            # A timeout is absent on purpose: a stage no longer advances "for
+            # time" (owner, 2026-10-19), so a timeout result blocks the stage
+            # instead of retrying through the expired quarantine here.
             FailureKind.TRANSPORT,
             FailureKind.MODEL_UNAVAILABLE,
         )
@@ -2195,6 +2586,194 @@ class QuarantineExpiryTests(RouterTestCase):
                 self.assertLess(age, 60)
                 # The re-armed quarantine is cached again: no probe per run.
                 self.assertEqual(len(go.probes), 1)
+
+
+class GenerationTests(unittest.TestCase):
+    """Encargo H punto 1: una generación nueva de intentos oculta la vieja
+    al router, de modo que un relanzamiento llama al modelo otra vez en vez
+    de repetir el resultado grabado. Sin tope de reintentos."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.db = Path(self.tmp.name) / "routes.db"
+        self.store = SubscriptionStateStore(self.db)
+
+    def attempt(self, slot=0, attempt=0, **overrides):
+        values = dict(
+            workflow_id="wf",
+            stage_id="st",
+            slot=slot,
+            attempt=attempt,
+            adapter="opencode_go",
+            model="m",
+            billing_mode="subscription",
+            mode="start",
+            success=True,
+            failure=None,
+            session_id="",
+            start_revision="r1",
+            end_revision="r1",
+            changed_files=[],
+            detail="ok",
+        )
+        values.update(overrides)
+        self.store.record_attempt(**values)
+
+    def test_open_generation_hides_the_old_attempts_from_the_router(self):
+        self.attempt(success=True)
+        self.assertEqual(len(self.store.stage_attempts("wf", "st")), 1)
+        self.assertIsNotNone(self.store.latest_success("wf", "st"))
+
+        generation = self.store.open_generation("wf", "st")
+
+        self.assertEqual(generation, 1)
+        self.assertEqual(self.store.current_generation("wf", "st"), 1)
+        self.assertEqual(self.store.stage_attempts("wf", "st"), [])
+        self.assertIsNone(self.store.latest_success("wf", "st"))
+
+    def test_new_attempts_land_in_the_current_generation(self):
+        self.attempt(success=False, failure="task_failure", detail="old")
+        self.store.open_generation("wf", "st")
+        self.attempt(attempt=1, success=True, detail="new")
+
+        rows = self.store.stage_attempts("wf", "st")
+
+        self.assertEqual([row["attempt"] for row in rows], [1])
+        self.assertEqual(rows[0]["generation"], 1)
+        self.assertEqual(rows[0]["detail"], "new")
+
+    def test_attempt_identity_keeps_counting_across_generations(self):
+        # UNIQUE(workflow_id, stage_id, slot, attempt): the counter is
+        # global, so a new generation never collides with a preserved row.
+        self.attempt(slot=0, attempt=0)
+        self.store.open_generation("wf", "st")
+
+        self.assertEqual(self.store.next_attempt("wf", "st", 0), 1)
+        self.attempt(slot=0, attempt=1)
+        self.assertEqual(self.store.next_attempt("wf", "st", 0), 2)
+
+        with closing(sqlite3.connect(self.db)) as conn:
+            total, old = conn.execute(
+                "SELECT COUNT(*), SUM(generation = 0) FROM subscription_attempts "
+                "WHERE workflow_id='wf' AND stage_id='st'"
+            ).fetchone()
+        self.assertEqual((total, old), (2, 1), "the old generation stays as evidence")
+
+    def test_generations_open_without_a_cap(self):
+        self.store.open_generation("wf", "st")
+        self.store.open_generation("wf", "st")
+
+        self.assertEqual(self.store.current_generation("wf", "st"), 2)
+        self.store.open_generation("wf", "st")
+        self.assertEqual(self.store.current_generation("wf", "st"), 3)
+
+
+class StageLeaseHeartbeatTests(RouterTestCase):
+    """The lease must outlive any stage: a heartbeat renews it while the
+    vendor process runs, and a dead process stops beating so the lease
+    expires on its own, exactly as before."""
+
+    def _counting_renewals(self, store):
+        renewals = []
+        original = store.renew_stage
+
+        def counting(*args, **kwargs):
+            renewed = original(*args, **kwargs)
+            if renewed:
+                renewals.append(time.monotonic())
+            return renewed
+
+        store.renew_stage = counting
+        return renewals
+
+    def test_the_lease_beats_during_a_long_invocation_and_blocks_other_owners(self):
+        router = self.router()
+        entered, release = threading.Event(), threading.Event()
+
+        def unbounded(request, route):
+            entered.set()
+            release.wait(10)
+            return completed("finally done", "opencode_go")
+
+        self.fake_adapters["opencode_go"].result = unbounded
+        renewals = self._counting_renewals(router.store)
+        other = SubscriptionStateStore(self.db_path)
+
+        with (
+            patch("subscriptions.router._STAGE_LEASE_RENEWAL_SECONDS", 0.01),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            future = pool.submit(
+                router.run, request(self.workspace), routes_for_main()[:1]
+            )
+            try:
+                self.assertTrue(entered.wait(10))
+                time.sleep(0.15)
+                # An outside owner cannot claim the stage while it runs.
+                self.assertFalse(other.claim_stage("wf-6", "st-6", "thief", 600))
+                self.assertGreaterEqual(len(renewals), 5)
+                beats = len(renewals)
+                time.sleep(0.15)
+                # The heartbeat kept beating while the invocation stayed slow.
+                self.assertGreater(len(renewals), beats)
+                self.assertFalse(other.claim_stage("wf-6", "st-6", "thief", 600))
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+
+        self.assertTrue(result.success)
+        # The heartbeat stops with the stage: the renewal count freezes.
+        stopped = len(renewals)
+        time.sleep(0.1)
+        self.assertEqual(len(renewals), stopped)
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 60))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
+
+    def test_a_dead_process_stops_beating_and_its_lease_expires_alone(self):
+        from subscriptions.router import _StageLeaseHeartbeat
+
+        store = SubscriptionStateStore(self.db_path)
+        self.assertTrue(store.claim_stage("wf-9", "st-9", "owner", 0.3))
+        renewals = self._counting_renewals(store)
+        heartbeat = _StageLeaseHeartbeat(
+            store,
+            "wf-9",
+            "st-9",
+            "owner",
+            lease_seconds=0.3,
+            interval=0.05,
+        )
+        heartbeat.start()
+        time.sleep(0.2)
+        self.assertGreaterEqual(len(renewals), 2)
+
+        # The router process dying is the thread dying: nothing renews after
+        # the beat stops, and the lease lapses with no owner releasing it.
+        heartbeat.stop()
+        frozen = len(renewals)
+        time.sleep(0.1)
+        self.assertEqual(len(renewals), frozen)
+        time.sleep(0.3)
+        self.assertTrue(store.claim_stage("wf-9", "st-9", "next-owner", 60))
+        store.release_stage("wf-9", "st-9", "next-owner")
+
+    def test_a_heartbeat_that_cannot_start_releases_the_lease(self):
+        from subscriptions.router import _StageLeaseHeartbeat
+
+        router = self.router()
+        with patch.object(
+            _StageLeaseHeartbeat,
+            "start",
+            side_effect=RuntimeError("can't start new thread"),
+        ):
+            with self.assertRaises(RuntimeError):
+                router.run(request(self.workspace), routes_for_main()[:1])
+
+        # The stage is free at once — not held for the lease window with no
+        # one running it.
+        self.assertTrue(router.store.claim_stage("wf-6", "st-6", "next-owner", 60))
+        router.store.release_stage("wf-6", "st-6", "next-owner")
 
 
 if __name__ == "__main__":

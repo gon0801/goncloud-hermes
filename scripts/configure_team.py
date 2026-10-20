@@ -635,6 +635,41 @@ def director_plugins_manifest():
     return json.loads(ruta.read_text(encoding="utf-8"))["plugins"]
 
 
+def director_plugins_locales():
+    """Director plugins enabled but NOT managed by this script ("local").
+
+    forja-queue-cap (2026-10-19): installed by hand under the director's
+    profile (raises the gateway busy queue from 32 to 128) with no repo of
+    its own, so the deploy only leaves it enabled in plugins.enabled — it
+    never copies, deletes or verifies its files. Missing or empty means
+    today's behavior. A name pinned in both lists is a manifest bug and is
+    refused here, before any profile is touched.
+    """
+    override = os.environ.get(DIRECTOR_PLUGINS_OVERRIDE)
+    ruta = Path(override) if override else ROOT / "director-plugins.json"
+    manifiesto = json.loads(ruta.read_text(encoding="utf-8"))
+    locales = manifiesto.get("local", [])
+    repetidos = sorted({p["name"] for p in manifiesto["plugins"]} & set(locales))
+    if repetidos:
+        raise ValueError(
+            "Plugins del director a la vez administrados y locales: "
+            f"{', '.join(repetidos)}; un nombre solo puede vivir en una lista "
+            "de director-plugins.json"
+        )
+    # El deploy escribe plugins.enabled anteponiendo "goncloud-team" a los
+    # administrados y cerrando con los locales: la unicidad vale sobre la
+    # lista entera, no solo entre las dos del manifiesto (F2 de #52).
+    enabled = ["goncloud-team", *(p["name"] for p in manifiesto["plugins"]), *locales]
+    duplicados = sorted({nombre for nombre in enabled if enabled.count(nombre) > 1})
+    if duplicados:
+        raise ValueError(
+            "Plugins del director duplicados en plugins.enabled: "
+            f"{', '.join(duplicados)}; cada nombre aparece una sola vez en "
+            "director-plugins.json (goncloud-team lo antepone el deploy)"
+        )
+    return locales
+
+
 def con_fines_lf(bruto):
     """The bytes as git leaves them: line endings normalized to LF."""
     return bruto.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
@@ -818,14 +853,22 @@ def desired_profile_config(role, team, runtime_home):
         # Gmail/Calendar/Drive through a terminal-driven skill. Its role text,
         # not a narrow toolset, keeps it out of logs and plugin code. The
         # plugins and their toolsets come from the pinned manifest (H-jev r1,
-        # 2026-10-18): jev last, the live order on the PC.
+        # 2026-10-18): jev last, the live order on the PC. The manifest's
+        # "local" plugins close the list (H-plugins-locales, 2026-10-19:
+        # forja-queue-cap): enabled on the director, but their files live
+        # only in its profile and this script never manages them.
         plugins = director_plugins_manifest()
+        locales = director_plugins_locales()
         toolsets = [
             *_DIRECTOR_TOOLSETS,
             *(toolset for plugin in plugins for toolset in plugin["toolsets"]),
         ]
         desired["plugins"] = {
-            "enabled": ["goncloud-team", *(plugin["name"] for plugin in plugins)]
+            "enabled": [
+                "goncloud-team",
+                *(plugin["name"] for plugin in plugins),
+                *locales,
+            ]
         }
         desired["platform_toolsets"] = {"cli": toolsets, "telegram": list(toolsets)}
         # Not the dispatcher's switch (that is the root config, see
@@ -1104,7 +1147,9 @@ def configure(
             if fresh:
                 print(
                     "Plugins del director: no instalados; instálalos con "
-                    "`hermes plugins` (manifiesto director-plugins.json)"
+                    "`hermes plugins` (manifiesto director-plugins.json); "
+                    "los de su lista `local` no tienen repo y se instalan "
+                    "aparte, a mano en el perfil"
                 )
             else:
                 notas_plugins = conciliar_plugins_director(

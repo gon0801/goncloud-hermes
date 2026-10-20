@@ -23,9 +23,9 @@ def _orchestrator():
     local = os.environ.get("LOCALAPPDATA")
     if local:
         sys.path.insert(0, str(Path(local) / "hermes" / "hermes-agent"))
-    from local_orchestrator import LocalOrchestrator
+    from local_orchestrator import LocalOrchestrator, jev_de_produccion
 
-    return LocalOrchestrator()
+    return LocalOrchestrator(jev=jev_de_produccion())
 
 
 def main(argv=None, *, orchestrator_factory=None):

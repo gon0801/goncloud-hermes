@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import SubscriptionProcessError, probe_workspace, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -85,6 +85,15 @@ def parse_grok_ndjson(output: str) -> dict:
     }
 
 
+#: Every role runs with bypassPermissions (decision of 2026-10-19, #57/#71):
+#: Grok has no per-tool allowlist, so dontAsk denies even the read-only
+#: commands a scout needs and the stage fails over (the bug #57 fixed).
+#: Read-only roles stay contained by --sandbox workspace and by the
+#: orchestrator's read-only fingerprint guard, which blocks the stage if
+#: it changed the repository.
+GROK_PERMISSION_MODE = "bypassPermissions"
+
+
 class GrokAdapter(SubscriptionAdapter):
     """Run one stage on the grok.com subscription, sandboxed, prompt by file."""
 
@@ -93,13 +102,14 @@ class GrokAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """``grok models`` is non-generative and reports the login state."""
         try:
-            evidence = run_cli(
-                ["grok", "models"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["grok", "models"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
         haystack = (evidence.stream or "").lower()
@@ -125,7 +135,7 @@ class GrokAdapter(SubscriptionAdapter):
             "--output-format",
             "streaming-json",
             "--permission-mode",
-            "dontAsk",
+            GROK_PERMISSION_MODE,
             "--sandbox",
             "workspace",
             "--model",
@@ -150,7 +160,9 @@ class GrokAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_grok_ndjson(evidence.stream)
         if (
@@ -172,5 +184,9 @@ class GrokAdapter(SubscriptionAdapter):
             else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(
-            route, failure, evidence=(evidence.stderr, evidence.stream)
+            route,
+            failure,
+            request=request,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
         )

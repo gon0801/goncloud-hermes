@@ -699,6 +699,17 @@ conservadora puede afirmar una continuacion que no ocurrio, porque una vez que u
 intento se ejecuto el router no intenta distinguir quien ensucio que. Es el lado
 seguro del error.
 
+**Actualizacion posterior (regla por intento):** la consecuencia de arriba ya
+no describe al router. Cada intento compara el `tree_fingerprint` de su
+arranque contra el de su cierre (con topes de lectura y sin seguir enlaces ni
+abrir archivos especiales), guarda ese veredicto propio en su fila, y la
+recuperacion tras un reinicio lee el veredicto guardado en vez de recalcular
+con cualquier suciedad presente. La suciedad heredada que un intento no toco
+ya no bloquea su failover; el delta propio si. Las filas `skipped`/`denied`
+tampoco cuentan como trabajo propio de la etapa. La regla operativa vigente
+esta en [model-routing](model-routing.md); lo de arriba queda como el
+historial de por que el digest original se borro en su momento.
+
 Nota de proceso, con dos hipotesis mias caidas antes de dar con la buena. El
 `cross-review.ps1` del kit no pudo con el diff completo: **no** era el limite de
 linea de comandos de Windows (el comando mide ~1400 caracteres, porque el prompt

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 sys.path.insert(0, str(ROOT / "tests"))
 from subscriptions.types import AdapterHealth, FailureKind, InvocationResult  # noqa: E402
 from subscriptions.process import ProcessEvidence  # noqa: E402
-from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+from goncloud_test_support import arbol_hermes, cleanup_temp_directory  # noqa: E402
 
 MigrationError = module.MigrationError
 migrate_launcher_secrets = module.migrate_launcher_secrets
@@ -89,11 +89,36 @@ def failing_probe():
     return probe
 
 
+#: La migración de credenciales exige dueño Windows: _migrate_batch rechaza
+#: POSIX antes de crear journal o tienda ("safe credential migration
+#: ownership unavailable"; no hay primitiva portable contra un escritor
+#: abierto). Los casos que la ejercitan no corren fuera de Windows; los
+#: restantes de la clase (lógica pura o con guardia propia) quedan.
+_MIGRACION_WINDOWS = unittest.skipUnless(
+    os.name == "nt",
+    "la migracion de credenciales es Windows-only: _migrate_batch rechaza"
+    " POSIX (ownership unavailable)",
+)
+
+
+def _plataforma_con_tienda_privada() -> bool:
+    """Linux (renameat2) y Windows (handle dueno) publican la tienda privada.
+
+    En macOS private_files falla cerrado a proposito (no hay renameat2 ni
+    handle de Windows), asi que la evidencia viva no corre ahi; en Windows
+    si, y una guardia solo-Linux la apagaba tambien en la PC (F4 de #47).
+    """
+    return sys.platform.startswith("linux") or os.name == "nt"
+
+
 class MigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
-        self.root = Path(self.tmp.name)
+        # Resuelto: en macOS /var es un enlace a /private/var y la migracion
+        # rechaza rutas con enlaces en cualquier ancestro; en Linux /tmp es
+        # real y resolve() es identidad.
+        self.root = Path(self.tmp.name).resolve()
 
     @unittest.skipUnless(os.name == "nt", "Windows extended path aliases")
     def test_extended_private_store_alias_of_sidecar_is_rejected_prewrite(self):
@@ -148,6 +173,7 @@ class MigrationTests(unittest.TestCase):
             if "redirected" in attempts:
                 os.rmdir(destination)
 
+    @_MIGRACION_WINDOWS
     def test_external_identical_launcher_is_not_owned_by_content_digest(self):
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
@@ -339,6 +365,7 @@ class MigrationTests(unittest.TestCase):
             )
         )
 
+    @_MIGRACION_WINDOWS
     def test_external_store_wins_at_recovery_retirement_boundary(self):
         launcher = seeded_deepseek_launcher(self.root)
         target = private_env(self.root)
@@ -361,6 +388,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
         self.assertTrue(module._journal_path(target).exists())
 
+    @_MIGRACION_WINDOWS
     def test_interrupt_after_every_original_move_restores_exact_objects(self):
         for victim in ("subscription-router.env", "deepseek.cmd", "glm-code.ps1"):
             for interrupt in (KeyboardInterrupt, SystemExit):
@@ -492,6 +520,11 @@ class MigrationTests(unittest.TestCase):
                 finally:
                     handle.Close()
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "la publicacion exclusive exige renameat2 (glibc/Linux): en macOS"
+        " la primitiva no existe y private_files falla cerrado a proposito",
+    )
     def test_move_and_publish_sync_both_directory_boundaries(self):
         from subscriptions import private_files
 
@@ -529,6 +562,7 @@ class MigrationTests(unittest.TestCase):
                     private_files.sync_directory(self.root)
                 closed.assert_called_once_with(71)
 
+    @_MIGRACION_WINDOWS
     def test_migration_removes_plaintext_only_after_probe(self):
         glm, deepseek = seeded_launchers(self.root)
         stream = io.StringIO()
@@ -552,6 +586,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn(DEEPSEEK_SECRET, stored)
         self.assertIn("GLM_BASE_URL=https://api.z.ai/api/anthropic", stored)
 
+    @_MIGRACION_WINDOWS
     def test_failed_probe_preserves_launcher(self):
         launcher = seeded_deepseek_launcher(self.root)
         before = launcher.read_bytes()
@@ -566,6 +601,7 @@ class MigrationTests(unittest.TestCase):
 
         self.assertEqual(launcher.read_bytes(), before)
 
+    @_MIGRACION_WINDOWS
     def test_recoverable_backup_is_kept_outside_the_launchers(self):
         glm, deepseek = seeded_launchers(self.root)
 
@@ -579,6 +615,7 @@ class MigrationTests(unittest.TestCase):
             original = backup.read_text(encoding="utf-8")
             self.assertIn("ANTHROPIC_AUTH_TOKEN", original)
 
+    @_MIGRACION_WINDOWS
     def test_apikey_sidecar_is_neutered_after_verified_migration(self):
         glm = self.root / "glm-code.ps1"
         glm.write_text(
@@ -601,6 +638,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn(GLM_SECRET, sidecar.read_text(encoding="utf-8"))
         self.assertIn("GLM_API_KEY", private_env(self.root).read_text(encoding="utf-8"))
 
+    @_MIGRACION_WINDOWS
     def test_missing_credential_is_reported_without_guessing(self):
         empty = self.root / "empty.cmd"
         empty.write_text("@echo off\r\n", encoding="utf-8", newline="")
@@ -614,6 +652,11 @@ class MigrationTests(unittest.TestCase):
             )
         self.assertEqual(empty.read_bytes(), b"@echo off\r\n")
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "la publicacion exclusive exige renameat2 (glibc/Linux): en macOS"
+        " la primitiva no existe y private_files falla cerrado a proposito",
+    )
     def test_private_env_write_is_atomic_and_restricted(self):
         target = private_env(self.root)
         module.write_private_env(target, {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET})
@@ -640,6 +683,11 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(second.count("DEEPSEEK_API_KEY="), 1)
         self.assertIn("GLM_API_KEY=", second)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "la publicacion exclusive exige renameat2 (glibc/Linux): en macOS"
+        " la primitiva no existe y private_files falla cerrado a proposito",
+    )
     def test_published_store_still_rejects_external_hardlinks(self):
         target = private_env(self.root)
         module.write_private_env(target, {"GLM_API_KEY": GLM_SECRET})
@@ -651,7 +699,11 @@ class MigrationTests(unittest.TestCase):
             module.write_private_env(target, {"DEEPSEEK_API_KEY": DEEPSEEK_SECRET})
         self.assertEqual(target.read_bytes(), before)
 
-    @unittest.skipUnless(os.name == "posix", "POSIX ownership-preserving restoration")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "restauracion que conserva ownership sobre renameat2 (glibc/Linux):"
+        " en macOS la primitiva no existe y private_files falla cerrado",
+    )
     def test_posix_changed_object_is_restored_without_residual_hardlink(self):
         from subscriptions import private_files
 
@@ -667,7 +719,11 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(target.stat().st_nlink, 1)
         self.assertEqual(module.read_private_env(target), {"OTHER": "external edit"})
 
-    @unittest.skipUnless(os.name == "posix", "POSIX exclusive publication")
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "publicacion exclusive sobre renameat2 (glibc/Linux): en macOS la"
+        " primitiva no existe y private_files falla cerrado a proposito",
+    )
     def test_posix_exclusive_publication_preserves_existing_destination(self):
         from subscriptions import private_files
 
@@ -681,6 +737,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(source.stat().st_nlink, 1)
         self.assertEqual(target.stat().st_nlink, 1)
 
+    @_MIGRACION_WINDOWS
     def test_unverified_evidence_never_cleans_launcher_or_changes_store(self):
         launcher = seeded_deepseek_launcher(self.root)
         before = launcher.read_bytes()
@@ -735,6 +792,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 2)
         migrate.assert_not_called()
 
+    @_MIGRACION_WINDOWS
     def test_second_probe_failure_rolls_back_both_launchers_and_store(self):
         glm, deepseek = seeded_launchers(self.root)
         originals = [p.read_bytes() for p in (glm, deepseek)]
@@ -751,6 +809,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("sk-sensitive", str(caught.exception))
         self.assertIsNone(caught.exception.__cause__)
 
+    @_MIGRACION_WINDOWS
     def test_success_preserves_crlf_and_backs_up_current_bytes(self):
         launcher = seeded_deepseek_launcher(self.root)
         before = launcher.read_bytes()
@@ -770,6 +829,7 @@ class MigrationTests(unittest.TestCase):
         )
         self.assertIn(before, [backup.read_bytes() for backup in result.backups])
 
+    @_MIGRACION_WINDOWS
     def test_cleanup_replace_failure_restores_bytes_and_keeps_recovery(self):
         glm, deepseek = seeded_launchers(self.root)
         originals = {p: p.read_bytes() for p in (glm, deepseek)}
@@ -797,6 +857,7 @@ class MigrationTests(unittest.TestCase):
             module.write_private_env(target, {"GLM_API_KEY": "fixture\nOTHER=bad"})
         self.assertFalse(target.exists())
 
+    @_MIGRACION_WINDOWS
     def test_probe_exception_cannot_leak_through_migration_error(self):
         launcher = seeded_deepseek_launcher(self.root)
 
@@ -810,6 +871,7 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("sk-sensitive", str(caught.exception))
         self.assertNotIn("owner@example.test", str(caught.exception))
 
+    @_MIGRACION_WINDOWS
     def test_parallel_migrations_cannot_replace_store_under_pending_proof(self):
         glm, deepseek = seeded_launchers(self.root)
         entered, release = threading.Event(), threading.Event()
@@ -842,6 +904,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn(GLM_SECRET, glm.read_text())
         self.assertNotIn(DEEPSEEK_SECRET, deepseek.read_text())
 
+    @_MIGRACION_WINDOWS
     def test_process_crash_during_cleanup_keeps_proven_store_and_exact_backups(self):
         glm, deepseek = seeded_launchers(self.root)
         originals = {p.name: p.read_bytes() for p in (glm, deepseek)}
@@ -881,6 +944,11 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         migrate_launcher_secrets(glm, deepseek, private_env(self.root), passing_probe())
         self.assertNotIn(GLM_SECRET, glm.read_text())
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "la publicacion exclusive exige renameat2 (glibc/Linux): en macOS"
+        " la primitiva no existe y private_files falla cerrado a proposito",
+    )
     def test_atomic_write_failure_leaves_existing_store_and_no_temp_secrets(self):
         target = private_env(self.root)
         target.write_bytes(b"OTHER_KEY=preserved\n")
@@ -897,6 +965,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), b"OTHER_KEY=preserved\n")
         self.assertEqual(list(self.root.glob(".subscription-*")), [])
 
+    @_MIGRACION_WINDOWS
     def test_migration_preserves_store_edited_during_verification(self):
         launcher = seeded_deepseek_launcher(self.root)
         before = launcher.read_bytes()
@@ -913,6 +982,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), changed)
         self.assertEqual(launcher.read_bytes(), before)
 
+    @_MIGRACION_WINDOWS
     def test_private_store_cannot_alias_sidecar_launcher(self):
         launcher = self.root / "glm.ps1"
         original = b"$env:ANTHROPIC_AUTH_TOKEN = $key\n"
@@ -934,6 +1004,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(launcher.read_bytes(), original)
         self.assertEqual(sidecar.read_text(), GLM_SECRET)
 
+    @_MIGRACION_WINDOWS
     def test_private_store_and_backups_are_rejected_inside_any_git_checkout(self):
         launcher = seeded_deepseek_launcher(self.root)
         repo = self.root / "other-checkout"
@@ -1002,6 +1073,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         for backup in self.root.rglob("displaced-*"):
             assert_private(backup)
 
+    @_MIGRACION_WINDOWS
     def test_symlink_store_is_rejected_before_any_credential_write(self):
         target = self.root / "canonical.env"
         target.write_bytes(b"OTHER_KEY=preserved\n")
@@ -1050,6 +1122,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(list(outside.iterdir()), [])
         self.assertEqual(list(repo.glob("subscription-backup-*")), [])
 
+    @_MIGRACION_WINDOWS
     def test_keyboard_interrupt_immediately_after_each_publication_restores_launchers(
         self,
     ):
@@ -1083,6 +1156,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                         "store may be removed only after every launcher is restored",
                     )
 
+    @_MIGRACION_WINDOWS
     def test_store_edit_during_preparation_is_preserved_before_first_write(self):
         launcher = seeded_deepseek_launcher(self.root)
         target = private_env(self.root)
@@ -1103,6 +1177,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), changed)
         self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
 
+    @_MIGRACION_WINDOWS
     def test_edit_after_candidate_flush_is_preserved_before_replace(self):
         launcher = seeded_deepseek_launcher(self.root)
         target = private_env(self.root)
@@ -1127,6 +1202,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), changed)
         self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
 
+    @_MIGRACION_WINDOWS
     def test_recovery_interruption_preserves_store_until_every_launcher_is_certified(
         self,
     ):
@@ -1174,6 +1250,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertFalse(target.exists())
         self.assertFalse(target.with_name(target.name + ".migration.json").exists())
 
+    @_MIGRACION_WINDOWS
     def test_process_death_immediately_after_replace_recovers_before_new_proof(self):
         code = """
 import os, sys
@@ -1221,6 +1298,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
                     target.with_name(target.name + ".migration.json").exists()
                 )
 
+    @_MIGRACION_WINDOWS
     def test_unknown_launcher_during_rollback_keeps_store_and_journal(self):
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
@@ -1242,6 +1320,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertTrue(target.exists())
         self.assertTrue(target.with_name(target.name + ".migration.json").exists())
 
+    @_MIGRACION_WINDOWS
     def test_equivalent_path_spelling_uses_the_same_migration_lock(self):
         glm, deepseek = seeded_launchers(self.root)
         (self.root / "path-part").mkdir()
@@ -1273,6 +1352,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
             result = future.result(timeout=10)
         self.assertEqual(result.private_env, private_env(self.root).resolve())
 
+    @_MIGRACION_WINDOWS
     def test_hard_link_alias_cannot_create_an_independent_store_lock(self):
         target = private_env(self.root)
         target.write_bytes(b"OTHER_KEY=preserved\n")
@@ -1286,6 +1366,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), b"OTHER_KEY=preserved\n")
         self.assertEqual(alias.read_bytes(), b"OTHER_KEY=preserved\n")
 
+    @_MIGRACION_WINDOWS
     def test_equal_candidate_written_externally_before_publish_is_not_rolled_back(self):
         launcher = seeded_deepseek_launcher(self.root)
         target = private_env(self.root)
@@ -1305,6 +1386,7 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual(target.read_bytes(), concurrent)
         self.assertIn(DEEPSEEK_SECRET, launcher.read_text())
 
+    @_MIGRACION_WINDOWS
     def test_equal_candidate_replaced_externally_during_cleanup_is_preserved(self):
         glm, deepseek = seeded_launchers(self.root)
         target = private_env(self.root)
@@ -1331,11 +1413,99 @@ module.migrate_launcher_secrets(root / "glm-code.ps1", root / "deepseek.cmd", ro
         self.assertEqual({p: p.read_bytes() for p in originals}, originals)
 
 
+class GuardiaMigracionTests(unittest.TestCase):
+    """Ninguna prueba de migracion pasa vacia fuera de Windows (F3 de #47).
+
+    _migrate_batch rechaza POSIX antes de crear journal o correr la sonda
+    ("safe credential migration ownership unavailable",
+    scripts/configure_subscriptions.py), asi que una prueba sin la guardia
+    de Windows que espera MigrationError de migrate_one o
+    migrate_launcher_secrets pasa por la razon equivocada, sin ejercitar
+    la migracion. La unica excepcion genuina es el rechazo por falta de
+    sonda, que precede a la guarda POSIX en _migrate_batch.
+    """
+
+    _GENUINA_SIN_GUARDIA = {
+        "test_no_probe_rejects_before_writing_anything",
+    }
+
+    def test_las_pruebas_que_ejercitan_la_migracion_llevan_la_guardia(self):
+        import ast
+
+        arbol = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        clase = next(
+            nodo
+            for nodo in arbol.body
+            if isinstance(nodo, ast.ClassDef) and nodo.name == "MigrationTests"
+        )
+        sin_guardia = []
+        for funcion in clase.body:
+            if not isinstance(funcion, ast.FunctionDef):
+                continue
+            llama_migracion = any(
+                isinstance(nodo, ast.Call)
+                and (
+                    (
+                        isinstance(nodo.func, ast.Name)
+                        and nodo.func.id in ("migrate_one", "migrate_launcher_secrets")
+                    )
+                    or (
+                        isinstance(nodo.func, ast.Attribute)
+                        and nodo.func.attr
+                        in ("migrate_one", "migrate_launcher_secrets")
+                    )
+                )
+                for nodo in ast.walk(funcion)
+            )
+            if not llama_migracion or funcion.name in self._GENUINA_SIN_GUARDIA:
+                continue
+            decoradores = [ast.unparse(d) for d in funcion.decorator_list]
+            if not any(
+                "_MIGRACION_WINDOWS" in d or ("os.name" in d and "'nt'" in d)
+                for d in decoradores
+            ):
+                sin_guardia.append(funcion.name)
+        self.assertEqual(
+            sin_guardia,
+            [],
+            "pruebas de migracion sin @_MIGRACION_WINDOWS: fuera de Windows"
+            " pasan vacias contra el rechazo POSIX, sin ejercitar nada",
+        )
+
+
+class PlataformaTiendaPrivadaTests(unittest.TestCase):
+    """La evidencia viva corre en Linux y en Windows, no en macOS (F4)."""
+
+    def test_windows_cuenta_y_macos_no(self):
+        with (
+            patch.object(os, "name", "nt"),
+            patch.object(sys, "platform", "win32"),
+        ):
+            self.assertTrue(_plataforma_con_tienda_privada())
+        with (
+            patch.object(os, "name", "posix"),
+            patch.object(sys, "platform", "darwin"),
+        ):
+            self.assertFalse(_plataforma_con_tienda_privada())
+        with (
+            patch.object(os, "name", "posix"),
+            patch.object(sys, "platform", "linux"),
+        ):
+            self.assertTrue(_plataforma_con_tienda_privada())
+
+
+@unittest.skipUnless(
+    _plataforma_con_tienda_privada(),
+    "la tienda privada de la sonda viva se publica en Linux (renameat2)"
+    " o en Windows (handle dueno); en macOS falla cerrada a proposito",
+)
 class LiveEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(cleanup_temp_directory, self.tmp)
-        self.db_path = Path(self.tmp.name) / "router.db"
+        # Resuelto: macOS monta el tmp bajo /var, que es un enlace; la
+        # migracion rechaza ancestros con enlaces (en Linux es identidad).
+        self.db_path = Path(self.tmp.name).resolve() / "router.db"
         self.environment = patch.dict(
             os.environ, {"GONCLOUD_SUBSCRIPTION_DB": str(self.db_path)}
         )
@@ -1390,6 +1560,47 @@ class LiveEvidenceTests(unittest.TestCase):
         self.assertEqual(len(probed), len(expected))
         self.assertIn("opencode_zai", probed)
         self.assertEqual(summary["passed"], len(expected))
+
+    def test_the_live_probe_bounds_its_diagnostic_invoke_by_the_probe_window(self):
+        # Stages run without a deadline, but this diagnostic invoke holds the
+        # adapter's dispatch lock while it runs: a hung CLI here must hit the
+        # adapter's own probe window, or every real stage of that adapter
+        # benches behind the lock ("stage already running or ownership
+        # expired; retry later").
+        observed = {}
+
+        class ReadyAdapter:
+            billing_mode = "subscription"
+            timeout_seconds = None
+            probe_timeout_seconds = 30
+
+            def probe(self, route):
+                return AdapterHealth(True, route.adapter)
+
+            def invoke(self, request, route):
+                observed["stage_window"] = self.timeout_seconds
+                return InvocationResult(
+                    True,
+                    "GONCLOUD_PROBE_OK",
+                    route.adapter,
+                    route.model,
+                    route.billing_mode,
+                )
+
+        adapter = ReadyAdapter()
+        with (
+            patch.object(module, "read_private_env", return_value={}),
+            patch(
+                "subscriptions.adapters.build_adapter_registry",
+                return_value={"kimi": adapter},
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
+            result = module.run_live_probe_all(only="kimi")
+
+        self.assertEqual(result["passed"], 1)
+        self.assertIsNotNone(observed["stage_window"])
+        self.assertEqual(observed["stage_window"], 30)
 
     def test_live_probe_commands_exclude_other_processes_and_release_after_crash(self):
         import sqlite3
@@ -2046,14 +2257,14 @@ while True:
         self.assertEqual(adapter.observed, 120)
 
 
+@unittest.skipUnless(
+    arbol_hermes(),
+    "hermes-agent real solo en la PC: DeploymentTests despliega contra el"
+    " runtime instalado (no tiene doble)",
+)
 class DeploymentTests(unittest.TestCase):
     def test_configure_team_copies_subscriptions_and_routing_source(self):
-        upstream = Path(
-            os.environ.get(
-                "HERMES_INSTALL_DIR",
-                Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/hermes-agent",
-            )
-        )
+        upstream = arbol_hermes()
         self.assertTrue(
             (upstream / "hermes_cli/profiles.py").is_file(),
             "Run tests with the installed Hermes runtime",

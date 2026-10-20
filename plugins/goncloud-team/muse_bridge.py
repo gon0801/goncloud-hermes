@@ -160,7 +160,7 @@ def delegate_to_muse(
     workspace: Path,
     actor_role: str,
     max_steps: int = 80,
-    timeout: int = 900,
+    timeout: int | None = None,
     runner: Callable[..., Any] = subprocess.run,
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -168,7 +168,11 @@ def delegate_to_muse(
     jev_config=None,
     clasificar_con_jev: bool = True,
 ) -> dict:
-    """Delegate one task to Muse without interpolating user input into a shell."""
+    """Delegate one task to Muse without interpolating user input into a shell.
+
+    ``timeout=None`` — the default — lets the delegation run without a time
+    limit, exactly as the stage adapters pass it on from their unbounded stage.
+    """
     if not prompt.strip():
         raise MuseBridgeError("Muse delegation prompt cannot be empty")
 
@@ -196,7 +200,7 @@ def delegate_to_muse(
                 command,
                 "",
                 workspace,
-                timeout=min(timeout, 300),
+                timeout=timeout,
                 runner=runner,
             )
         except SubscriptionProcessError as exc:

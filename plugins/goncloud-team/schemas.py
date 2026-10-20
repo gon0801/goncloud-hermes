@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .workflow import INITIAL_STAGES, TEAM_ROLES
 
-
 ENGINEERING_START = {
     "name": "goncloud_engineering_start",
     "description": (
@@ -59,7 +58,13 @@ LOCAL_RUN = {
         "Start technical work that arrived over a messaging transport. Only the claw "
         "profile may call this. Creates the durable Goncloud chain and leaves it running "
         "in the background through the subscription router; returns at once with the "
-        "workflow_id. Never selects models or workers. Reuse request_key on retries."
+        "workflow_id. Never selects models or workers. Reuse request_key on retries: "
+        "a relaunch retries the chain's blocked stages (fresh model calls, no retry "
+        "cap) and respects done stages. The repository keeps one active chain: a "
+        "stopped chain is closed automatically and the new chain starts; if the "
+        "repository already has a live chain, nothing is created and the answer is "
+        '{"busy": true, "cadena_viva": <id>} — relaunch when the live chain\'s '
+        "aviso arrives."
     ),
     "parameters": {
         "type": "object",
@@ -125,6 +130,46 @@ LOCAL_STATUS = {
     },
 }
 
+LOCAL_CLOSE = {
+    "name": "goncloud_local_close",
+    "description": (
+        "Close a finished-but-open local chain (a stopped driver: outcome "
+        "paused after a stop_after checkpoint, blocked, waiting, or error) "
+        "so new work can start again in the same repository. Only the claw "
+        "profile may call this. Closing requires durable evidence that the "
+        "driver is gone: one of its own stopped outcomes as the result "
+        "file's last write — every driver start marks that file running "
+        "first, so a relaunched chain waits for its own driver — a running "
+        "mark whose pid is gone counts as a dead driver, and no "
+        "live subscription lease; a running chain is refused. Note that "
+        "WorkflowService.start now frees a stopped chain by itself and "
+        "queues behind a live one, so an explicit close is only needed to "
+        "abandon a chain. Archives the "
+        "director root and every stage that is not done with the native "
+        "Kanban archive, keeps the done stages as evidence, records the "
+        "reason as a comment on the root, and also frees a root stuck in "
+        "triage without its stage graph. Closing an already-closed chain "
+        "returns the same receipt."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "Goncloud engineering workflow root id.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Owner-facing reason for closing, recorded on the root "
+                    "(at most 1000 characters)."
+                ),
+            },
+        },
+        "required": ["workflow_id", "reason"],
+    },
+}
+
 ENGINEERING_STATUS = {
     "name": "goncloud_engineering_status",
     "description": "Read the durable native-Kanban status of one Goncloud engineering workflow.",
@@ -163,8 +208,9 @@ ENGINEERING_REVIEW = {
     "name": "goncloud_engineering_review",
     "description": (
         "Record the reviewer decision. Approval releases entrega through native dependencies. "
-        "Only a first-round high/critical rejection creates one corrective round; a second "
-        "rejection or lower-severity unresolved finding blocks delivery. No third round exists."
+        "Only a first-round high/critical rejection creates one corrective round; a low/medium "
+        "rejection with no security, data or credential finding does not block: it releases "
+        "entrega with the findings as non-blocking pending. No third round exists."
     ),
     "parameters": {
         "type": "object",
@@ -245,7 +291,10 @@ SUBSCRIPTION_RUN = {
             "repository": {
                 "type": "string",
                 "description": (
-                    "Absolute repository path; must match the stage workspace."
+                    "Absolute repository path; must match the stage workspace. "
+                    "For chains with a worktree, this is the chain's worktree "
+                    "path (branch cadena/<workflow_id>) — never the original "
+                    "checkout."
                 ),
             },
             "revision": {

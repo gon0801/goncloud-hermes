@@ -1,3 +1,10 @@
+# Los .sh se ejecutan con bash: con core.autocrlf=true (default de Git for
+# Windows) un CRLF en el shebang rompe el parseo en local y en CI. Va ANTES
+# de las reglas -text: en .gitattributes la ultima regla que aplica a una
+# ruta gana, y puesta al final pisaba el -text del espejo fijado por bytes
+# (F6; lo fija FinDeLinea de tests/test_sistema_agentes_pin.py con
+# git check-attr).
+*.sh text eol=lf
 # La copia fijada de G y su dorado comparan byte a byte contra pin.json:
 # ninguna conversion de fin de linea, en ninguna plataforma.
 shared/sistema-agentes/** -text

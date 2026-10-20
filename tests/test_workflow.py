@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 from pathlib import Path
 
 
@@ -19,9 +21,9 @@ from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
-    claim_task,
     complete_task,
     get_task,
+    list_events,
     list_tasks,
     parent_ids,
 )
@@ -49,6 +51,27 @@ class WorkflowTestCase(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.db_path = self.root / "kanban.db"
+        # Review F5: start resolves the subscription store through
+        # default_db_path(); without this pin the race test ran schema
+        # migrations and BEGIN IMMEDIATE against the developer's real
+        # router store — and passed or failed depending on its existence.
+        os.environ["GONCLOUD_SUBSCRIPTION_DB"] = str(self.root / "routes.db")
+        self.addCleanup(os.environ.pop, "GONCLOUD_SUBSCRIPTION_DB", None)
+        # The race must decide with the store present (encargo H, pruebas):
+        # an absent store file is checked ground, and the no-store early
+        # return it used to trigger masked exactly the bug this suite
+        # guards. Creating the schema here keeps every test on the
+        # with-store path.
+        from subscriptions.state import SubscriptionStateStore
+
+        SubscriptionStateStore(self.root / "routes.db")
+        # The driver-mark home needs the same pin (regla D removed the
+        # no-store early return that used to mask this): the fake's
+        # sequential ids repeat across runs, so an unpinned HERMES_HOME
+        # let _driver_signals read a stale mark from the real home and
+        # the race archived a birthing chain.
+        os.environ["HERMES_HOME"] = str(self.root / "hermes-home")
+        self.addCleanup(os.environ.pop, "HERMES_HOME", None)
 
     def service(self, role: str = "claw") -> WorkflowService:
         return WorkflowService(db_path=self.db_path, actor_role=role)
@@ -95,6 +118,22 @@ class WorkflowTestCase(unittest.TestCase):
                 {str(self.repo.resolve())},
             )
 
+    def test_start_auto_closes_a_stopped_chain_in_the_same_repo(self) -> None:
+        # Regresion H-payload: el INSERT del auto-cierre usa task_events.payload
+        # (la columna real); con payload_json esto tronaba en vivo y la cadena
+        # nueva nunca arrancaba.
+        first = self.start()
+        with mock.patch("workflow._driver_signals", return_value=(False, True)):
+            second = self.start(request_key="second-chain")
+        self.assertNotEqual(second["workflow_id"], first["workflow_id"])
+        self.assertEqual(second["closed_chains"], [first["workflow_id"]])
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "archived")
+            self.assertIn(
+                "archived",
+                [e["kind"] for e in list_events(conn, first["workflow_id"])],
+            )
+
     def test_duplicate_key_with_changed_contract_is_rejected(self) -> None:
         self.start()
 
@@ -107,8 +146,12 @@ class WorkflowTestCase(unittest.TestCase):
                 sources=SOURCES,
             )
 
-    def test_concurrent_different_requests_cannot_share_one_repository(self) -> None:
-        # Initialize the native schema before racing only the policy decision.
+    def test_concurrent_different_requests_serialize_through_one_repository(
+        self,
+    ) -> None:
+        # Encargo H punto 2: the repository no longer refuses a second chain;
+        # the atomic root insert still serializes the race (each root exactly
+        # once, no half-created chain).
         with connect_closing(self.db_path):
             pass
         barrier = threading.Barrier(2)
@@ -132,28 +175,52 @@ class WorkflowTestCase(unittest.TestCase):
                 except WorkflowError as exc:
                     outcomes.append(("error", str(exc)))
 
-        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 1)
-        self.assertEqual([kind for kind, _ in outcomes].count("error"), 1)
-        self.assertIn(
-            "already has active Goncloud workflow",
-            next(value for kind, value in outcomes if kind == "error"),
-        )
+        self.assertEqual([kind for kind, _ in outcomes].count("ok"), 2)
+        self.assertEqual([kind for kind, _ in outcomes].count("error"), 0)
         with connect_closing(self.db_path) as conn:
-            self.assertEqual(len(list_tasks(conn)), 8)
+            self.assertEqual(len(list_tasks(conn, include_archived=True)), 8)
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 1, "the loser created nothing")
+        # One root is the winner's chain; the loser's busy answer names it.
+        busy = [
+            result for kind, result in outcomes if kind == "ok" and result.get("busy")
+        ]
+        winner = next(
+            result
+            for kind, result in outcomes
+            if kind == "ok" and not result.get("busy")
+        )
+        self.assertEqual(len(busy), 1)
+        self.assertEqual(busy[0]["cadena_viva"], winner["workflow_id"])
+        self.assertEqual(
+            sum(task.status == "archived" for task in roots),
+            0,
+            "nobody archives anybody in the race",
+        )
 
+    @unittest.skipUnless(
+        os.name == "nt",
+        "el alias por mayusculas/minusculas solo unifica en un FS que no"
+        " distingue case (NTFS): en Linux /TMP no existe y resolve(strict)"
+        " falla antes de llegar al lock",
+    )
     def test_repository_lock_normalizes_windows_path_casing(self) -> None:
         self.start("case-a")
 
-        with self.assertRaisesRegex(
-            WorkflowError, "already has active Goncloud workflow"
-        ):
-            self.service().start(
-                request_key="case-b",
-                repository=str(self.repo).swapcase(),
-                revision="abc123",
-                instruction="Alias of the same repository",
-                sources=SOURCES,
-            )
+        # Encargo H punto 2: the alias of the same repository no longer gets
+        # a refusal — start recognizes the repo through its normalized path.
+        started = self.service().start(
+            request_key="case-b",
+            repository=str(self.repo).swapcase(),
+            revision="abc123",
+            instruction="Alias of the same repository",
+            sources=SOURCES,
+        )
+        self.assertNotIn("already has active Goncloud workflow", repr(started))
 
     def test_native_dependencies_keep_later_stages_from_running_early(self) -> None:
         started = self.start()
@@ -169,7 +236,7 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertFalse(complete_task(conn, engineer_id, summary="ran ahead"))
             self.assertEqual(get_task(conn, engineer_id).status, "todo")
 
-    def test_non_high_first_review_rejection_blocks_delivery(self) -> None:
+    def test_medium_first_review_rejection_delivers_with_pending(self) -> None:
         started = self.start()
         self.complete_initial_before_review(started)
 
@@ -181,13 +248,56 @@ class WorkflowTestCase(unittest.TestCase):
             severity="medium",
         )
 
-        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["outcome"], "approved_with_pending")
         self.assertEqual(
-            self.service("reviewer").guard_native_completion(
-                started["stages"]["reviewer"]
-            )["action"],
-            "block",
+            result["pendientes_no_bloqueantes"],
+            [
+                {
+                    "severity": "medium",
+                    "summary": "A material medium finding remains.",
+                    "round": 1,
+                }
+            ],
         )
+        status = self.service("operaciones").status(workflow_id=started["workflow_id"])
+        self.assertFalse(status["delivery_blocked"])
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(
+                get_task(conn, started["stages"]["reviewer"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "ready"
+            )
+            self.assertEqual(len(list_tasks(conn)), 8)
+
+    def test_low_first_review_rejection_also_delivers_with_pending(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        result = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="A minor low finding remains.",
+            severity="low",
+        )
+
+        self.assertEqual(result["outcome"], "approved_with_pending")
+        self.assertEqual(result["pendientes_no_bloqueantes"][0]["severity"], "low")
+
+    def test_medium_rejection_marked_security_still_blocks(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        result = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="Medium pero de seguridad: credenciales expuestas.",
+            severity="medium",
+        )
+
+        self.assertEqual(result["outcome"], "blocked")
         with connect_closing(self.db_path) as conn:
             self.assertEqual(
                 get_task(conn, started["stages"]["reviewer"]).status, "blocked"
@@ -195,10 +305,25 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(
                 get_task(conn, started["stages"]["entrega"]).status, "todo"
             )
-            self.assertIsNone(
-                claim_task(conn, started["stages"]["entrega"], claimer="test")
+
+    def test_rejection_without_severity_keeps_old_failsafe(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+
+        with self.assertRaisesRegex(WorkflowError, "a rejection requires severity"):
+            self.service("reviewer").review(
+                workflow_id=started["workflow_id"],
+                task_id=started["stages"]["reviewer"],
+                decision="reject",
+                summary="A finding remains.",
             )
-            self.assertEqual(len(list_tasks(conn)), 8)
+        with connect_closing(self.db_path) as conn:
+            self.assertNotEqual(
+                get_task(conn, started["stages"]["reviewer"]).status, "done"
+            )
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "todo"
+            )
 
     def test_approved_review_releases_entrega_and_status_reports_it(self) -> None:
         started = self.start()
@@ -291,6 +416,39 @@ class WorkflowTestCase(unittest.TestCase):
             self.assertEqual(get_task(conn, correction["reviewer"]).status, "blocked")
             self.assertEqual(
                 get_task(conn, started["stages"]["entrega"]).status, "todo"
+            )
+
+    def test_second_round_medium_rejection_delivers_with_pending(self) -> None:
+        started = self.start()
+        self.complete_initial_before_review(started)
+        first = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=started["stages"]["reviewer"],
+            decision="reject",
+            summary="High severity defect.",
+            severity="high",
+        )
+        correction = first["corrective_stages"]
+        with connect_closing(self.db_path) as conn:
+            for stage in ("implementer", "verifier", "adversary"):
+                self.assertTrue(
+                    complete_task(conn, correction[stage], summary=f"{stage} complete")
+                )
+
+        rejected = self.service("reviewer").review(
+            workflow_id=started["workflow_id"],
+            task_id=correction["reviewer"],
+            decision="reject",
+            summary="Only a medium finding remains.",
+            severity="medium",
+        )
+
+        self.assertEqual(rejected["outcome"], "approved_with_pending")
+        self.assertEqual(rejected["round"], 2)
+        with connect_closing(self.db_path) as conn:
+            self.assertEqual(get_task(conn, correction["reviewer"]).status, "done")
+            self.assertEqual(
+                get_task(conn, started["stages"]["entrega"]).status, "ready"
             )
 
     def test_role_checks_use_bound_profile_identity(self) -> None:

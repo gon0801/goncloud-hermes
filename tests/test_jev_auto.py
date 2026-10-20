@@ -31,6 +31,8 @@ import yaml
 RAIZ = Path(__file__).resolve().parents[1]
 PLUGIN = RAIZ / "plugins/goncloud-team"
 sys.path.insert(0, str(RAIZ / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 if str(PLUGIN) not in sys.path:
     sys.path.insert(0, str(PLUGIN))
 
@@ -74,7 +76,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.modulo = cargar_jev_auto()
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         self.hogar = Path(self.temporal.name)
         self.llamadas = []
         entorno = mock.patch.dict(
@@ -85,7 +87,14 @@ class Base(unittest.TestCase):
 
     def corredor_ok(self, texto, hogar):
         self.llamadas.append((texto, hogar))
-        return {"estado": "ok", "skill": "web-navigation", "motivo": None, "ms": 120}
+        return {
+            "estado": "ok",
+            "skill": "web-navigation",
+            "motivo": None,
+            "ms": 120,
+            "gate": 0.9,
+            "fit": 0.9,
+        }
 
     def corredor_vacio(self, texto, hogar):
         self.llamadas.append((texto, hogar))
@@ -246,6 +255,96 @@ class VeredictosTests(Base):
         self.assertIn("no respondió", respuesta["context"])
 
 
+class UmbralSkillFitTests(Base):
+    """S2: fit >= UMBRAL_SKILL_FIT carga; debajo o sin fit, decide claw."""
+
+    def veredicto(self, fit, con_fit=True):
+        datos = {"estado": "ok", "skill": "apple-reminders", "motivo": None, "ms": 5}
+        if con_fit:
+            datos["fit"] = fit
+        return datos
+
+    def test_el_umbral_es_06(self):
+        self.assertEqual(self.modulo.UMBRAL_SKILL_FIT, 0.6)
+
+    def test_fit_en_y_sobre_el_umbral_dice_cargala_y_pie_limpio(self):
+        for fit in (0.6, 0.87, 1.0):
+            with self.subTest(fit=fit):
+                self.assertEqual(
+                    self.modulo._linea_contexto(self.veredicto(fit)),
+                    "JEV skill_select: apple-reminders (cárgala)",
+                )
+                self.assertEqual(
+                    self.modulo._pie_visible(self.veredicto(fit)),
+                    "JEV: apple-reminders",
+                )
+
+    def test_fit_bajo_el_umbral_dice_posible_y_pie_dudosa(self):
+        self.assertEqual(
+            self.modulo._linea_contexto(self.veredicto(0.42)),
+            "JEV skill_select: posible apple-reminders (fit 0.42): decide tú",
+        )
+        self.assertEqual(
+            self.modulo._linea_contexto(self.veredicto(0.59)),
+            "JEV skill_select: posible apple-reminders (fit 0.59): decide tú",
+        )
+        self.assertEqual(
+            self.modulo._pie_visible(self.veredicto(0.42)),
+            "JEV: apple-reminders? (dudosa)",
+        )
+
+    def test_sin_fit_dice_posible_y_pie_dudosa(self):
+        for veredicto in (self.veredicto(None), self.veredicto(None, con_fit=False)):
+            self.assertEqual(
+                self.modulo._linea_contexto(veredicto),
+                "JEV skill_select: posible apple-reminders (fit ?): decide tú",
+            )
+            self.assertEqual(
+                self.modulo._pie_visible(veredicto),
+                "JEV: apple-reminders? (dudosa)",
+            )
+
+    def test_vacio_y_fallo_no_cambian_con_el_umbral(self):
+        vacio = {"estado": "vacio", "skill": None, "fit": None}
+        fallo = {"estado": "fallo", "skill": None, "motivo": "caido", "fit": None}
+        self.assertEqual(
+            self.modulo._linea_contexto(vacio), "JEV skill_select: ninguna"
+        )
+        self.assertEqual(self.modulo._pie_visible(vacio), "JEV: ninguna")
+        self.assertIn("no respondió", self.modulo._linea_contexto(fallo))
+        self.assertEqual(self.modulo._pie_visible(fallo), "JEV: no respondió")
+
+    def test_el_turno_con_fit_bajo_no_ordena_cargar_y_el_pie_es_dudosa(self):
+        def corredor(texto, hogar):
+            return {
+                "estado": "ok",
+                "skill": "apple-reminders",
+                "motivo": None,
+                "ms": 5,
+                "gate": 0.8,
+                "fit": 0.42,
+            }
+
+        auto = self.auto(corredor=corredor)
+        self.assertEqual(
+            auto.pre_llm_call(**turno()),
+            {
+                "context": (
+                    "JEV skill_select: posible apple-reminders (fit 0.42): decide tú"
+                )
+            },
+        )
+        pie = auto.transform_llm_output(
+            session_id="s1",
+            turn_id="t1",
+            platform="telegram",
+            response_text="respuesta",
+        )
+        self.assertEqual(pie, "respuesta\n\nJEV: apple-reminders? (dudosa)")
+        fila = self.registro()[0]
+        self.assertEqual((fila["gate"], fila["fit"]), (0.8, 0.42))
+
+
 class RegistroTests(Base):
     """Una linea JSON por consulta, sin texto del mensaje y sin llave."""
 
@@ -264,6 +363,8 @@ class RegistroTests(Base):
                 "platform",
                 "consultado",
                 "resultado",
+                "gate",
+                "fit",
                 "error",
                 "ms",
                 "msg_len",
@@ -273,6 +374,8 @@ class RegistroTests(Base):
         self.assertEqual(fila["platform"], "telegram")
         self.assertTrue(fila["consultado"])
         self.assertEqual(fila["resultado"], "web-navigation")
+        self.assertEqual(fila["gate"], 0.9)
+        self.assertEqual(fila["fit"], 0.9)
         self.assertIsNone(fila["error"])
         self.assertEqual(fila["msg_len"], len(MENSAJE))
         self.assertIsInstance(fila["ms"], int)
@@ -394,11 +497,13 @@ class PieVisibleTests(Base):
     def test_una_llave_de_config_del_ctx_gana_sobre_el_entorno(self):
         os.environ.pop("GONCLOUD_JEV_AUTO_VISIBLE", None)
         apagado = self.modulo.registrar(_CtxFalso(config={"jev_auto_visible": False}))
+        apagado.decisor = None  # el decisor real jamas corre en pruebas
         apagado.hogar = self.hogar
         apagado.corredor = self.corredor_ok
         self.assertIsNotNone(apagado.pre_llm_call(**turno()))
         self.assertIsNone(self.transformar(apagado))
         encendido = self.modulo.registrar(_CtxFalso(config={"jev_auto_visible": True}))
+        encendido.decisor = None  # el decisor real jamas corre en pruebas
         encendido.hogar = self.hogar
         encendido.corredor = self.corredor_ok
         with mock.patch.dict(os.environ, {"GONCLOUD_JEV_AUTO_VISIBLE": "0"}):
@@ -412,6 +517,7 @@ class PieVisibleTests(Base):
                 auto = self.modulo.registrar(
                     _CtxFalso(config={"jev_auto_visible": valor})
                 )
+                auto.decisor = None  # el decisor real jamas corre en pruebas
                 auto.hogar = self.hogar
                 auto.corredor = self.corredor_ok
                 os.environ.pop("GONCLOUD_JEV_AUTO_VISIBLE", None)
@@ -424,6 +530,7 @@ class PieVisibleTests(Base):
                 auto = self.modulo.registrar(
                     _CtxFalso(config={"jev_auto_visible": valor})
                 )
+                auto.decisor = None  # el decisor real jamas corre en pruebas
                 auto.hogar = self.hogar
                 auto.corredor = self.corredor_ok
                 with mock.patch.dict(os.environ, {"GONCLOUD_JEV_AUTO_VISIBLE": "0"}):
@@ -715,6 +822,51 @@ class CorredorRealTests(Base):
         veredicto = self.correr(popen=lambda *a, **k: hijo)
         self.assertEqual(veredicto["estado"], "vacio")
 
+    def test_gate_y_fit_del_hijo_viajan_en_el_veredicto(self):
+        hijo = self.PopenFalso()
+        hijo.salida = (
+            json.dumps(
+                {
+                    "suggested": "web-navigation",
+                    "decision": "suggest",
+                    "gate": 0.91,
+                    "fit": 0.42,
+                }
+            ).encode("utf-8"),
+            b"",
+        )
+        veredicto = self.correr(popen=lambda *a, **k: hijo)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.91, 0.42))
+
+    def test_abstencion_conserva_gate_y_fit_queda_none(self):
+        hijo = self.PopenFalso()
+        hijo.salida = (
+            json.dumps(
+                {"suggested": None, "decision": "abstain", "gate": 0.12, "fit": None}
+            ).encode("utf-8"),
+            b"",
+        )
+        veredicto = self.correr(popen=lambda *a, **k: hijo)
+        self.assertEqual(veredicto["estado"], "vacio")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.12, None))
+
+    def test_gate_y_fit_no_numericos_quedan_none(self):
+        hijo = self.PopenFalso()
+        hijo.salida = (
+            json.dumps(
+                {
+                    "suggested": "web-navigation",
+                    "decision": "suggest",
+                    "gate": "alto",
+                    "fit": True,
+                }
+            ).encode("utf-8"),
+            b"",
+        )
+        veredicto = self.correr(popen=lambda *a, **k: hijo)
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (None, None))
+
     def test_suggest_sin_nombre_es_vacio(self):
         hijo = self.PopenFalso()
         hijo.salida = (
@@ -735,7 +887,7 @@ class HijoRealTests(Base):
         "\n"
         "def suggest(request, roster):\n"
         "    return {'suggested': roster[0]['name'], 'decision': 'suggest',"
-        " 'gate': 0.9}\n"
+        " 'gate': 0.9, 'fits': {'web-navigation': 0.87, 'otra': 0.1}}\n"
     )
 
     def setUp(self):
@@ -768,6 +920,62 @@ class HijoRealTests(Base):
         self.assertEqual(veredicto["estado"], "ok")
         self.assertEqual(veredicto["skill"], "web-navigation")
         self.assertEqual(veredicto["motivo"], None)
+        # S1: gate tal cual y fit = fits[sugerida], no el de otra skill.
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.9, 0.87))
+
+    ROUTER_CON_CONFIG = (
+        "CFG = {'deny': ['web-navigation'], 'gate': 0.33}\n"
+        "\n"
+        "def load_roster():\n"
+        "    return [{'name': 'web-navigation'}, {'name': 'otra'}]\n"
+        "\n"
+        "def load_config():\n"
+        "    return CFG\n"
+        "\n"
+        "def filter_roster(roster, cfg):\n"
+        "    return [r for r in roster if r['name'] not in cfg['deny']]\n"
+        "\n"
+        "def suggest(request, roster, cfg=None):\n"
+        "    if cfg is None:\n"
+        "        return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': 0.5}\n"
+        "    return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': cfg['gate'], 'fits': {roster[0]['name']: 0.9}}\n"
+    )
+
+    def test_el_hijo_aplica_config_y_filtro_del_router(self):
+        # Hueco B: allow/deny y jev-skill-router.json valen en la ruta
+        # automatica; sin ellos sugeriria la skill vetada.
+        self.escribir_router(self.ROUTER_CON_CONFIG)
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual(veredicto["skill"], "otra")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.33, 0.9))
+
+    def test_plugin_viejo_sin_config_ni_filtro_cae_a_la_llamada_de_siempre(self):
+        for faltante in ("load_config", "filter_roster"):
+            with self.subTest(sin=faltante):
+                self.escribir_router(self.ROUTER_CON_CONFIG + f"del {faltante}\n")
+                with self.con_respaldo():
+                    veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+                self.assertEqual(veredicto["estado"], "ok")
+                self.assertEqual(veredicto["skill"], "web-navigation")
+                self.assertEqual(veredicto["gate"], 0.5)
+
+    def test_el_hijo_sin_fits_deja_fit_none_y_gate_pasa(self):
+        self.escribir_router(
+            "def load_roster():\n"
+            "    return [{'name': 'web-navigation'}]\n"
+            "\n"
+            "def suggest(request, roster):\n"
+            "    return {'suggested': 'web-navigation', 'decision': 'suggest',"
+            " 'gate': 0.7}\n"
+        )
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.7, None))
 
     def test_el_hijo_real_abstiene_y_el_padre_lo_entiende(self):
         self.escribir_router(
@@ -919,7 +1127,7 @@ class HogarTests(Base):
 
     def test_la_ruta_del_plugin_deriva_el_perfil_del_despliegue(self):
         # El layout vivo de la PC: <perfil>/plugins/goncloud-team/jev_auto.py
-        # sube dos niveles al perfil, como el parche 0002-skills-root.
+        # sube dos niveles al perfil, como el _skills_root() del router.
         copia = self.cargar_copia(
             self.hogar / "perfil" / "plugins" / "goncloud-team" / "jev_auto.py",
             "jev_auto_derivacion",
@@ -939,8 +1147,138 @@ class HogarTests(Base):
                 self.assertEqual(copia._hogar_perfil(), Path.home() / ".hermes")
 
 
+def _cargar_medir_skills():
+    ruta = RAIZ / "scripts" / "jev_medir_skills.py"
+    spec = importlib.util.spec_from_file_location("jev_medir_skills", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+class MedirSkillsTests(unittest.TestCase):
+    """S3: el script de medicion corre con un runner doble, sin red ni llave."""
+
+    def test_el_fixture_trae_los_34_casos_etiquetados(self):
+        medir_mod = _cargar_medir_skills()
+        casos = medir_mod.cargar_casos(
+            RAIZ / "tests/fixtures/jev_skills_etiquetado.jsonl"
+        )
+        self.assertEqual(len(casos), 34)
+        por_mensaje = {c["mensaje"]: c["esperado"] for c in casos}
+        self.assertEqual(por_mensaje["hay personalizadas por hacer hoy?"], "ninguna")
+        self.assertEqual(por_mensaje["llegó una personalizada"], "ninguna")
+        self.assertEqual(
+            por_mensaje["buenos días, qué tenemos pendiente hoy"], "ninguna"
+        )
+        self.assertEqual(
+            por_mensaje["recuérdame mañana a las 9 pagar la luz"], "apple-reminders"
+        )
+
+    def test_cargar_casos_salta_una_linea_con_json_malformado(self):
+        # H67: igual que en jev_medir_ruteo, una línea malformada no aborta.
+        medir_mod = _cargar_medir_skills()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "casos.jsonl"
+            ruta.write_text(
+                '{"mensaje": "pon un recordatorio", "esperado": "apple-reminders"}\n'
+                '{"mensaje": "x",}\n'
+                "42\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                medir_mod.cargar_casos(ruta),
+                [
+                    {
+                        "mensaje": "pon un recordatorio",
+                        "esperado": "apple-reminders",
+                    }
+                ],
+            )
+
+    def test_medir_y_la_tabla_por_umbral_con_runner_doble(self):
+        medir_mod = _cargar_medir_skills()
+        respuestas = {
+            "pon un recordatorio": {
+                "estado": "ok",
+                "skill": "apple-reminders",
+                "gate": 0.9,
+                "fit": 0.8,
+            },
+            "hay personalizadas por hacer hoy?": {
+                "estado": "ok",
+                "skill": "apple-reminders",
+                "gate": 0.7,
+                "fit": 0.42,
+            },
+            "saluda": {"estado": "vacio", "skill": None, "gate": 0.2, "fit": None},
+            "revisa el correo": {
+                "estado": "ok",
+                "skill": "email-inbox-triage",
+                "gate": 0.9,
+                "fit": 0.95,
+            },
+        }
+        casos = [
+            {"mensaje": "pon un recordatorio", "esperado": "apple-reminders"},
+            {
+                "mensaje": "hay personalizadas por hacer hoy?",
+                "esperado": "ninguna",
+            },
+            {"mensaje": "saluda", "esperado": "ninguna"},
+            {"mensaje": "revisa el correo", "esperado": "odoo"},
+        ]
+        resultado = medir_mod.medir(lambda mensaje: respuestas[mensaje], casos)
+        self.assertEqual(resultado["total"], 4)
+        self.assertEqual(resultado["aciertos"], 2)
+        filas = {f["mensaje"]: f for f in resultado["filas"]}
+        baja = filas["hay personalizadas por hacer hoy?"]
+        self.assertEqual(
+            (baja["suggested"], baja["gate"], baja["fit"], baja["acierto"]),
+            ("apple-reminders", 0.7, 0.42, False),
+        )
+        self.assertIsNone(filas["saluda"]["suggested"])
+        self.assertTrue(filas["saluda"]["acierto"])
+        tabla = {f["umbral"]: f for f in resultado["tabla"]}
+        self.assertEqual(sorted(tabla), [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+        # Con fit hay 3: 1 buena (0.8) y 2 malas (0.42 y 0.95 contra odoo).
+        self.assertEqual(
+            (tabla[0.3]["cargala_acertadas"], tabla[0.3]["cargala_equivocadas"]),
+            (1, 2),
+        )
+        self.assertEqual(
+            (tabla[0.6]["cargala_acertadas"], tabla[0.6]["cargala_equivocadas"]),
+            (1, 1),
+        )
+        self.assertEqual(
+            (tabla[0.9]["cargala_acertadas"], tabla[0.9]["cargala_equivocadas"]),
+            (0, 1),
+        )
+        texto = medir_mod.formatear(resultado)
+        self.assertIn("suggested=apple-reminders gate=0.70 fit=0.42", texto)
+        self.assertIn("aciertos: 2/4", texto)
+        self.assertIn("0.6 | 1 | 1", texto)
+
+    def test_medir_con_un_solo_umbral_y_runner_que_falla_no_explota(self):
+        medir_mod = _cargar_medir_skills()
+
+        def corredor(mensaje):
+            raise RuntimeError("sin router")
+
+        resultado = medir_mod.medir(
+            corredor,
+            [{"mensaje": "algo largo y concreto", "esperado": "ninguna"}],
+            umbrales=(0.6,),
+        )
+        self.assertEqual([f["umbral"] for f in resultado["tabla"]], [0.6])
+        self.assertFalse(resultado["filas"][0]["acierto"])
+        self.assertEqual(resultado["aciertos"], 0)
+        self.assertIn("error: sin router", medir_mod.formatear(resultado))
+
+
 class CableadoTests(unittest.TestCase):
-    """El plugin registra los dos ganchos como registra el que ya tenia."""
+    """El plugin registra los ganchos como registra el que ya tenia."""
 
     @classmethod
     def setUpClass(cls):
@@ -965,12 +1303,22 @@ class CableadoTests(unittest.TestCase):
         self.plugin.register(ctx)
         self.assertEqual(
             sorted(ctx.hooks),
-            ["pre_llm_call", "pre_tool_call", "transform_llm_output"],
+            [
+                "post_llm_call",
+                "post_tool_call",
+                "pre_llm_call",
+                "pre_tool_call",
+                "transform_llm_output",
+            ],
         )
 
     def test_el_plugin_yaml_declara_los_ganchos(self):
         manifest = yaml.safe_load((PLUGIN / "plugin.yaml").read_text(encoding="utf-8"))
-        for gancho in ("pre_tool_call", "pre_llm_call", "transform_llm_output"):
+        for gancho in (
+            "pre_tool_call",
+            "pre_llm_call",
+            "transform_llm_output",
+        ):
             self.assertIn(gancho, manifest["provides_hooks"])
 
     def test_los_ganchos_cableados_respetan_la_puerta(self):
@@ -978,33 +1326,97 @@ class CableadoTests(unittest.TestCase):
         self.plugin.register(ctx)
         pre = ctx.hooks["pre_llm_call"]
         auto = pre.__self__
+        auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         auto.hogar = Path(temporal.name)
         auto.corredor = lambda texto, hogar: {
             "estado": "ok",
             "skill": "web-navigation",
             "motivo": None,
             "ms": 5,
+            "gate": 0.9,
+            "fit": 0.9,
         }
         self.assertIsNotNone(pre(**turno()))
         self.assertIsNone(pre(**turno(platform="cron")))
         scout = _CtxFalso(perfil="scout")
         self.plugin.register(scout)
+        scout.hooks["pre_llm_call"].__self__.decisor = None  # JEV real jamas en pruebas
         self.assertIsNone(scout.hooks["pre_llm_call"](**turno()))
+
+    def test_los_cinco_ganchos_de_jev_quedan_alcanzables_y_el_de_bucle_corre(self):
+        # Hermes admite varias funciones por gancho: con un ctx que las
+        # guarda todas, JEV queda alcanzable en los cinco y la guarda no
+        # sombrea al detector de bucle en pre_tool_call.
+        class CtxMulti(_CtxFalso):
+            def register_hook(self, nombre, funcion):
+                self.hooks.setdefault(nombre, []).append(funcion)
+
+        ctx = CtxMulti()
+        self.plugin.register(ctx)
+        jev = [
+            funcion
+            for funciones in ctx.hooks.values()
+            for funcion in funciones
+            if type(getattr(funcion, "__self__", None)).__name__ == "JevAuto"
+        ]
+        self.assertEqual(
+            sorted(funcion.__name__ for funcion in jev),
+            [
+                "post_llm_call",
+                "post_tool_call",
+                "pre_llm_call",
+                "pre_tool_call",
+                "transform_llm_output",
+            ],
+        )
+        self.assertEqual(len(ctx.hooks["pre_tool_call"]), 2)  # JEV + guarda
+        auto = jev[0].__self__
+        llamadas = []
+
+        class DecisorFalso:
+            def resuelva(self):
+                return "", ()
+
+            def bucle(self, ficha, entrada, clave=None, secretos=None):
+                llamadas.append(entrada)
+
+                class Decision:
+                    error = None
+                    opcion = "bucle"
+                    confianza = 0.95
+
+                return Decision()
+
+        auto.decisor = DecisorFalso()
+        detector = next(
+            f
+            for f in ctx.hooks["pre_tool_call"]
+            if getattr(f, "__self__", None) is auto
+        )
+        detector(tool_name="read_file", args={}, session_id="s1")
+        detector(tool_name="read_file", args={}, session_id="s1")
+        for hilo in list(auto.hilos):
+            hilo.join(5)
+        self.assertEqual(len(llamadas), 1)
+        self.assertTrue(any("Jev advierte" in a for a in auto._avisos.get("s1", [])))
 
     def test_la_consulta_registrada_deja_registro_y_pie(self):
         ctx = _CtxFalso()
         self.plugin.register(ctx)
         auto = ctx.hooks["pre_llm_call"].__self__
+        auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         auto.hogar = Path(temporal.name)
         auto.corredor = lambda texto, hogar: {
             "estado": "ok",
             "skill": "web-navigation",
             "motivo": None,
             "ms": 5,
+            "gate": 0.9,
+            "fit": 0.9,
         }
         auto.pre_llm_call(**turno())
         pie = ctx.hooks["transform_llm_output"](

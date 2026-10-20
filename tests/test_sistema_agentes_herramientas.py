@@ -17,6 +17,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 import hermes_falso  # noqa: E402
 from conexiones import rastrear_conexiones  # noqa: E402
@@ -117,7 +118,7 @@ class Base(unittest.TestCase):
         self.plugin = cargar_plugin()
         self.addCleanup(hermes_falso.desinstalar)
         self.temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.temporal)
         parche = mock.patch.dict("os.environ", {"HERMES_HOME": self.temporal.name})
         parche.start()
         self.addCleanup(parche.stop)
@@ -746,7 +747,7 @@ class CargaComoPaquete(unittest.TestCase):
         import importlib
 
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
         # F9: con HERMES_HOME fijado al temporal el manejador abre el store de
@@ -823,6 +824,19 @@ class PuertaDeCapacidades(Base):
         )
         self.assertEqual(respuesta["rootId"], RAIZ)
         self.assertFalse(respuesta["replayed"])
+
+    def test_version_sin_certificar_abre_con_aviso_en_el_recibo(self):
+        # Encargo H punto 3: la puerta abre con aviso; el submit fluye y el
+        # recibo lleva el aviso sin bloquear nada.
+        herramientas = importlib.import_module("raices.herramientas")
+        respuesta = herramientas.enviar_raiz(
+            {"plan": meta_de()},
+            "claw",
+            home=self.temporal.name,
+            ruta_abierta=lambda: (True, "version-no-certificada"),
+        )
+        self.assertEqual(respuesta["rootId"], RAIZ)
+        self.assertEqual(respuesta["aviso"], "version-no-certificada")
 
     def test_la_lectura_no_consulta_la_puerta(self):
         puerta = mock.MagicMock(return_value=(False, "version-no-certificada"))

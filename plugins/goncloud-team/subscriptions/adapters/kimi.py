@@ -6,7 +6,12 @@ import json
 import tomllib
 from pathlib import Path
 
-from ..process import PROMPT_PLACEHOLDER, SubscriptionProcessError, run_cli
+from ..process import (
+    PROMPT_PLACEHOLDER,
+    SubscriptionProcessError,
+    probe_workspace,
+    run_cli,
+)
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -198,13 +203,14 @@ class KimiAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """``kimi doctor`` is non-generative; auth needs live inference."""
         try:
-            evidence = run_cli(
-                ["kimi", "doctor"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["kimi", "doctor"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
         if evidence.returncode != 0:
@@ -224,7 +230,9 @@ class KimiAdapter(SubscriptionAdapter):
             route.reasoning_effort is not None
             and self._configured_effort() != route.reasoning_effort
         ):
-            return self._failed_result(route, FailureKind.INVALID_REQUEST)
+            return self._failed_result(
+                route, FailureKind.INVALID_REQUEST, request=request
+            )
         # kimi resolves models through its configured aliases (config.toml
         # defines them as kimi-code/<name>), so qualify bare table models.
         model = route.model if "/" in route.model else f"kimi-code/{route.model}"
@@ -251,7 +259,9 @@ class KimiAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_kimi_jsonl(evidence.stream)
         if evidence.returncode == 0:
@@ -264,10 +274,20 @@ class KimiAdapter(SubscriptionAdapter):
                     billing_mode=route.billing_mode,
                     session_id=parsed["session_id"] or "",
                 )
-            return self._failed_result(route, FailureKind.TASK_FAILURE)
+            return self._failed_result(
+                route,
+                FailureKind.TASK_FAILURE,
+                request=request,
+                evidence=(evidence.stderr, evidence.stream),
+                returncode=evidence.returncode,
+            )
         failure = classify_failure(
             evidence.returncode, evidence.stream, evidence.stderr
         )
         return self._failed_result(
-            route, failure, evidence=(evidence.stderr, evidence.stream)
+            route,
+            failure,
+            request=request,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
         )

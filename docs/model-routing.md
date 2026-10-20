@@ -178,14 +178,17 @@ Dos reglas hacen que ese reparto funcione y las dos se violaron en `t_f1c90a69`:
   intento previo ni commit sobre la base, la etapa arranca en `mode="start"` y
   el modelo NO recibe los archivos del propietario listados como trabajo de un
   worker anterior. Esa historia falsa es la que rompio la cadena real.
-- Pero para decidir si un fallo avanza o bloquea, "el workspace cambio" sigue
-  siendo conservador: **cualquier** archivo sucio cuenta. Distinguir quien
-  ensucio que requiere una linea base de contenido, y dos rondas de revision
-  externa encontraron formas de que esa distincion leyera una mutacion real como
-  "sin cambios". Bloquear una etapa se recupera; pisar el trabajo de un worker
-  no. Consecuencia practica: **con el arbol sucio no hay failover automatico**,
-  asi que commitea o stashea antes de lanzar una cadena. El detalle de las dos
-  rondas esta en [estado](status.md).
+- Para decidir si un fallo avanza o bloquea, el router compara el arbol al
+  arrancar **ese intento** contra el arbol al terminarlo (`tree_fingerprint`:
+  revision HEAD mas el contenido de cada archivo sucio, con topes de lectura
+  y sin seguir enlaces). La suciedad heredada que el intento no toco no
+  cuenta como mutacion suya: un fallo limpio avanza de posicion aunque el
+  arbol ya viniera sucio. Lo que si bloquea es el delta propio del intento
+  (editar un archivo ya sucio, crear archivos, commitear durante la corrida)
+  y, en modo continuacion, el trabajo propio de intentos anteriores de la
+  misma etapa. El veredicto propio queda guardado en la fila del intento y
+  es el que lee la recuperacion tras un reinicio. El detalle historico de
+  las dos rondas esta en [estado](status.md).
 El unico fallo vigente en la matriz, `quota` en Codex, avanza de slot y no bloquea ninguna etapa;
 el proveedor declara la fecha de reposicion. Zen y Kimi pasaron a `ready` al
 agregar a Node la raiz TLS de Kaspersky que intercepta esas conexiones, y Kimi

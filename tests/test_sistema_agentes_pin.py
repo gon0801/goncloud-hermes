@@ -102,6 +102,45 @@ class FinDeLinea(unittest.TestCase):
                     self.assertEqual(resultado.returncode, 0, resultado.stderr)
                     self.assertIn("text: unset", resultado.stdout, (regla, ruta))
 
+    def test_un_sh_del_espejo_sigue_sin_conversion_pese_al_sh_global(self):
+        """F6: el `*.sh text eol=lf` global no pisa el -text del espejo.
+
+        En .gitattributes la ULTIMA regla que aplica a una ruta gana por
+        atributo: puesta al final, `*.sh text eol=lf` daba text: set a un
+        .sh del espejo y autocrlf lo reescribiria (los sha256 del pin se
+        rompen en Windows). Vive ANTES de las -text, asi que un .sh dentro
+        del espejo (aunque hoy no exista: check-attr evalua patrones, no
+        el disco) debe salir text: unset. El otro lado del contrato: los
+        .sh que SI se ejecutan con bash (.github/scripts) conservan su
+        text: set y eol: lf.
+        """
+        for ruta in (
+            "shared/sistema-agentes/fakes/hipotetico.sh",
+            "tests/fixtures/sistema-agentes-g/hipotetico.sh",
+        ):
+            with self.subTest(ruta=ruta):
+                salida = self.check_attr("text", ruta)
+                self.assertIn("text: unset", salida, ruta)
+        salida = self.check_attr("text", "eol", ".github/scripts/reusar_completa.sh")
+        self.assertIn("text: set", salida)
+        self.assertIn("eol: lf", salida)
+
+    def check_attr(self, *atributos_y_ruta):
+        """`git check-attr <atributos> -- <ruta>`; devuelve stdout (salta sin git)."""
+        *atributos, ruta = atributos_y_ruta
+        try:
+            resultado = subprocess.run(
+                ["git", "check-attr", *atributos, "--", ruta],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except OSError:
+            self.skipTest("git no esta disponible")
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        return resultado.stdout
+
 
 if __name__ == "__main__":
     unittest.main()

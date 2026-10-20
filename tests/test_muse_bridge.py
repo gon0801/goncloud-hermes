@@ -74,6 +74,11 @@ class MuseBridgeTests(unittest.TestCase):
                 Path(r"C:\dev\repo"), Path(r"C:\temp\prompt.txt"), max_steps=0
             )
 
+    @unittest.skipUnless(
+        os.name == "nt",
+        "delegar a muse necesita Windows: el prompt sale por un tempfile que"
+        " se traduce a /mnt/c, no hay ruta literal que lo haga portable",
+    )
     def test_delegate_sends_arbitrary_prompt_on_stdin_not_command_line(self):
         observed = {}
 
@@ -118,6 +123,11 @@ class MuseBridgeTests(unittest.TestCase):
 
         self.assertIn("goncloud_muse_delegate", manifest["provides_tools"])
 
+    @unittest.skipUnless(
+        os.name == "nt",
+        "delegar a muse necesita Windows: el prompt sale por un tempfile que"
+        " se traduce a /mnt/c, no hay ruta literal que lo haga portable",
+    )
     def test_direct_muse_result_redacts_assignment_environment_and_identity(self):
         sensitive = (
             "opaque-muse-fixture",

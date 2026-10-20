@@ -294,7 +294,6 @@ class DripEndpoint:
 class BillingModeTests(unittest.TestCase):
     def test_only_deepseek_is_api_billed(self):
         adapters = build_adapter_registry()
-
         self.assertEqual(
             [adapters[name].billing_mode for name in ("kimi", "zai", "grok")],
             ["subscription"] * 3,
@@ -326,6 +325,23 @@ class BillingModeTests(unittest.TestCase):
                 "deepseek",
             },
         )
+
+    def test_no_adapter_binds_a_timeout_to_the_stage(self):
+        """Stages run without a deadline; only health probes keep windows.
+
+        The 300 s stage ceiling starved every large design (2026-09-14);
+        bringing it back — as a default or a clamp — turns this red.
+        """
+        adapters = build_adapter_registry()
+
+        for name, adapter in adapters.items():
+            with self.subTest(adapter=name):
+                self.assertIsNone(adapter.timeout_seconds)
+        # The health probes keep their bounded windows exactly as they were.
+        self.assertEqual(adapters["muse"].probe_timeout_seconds, 120)
+        for name, adapter in adapters.items():
+            if name != "muse":
+                self.assertEqual(adapter.probe_timeout_seconds, 30)
 
 
 class KimiGrokTests(unittest.TestCase):
@@ -468,8 +484,15 @@ class KimiGrokTests(unittest.TestCase):
 
         self.assertFalse(exit_zero.success)
         self.assertEqual(exit_zero.failure, FailureKind.TASK_FAILURE)
+        # Exit 0 with an invalid terminal keeps the same evidence contract as
+        # a failing exit: the stream line that broke the turn stays in detail.
+        self.assertIn("exit 0", exit_zero.detail)
+        self.assertIn("turn.step.retrying", exit_zero.detail)
+        self.assertIn("APIConnectionError", exit_zero.detail)
         self.assertFalse(exit_one.success)
         self.assertEqual(exit_one.failure, FailureKind.TRANSPORT)
+        self.assertIn("exit 1", exit_one.detail)
+        self.assertIn("turn.step.retrying", exit_one.detail)
 
     def test_kimi_connection_error_is_transport_failure(self):
         result = KimiAdapter(
@@ -603,7 +626,7 @@ class KimiGrokTests(unittest.TestCase):
         runner = CaptureRunner(stdout=GROK_ACP)
 
         result = GrokAdapter(runner=runner).invoke(
-            replace(request(self.workspace), max_steps=17),
+            replace(request(self.workspace), max_steps=17, role="implementer"),
             route_for("grok", "grok-4.6", slot=6, reasoning_effort="xhigh"),
         )
 
@@ -612,7 +635,15 @@ class KimiGrokTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertEqual(command[command.index("--max-turns") + 1], "17")
         self.assertIn("Maximum autonomous steps: 17", captured["text"])
-        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        # bypassPermissions (2026-10-19) en todos los roles: dontAsk niega lo
+        # que querria preguntar en una corrida headless ("permission required
+        # ... was not run") y Grok no tiene allowlist; el sandbox workspace
+        # sigue confinando archivos y red
+        # (test_grok_runs_bypass_in_every_role_inside_the_sandbox).
+        self.assertEqual(
+            command[command.index("--permission-mode") + 1], "bypassPermissions"
+        )
+        self.assertNotIn("dontAsk", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
         self.assertEqual(
             command[command.index("--output-format") + 1], "streaming-json"
@@ -1064,6 +1095,26 @@ class HttpAdapterTests(unittest.TestCase):
             )
         self.assertEqual(result.failure, FailureKind.QUOTA)
 
+    def test_http_failure_evidence_names_the_http_response_channel(self):
+        # The single channel is the response body; stderr/stream labels would
+        # describe a process that never ran.
+        with FakeEndpoint(
+            status=429, body='{"error":{"message":"rate limit"}}'
+        ) as endpoint:
+            result = DeepSeekAdapter(
+                api_key=DEEPSEEK_FIXTURE_KEY, base_url=endpoint.url
+            ).invoke(
+                request(self.workspace),
+                route_for("deepseek", "deepseek-flash", billing="api"),
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.RATE_LIMIT)
+        self.assertIn("http response tail:", result.detail)
+        self.assertIn("rate limit", result.detail)
+        self.assertNotIn("stderr tail:", result.detail)
+        self.assertNotIn("stream tail:", result.detail)
+
     def test_deepseek_probe_uses_non_generative_models_list(self):
         with FakeEndpoint(body='{"data":[{"id":"deepseek-flash"}]}') as endpoint:
             adapter = DeepSeekAdapter(
@@ -1248,15 +1299,13 @@ class ProbeFailureClassificationTests(unittest.TestCase):
         )
 
     def test_a_probe_timeout_is_a_failure_the_router_advances_past(self):
-        from subscriptions.router import _ADVANCING_FAILURES
-
         for name, (adapter, route) in self.probes().items():
             with self.subTest(adapter=name):
                 failure = adapter.probe(route).failure
-                # Exact identity, not membership: task_failure also advances
-                # now, so membership alone cannot catch a regression to it.
+                # Exact identity: the probe hit its own bounded window. Probes
+                # keep their deadlines (they are not stages); the health skip
+                # moves the stage to the next slot without any time bench.
                 self.assertIs(failure, FailureKind.TIMEOUT)
-                self.assertIn(failure, _ADVANCING_FAILURES)
 
 
 class ClaudeCommandTests(unittest.TestCase):
@@ -1341,6 +1390,10 @@ class OpenCodeCommandTests(unittest.TestCase):
         self.assertFalse(self.env_for(request(self.workspace)))
 
 
+@unittest.skipUnless(
+    os.name == "nt",
+    "el puente muse necesita rutas Windows (prompt por tempfile y /mnt/c)",
+)
 class MuseCommandTests(unittest.TestCase):
     """A stage invocation still launches Muse."""
 
@@ -1355,6 +1408,200 @@ class MuseCommandTests(unittest.TestCase):
             request(self.workspace), route_for("muse", "muse-spark-1.3")
         )
         self.assertIsNotNone(runner.command)
+
+
+class ProbeAwareRunner(FakeCliRunner):
+    """Answers the non-generative grok probe; the invocation gets the failure."""
+
+    def __call__(self, command, **kwargs):
+        if command[:2] == ["grok", "models"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="logged in, grok-4.6 available", stderr=""
+            )
+        return super().__call__(command, **kwargs)
+
+
+class FailureEvidenceDetailTests(unittest.TestCase):
+    """A failed attempt records WHY it failed, redacted, in its detail."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.workspace = Path(self.tmp.name).resolve()
+
+    def router_with_grok(self, runner):
+        return SubscriptionRouter(
+            adapters={"grok": GrokAdapter(runner=runner)},
+            db_path=self.workspace / "detail.db",
+        )
+
+    def test_failed_stderr_reaches_the_attempt_detail(self):
+        runner = ProbeAwareRunner(stderr="Not logged in, run grok login", returncode=1)
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.AUTH)
+        self.assertEqual(len(attempts), 1)
+        detail = attempts[0]["detail"]
+        self.assertIn("grok invocation failed (auth)", detail)
+        self.assertIn("exit 1", detail)
+        self.assertIn("Not logged in, run grok login", detail)
+        # The public result text stays the bounded class message.
+        self.assertTrue(
+            result.text.startswith("grok invocation failed (auth)"), result.text
+        )
+
+    def test_api_key_shaped_stderr_is_redacted_in_the_attempt_detail(self):
+        runner = ProbeAwareRunner(
+            stderr="auth rejected key sk-fixture-grok-key-000123", returncode=1
+        )
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        detail = router.store.stage_attempts("wf-5", "stage-verifier")[0]["detail"]
+
+        self.assertFalse(result.success)
+        self.assertIn("[redacted]", detail)
+        self.assertNotIn("sk-fixture-grok-key-000123", detail)
+        self.assertNotIn("sk-fixture-grok-key-000123", repr(result))
+
+    def test_prompt_echo_across_the_tail_window_is_redacted_before_truncation(self):
+        # A CLI echoing an assignment longer than the detail window leaves only
+        # the prompt's tail inside the window: redaction must run on the FULL
+        # channel, or that suffix reaches the durable detail and status.
+        prompt = "Assign the fixture deadline. " * 143  # ~4000 chars
+        marker = "APIConnectionError"
+        runner = ProbeAwareRunner(
+            stderr=(
+                f"{prompt}\n"
+                f"vendor died: {marker} while reading the assignment\n" + "pad " * 200
+            ),
+            returncode=1,
+        )
+        windows = [prompt[i : i + 40] for i in range(0, len(prompt) - 40, 97)]
+
+        adapter_result = GrokAdapter(runner=runner).invoke(
+            request(self.workspace, prompt=prompt), route_for("grok", "grok-4.6")
+        )
+        router = SubscriptionRouter(
+            adapters={"grok": GrokAdapter(runner=runner)},
+            db_path=self.workspace / "echo.db",
+            routing_source={
+                "profile_names": {"main": "claw"},
+                "profile_inheritance": {},
+                "chains": {
+                    "claw": [
+                        "opencode-go/deepseek-v4.1-flash (off)",
+                        "anthropic/claude-sonnet-5",
+                        "meta/muse-spark-1.3 (max)",
+                        "xai/grok-4.6",
+                    ]
+                },
+            },
+        )
+        router.run(
+            request(self.workspace, prompt=prompt),
+            [route_for("grok", "grok-4.6", slot=0)],
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+        status = router.status("claw", workflow_id="wf-5", stage_id="stage-verifier")
+
+        self.assertFalse(adapter_result.success)
+        # The evidence that is not prompt survives redaction; the prompt is
+        # gone from every reader-visible surface, in any 40-char piece.
+        self.assertIn(marker, adapter_result.detail)
+        self.assertIn(marker, attempts[0]["detail"])
+        for surface in (adapter_result.detail, attempts[0]["detail"], repr(status)):
+            for window in windows:
+                self.assertNotIn(window, surface)
+
+    def test_detail_keeps_only_the_last_1500_characters_of_each_channel(self):
+        stderr = "head " + "a" * 4000 + " END-OF-STDERR"
+        stream = "head " + "b" * 4000 + " END-OF-STREAM"
+        adapter = GrokAdapter(
+            runner=FakeCliRunner(stdout=stream, stderr=stderr, returncode=3)
+        )
+
+        result = adapter.invoke(request(self.workspace), route_for("grok", "grok-4.6"))
+
+        self.assertFalse(result.success)
+        self.assertIn("END-OF-STDERR", result.detail)
+        self.assertIn("END-OF-STREAM", result.detail)
+        self.assertNotIn("head ", result.detail)
+        self.assertLess(len(result.detail), 3400)
+
+    def test_successful_invocation_leaves_the_detail_unchanged(self):
+        runner = ProbeAwareRunner(stdout=GROK_ACP)
+        router = self.router_with_grok(runner)
+
+        result = router.run(
+            request(self.workspace), [route_for("grok", "grok-4.6", slot=0)]
+        )
+        attempts = router.store.stage_attempts("wf-5", "stage-verifier")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.detail, "")
+        self.assertEqual(attempts[0]["detail"], "grok answered")
+
+    def test_muse_bridge_error_is_kept_in_the_detail(self):
+        from muse_bridge import MuseBridgeError
+
+        error = MuseBridgeError("Muse output did not contain a terminal record")
+        with patch("subscriptions.adapters.muse.delegate_to_muse", side_effect=error):
+            result = MuseAdapter(runner=FakeCliRunner()).invoke(
+                request(self.workspace), route_for("muse", "muse-spark-1.3")
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("Muse output did not contain a terminal record", result.detail)
+
+    def test_grok_runs_bypass_in_every_role_inside_the_sandbox(self):
+        # Grok has no per-tool allowlist: dontAsk would deny a scout's
+        # read-only commands and fail the stage over (#57). Every role runs
+        # bypassPermissions, always inside --sandbox workspace; read-only
+        # roles are also held by the orchestrator's fingerprint guard.
+        for role in (
+            "scout",
+            "ingenieria",
+            "verifier",
+            "reviewer",
+            "implementer",
+            "entrega",
+            "adversary",
+        ):
+            with self.subTest(role=role):
+                runner = FakeCliRunner(stdout=GROK_ACP)
+                GrokAdapter(runner=runner).invoke(
+                    replace(request(self.workspace), role=role),
+                    route_for("grok", "grok-4.6"),
+                )
+                command = runner.command
+                self.assertEqual(
+                    command[command.index("--permission-mode") + 1],
+                    "bypassPermissions",
+                )
+                self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
+                self.assertNotIn("dontAsk", command)
+
+    def test_process_error_message_is_recorded_in_the_attempt_detail(self):
+        def timeout_runner(command, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
+
+        adapter = GrokAdapter(runner=timeout_runner)
+        adapter.timeout_seconds = 30
+
+        result = adapter.invoke(request(self.workspace), route_for("grok", "grok-4.6"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TIMEOUT)
+        self.assertIn("vendor process timed out after 30s", result.detail)
 
 
 class CodexCommandTests(unittest.TestCase):

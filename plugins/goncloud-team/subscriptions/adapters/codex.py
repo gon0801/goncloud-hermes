@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import SubscriptionProcessError, probe_workspace, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -108,13 +108,14 @@ class CodexAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """Ready only when ``codex login status`` reports the ChatGPT plan."""
         try:
-            evidence = run_cli(
-                ["codex", "login", "status"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["codex", "login", "status"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
         # The npm shim prints this status on stderr while stdout stays empty.
@@ -163,7 +164,9 @@ class CodexAdapter(SubscriptionAdapter):
                 runner=self.runner,
             )
         except SubscriptionProcessError as error:
-            return self._failed_result(route, error.failure, str(error))
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         parsed = parse_codex_jsonl(evidence.stream)
         if (
@@ -185,5 +188,9 @@ class CodexAdapter(SubscriptionAdapter):
             else classify_failure(evidence.returncode, evidence.stream, evidence.stderr)
         )
         return self._failed_result(
-            route, failure, evidence=(evidence.stderr, evidence.stream)
+            route,
+            failure,
+            request=request,
+            evidence=(evidence.stderr, evidence.stream),
+            returncode=evidence.returncode,
         )

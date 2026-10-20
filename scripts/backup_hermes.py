@@ -184,6 +184,14 @@ def _hermes_home_rules():
         yield Rule("home", name, False, reason)
         yield Rule("home", f"profiles/*/{name}", False, reason)
     yield Rule("home", "**/*.pid", False, "pid de un proceso vivo")
+    # Ronda 19-oct-2026 (OK DG): repo git del plugin jev; su index lo bloquea
+    # un proceso vivo y el plugin se vuelve a clonar desde su remoto.
+    yield Rule(
+        "home",
+        "profiles/claw/plugins/jev/.git",
+        False,
+        "repo git del plugin jev; se reclona desde su remoto",
+    )
 
 
 def _user_rules():

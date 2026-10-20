@@ -34,19 +34,12 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 MANIFIESTO = json.loads((ROOT / "director-plugins.json").read_text(encoding="utf-8"))
-PATCH = ROOT / "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch"
 
 JEV_REPO = "https://github.com/ajensenwaud/hermes-jev-plugin"
-JSR_REPO = "https://github.com/ydmw74/jev-skill-router"
+JSR_REPO = "https://github.com/gon0801/jev-skill-router"
 JEV_SHA = "b3d29f71770a3447ad0b3db00658f64a8edc7dd3"
-JSR_SHA = "76ee09e049dbc10c76f98cfefc6ca16b42cfad38"
-PATCH_SHA = "fb7c8aa20f8f6cfd85fd4035777e3215c1c716eaf429fb11f0223f4d1c89d879"
+JSR_SHA = "2fc5cac7d1c37e23322be0d1242f5249e94df159"
 MCP_SERVER = "src/jev_skill_router/mcp_server.py"
-PRISTINE_SHA = "eb28e49d7815d1e200f42ae52c6545c529ecbfb28fb31f935d28f4c8d1aa4e04"
-PATCHED_SHA = "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b"
-PATCH2 = ROOT / "patches/claw/jev-skill-router-mcp/0002-skills-root.patch"
-PATCH2_SHA = "f3d67ea61c8fb50e851e5b7af1d0a28a9b592dd9caab59ca219e40d6a14ae7e6"
-FINAL_SHA = "d6b95558301f5435f4b675ba4bb687e16caec7e4d0b46b37055d0f6b62f21b98"
 JEV_PATCH = ROOT / "patches/claw/jev/0001-secret-scope.patch"
 JEV_PATCH_SHA = "4a82061e6241dc7f64c41aeb13d7115f32be44f7b23b7e93d4112a8a62f0306c"
 JEV_CLIENT = "client.py"
@@ -82,30 +75,16 @@ class ManifiestoTests(unittest.TestCase):
         self.assertEqual(jsr["repo"], JSR_REPO)
         self.assertEqual(jsr["sha"], JSR_SHA)
         self.assertEqual(jsr["toolsets"], [])
-        self.assertEqual(
-            jsr["patches"],
-            [
-                {
-                    "file": MCP_SERVER,
-                    "patch": "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch",
-                    "sha256_pristine": PRISTINE_SHA,
-                    "sha256_patched": PATCHED_SHA,
-                },
-                {
-                    "file": MCP_SERVER,
-                    "patch": "patches/claw/jev-skill-router-mcp/0002-skills-root.patch",
-                    "sha256_pristine": PATCHED_SHA,
-                    "sha256_patched": FINAL_SHA,
-                },
-            ],
-        )
+        # Las correcciones del router ya viven en gon0801 al sha fijado: sin
+        # parches locales que reaplicar (y que un configure_team revertiria).
+        self.assertEqual(jsr["patches"], [])
+        self.assertNotIn("ydmw74", json.dumps(MANIFIESTO))
+
+    def test_no_quedan_parches_del_router_en_el_repo(self):
+        self.assertFalse((ROOT / "patches/claw/jev-skill-router-mcp").exists())
 
     def test_el_patch_del_repo_no_cambia_ni_se_pierde(self):
-        for ruta, sha, archivo in (
-            (JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),
-            (PATCH, PATCH_SHA, MCP_SERVER),
-            (PATCH2, PATCH2_SHA, MCP_SERVER),
-        ):
+        for ruta, sha, archivo in ((JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),):
             with self.subTest(patch=ruta.name):
                 self.assertTrue(ruta.is_file())
                 self.assertEqual(hashlib.sha256(ruta.read_bytes()).hexdigest(), sha)
@@ -121,7 +100,13 @@ class ManifiestoTests(unittest.TestCase):
         # valga en cualquier arbol que corra la bateria.
         try:
             resultado = subprocess.run(
-                ["git", "check-attr", "text", "--", PATCH.relative_to(ROOT).as_posix()],
+                [
+                    "git",
+                    "check-attr",
+                    "text",
+                    "--",
+                    JEV_PATCH.relative_to(ROOT).as_posix(),
+                ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -144,7 +129,12 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
                 if role == team["director"]:
                     self.assertEqual(
                         desired["plugins"]["enabled"],
-                        ["goncloud-team", "jev", "jev-skill-router-mcp"],
+                        [
+                            "goncloud-team",
+                            "jev",
+                            "jev-skill-router-mcp",
+                            "forja-queue-cap",
+                        ],
                     )
                     esperados = [*module._DIRECTOR_TOOLSETS, "jev"]
                     self.assertEqual(desired["platform_toolsets"]["cli"], esperados)
@@ -158,13 +148,23 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
                     self.assertNotIn("jev", desired["platform_toolsets"]["telegram"])
 
     def test_el_config_vivo_de_claw_hoy_mergea_sin_conflicto(self):
-        # El config.yaml vivo de la PC ya declara los plugins del manifiesto y
-        # el toolset con jev al final; el deploy debe leerlo como reconciliado,
-        # sin conflicto y sin diff (encargo H-jev r1, 2026-10-18).
+        # El config.yaml vivo de la PC (H-plugins-locales, 2026-10-19)
+        # declara los plugins del manifiesto y forja-queue-cap, el plugin
+        # LOCAL que Forja instalo a mano en profiles/claw/plugins (sube la
+        # cola busy del gateway de 32 a 128; no tiene repo), mas el toolset
+        # con jev al final. Con la lista "local" del manifiesto, el deploy
+        # debe leerlo como reconciliado, sin conflicto y sin diff.
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         con_jev = [*module._DIRECTOR_TOOLSETS, "jev"]
         existing = {
-            "plugins": {"enabled": ["goncloud-team", "jev", "jev-skill-router-mcp"]},
+            "plugins": {
+                "enabled": [
+                    "goncloud-team",
+                    "jev",
+                    "jev-skill-router-mcp",
+                    "forja-queue-cap",
+                ]
+            },
             "platform_toolsets": {"cli": con_jev, "telegram": list(con_jev)},
         }
         previous = {
@@ -180,6 +180,105 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
 
         self.assertEqual(merged["plugins"], existing["plugins"])
         self.assertEqual(merged["platform_toolsets"], existing["platform_toolsets"])
+
+    def test_un_manifiesto_sin_local_mantiene_la_conducta_de_hoy(self):
+        # Caso (b) del encargo: sin la lista "local" el deploy se comporta
+        # como siempre — forja-queue-cap no aparece en enabled y el config
+        # vivo previo a Forja mergea sin conflicto.
+        team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto.pop("local", None)
+        con_jev = [*module._DIRECTOR_TOOLSETS, "jev"]
+        existing = {
+            "plugins": {"enabled": ["goncloud-team", "jev", "jev-skill-router-mcp"]},
+            "platform_toolsets": {"cli": con_jev, "telegram": list(con_jev)},
+        }
+        previous = {
+            "plugins": {"enabled": ["goncloud-team"]},
+            "platform_toolsets": {
+                "cli": list(module._DIRECTOR_TOOLSETS),
+                "telegram": list(module._DIRECTOR_TOOLSETS),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                desired = module.desired_profile_config(
+                    team["director"], team, Path("C:/home")
+                )
+                merged = module.merge_profile_config(existing, desired, previous)
+
+        self.assertEqual(
+            desired["plugins"]["enabled"],
+            ["goncloud-team", "jev", "jev-skill-router-mcp"],
+        )
+        self.assertEqual(merged["plugins"], existing["plugins"])
+
+    def test_un_nombre_en_plugins_y_local_es_error_claro(self):
+        # Caso (c): un plugin administrado no puede ser tambien local; el
+        # manifiesto esta mal y se rechaza antes de tocar ningun perfil.
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["jev"]
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                with self.assertRaisesRegex(ValueError, "administrados y locales: jev"):
+                    module.director_plugins_locales()
+
+    def _locales_con_manifiesto(self, manifiesto):
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                return module.director_plugins_locales()
+
+    def test_goncloud_team_en_local_es_duplicado(self):
+        # F2 de #52: el deploy antepone siempre "goncloud-team" a
+        # plugins.enabled; nombrarlo tambien en "local" duplicaba la
+        # entrada que el merge escribe en config.yaml.
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["goncloud-team"]
+        with self.assertRaisesRegex(ValueError, "duplicados.*goncloud-team"):
+            self._locales_con_manifiesto(manifiesto)
+
+    def test_un_nombre_repetido_dentro_de_local_es_duplicado(self):
+        # F2 de #52: la guarda tampoco veia un nombre repetido dentro de
+        # la propia lista "local".
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["forja-queue-cap", "forja-queue-cap"]
+        with self.assertRaisesRegex(ValueError, "duplicados.*forja-queue-cap"):
+            self._locales_con_manifiesto(manifiesto)
+
+    def test_el_readme_nombra_la_lista_local_y_el_enabled_del_deploy(self):
+        # F1 de #52: la seccion del README debe declarar el mismo
+        # plugins.enabled que el deploy escribe, con la lista "local".
+        seccion = (
+            (ROOT / "README.md")
+            .read_text(encoding="utf-8")
+            .split("## Plugins externos del director", 1)[1]
+            .split("\n## ", 1)[0]
+        )
+        self.assertIn("`local`", seccion)
+        self.assertIn("forja-queue-cap", seccion)
+        self.assertIn(
+            "[goncloud-team, jev, jev-skill-router-mcp, forja-queue-cap]", seccion
+        )
 
 
 PRISTINA = "def call_adapter():\n    return {}\n"
@@ -623,6 +722,9 @@ class DespliegueFrescoTests(unittest.TestCase):
         resultado = self.run_configure()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn("hermes plugins", resultado.stdout)
+        # F1 de #52: el aviso no manda instalar los `local` desde el
+        # manifiesto; no tienen repo y se instalan aparte.
+        self.assertIn("`local`", resultado.stdout)
         config = yaml.safe_load(
             (self.runtime / "profiles" / "claw" / "config.yaml").read_text(
                 encoding="utf-8"
@@ -630,7 +732,12 @@ class DespliegueFrescoTests(unittest.TestCase):
         )
         self.assertEqual(
             config["plugins"]["enabled"],
-            ["goncloud-team", "jev", "jev-skill-router-mcp"],
+            [
+                "goncloud-team",
+                "jev",
+                "jev-skill-router-mcp",
+                "forja-queue-cap",
+            ],
         )
         self.assertEqual(
             config["platform_toolsets"]["cli"],
@@ -649,16 +756,19 @@ class DespliegueFrescoTests(unittest.TestCase):
         self.assertIn("hermes plugins", resultado.stderr)
 
     def test_la_seccion_jev_va_en_el_soul_de_claw_y_de_nadie_mas(self):
-        # La regla de David (2026-10-18) vive en roles/claw.md, en la posicion
-        # exacta que claw dejo a mano en su SOUL de la PC: antes de
-        # Especialistas. El SOUL del director la lleva; ningun otro perfil la
-        # recibe porque el generador solo une roles/<rol>.md de cada perfil.
+        # La seccion JEV vive en roles/claw.md, en la posicion exacta que
+        # claw dejo a mano en su SOUL de la PC: antes de Especialistas. El
+        # SOUL del director la lleva; ningun otro perfil la recibe porque
+        # el generador solo une roles/<rol>.md de cada perfil. La regla
+        # "Prohibido parchar a mano" se retiro del rol (David, 2026-10-19)
+        # y el SOUL compuesto no debe volver a llevarla: mientras siga, el
+        # deploy marca conflicto con el SOUL vivo de la PC.
         resultado = self.run_configure()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         perfiles = self.runtime / "profiles"
         claw = (perfiles / "claw" / "SOUL.md").read_text(encoding="utf-8")
         self.assertIn("# JEV (decisiones rapidas)", claw)
-        self.assertIn("Prohibido parchar a mano", claw)
+        self.assertNotIn("Prohibido parchar a mano", claw)
         self.assertLess(
             claw.index("# JEV (decisiones rapidas)"),
             claw.index("# Especialistas"),

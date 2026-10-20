@@ -38,8 +38,15 @@ CREATE TABLE IF NOT EXISTS subscription_attempts (
     owner TEXT NOT NULL DEFAULT '',
     terminal INTEGER NOT NULL DEFAULT 0,
     disposition TEXT NOT NULL DEFAULT 'executed',
+    mutated INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(workflow_id, stage_id, slot, attempt)
+);
+CREATE TABLE IF NOT EXISTS subscription_stage_generations (
+    workflow_id TEXT NOT NULL,
+    stage_id TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(workflow_id, stage_id)
 );
 CREATE TABLE IF NOT EXISTS subscription_stage_leases (
     workflow_id TEXT NOT NULL,
@@ -81,6 +88,8 @@ _ATTEMPT_COLUMNS = (
     "status",
     "terminal",
     "disposition",
+    "mutated",
+    "generation",
     "created_at",
 )
 
@@ -177,6 +186,17 @@ class SubscriptionStateStore:
                 conn.execute(
                     "ALTER TABLE subscription_attempts ADD COLUMN disposition TEXT NOT NULL DEFAULT 'executed'"
                 )
+            if "generation" not in columns:
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mutated" not in columns:
+                # The attempt's own mutation verdict, recorded by the live
+                # run that read it. NULL on rows written before it existed:
+                # their recovery falls back to the old recomputation.
+                conn.execute(
+                    "ALTER TABLE subscription_attempts ADD COLUMN mutated INTEGER"
+                )
             health_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(subscription_health)")
@@ -268,6 +288,20 @@ class SubscriptionStateStore:
                     "WHERE workflow_id = ? AND stage_id = ?",
                     (workflow_id, stage_id),
                 )
+            # Reopening the stage proves every running attempt just lost its
+            # owner: the lease is gone or expired, so nobody is executing.
+            # Rows whose owner no longer matches any lease used to stay
+            # "attempt running" with failure NULL forever (claw point 9,
+            # t_70e4ed2c); close them as abandoned with a readable cause.
+            conn.execute(
+                "UPDATE subscription_attempts SET status = 'abandoned', "
+                "failure = 'task_failure', "
+                "detail = 'attempt abandoned: its owner lost the stage lease "
+                "and never closed it' "
+                "WHERE workflow_id = ? AND stage_id = ? "
+                "AND status = 'running' AND owner != ?",
+                (workflow_id, stage_id, owner),
+            )
             conn.execute(
                 "INSERT INTO subscription_stage_leases VALUES (?,?,?,?)",
                 (
@@ -311,6 +345,31 @@ class SubscriptionStateStore:
             )
             conn.commit()
 
+    def active_leases(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Unexpired leases of one workflow: a driver still owns a stage."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT stage_id, owner, expires_at FROM subscription_stage_leases "
+                "WHERE workflow_id = ? ORDER BY stage_id",
+                (workflow_id,),
+            ).fetchall()
+        ahora = _utcnow()
+        vivas = []
+        for row in rows:
+            expiry = _parse_iso(row["expires_at"])
+            # An unreadable expiry counts as live, like claim_stage: this is
+            # the side that authorizes archiving a chain, so it fails closed
+            # (live review F7).
+            if expiry is None or expiry > ahora:
+                vivas.append(
+                    {
+                        "stage_id": row["stage_id"],
+                        "owner": row["owner"],
+                        "expires_at": row["expires_at"],
+                    }
+                )
+        return vivas
+
     @staticmethod
     def _interrupt_attempts(conn, workflow_id, stage_id, owner):
         conn.execute(
@@ -331,6 +390,44 @@ class SubscriptionStateStore:
         return expiry is not None and expiry > _utcnow()
 
     # -- attempts ---------------------------------------------------------
+
+    def current_generation(self, workflow_id: str, stage_id: str) -> int:
+        """The attempt generation attempt queries see for one stage."""
+        with self._lock, self._connect() as conn:
+            return self._generation_locked(conn, workflow_id, stage_id)
+
+    @staticmethod
+    def _generation_locked(conn, workflow_id: str, stage_id: str) -> int:
+        row = conn.execute(
+            "SELECT generation FROM subscription_stage_generations "
+            "WHERE workflow_id = ? AND stage_id = ?",
+            (workflow_id, stage_id),
+        ).fetchone()
+        return int(row["generation"]) if row is not None else 0
+
+    def open_generation(self, workflow_id: str, stage_id: str) -> int:
+        """Open a new attempt generation for one stage and return its number.
+
+        Encargo H punto 1 (relanzar = reintentar): older attempts stay as
+        durable evidence, but attempt queries only see the current
+        generation, so the router runs the stage's routes from the first
+        slot again instead of replaying a recorded result. There is no
+        retry cap: every relaunch opens another generation. The attempt
+        counter keeps counting across generations (it is the durable
+        UNIQUE identity, not a display value).
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            generation = self._generation_locked(conn, workflow_id, stage_id) + 1
+            conn.execute(
+                "INSERT INTO subscription_stage_generations "
+                "(workflow_id, stage_id, generation) VALUES (?,?,?) "
+                "ON CONFLICT(workflow_id, stage_id) DO UPDATE SET "
+                "generation=excluded.generation",
+                (workflow_id, stage_id, generation),
+            )
+            conn.commit()
+        return generation
 
     def record_attempt(
         self,
@@ -353,6 +450,7 @@ class SubscriptionStateStore:
         status: str = "completed",
         owner: str = "",
         disposition: str = "executed",
+        mutated: Optional[bool] = None,
     ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -362,8 +460,8 @@ class SubscriptionStateStore:
                 "INSERT INTO subscription_attempts "
                 "(workflow_id, stage_id, slot, attempt, adapter, model, "
                 "billing_mode, mode, success, failure, session_id, "
-                "start_revision, end_revision, changed_files, detail, status, owner, disposition) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "start_revision, end_revision, changed_files, detail, status, owner, disposition, generation, mutated) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     workflow_id,
                     stage_id,
@@ -383,6 +481,8 @@ class SubscriptionStateStore:
                     status,
                     owner,
                     disposition,
+                    self._generation_locked(conn, workflow_id, stage_id),
+                    None if mutated is None else int(mutated),
                 ),
             )
             conn.commit()
@@ -402,6 +502,7 @@ class SubscriptionStateStore:
         changed_files: list[str],
         detail: str,
         disposition: str = "executed",
+        mutated: Optional[bool] = None,
     ) -> bool:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -409,7 +510,8 @@ class SubscriptionStateStore:
                 return False
             updated = conn.execute(
                 "UPDATE subscription_attempts SET success = ?, failure = ?, session_id = ?, "
-                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed', disposition = ? "
+                "end_revision = ?, changed_files = ?, detail = ?, status = 'completed', disposition = ?, "
+                "mutated = COALESCE(?, mutated) "
                 "WHERE workflow_id = ? AND stage_id = ? AND slot = ? AND attempt = ? "
                 "AND owner = ? AND status = 'running'",
                 (
@@ -420,6 +522,7 @@ class SubscriptionStateStore:
                     json.dumps(redact_data(sorted(changed_files)), ensure_ascii=False),
                     redact_text(detail),
                     disposition,
+                    None if mutated is None else int(mutated),
                     workflow_id,
                     stage_id,
                     slot,
@@ -431,23 +534,30 @@ class SubscriptionStateStore:
             return bool(updated)
 
     def stage_attempts(self, workflow_id: str, stage_id: str) -> list[dict[str, Any]]:
+        """The current generation's attempts of one stage.
+
+        Older generations stay in the table as durable evidence; a relaunch
+        opened a new one so the router re-runs instead of replaying.
+        """
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM subscription_attempts "
-                "WHERE workflow_id = ? AND stage_id = ? ORDER BY id",
-                (workflow_id, stage_id),
+                "WHERE workflow_id = ? AND stage_id = ? AND generation = ? ORDER BY id",
+                (workflow_id, stage_id, generation),
             ).fetchall()
         return [_attempt_view(row) for row in rows]
 
     def latest_success(
         self, workflow_id: str, stage_id: str
     ) -> Optional[dict[str, Any]]:
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM subscription_attempts "
-                "WHERE workflow_id = ? AND stage_id = ? AND success = 1 "
+                "WHERE workflow_id = ? AND stage_id = ? AND generation = ? AND success = 1 "
                 "ORDER BY id DESC LIMIT 1",
-                (workflow_id, stage_id),
+                (workflow_id, stage_id, generation),
             ).fetchone()
         return _attempt_view(row) if row is not None else None
 
@@ -486,6 +596,7 @@ class SubscriptionStateStore:
 
     def mark_stage_terminal(self, workflow_id, stage_id, owner) -> bool:
         """Fence a final local result before releasing its execution lease."""
+        generation = self.current_generation(workflow_id, stage_id)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if not self._owns_stage(conn, workflow_id, stage_id, owner):
@@ -493,8 +604,8 @@ class SubscriptionStateStore:
             conn.execute(
                 "UPDATE subscription_attempts SET terminal=1 WHERE id=("
                 "SELECT id FROM subscription_attempts WHERE workflow_id=? AND stage_id=? "
-                "AND status='completed' ORDER BY id DESC LIMIT 1)",
-                (workflow_id, stage_id),
+                "AND generation=? AND status='completed' ORDER BY id DESC LIMIT 1)",
+                (workflow_id, stage_id, generation),
             )
             conn.commit()
             return True

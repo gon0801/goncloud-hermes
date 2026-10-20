@@ -15,6 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
 sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from conexiones import rastrear_conexiones  # noqa: E402
 
@@ -198,7 +199,7 @@ class AlmacenDePrueba(unittest.TestCase):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
         self.addCleanup(self.tienda.cerrar)
@@ -1379,7 +1380,7 @@ class LaGuardaExcluyeAlRevisorAutor(AlmacenDePrueba):
     def setUp(self):
         rastrear_conexiones(self)
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.ruta = Path(self.directorio.name) / "sistema-agentes.db"
         self.tienda = store.Store(self.ruta, permisos_h=permisos_de_prueba())
         self.addCleanup(self.tienda.cerrar)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import stat
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import replace
@@ -31,13 +34,14 @@ from .types import (
     SkippedRoute,
 )
 
-#: Failures that may advance to the next slot automatically.
+#: Failures that may advance to the next slot automatically. A stage timeout
+#: is NOT one of them and never can be again: stages have no deadline (owner,
+#: 2026-10-19), so no route may hand the stage to the next model "for time".
 _ADVANCING_FAILURES = {
     FailureKind.AUTH,
     FailureKind.QUOTA,
     FailureKind.RATE_LIMIT,
     FailureKind.MODEL_UNAVAILABLE,
-    FailureKind.TIMEOUT,
     FailureKind.TRANSPORT,
     FailureKind.INVALID_TERMINAL,
     # An executed attempt that delivered nothing usable (launch failure,
@@ -54,19 +58,15 @@ _BLOCK_AFTER_MUTATION = {
     FailureKind.TASK_FAILURE,
 }
 _QUOTA_COOLDOWN_MINUTES = 15
-# A hung endpoint (no output to its deadline) stays hung a while; cool it down
-# so a multi-stage workflow skips it instead of hanging the full deadline at
-# slot 0 of every stage. The probe (an auth check) cannot see the hang, so the
-# cooldown, not health, is what bridges it.
-_TIMEOUT_COOLDOWN_MINUTES = 15
 # A throttle clears in seconds to a minute. Benching the primary account for
 # the quota window on one throttle pushed every later stage onto weaker
 # fallbacks until the chain ran out (kanban 2026-09-14..10-12).
 _RATE_LIMIT_COOLDOWN_MINUTES = 2
-#: How long an advancing failure benches the account for later stages.
+#: How long an advancing failure benches the account for later stages. A
+#: timeout has no bench: with no stage deadline there is no hung-at-the-
+#: deadline pattern to protect later stages from, and time never advances.
 _COOLDOWN_MINUTES = {
     FailureKind.QUOTA: _QUOTA_COOLDOWN_MINUTES,
-    FailureKind.TIMEOUT: _TIMEOUT_COOLDOWN_MINUTES,
     FailureKind.RATE_LIMIT: _RATE_LIMIT_COOLDOWN_MINUTES,
 }
 # Quota, connectivity and even credentials come back on their own, so a
@@ -74,9 +74,14 @@ _COOLDOWN_MINUTES = {
 # horizon the router may try the account again; only a successful real
 # inference lifts the quarantine, and a repeated failure re-arms it.
 _QUARANTINE_RETRY_SECONDS = 3600
-# Renew before every invoke; this exceeds the 300s vendor deadline, its 5s
-# cleanup grace, and the bounded Git evidence reads after invocation.
+# Renew before every invoke AND from the lease heartbeat while an invocation
+# runs, so an unbounded stage never loses ownership while its vendor process
+# is alive. Between two synchronous renewals this must still cover the bounded
+# steps (probes, evidence reads, throttle sleeps).
 _STAGE_LEASE_SECONDS = 600
+# The heartbeat renews well inside the lease. If the router process dies, the
+# heartbeat dies with it and the lease expires on its own, exactly as before.
+_STAGE_LEASE_RENEWAL_SECONDS = 120
 #: Waits before each same-route retry of a throttle; their count is the retry
 #: budget. OpenClaw recovers throttles on the same model the same way.
 _RATE_LIMIT_BACKOFF_SECONDS = (20, 60)
@@ -134,6 +139,14 @@ def default_db_path() -> Path:
     if local:
         return Path(local) / "hermes" / "subscription-router.db"
     return Path.home() / ".goncloud" / "subscription-router.db"
+
+
+#: Bounds on what tree_fingerprint reads from one dirty file and from the
+#: whole dirty set. Past a bound the entry pins size+mtime instead of
+#: content: an untouched file still compares equal, and no dirty FIFO,
+#: device or oversized blob can hold the fingerprint (and the stage) open.
+_FINGERPRINT_MAX_FILE_BYTES = 8 * 1024 * 1024
+_FINGERPRINT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 
 class GitInspector:
@@ -202,6 +215,162 @@ class GitInspector:
         files = tuple(sorted(set(committed) | set(self.changed_files(workspace))))
         return current, files, bool(files or current != (baseline or revision))
 
+    def tree_fingerprint(
+        self, workspace: Path
+    ) -> tuple[str, tuple[tuple[str, str], ...]]:
+        """The tree as ONE attempt starts: HEAD plus every dirty file with a
+        content digest.
+
+        Names alone cannot tell an untouched dirty file from a worker's edit
+        of that same file (review round 2, 2026-09-26), so each entry pins
+        its bytes. Comparing two of these answers "did this attempt change
+        the workspace" without hashing the whole tree: only dirt is read,
+        and a file the attempt never touched compares equal.
+        """
+        entries = []
+        read_budget = _FINGERPRINT_MAX_TOTAL_BYTES
+        for name in self.changed_files(workspace):
+            digest, read_budget = self._dirty_digest(workspace / name, read_budget)
+            entries.append((name, digest))
+        return self.current_revision(workspace), tuple(entries)
+
+    @staticmethod
+    def _dirty_digest(path: Path, read_budget: int) -> tuple[str, int]:
+        """One dirty entry's digest, without ever opening a special file.
+
+        Symlinks are read as links (``readlink``), never followed; FIFOs,
+        devices and sockets are classified from ``lstat`` alone, so none of
+        them can block or stream forever into the hash. A regular file is
+        hashed in chunks only up to the per-file and total bounds; past a
+        bound its size and mtime pin the entry instead.
+        """
+        try:
+            info = path.lstat()
+        except OSError:
+            # Gone or unreadable between the two reads; an empty digest
+            # still compares, and the pair difference stays honest.
+            return "", read_budget
+        if stat.S_ISLNK(info.st_mode):
+            try:
+                target = os.readlink(path)
+            except OSError:
+                return "link:", read_budget
+            return "link:" + hashlib.sha256(
+                target.encode("utf-8", "surrogateescape")
+            ).hexdigest(), read_budget
+        if not stat.S_ISREG(info.st_mode):
+            return (
+                f"special:{info.st_mode:o}:{info.st_size}:{info.st_mtime_ns}",
+                read_budget,
+            )
+        if info.st_size > _FINGERPRINT_MAX_FILE_BYTES or info.st_size > read_budget:
+            return f"large:{info.st_size}:{info.st_mtime_ns}", read_budget
+        digest = hashlib.sha256()
+        read = 0
+        # H71 L2: the lstat above is not the open. Between them another
+        # hand can swap the file for a FIFO or a symlink to /dev/zero and
+        # a plain open("rb") would block forever. Open without following
+        # links and without blocking, then fstat the open descriptor and
+        # classify anything that is not a regular file from it alone.
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        try:
+            descriptor = os.open(path, flags)
+        except OSError:
+            return "", read_budget
+        try:
+            with os.fdopen(descriptor, "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not stat.S_ISREG(opened.st_mode):
+                    return (
+                        f"special:{opened.st_mode:o}:{opened.st_size}:"
+                        f"{opened.st_mtime_ns}",
+                        read_budget,
+                    )
+                if (
+                    opened.st_size > _FINGERPRINT_MAX_FILE_BYTES
+                    or opened.st_size > read_budget
+                ):
+                    return (
+                        f"large:{opened.st_size}:{opened.st_mtime_ns}",
+                        read_budget,
+                    )
+                while chunk := handle.read(64 * 1024):
+                    read += len(chunk)
+                    if read > _FINGERPRINT_MAX_FILE_BYTES:
+                        return (
+                            f"large:{opened.st_size}:{opened.st_mtime_ns}",
+                            read_budget,
+                        )
+                    digest.update(chunk)
+        except OSError:
+            return "", read_budget
+        return digest.hexdigest(), read_budget - read
+
+
+class _StageLeaseHeartbeat:
+    """Renew the stage lease in the background while one stage runs.
+
+    A stage without a deadline can outlive any fixed lease, so a daemon thread
+    renews it for as long as the invocation lasts and is stopped when the
+    stage ends (released in ``run``). If the router process dies, the thread
+    dies with it: nothing renews the lease and it expires on its own, so
+    another owner can claim the stage — the same recovery as before.
+    """
+
+    def __init__(
+        self,
+        store: SubscriptionStateStore,
+        workflow_id: str,
+        stage_id: str,
+        owner: str,
+        *,
+        lease_seconds: float,
+        interval: float,
+    ) -> None:
+        self._store = store
+        self._workflow_id = workflow_id
+        self._stage_id = stage_id
+        self._owner = owner
+        self._lease_seconds = lease_seconds
+        self._interval = interval
+        self._stop = threading.Event()
+        self.lost = False
+        self._thread = threading.Thread(
+            target=self._beat, name="stage-lease-heartbeat", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=30)
+
+    def _beat(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                renewed = self._store.renew_stage(
+                    self._workflow_id,
+                    self._stage_id,
+                    self._owner,
+                    self._lease_seconds,
+                )
+            except Exception:  # noqa: BLE001 - a store hiccup is not a lost stage
+                continue
+            if not renewed:
+                # Ownership is gone (the lease lapsed or another owner took
+                # over). Stop beating; every fenced write from here on fails
+                # the owner check, so the stage reports busy instead of
+                # fighting the new owner.
+                self.lost = True
+                return
+
 
 class SubscriptionRouter:
     """Compile the slot table, invoke adapters, and fail over durably."""
@@ -248,7 +417,19 @@ class SubscriptionRouter:
             request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
         ):
             return self._stage_busy()
+        heartbeat = _StageLeaseHeartbeat(
+            self.store,
+            request.workflow_id,
+            request.stage_id,
+            owner,
+            lease_seconds=_STAGE_LEASE_SECONDS,
+            interval=_STAGE_LEASE_RENEWAL_SECONDS,
+        )
         try:
+            # Inside the try: a thread that cannot start (a exhausted process
+            # out of threads) must release the stage, not hold the lease for
+            # its whole window with no one running the stage.
+            heartbeat.start()
             result = self._run_owned(request, routes, owner)
             if request.result_transform is not None and not (
                 result.adapter == "router"
@@ -260,6 +441,7 @@ class SubscriptionRouter:
                     return self._stage_busy()
             return sanitize_result(result, (request.prompt,))
         finally:
+            heartbeat.stop()
             self.store.release_stage(request.workflow_id, request.stage_id, owner)
 
     @staticmethod
@@ -298,10 +480,21 @@ class SubscriptionRouter:
                     failure = (
                         FailureKind(latest["failure"]) if latest["failure"] else None
                     )
-                    mutated = bool(
-                        latest["changed_files"]
-                        or latest["end_revision"] != latest["start_revision"]
-                    )
+                    # The recorded file lists mix what the stage inherited
+                    # with what the attempt did, so they decide nothing here
+                    # (owner, 2026-10-19). The live run recorded its own
+                    # mutation verdict on the attempt row; that recorded
+                    # verdict — not a fresh mutation_since, which counts
+                    # inherited dirt as this attempt's work — is the delta
+                    # the live decision read. Rows written before the
+                    # verdict was recorded fall back to the recomputation.
+                    recorded_mutated = latest.get("mutated")
+                    if recorded_mutated is not None:
+                        mutated = bool(recorded_mutated)
+                    else:
+                        _, _, mutated = self.git.mutation_since(
+                            request.workspace, latest["start_revision"]
+                        )
                     if (
                         latest["success"]
                         or latest["terminal"]
@@ -320,12 +513,29 @@ class SubscriptionRouter:
                     routes = tuple(
                         route for route in routes if route.slot > latest["slot"]
                     )
-                elif latest["status"] == "interrupted":
+                elif latest["status"] in ("interrupted", "abandoned"):
                     routes = tuple(
                         route for route in routes if route.slot >= latest["slot"]
                     )
 
         request = self._absorb_workspace_state(request)
+        # Inherited work is evidence, not a verdict (owner, 2026-10-19): a
+        # stage running on top of its OWN earlier attempts keeps the old rule
+        # that any failure over recorded same-stage changes blocks, and the
+        # commit span between one attempt's own start and end revisions is
+        # exactly that. The recorded file lists cannot tell inherited from
+        # own, so they decide nothing here.
+        # Only an executed, completed attempt can have done this stage's own
+        # work. A skipped/denied row never invoked anything: its recorded
+        # span (stage baseline -> current HEAD) is inherited commits, and
+        # counting it would block a clean retry on work this stage never did.
+        own_stage_changes = any(
+            row["disposition"] == "executed"
+            and row["status"] == "completed"
+            and row["start_revision"]
+            and row["end_revision"] != row["start_revision"]
+            for row in self.store.stage_attempts(request.workflow_id, request.stage_id)
+        )
         last_failure: Optional[InvocationResult] = None
         attempted_any = False
         skipped_routes: list[SkippedRoute] = []
@@ -420,6 +630,7 @@ class SubscriptionRouter:
                     detail=skipped.text,
                     owner=owner,
                     disposition="denied" if denied else "skipped",
+                    mutated=False,
                 )
                 if denied:
                     return self._route_evidence(skipped, route, skipped_routes)
@@ -433,6 +644,10 @@ class SubscriptionRouter:
                 request.workflow_id, request.stage_id, owner, _STAGE_LEASE_SECONDS
             ):
                 return self._stage_busy()
+            # This attempt's own baseline. Everything the workspace already
+            # carried (earlier stages' files and commits, dirt older than
+            # this attempt) is frozen here and stops deciding the verdict.
+            attempt_baseline = self.git.tree_fingerprint(request.workspace)
             self.store.record_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -445,7 +660,7 @@ class SubscriptionRouter:
                 success=False,
                 failure=None,
                 session_id="",
-                start_revision=request.start_revision,
+                start_revision=attempt_baseline[0],
                 end_revision=request.current_revision,
                 changed_files=list(request.changed_files),
                 detail="attempt running",
@@ -480,6 +695,7 @@ class SubscriptionRouter:
                     changed_files=list(request.changed_files),
                     detail=denied.text,
                     disposition="denied",
+                    mutated=False,
                 )
                 # Authorization says nothing about vendor health or quota.
                 return (
@@ -524,18 +740,22 @@ class SubscriptionRouter:
                 # block nor mark or quarantine the account on its own.
                 clase_regla = result.failure
                 result = self._aplicar_jev(result, route, attempt_no)
-            revision, changed, mutated = self.git.mutation_since(
-                request.workspace, request.start_revision
+            revision, changed, _git_mutated = self.git.mutation_since(
+                request.workspace, attempt_baseline[0]
             )
             changed = tuple(sorted(set(changed) | set(request.changed_files)))
-            # Deliberately conservative once an attempt has executed: any dirt
-            # counts. Telling the two apart needs a content baseline, and the
-            # attempts at that kept finding new ways to read a real mutation as
-            # "nothing changed" (two review rounds, 2026-09-26). Blocking a
-            # stage is recoverable; overwriting a worker's edits is not. The one
-            # case that does not need the distinction is attempt 0, where no
-            # worker has run yet, and _absorb_workspace_state handles it.
-            mutated = mutated or request.mode == "continue"
+            # One attempt, one verdict (owner, 2026-10-19): what THIS attempt
+            # did to the tree is the fingerprint it started with against the
+            # tree now. What the stage had already inherited rides in
+            # changed_files as evidence and no longer blocks a clean attempt:
+            # a task_failure over an untouched workspace is a dead route, not
+            # a verdict (t_9df6342d, t_464d20e7). A rewritten dirty file
+            # changes its bytes and still reads as a mutation (review round
+            # 2, 2026-09-26); untouched dirt compares equal.
+            mutated = self.git.tree_fingerprint(request.workspace) != attempt_baseline
+            # A stage continuing over its own earlier attempts keeps the old
+            # conservative rule: a failure on top of same-stage work blocks.
+            mutated = mutated or (request.mode == "continue" and own_stage_changes)
             recorded = self.store.finish_attempt(
                 workflow_id=request.workflow_id,
                 stage_id=request.stage_id,
@@ -547,8 +767,14 @@ class SubscriptionRouter:
                 session_id=result.session_id,
                 end_revision=revision,
                 changed_files=list(changed),
-                detail=result.text[:2000],
+                # A failed result carries its own bounded diagnostics; a
+                # success keeps the bounded result text as the record.
+                detail=result.detail or result.text[:2000],
                 disposition=disposition,
+                # Persist the verdict this live decision reads, so a restart
+                # recovery reads the same delta instead of recounting
+                # inherited dirt. A skipped attempt never invoked: no delta.
+                mutated=mutated if disposition == "executed" else False,
             )
             if not recorded:
                 return self._stage_busy()
@@ -578,6 +804,7 @@ class SubscriptionRouter:
             ):
                 return result
             if mutated:
+                own_stage_changes = True
                 request = replace(
                     request,
                     mode="continue",
@@ -727,7 +954,9 @@ class SubscriptionRouter:
             owner=owner,
             success=result.success,
             failure=result.failure.value if result.failure else None,
-            detail=result.text,
+            # Keep the whole record: the public line plus the diagnostics
+            # recovered from the attempt, never the diagnostics alone.
+            detail="\n".join(part for part in (result.text, result.detail) if part),
             session_id=result.session_id,
         ):
             return self._stage_busy()
@@ -933,7 +1162,11 @@ class SubscriptionRouter:
         # A rejected envelope advances the slot but says nothing about the
         # account: the vendor answered. Keeping it ready avoids skipping the
         # primary position for the whole health window after one bad answer.
-        account_ready = failure not in _ADVANCING_FAILURES or failure in {
+        # A timeout is the opposite — nothing answered, something may hang —
+        # and it is never an advancing failure anymore (no stage deadline),
+        # so the ready-after-failure kinds are spelled out instead of derived
+        # from the advancing set.
+        account_ready = failure is None or failure in {
             # The vendor answered, so the account is fine: a rejected envelope
             # or a disabled/unknown model says nothing about account health.
             # Marking it unhealthy would skip the account on a later stage that
@@ -946,6 +1179,8 @@ class SubscriptionRouter:
             # account either; a health bench here would skip every later
             # position sharing the adapter and undo the advance (2026-10-17).
             FailureKind.TASK_FAILURE,
+            # A refused request is also the vendor answering.
+            FailureKind.INVALID_REQUEST,
         }
         self.store.save_health(
             adapter,
@@ -995,9 +1230,19 @@ class SubscriptionRouter:
 
 
 def _result_from_attempt(attempt: dict) -> InvocationResult:
+    recorded = attempt.get("detail") or ""
+    success = bool(attempt["success"])
+    # A failed attempt's detail opens with the short public text; the rest is
+    # the redacted diagnostics. Recovery keeps the public text the short one
+    # and serves the diagnostics through detail, like a live failed dispatch.
+    if success:
+        text, diagnostic = recorded, ""
+    else:
+        text, _, diagnostic = recorded.partition("\n")
     return InvocationResult(
-        success=bool(attempt["success"]),
-        text=attempt.get("detail") or "",
+        success=success,
+        text=text,
+        detail=diagnostic,
         adapter=attempt["adapter"],
         model=attempt["model"],
         billing_mode=attempt["billing_mode"],

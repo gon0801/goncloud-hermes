@@ -46,57 +46,106 @@ _WINDOWS_GATE_LAUNCHER = (
 
 # A Windows Job cannot contain Linux descendants. This isolated Linux guardian
 # owns/reaps its descendants, including children that create another session.
-# Its absolute deadline survives loss of wsl.exe and includes WSL startup time.
+# Its only clock is the caller's explicit deadline. A deadline-less stage is
+# bounded by the router's life instead — never by time while the work is
+# alive: when the parent chain is gone (router crashed), the vendor dies with
+# it, well before the stage lease lapses and another owner starts a second
+# vendor on the same workspace.
 _WSL_PROCESS_GUARD = """
 import ctypes, os, pathlib, signal, subprocess, sys, time
-deadline = float(sys.argv[1])
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-    raise SystemExit(125)
-stopped = False
-def stop(signum, frame):
-    global stopped
-    stopped = True
-for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-    signal.signal(sig, stop)
-children_file = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
-def children():
-    return [int(pid) for pid in children_file.read_text().split()]
-code = 124
-child = None
-try:
-    if time.time() < deadline and not stopped:
-        child = subprocess.Popen(sys.argv[2:], start_new_session=True)
-        while time.time() < deadline and not stopped:
-            code = child.poll()
-            if code is not None:
-                break
-            time.sleep(min(0.02, max(0, deadline - time.time())))
-        else:
-            code = 124
-finally:
-    cleanup_deadline = time.monotonic() + 0.9
-    while True:
-        owned = children()
-        if not owned:
-            break
-        for pid in owned:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        while True:
-            try:
-                if os.waitpid(-1, os.WNOHANG)[0] == 0:
+
+
+def die_with_parent():
+    # PR_SET_PDEATHSIG(SIGHUP): the kernel raises SIGHUP here the moment the
+    # parent fronting the Windows router disappears.
+    try:
+        return ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
+def parent_gone(parent):
+    # Backstop for PDEATHSIG: the router is the only clock a deadline-less
+    # stage answers to.
+    return os.getppid() != parent or not pathlib.Path(
+        '/proc/' + str(parent)
+    ).exists()
+
+
+def owned_children():
+    # Every descendant we still own, including daemons that left our session.
+    children = pathlib.Path('/proc/self/task') / str(os.getpid()) / 'children'
+    try:
+        return [int(pid) for pid in children.read_text().split()]
+    except OSError:
+        return []
+
+
+def run(deadline, command, stopped):
+    parent = os.getppid()
+    still_running = (
+        (lambda: True) if deadline is None else (lambda: time.time() < deadline)
+    )
+    code = 124
+    child = None
+    try:
+        if still_running() and not stopped():
+            child = subprocess.Popen(command, start_new_session=True)
+            while still_running() and not stopped() and not parent_gone(parent):
+                code = child.poll()
+                if code is not None:
                     break
-            except ChildProcessError:
+                time.sleep(0.02)
+            else:
+                code = 124
+    finally:
+        cleanup_deadline = time.monotonic() + 0.9
+        while True:
+            owned = owned_children()
+            if not owned:
                 break
-        if time.monotonic() >= cleanup_deadline:
-            code = 125
-            break
-        time.sleep(0.01)
-    if child is not None:
-        child.returncode = code
-raise SystemExit(code)
+            for pid in owned:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            while True:
+                try:
+                    if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                        break
+                except ChildProcessError:
+                    break
+            if time.monotonic() >= cleanup_deadline:
+                code = 125
+                break
+            time.sleep(0.01)
+        if child is not None:
+            child.returncode = code
+    return code
+
+
+def main():
+    # `--parent` fronts a deadline-less stage: the vendor lives exactly as
+    # long as the router that owns it. A number is an explicit deadline.
+    if len(sys.argv) > 1 and sys.argv[1] == '--parent':
+        deadline = None
+    else:
+        deadline = float(sys.argv[1])
+    if not die_with_parent():
+        raise SystemExit(125)
+    stopped = False
+
+    def stop(signum, frame):
+        nonlocal stopped
+        stopped = True
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop)
+    raise SystemExit(run(deadline, sys.argv[2:], lambda: stopped))
+
+
+if __name__ == '__main__':
+    main()
 """
 
 
@@ -350,9 +399,14 @@ def _run_with_process_tree(
     cwd: Path,
     env: Mapping[str, str],
     stdin_text: str | None,
-    timeout: int,
+    timeout: int | None,
 ) -> tuple[int, str, str]:
-    """Run a real CLI in an isolated group so timeout cleanup includes children."""
+    """Run a real CLI in an isolated group so timeout cleanup includes children.
+
+    ``timeout=None`` waits indefinitely: a stage without a deadline must not
+    kill its vendor process for time. Only an explicit positive timeout
+    terminates the tree.
+    """
     windows = os.name == "nt"
     job = _create_windows_process_job()
     if windows and job is None:
@@ -462,17 +516,33 @@ def _run_with_process_tree(
                 pass
 
 
+def probe_workspace():
+    """Throwaway cwd for a vendor probe.
+
+    A probe has no workspace of its own; running it in the caller's cwd
+    lets the vendor CLI drop its state folders (.claude/, .codex/, ...)
+    into whatever checkout the host process happens to sit in.
+    """
+    return tempfile.TemporaryDirectory(
+        prefix="goncloud-probe-", ignore_cleanup_errors=True
+    )
+
+
 def run_cli(
     command: Sequence[str],
     prompt: str,
     workspace: Path,
-    timeout: int,
+    timeout: int | None,
     env_overlay: Mapping[str, str] | None = None,
     prompt_transport: Literal["stdin", "tempfile"] = "stdin",
     runner=subprocess.run,
 ) -> ProcessEvidence:
-    """Run one vendor command without shell interpolation or leaked secrets."""
-    if type(timeout) is not int or timeout <= 0:
+    """Run one vendor command without shell interpolation or leaked secrets.
+
+    ``timeout=None`` is a stage without a deadline: the vendor process runs
+    until it ends. Probes always pass a positive integer window.
+    """
+    if timeout is not None and (type(timeout) is not int or timeout <= 0):
         raise SubscriptionProcessError(
             "timeout must be a positive integer number of seconds"
         )
@@ -485,6 +555,12 @@ def run_cli(
     overlay = dict(env_overlay or {})
     child_env = {**os.environ, **overlay}
     secrets = sensitive_values(child_env) + tuple(overlay.values())
+    # The assignment is a secret of the error channel: a CLI that echoes it
+    # into stderr must have it redacted HERE, before _cap drops the middle
+    # of an over-long stderr and the literal prompt stops matching for every
+    # later redaction pass. stdout/stream are the vendor's answer and stay
+    # semantically exact; the router boundary strips the prompt from them.
+    stderr_secrets = secrets + ((prompt,) if prompt else ())
     prompt_path: Path | None = None
     started = time.monotonic()
     try:
@@ -505,13 +581,21 @@ def run_cli(
                 and command[3] == "--exec"
             )
             if wsl:
+                # A deadline-less stage is guarded by the router's own life
+                # (--parent): the vendor dies the moment the parent chain is
+                # gone and is never killed by time while the work is alive.
+                # A number is an explicit probe/stage deadline.
                 command = command[:4] + [
                     "/usr/bin/python3",
                     "-I",
                     "-S",
                     "-c",
                     _WSL_PROCESS_GUARD,
-                    str(time.time() + timeout),
+                    *(
+                        ["--parent"]
+                        if timeout is None
+                        else [str(time.time() + timeout)]
+                    ),
                     *command[4:],
                 ]
             returncode, stdout, stderr = _run_with_process_tree(
@@ -519,9 +603,16 @@ def run_cli(
                 cwd=workspace,
                 env=child_env,
                 stdin_text=stdin_text,
-                timeout=timeout + 1 if wsl else timeout,
+                timeout=None if timeout is None else (timeout + 1 if wsl else timeout),
             )
             if wsl and returncode == 124:
+                if timeout is None:
+                    # The parent chain died, not the work: a lost guardian is
+                    # a dead route, never a time verdict.
+                    raise SubscriptionProcessError(
+                        "vendor process outlived its parent",
+                        FailureKind.TASK_FAILURE,
+                    ) from None
                 raise subprocess.TimeoutExpired(command, timeout)
             if wsl and returncode == 125:
                 raise SubscriptionProcessError("vendor process containment unavailable")
@@ -557,7 +648,7 @@ def run_cli(
     return ProcessEvidence(
         returncode=returncode,
         stdout=_cap(redacted_stdout),
-        stderr=_redact_and_cap(stderr, secrets),
+        stderr=_redact_and_cap(stderr, stderr_secrets),
         duration_seconds=time.monotonic() - started,
         stream=redacted_stdout,
     )

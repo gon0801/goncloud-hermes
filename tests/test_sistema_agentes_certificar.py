@@ -17,6 +17,8 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "plugins/goncloud-team"))
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 capacidades = importlib.import_module("raices.capacidades")
 certificar = importlib.import_module("raices.certificar")
@@ -50,7 +52,7 @@ def entrada_del_par():
 class Certificar(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directorio.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.directorio)
         self.home = Path(self.directorio.name) / "hermes"
         self.home.mkdir()
         self.ruta = Path(self.directorio.name) / "certificadas.json"
@@ -272,6 +274,15 @@ class Certificar(unittest.TestCase):
         self.assertEqual(codigo, 1)
         self.assertEqual(salida.strip(), "par-incierto")
         self.assertEqual(self.pruebas, [])
+
+    def test_la_version_sin_certificar_abre_con_aviso_y_certifica_igual(self):
+        # Encargo H punto 3: decidir ahora abre con la causa advisoría; el
+        # camino de certificar sigue leyendo la causa, no solo la puerta.
+        codigo, salida = self.certificar(
+            self.argv(), leer_par=lambda: (True, "version-no-certificada", PAR)
+        )
+        self.assertEqual(codigo, 0)
+        self.assertEqual(json.loads(salida)["code_sha"], SHA)
 
 
 class ElLectorUnicoDeVersion(unittest.TestCase):

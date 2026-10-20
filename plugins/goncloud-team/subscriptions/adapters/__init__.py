@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 
+from ..redaction import redact_text
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -101,8 +102,16 @@ _TRANSPORT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-#: Every vendor process shares this hard ceiling, probes included.
-_ABSOLUTE_DEADLINE_SECONDS = 300
+#: Health probes keep a hard ceiling: they are reachability/auth checks with a
+#: bounded job, and 300 s still covers a cold WSL launch. A stage invocation is
+#: NOT a probe — the vendor process runs without any deadline at all (owner,
+#: 2026-10-19: no model finishes a large design or implementation inside a
+#: fixed window, and Kimi already ran unbounded in the owner's terminal).
+_MAX_PROBE_TIMEOUT_SECONDS = 300
+
+#: Per-channel cap on the failure evidence an attempt detail keeps: the LAST
+#: characters of stderr and of the stream, where a CLI's closing error lives.
+_DETAIL_TAIL_CHARS = 1500
 
 _STATUS_CODES = {
     "401": FailureKind.AUTH,
@@ -257,29 +266,30 @@ class SubscriptionAdapter:
 
     name: str = ""
     billing_mode = "subscription"
-    # An adapter may raise its own ceilings up to the absolute process deadline
-    # when its launch path genuinely needs longer (a WSL cold start outruns the
-    # default probe window); clamping a declared window to the default instead
-    # reports a healthy account as a failed one.
-    max_timeout_seconds = _ABSOLUTE_DEADLINE_SECONDS
+    # A real stage is unbounded: the model process runs until it ends, and the
+    # router's lease heartbeat keeps stage ownership alive while it does. An
+    # adapter may still opt into its own deadline by declaring a number here;
+    # None — the default — is a stage without a time limit.
+    timeout_seconds = None
+    # Probes stay bounded: the default window and default ceiling are 30 s,
+    # and an adapter may raise its own ceiling up to the probe limit when its
+    # launch path genuinely needs longer (a WSL cold start outruns the default
+    # probe window); clamping a declared window to the default instead reports
+    # a healthy account as a failed one.
     max_probe_timeout_seconds = 30
-    timeout_seconds = 300
     probe_timeout_seconds = 30
     probe_is_generative = False
 
     def __init__(self, runner=None) -> None:
         self.runner = runner if runner is not None else subprocess.run
-        # Class-declared values bypass __setattr__, so force them through it.
-        self.max_timeout_seconds = self.max_timeout_seconds
+        # Class-declared probe values bypass __setattr__, so force them through
+        # it; timeout_seconds needs no forcing — a stage is never clamped.
         self.max_probe_timeout_seconds = self.max_probe_timeout_seconds
-        self.timeout_seconds = self.timeout_seconds
         self.probe_timeout_seconds = self.probe_timeout_seconds
 
     def __setattr__(self, name, value) -> None:
-        if name in {"max_timeout_seconds", "max_probe_timeout_seconds"}:
-            value = min(value, _ABSOLUTE_DEADLINE_SECONDS)
-        elif name == "timeout_seconds":
-            value = min(value, self.max_timeout_seconds)
+        if name == "max_probe_timeout_seconds":
+            value = min(value, _MAX_PROBE_TIMEOUT_SECONDS)
         elif name == "probe_timeout_seconds":
             value = min(value, self.max_probe_timeout_seconds)
         super().__setattr__(name, value)
@@ -296,14 +306,36 @@ class SubscriptionAdapter:
         failure: FailureKind,
         detail: str = "",
         *,
+        request: InvocationRequest,
         evidence: tuple[str, ...] = (),
+        returncode: int | None = None,
+        channel_labels: tuple[str, ...] = ("stderr", "stream"),
     ) -> InvocationResult:
         text = f"{route.adapter} invocation failed ({failure.value})"
+        # The durable attempt detail keeps the vendor's own answer: the class,
+        # the exit code and the redacted tails of stderr and the stream, so a
+        # failed chain records WHY it failed. Diagnostics are not a public
+        # evidence channel; only the attempt record and a recovered attempt
+        # read them, and every boundary re-redacts. Redaction runs on the FULL
+        # channel — the process boundary never holds the assignment prompt, so
+        # a CLI echoing a prompt longer than the tail window would otherwise
+        # leave a prompt suffix no later boundary can recognize (2026-10-19).
+        parts = [text]
+        if returncode is not None:
+            parts.append(f"exit {returncode}")
+        if detail:
+            parts.append(detail)
+        parts.extend(
+            f"{label} tail: {redact_text(channel or '', (request.prompt,))[-_DETAIL_TAIL_CHARS:]}"
+            for label, channel in zip(channel_labels, evidence)
+            if channel
+        )
         # Diagnostics are not a public evidence channel, even after redaction;
         # only a throttle's wait is read out of them.
         return InvocationResult(
             success=False,
             text=text,
+            detail="\n".join(parts) if len(parts) > 1 else "",
             adapter=route.adapter,
             model=route.model,
             billing_mode=route.billing_mode,

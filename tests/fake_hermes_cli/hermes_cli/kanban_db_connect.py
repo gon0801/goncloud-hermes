@@ -8,30 +8,54 @@ write_txn (:1191) es BEGIN IMMEDIATE, y el anidamiento es opt-in por savepoint
 from __future__ import annotations
 
 import contextlib
+import os
 import secrets
 import sqlite3
 from pathlib import Path
 
+# Columnas (nombre y orden) del kanban REAL: tests/fixtures/kanban_schema_real.json
+# las fija y test_sistema_agentes_kanban_esquema.py las verifica contra este doble.
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
-  id               TEXT PRIMARY KEY,
-  title            TEXT NOT NULL,
-  body             TEXT,
-  assignee         TEXT,
-  status           TEXT NOT NULL,
-  priority         INTEGER DEFAULT 0,
-  created_by       TEXT,
-  created_at       INTEGER NOT NULL,
-  workspace_kind   TEXT,
-  workspace_path   TEXT,
-  claim_lock       TEXT,
-  claim_expires    INTEGER,
-  tenant           TEXT,
-  result           TEXT,
-  branch_name      TEXT,
-  project_id       TEXT,
-  idempotency_key  TEXT,
-  completed_at     INTEGER
+  id                    TEXT PRIMARY KEY,
+  title                 TEXT NOT NULL,
+  body                  TEXT,
+  assignee              TEXT,
+  status                TEXT NOT NULL,
+  priority              INTEGER DEFAULT 0,
+  created_by            TEXT,
+  created_at            INTEGER NOT NULL,
+  started_at            INTEGER,
+  completed_at          INTEGER,
+  workspace_kind        TEXT,
+  workspace_path        TEXT,
+  branch_name           TEXT,
+  project_id            TEXT,
+  claim_lock            TEXT,
+  claim_expires         INTEGER,
+  tenant                TEXT,
+  result                TEXT,
+  idempotency_key       TEXT,
+  consecutive_failures  INTEGER DEFAULT 0,
+  worker_pid            INTEGER,
+  last_failure_error    TEXT,
+  max_runtime_seconds   INTEGER,
+  last_heartbeat_at     INTEGER,
+  current_run_id        TEXT,
+  workflow_template_id  TEXT,
+  current_step_key      TEXT,
+  skills                TEXT,
+  model_override        TEXT,
+  provider_override     TEXT,
+  reasoning_effort      TEXT,
+  max_retries           INTEGER,
+  goal_mode             INTEGER DEFAULT 0,
+  goal_max_turns        INTEGER,
+  session_id            TEXT,
+  block_kind            TEXT,
+  block_recurrences     INTEGER DEFAULT 0,
+  completion_contract   TEXT,
+  worker_started_at     INTEGER
 );
 CREATE TABLE IF NOT EXISTS task_links (
   parent_id TEXT NOT NULL,
@@ -39,11 +63,12 @@ CREATE TABLE IF NOT EXISTS task_links (
   PRIMARY KEY (parent_id, child_id)
 );
 CREATE TABLE IF NOT EXISTS task_events (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id      TEXT NOT NULL,
-  kind         TEXT NOT NULL,
-  payload_json TEXT,
-  created_at   INTEGER NOT NULL
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id    TEXT NOT NULL,
+  run_id     INTEGER,
+  kind       TEXT NOT NULL,
+  payload    TEXT,
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS task_comments (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +77,25 @@ CREATE TABLE IF NOT EXISTS task_comments (
   body       TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_runs (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id             TEXT NOT NULL,
+  profile             TEXT,
+  step_key            TEXT,
+  status              TEXT,
+  claim_lock          TEXT,
+  claim_expires       INTEGER,
+  worker_pid          INTEGER,
+  max_runtime_seconds INTEGER,
+  last_heartbeat_at   INTEGER,
+  started_at          INTEGER NOT NULL,
+  ended_at            INTEGER,
+  outcome             TEXT,
+  summary             TEXT,
+  metadata            TEXT,
+  error               TEXT,
+  worker_started_at   INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
   ON tasks (idempotency_key);
 """
@@ -59,9 +103,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_idempotency
 
 def connect(db_path=None, *, board=None):
     """Abre (e inicializa si hace falta) el kanban. Referencia :668.
-    check_same_thread=False como el Store de H1: un puerto se abre y se cierra
-    donde quiera que su dueño decida, y un cierre entre hilos no deja el
-    archivo agarrado (WinError 32 en Windows)."""
+    Sin ruta explicita resuelve HERMES_KANBAN_DB, como la referencia; sin
+    ninguna de las dos, exige ruta. check_same_thread=False como el Store de
+    H1: un puerto se abre y se cierra donde quiera que su dueño decida, y un
+    cierre entre hilos no deja el archivo agarrado (WinError 32 en Windows)."""
+    if db_path is None:
+        db_path = os.environ.get("HERMES_KANBAN_DB") or None
     if db_path is None:
         raise ValueError("el doble exige una ruta explicita")
     ruta = Path(db_path)
