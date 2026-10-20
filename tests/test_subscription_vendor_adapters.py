@@ -1562,12 +1562,20 @@ class FailureEvidenceDetailTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("Muse output did not contain a terminal record", result.detail)
 
-    def test_grok_permission_mode_follows_the_role(self):
-        # bypassPermissions is the writing roles' mode only. A read-only
-        # stage (scout/ingenieria, and every other non-writing role) keeps
-        # the restrictive dontAsk: the orchestrator's fingerprint guard only
-        # detects a mutation after the fact, it does not prevent one.
-        for role in ("implementer", "entrega", "adversary"):
+    def test_grok_runs_bypass_in_every_role_inside_the_sandbox(self):
+        # Grok has no per-tool allowlist: dontAsk would deny a scout's
+        # read-only commands and fail the stage over (#57). Every role runs
+        # bypassPermissions, always inside --sandbox workspace; read-only
+        # roles are also held by the orchestrator's fingerprint guard.
+        for role in (
+            "scout",
+            "ingenieria",
+            "verifier",
+            "reviewer",
+            "implementer",
+            "entrega",
+            "adversary",
+        ):
             with self.subTest(role=role):
                 runner = FakeCliRunner(stdout=GROK_ACP)
                 GrokAdapter(runner=runner).invoke(
@@ -1579,18 +1587,8 @@ class FailureEvidenceDetailTests(unittest.TestCase):
                     command[command.index("--permission-mode") + 1],
                     "bypassPermissions",
                 )
-        for role in ("scout", "ingenieria", "verifier", "reviewer"):
-            with self.subTest(role=role):
-                runner = FakeCliRunner(stdout=GROK_ACP)
-                GrokAdapter(runner=runner).invoke(
-                    replace(request(self.workspace), role=role),
-                    route_for("grok", "grok-4.6"),
-                )
-                command = runner.command
-                self.assertEqual(
-                    command[command.index("--permission-mode") + 1], "dontAsk"
-                )
-                self.assertNotIn("bypassPermissions", command)
+                self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
+                self.assertNotIn("dontAsk", command)
 
     def test_process_error_message_is_recorded_in_the_attempt_detail(self):
         def timeout_runner(command, **kwargs):
