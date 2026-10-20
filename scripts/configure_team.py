@@ -656,6 +656,17 @@ def director_plugins_locales():
             f"{', '.join(repetidos)}; un nombre solo puede vivir en una lista "
             "de director-plugins.json"
         )
+    # El deploy escribe plugins.enabled anteponiendo "goncloud-team" a los
+    # administrados y cerrando con los locales: la unicidad vale sobre la
+    # lista entera, no solo entre las dos del manifiesto (F2 de #52).
+    enabled = ["goncloud-team", *(p["name"] for p in manifiesto["plugins"]), *locales]
+    duplicados = sorted({nombre for nombre in enabled if enabled.count(nombre) > 1})
+    if duplicados:
+        raise ValueError(
+            "Plugins del director duplicados en plugins.enabled: "
+            f"{', '.join(duplicados)}; cada nombre aparece una sola vez en "
+            "director-plugins.json (goncloud-team lo antepone el deploy)"
+        )
     return locales
 
 
@@ -1136,7 +1147,9 @@ def configure(
             if fresh:
                 print(
                     "Plugins del director: no instalados; instálalos con "
-                    "`hermes plugins` (manifiesto director-plugins.json)"
+                    "`hermes plugins` (manifiesto director-plugins.json); "
+                    "los de su lista `local` no tienen repo y se instalan "
+                    "aparte, a mano en el perfil"
                 )
             else:
                 notas_plugins = conciliar_plugins_director(

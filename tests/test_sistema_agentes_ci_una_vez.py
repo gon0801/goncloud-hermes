@@ -49,6 +49,9 @@ from pathlib import Path
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "tests"))
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
+
 WORKFLOW = REPO / ".github" / "workflows" / "sistema-agentes.yml"
 SCRIPT = REPO / ".github" / "scripts" / "reusar_completa.sh"
 RAMA_POR_DEFECTO = "feat/hermes-team"
@@ -333,7 +336,7 @@ class EscenarioReuso(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         tmp = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(tmp.cleanup)
+        cls.addClassCleanup(cleanup_temp_directory, tmp)
         cls.raiz = Path(tmp.name) / "repo"
         cls.sha, cls.arbol = repo_temporal(cls.raiz)
 

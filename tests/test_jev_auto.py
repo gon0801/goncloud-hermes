@@ -1260,7 +1260,7 @@ class CableadoTests(unittest.TestCase):
         auto = pre.__self__
         auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         auto.hogar = Path(temporal.name)
         auto.corredor = lambda texto, hogar: {
             "estado": "ok",
@@ -1283,7 +1283,7 @@ class CableadoTests(unittest.TestCase):
         auto = ctx.hooks["pre_llm_call"].__self__
         auto.decisor = None  # el ruteo real jamas corre en estas pruebas
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         auto.hogar = Path(temporal.name)
         auto.corredor = lambda texto, hogar: {
             "estado": "ok",

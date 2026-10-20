@@ -747,7 +747,7 @@ class CargaComoPaquete(unittest.TestCase):
         import importlib
 
         temporal = tempfile.TemporaryDirectory()
-        self.addCleanup(temporal.cleanup)
+        self.addCleanup(cleanup_temp_directory, temporal)
         hermes_falso.instalar()
         self.addCleanup(hermes_falso.desinstalar)
         # F9: con HERMES_HOME fijado al temporal el manejador abre el store de

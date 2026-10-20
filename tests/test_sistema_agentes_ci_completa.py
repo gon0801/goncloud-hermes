@@ -35,6 +35,25 @@ def patrones_de_la_bateria() -> list:
     ]
 
 
+_INVOCACION_CORREDOR = re.compile(
+    r"env\s+-u\s+OPENCODE_CONFIG_CONTENT\s+"
+    r"PYTHONPATH=\S*fake_hermes_cli\S*\s+"
+    r"python3\s+\.github/scripts/bateria_resto\.py"
+)
+
+
+def invoca_el_corredor_con_el_doble(texto: str) -> bool:
+    """La invocacion real del corredor, en una sola linea logica.
+
+    Une las continuaciones con barra del YAML y exige en el mismo comando
+    el `env -u OPENCODE_CONFIG_CONTENT`, el doble de hermes_cli en
+    PYTHONPATH y el corredor: menciones sueltas (un comentario que nombre
+    las tres cosas) no cuentan como correr la mitad resto (F5 de #47).
+    """
+    logicas = re.sub(r"\\\s*\n\s*", " ", texto)
+    return bool(_INVOCACION_CORREDOR.search(logicas))
+
+
 class ContratoBateriaCompleta(unittest.TestCase):
     def setUp(self):
         self.assertTrue(WORKFLOW.is_file(), f"falta el workflow: {WORKFLOW}")
@@ -85,23 +104,28 @@ class ContratoBateriaCompleta(unittest.TestCase):
             self.patrones,
             "el workflow debe declarar el patron -p de la mitad sistema",
         )
-        self.assertIn(
-            "bateria_resto.py",
-            self.texto,
-            "el workflow debe correr el corredor de la mitad resto: si la"
-            " seleccion existe pero nadie la invoca, la cobertura es mentira",
+        self.assertTrue(
+            invoca_el_corredor_con_el_doble(self.texto),
+            "el workflow debe invocar el corredor de la mitad resto en un"
+            " solo comando con env -u OPENCODE_CONFIG_CONTENT y el doble"
+            " de hermes_cli en PYTHONPATH: si la seleccion existe pero"
+            " nadie la invoca asi, la cobertura es mentira",
         )
-        self.assertIn(
-            "fake_hermes_cli",
-            self.texto,
-            "la mitad resto necesita el doble de hermes_cli en PYTHONPATH",
-        )
-        self.assertIn(
-            "OPENCODE_CONFIG_CONTENT",
-            self.texto,
-            "la mitad resto debe limpiar OPENCODE_CONFIG_CONTENT (env -u):"
-            " el router no hereda configuracion real del runner",
-        )
+
+    def test_menciones_sueltas_no_cuentan_como_invocacion(self):
+        # F5 de #47: el contrato anterior buscaba tres substrings en todo
+        # el workflow; un comentario que las nombre pasaba sin correr nada.
+        mutantes = [
+            "# bateria_resto.py con fake_hermes_cli y OPENCODE_CONFIG_CONTENT\n",
+            "PYTHONPATH=tests/fake_hermes_cli python3"
+            " .github/scripts/bateria_resto.py\n",
+            "env -u OPENCODE_CONFIG_CONTENT python3 .github/scripts/bateria_resto.py\n",
+            "env -u OPENCODE_CONFIG_CONTENT PYTHONPATH=tests/fake_hermes_cli"
+            " python3 otro_corredor.py\n",
+        ]
+        for mutante in mutantes:
+            with self.subTest(mutante=mutante.strip()):
+                self.assertFalse(invoca_el_corredor_con_el_doble(mutante))
 
 
 if __name__ == "__main__":
