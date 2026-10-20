@@ -1015,6 +1015,43 @@ def _is_our_test_process(pid: int, marker: str) -> bool:
         return False
 
 
+class ProbeWorkspaceTests(unittest.TestCase):
+    # F9 (#66) + cr8109 — si crear el directorio del probe falla, el
+    # error sale como SubscriptionProcessError: los probes lo traducen
+    # a health no-ready en vez de dejar escapar un OSError.
+    def test_uncreatable_probe_workspace_is_a_process_error(self):
+        from subscriptions import process as process_module
+
+        with patch.object(
+            process_module.tempfile,
+            "TemporaryDirectory",
+            side_effect=OSError("TMPDIR no escribible"),
+        ):
+            with self.assertRaises(SubscriptionProcessError):
+                process_module.probe_workspace()
+
+    def test_the_claude_probe_answers_not_ready_instead_of_raising(self):
+        from subscriptions import process as process_module
+        from subscriptions.adapters.claude import ClaudeAdapter
+        from subscriptions.types import RouteSpec
+
+        with patch.object(
+            process_module.tempfile,
+            "TemporaryDirectory",
+            side_effect=OSError("TMPDIR no escribible"),
+        ):
+            health = ClaudeAdapter(runner=FakeRunner()).probe(
+                RouteSpec(
+                    slot=1,
+                    label="x",
+                    adapter="claude",
+                    model="m",
+                    billing_mode="subscription",
+                )
+            )
+        self.assertFalse(health.ready)
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)

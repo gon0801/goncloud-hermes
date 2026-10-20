@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -88,7 +89,7 @@ class Base(unittest.TestCase):
     def auto(self, perfil, jev, **kwargs):
         casa = self.hogar(perfil)
         decisor = jev_decisiones.Decisor(casa, llamar=jev, tope_s=2.0)
-        return jev_auto.JevAuto(
+        auto = jev_auto.JevAuto(
             perfil,
             hogar=casa,
             decisor=decisor,
@@ -101,6 +102,8 @@ class Base(unittest.TestCase):
             kanban=self.raiz / "sin-kanban.db",
             **kwargs,
         )
+        self.addCleanup(self.esperar, auto)
+        return auto
 
     def esperar(self, auto):
         for hilo in list(auto.hilos):
@@ -111,6 +114,34 @@ class Base(unittest.TestCase):
         if not ruta.is_file():
             return []
         return [json.loads(x) for x in ruta.read_text(encoding="utf-8").splitlines()]
+
+
+class CasoFondoLento(Base):
+    """Dispara un hilo jev-fondo lento y NO lo espera a mano."""
+
+    def test_fondo_lento_sin_esperar(self):
+        jev = Falso({"fin": ("quedo", 0.95)}, demora=0.5)
+        auto = self.auto("pers", jev)
+        auto.post_llm_call(
+            **turno(assistant_response="Listo: 3 personalizadas nuevas anotadas.")
+        )
+        self.assertTrue(any(h.name == "jev-fondo" for h in auto.hilos))
+
+
+class CleanupEsperaHilosTests(Base):
+    def test_el_cleanup_espera_los_hilos_de_fondo_antes_de_borrar(self):
+        caso = CasoFondoLento("test_fondo_lento_sin_esperar")
+        resultado = unittest.TestResult()
+        antes = set(threading.enumerate())  # solo cuentan los hilos de este caso
+        caso.run(resultado)
+        self.assertEqual(resultado.errors, [])
+        self.assertEqual(resultado.failures, [])
+        vivos = [
+            h.name
+            for h in threading.enumerate()
+            if h.name == "jev-fondo" and h not in antes
+        ]
+        self.assertEqual(vivos, [])
 
 
 class ClasificacionEnCualquierPerfilTests(Base):
@@ -329,6 +360,8 @@ class TextoLimpioTests(unittest.TestCase):
             decisor = jev_decisiones.Decisor(casa, llamar=jev)
             auto = jev_auto.JevAuto("amazon", hogar=casa, decisor=decisor)
             auto.pre_llm_call(**turno(user_message=TELEGRAM_ENVUELTO))
+            for hilo in list(auto.hilos):
+                hilo.join(5)
             filas = [
                 json.loads(x)
                 for x in (casa / "jev" / "decisiones.jsonl")

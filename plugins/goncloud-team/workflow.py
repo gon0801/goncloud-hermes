@@ -215,7 +215,14 @@ def _exclude_cli_state_dirs(repository: str) -> None:
     exclude = common / "info" / "exclude"
     try:
         exclude.parent.mkdir(parents=True, exist_ok=True)
-        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        # F7 (#66): un exclude editado en otra codificación (cp1252 en
+        # Windows) no debe tumbar el start: surrogateescape conserva
+        # sus bytes al leer y al reescribir.
+        text = (
+            exclude.read_text(encoding="utf-8", errors="surrogateescape")
+            if exclude.exists()
+            else ""
+        )
     except OSError:
         return
     present = text.splitlines()
@@ -232,7 +239,9 @@ def _exclude_cli_state_dirs(repository: str) -> None:
             return
         try:
             exclude.write_text(
-                "".join(f"{line}\n" for line in migrated), encoding="utf-8"
+                "".join(f"{line}\n" for line in migrated),
+                encoding="utf-8",
+                errors="surrogateescape",
             )
         except OSError:
             return
@@ -242,7 +251,7 @@ def _exclude_cli_state_dirs(repository: str) -> None:
     chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
     chunk += "".join(f"{line}\n" for line in missing)
     try:
-        with exclude.open("a", encoding="utf-8") as handle:
+        with exclude.open("a", encoding="utf-8", errors="surrogateescape") as handle:
             handle.write(chunk)
     except OSError:
         return
@@ -626,12 +635,18 @@ class WorkflowService:
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
                         continue
-                    if active.status in {"done", "archived"}:
-                        continue
-                    if active.idempotency_key == idempotency_key:
-                        # Review F12: la raíz ya existía (relanzamiento) —
-                        # si el worktree falla, esta raíz NO se archiva.
+                    if (
+                        active.idempotency_key == idempotency_key
+                        and active.status != "archived"
+                    ):
+                        # Review F12 + F17 (#53): la raíz ya existía
+                        # (relanzamiento, también de una cadena ENTREGADA:
+                        # create_task deduplica contra toda no archivada)
+                        # — si el worktree falla, esta raíz NO se archiva.
+                        # Solo 'archived' cuenta como "no existe".
                         own_existing = active.id
+                        continue
+                    if active.status in {"done", "archived"}:
                         continue
                     try:
                         active_repo = (
@@ -679,7 +694,10 @@ class WorkflowService:
             # queda libre y el siguiente start arranca (no busy).
             try:
                 created = self._ensure_worktree(root_id, str(repo), revision)
-            except (WorkflowError, subprocess.SubprocessError, OSError):
+            except Exception:
+                # F19 (#53): también un RuntimeError (bucle de symlinks en
+                # resolve, '~' sin home en expanduser) deja la raíz recién
+                # creada archivada, como el cleanup de _auto_close.
                 # Review F12: archive_task abre su propia transacción (no se
                 # anida); SOLO se archiva la raíz que ESTE start acaba de
                 # crear — una preexistente (relanzamiento de una cadena
@@ -703,27 +721,38 @@ class WorkflowService:
                 # MOMENTO (no la rama por defecto del remoto).
                 stored["base_branch"] = self._rama_base_del_repo(str(repo))
                 if migrated:
+                    # F15 (#53): raíz e hijas en LA MISMA transacción: un
+                    # fallo intermedio no deja la raíz en el worktree con
+                    # hijas en el checkout original.
                     with write_txn(conn):
                         conn.execute(
                             "UPDATE tasks SET body = ? WHERE id = ?",
                             (_contract_body(stored), root_id),
                         ).close()
-                    # Review F10/F9: las tarjetas hijas de una cadena
-                    # anterior conservaban el workspace original en su
-                    # cuerpo — apuntan al worktree de la cadena.
-                    for child_id in self._decomposed_child_ids(conn, root_id) or []:
-                        child = self._require_task(conn, child_id)
-                        if str(repo) in (child.body or ""):
-                            conn.execute(
-                                "UPDATE tasks SET body = ? WHERE id = ?",
-                                (
-                                    (child.body or "").replace(str(repo), worktree),
-                                    child_id,
-                                ),
-                            ).close()
+                        # Review F10/F9: las tarjetas hijas de una cadena
+                        # anterior conservaban el workspace original en su
+                        # cuerpo — apuntan al worktree de la cadena.
+                        for child_id in self._decomposed_child_ids(conn, root_id) or []:
+                            child = self._require_task(conn, child_id)
+                            if str(repo) in (child.body or ""):
+                                conn.execute(
+                                    "UPDATE tasks SET body = ? WHERE id = ?",
+                                    (
+                                        (child.body or "").replace(str(repo), worktree),
+                                        child_id,
+                                    ),
+                                ).close()
 
             child_ids = self._decomposed_child_ids(conn, root_id)
             if child_ids is None:
+                # NO envolver en write_txn: el Hermes real v0.22.0 abre
+                # decompose_triage_task con `with write_txn(conn):` SIN
+                # allow_nested (kanban_db_graph.py:113-116, "helpers that
+                # open their own write_txn must not be called in here") y
+                # write_txn lanza RuntimeError "already inside a
+                # transaction" al anidar sin opt-in
+                # (kanban_db_connect.py:1241-1260). Envolverla (F8 de
+                # H#66) hacía fallar toda cadena nueva en producción.
                 child_ids = decompose_triage_task(
                     conn,
                     root_id,
@@ -737,18 +766,21 @@ class WorkflowService:
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
-            if worktree is not None:
+            if worktree is not None and child_ids is not None:
                 # R5: Hermes copia el workspace_path de la raíz (creada con
                 # el repo, línea de create_task de la raíz) a cada hija en
                 # decompose_triage_task, y su worker corre donde la tarjeta
                 # apunta. No hay API de Hermes para pasarlo por hija, así
                 # que se reapunta la columna aquí, igual que la migración
-                # del cuerpo de arriba — la raíz se queda en el repo.
-                for child_id in child_ids:
-                    conn.execute(
-                        "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-                        (worktree, child_id),
-                    ).close()
+                # del cuerpo de arriba — la raíz se queda en el repo. El
+                # reapunte va DESPUÉS de decompose, en su propio write_txn
+                # (como en 875b7a7), nunca dentro de su transacción.
+                with write_txn(conn):
+                    for child_id in child_ids:
+                        conn.execute(
+                            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                            (worktree, child_id),
+                        ).close()
             result = self._start_result(root_id, child_ids)
             if worktree is not None:
                 result["worktree"] = worktree
@@ -777,11 +809,16 @@ class WorkflowService:
         creado (review F5).
         """
         try:
+            # L1 (#72): la decisión "no es repo git" lee el texto de git, que
+            # git traduce según el locale (LANG=es_ES: "no es un repositorio
+            # git"). Forzar C en este probe — y en toda decisión que lea texto
+            # de git — para que la comparación sea siempre contra el inglés.
             probe = subprocess.run(
                 ["git", "-C", repository, "rev-parse", "--is-inside-work-tree"],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
             )
         except (OSError, subprocess.SubprocessError) as exc:
             # Review F13: un probe que FALLA (error, timeout) en un
@@ -790,7 +827,15 @@ class WorkflowService:
             # que RESPONDE "no es repo git" (returncode != 0) conserva la
             # conducta de hoy (punto 4).
             raise WorkflowError(f"git probe failed for {repository}: {exc}") from exc
-        if probe.returncode != 0 or probe.stdout.strip() != "true":
+        if probe.returncode != 0:
+            # F13 (#53): solo "not a git repository" es no-git; cualquier
+            # otro fallo (dubious ownership, permisos, repo corrupto) es
+            # error — degradar al checkout original es fail-open.
+            detalle = (probe.stderr or probe.stdout or "").strip()
+            if "not a git repository" in detalle.lower():
+                return None
+            raise WorkflowError(f"git probe failed for {repository}: {detalle[:200]}")
+        if probe.stdout.strip() != "true":
             return None
         repo_path = Path(repository)
         configured = os.environ.get("GONCLOUD_WORKTREE_ROOT") or str(
@@ -813,7 +858,11 @@ class WorkflowService:
                 timeout=300,
             )
 
-        resolved = git("rev-parse", f"{revision}^{{commit}}")
+        # F7 (#53): la revisión del dueño es dato, nunca una opción
+        # (--verify + --end-of-options: el rev-parse pelado no lo acepta).
+        resolved = git(
+            "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}"
+        )
         if resolved.returncode != 0:
             # Review F8/F9: sin fallback silencioso a HEAD — la cadena
             # trabajaría en un baseline que el dueño no aprobó.
@@ -844,6 +893,18 @@ class WorkflowService:
                 base_sha,
             )
         if attempt.returncode != 0:
+            # F5 (#53): carrera entre dos starts con la misma clave: el
+            # ganador ya creó la ruta o la rama cuando el perdedor llega.
+            # Se revalida y se reintenta SIN -b; no se recrea nada.
+            if wt_path.is_dir() and (wt_path / ".git").exists():
+                _exclude_cli_state_dirs(repository)
+                return str(wt_path), base_sha
+            branch_now = git("rev-parse", "--verify", "--quiet", branch)
+            if branch_now.returncode == 0:
+                retry = git("worktree", "add", "--end-of-options", str(wt_path), branch)
+                if retry.returncode == 0:
+                    _exclude_cli_state_dirs(repository)
+                    return str(wt_path), base_sha
             raise WorkflowError(
                 "git worktree add failed for chain "
                 f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
@@ -939,6 +1000,10 @@ class WorkflowService:
         # con ellos no se quita (build/, cachés, secretos locales...). Se
         # conserva y el motivo lo dice.
         dirty = git("status", "--porcelain", "--ignored")
+        if dirty.returncode != 0:
+            # F18 (#53): un git status que falla no es un worktree limpio.
+            info["reason"] = "no se pudo comprobar con git status; se conserva"
+            return info
         if dirty.stdout.strip():
             info["reason"] = "tiene cambios sin commit o archivos ignorados"
             return info
@@ -1022,8 +1087,9 @@ class WorkflowService:
         (ps) and the lease check run BEFORE the transaction (review F15);
         inside it the chain state is re-read and the mark fence compares
         run_id and outcome against what was judged outside — anything that
-        changed aborts the close before the first archive lands, and the
-        caller then queues the new chain behind it (review F3).
+        changed aborts the close before the first archive lands; the
+        close simply does not happen — the caller gets False and
+        answers busy instead (review F3).
         ``archive_task`` opens its own transaction and refuses nesting
         (reference 0.22), so the archive rides this transaction with the
         same guarded, idempotent UPDATE the native primitive applies.

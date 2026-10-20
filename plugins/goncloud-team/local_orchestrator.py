@@ -330,11 +330,19 @@ def _clean_new_cli_state(repository, before):
     for relative in sorted(after - before):
         target = root / relative
         try:
-            target.resolve().relative_to(resolved_root)
-            if target.is_dir() and not target.is_symlink():
-                target.rmdir()
-            else:
+            if target.is_symlink():
+                # cr8101: el enlace nuevo se quita SIN resolver su destino
+                # (fuera del repo); el guard mira el PADRE resuelto: si la
+                # carpeta contenedora es un enlace hacia fuera, la ruta
+                # reportada vive fuera y no se toca (F4 #66).
+                target.parent.resolve().relative_to(resolved_root)
                 target.unlink(missing_ok=True)
+            else:
+                target.resolve().relative_to(resolved_root)
+                if target.is_dir():
+                    target.rmdir()
+                else:
+                    target.unlink(missing_ok=True)
         except (OSError, ValueError):
             continue
         parent = target.parent
@@ -416,10 +424,13 @@ _DRIVER_BOOTSTRAP = (
     "    fallo = True\n"
     "    result = {'workflow_id': workflow_id, 'outcome': 'error',\n"
     "              'error': 'local driver failed; check durable status'}\n"
-    "tmp = out + '.%d.tmp' % os.getpid()\n"
-    "with open(tmp, 'w', encoding='utf-8') as handle:\n"
-    "    json.dump(result, handle, ensure_ascii=True)\n"
-    "os.replace(tmp, out)\n"
+    "# F21 (#44): un busy no se vuelca: no es outcome de parada y\n"
+    "# pisaría la marca viva del driver que sí está trabajando.\n"
+    "if not (isinstance(result, dict) and result.get('busy')):\n"
+    "    tmp = out + '.%d.tmp' % os.getpid()\n"
+    "    with open(tmp, 'w', encoding='utf-8') as handle:\n"
+    "        json.dump(result, handle, ensure_ascii=True)\n"
+    "    os.replace(tmp, out)\n"
     "# The mailbox event only rides a bootstrap that actually died (encargo\n"
     "# H, live F1): a resume that ends publishes its own outcome, which has\n"
     "# no 'error' key — reading one here raised KeyError on every healthy\n"
@@ -467,9 +478,9 @@ def _result_file(workflow_id, home):
 def _write_result(workflow_id, payload, *, home=None):
     """Publish one bounded driver result atomically; readers never see half.
 
-    home=None resolves the environment's Hermes home, so writers outside
-    the driver process (workflow.start queueing a chain, r5 punto 1) share
-    the exact same file the driver reads and writes.
+    home=None resolves the environment's Hermes home, so the driver
+    and its detached bootstrap — the writers of this file — share the
+    exact same file the driver reads and writes.
     """
     home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
     results = Path(home) / "goncloud-local"
@@ -1954,8 +1965,17 @@ class LocalOrchestrator:
                 for role, stage in blocked
                 if not self._blocked_by_read_only_guard(role, stage["id"], conn)
             ]
-            if not reopened:
-                return
+        if not reopened:
+            return
+        # F22 (#44): la generación nueva se abre ANTES del unblock; un
+        # corte entre ambos deja una generación de más (inocua), nunca
+        # una etapa ready repitiendo la generación vieja.
+        path = default_db_path()
+        if path.exists():
+            store = SubscriptionStateStore(path)
+            for _, stage in reopened:
+                store.open_generation(workflow_id, stage["id"])
+        with service._connect() as conn:
             for _, stage in reopened:
                 if not unblock_task(conn, stage["id"]):
                     raise WorkflowError(
@@ -1965,12 +1985,6 @@ class LocalOrchestrator:
                 conn, workflow_id
             ):
                 raise WorkflowError(f"native Kanban refused to unblock {workflow_id}")
-        path = default_db_path()
-        if not path.exists():
-            return
-        store = SubscriptionStateStore(path)
-        for _, stage in reopened:
-            store.open_generation(workflow_id, stage["id"])
 
     @staticmethod
     def _blocked_by_read_only_guard(role, stage_id, conn):
@@ -2014,7 +2028,8 @@ class LocalOrchestrator:
             own_mark=None if own_launch else mark,
         )
         if worker is not None:
-            return {**self._busy_result(workflow_id), "outcome": "busy"}
+            # F21 (#44): el busy nombra la cadena VIVA, no la relanzada.
+            return {**self._busy_result(worker), "outcome": "busy"}
         # Every driver enters here — the detached one the bootstrap spawns
         # and the CLI resume alike — so this is the one place a run marks
         # the result file running before its first stage (live review F8).
@@ -2160,6 +2175,10 @@ class LocalOrchestrator:
                     result.get("adapter") == "router"
                     and result.get("failure") == "task_failure"
                 ):
+                    # cr8103 (#66): esta salida también limpia el estado
+                    # CLI del intento; si no, el siguiente intento lo
+                    # fotografiaría como preexistente y nunca saldría.
+                    _clean_new_cli_state(workspace, cli_state_before)
                     return report("running")
                 terminal = (
                     parse_terminal_envelope(result.get("text"), role=role)

@@ -1,6 +1,6 @@
 """Doble de hermes_constants: el home de Hermes y su raiz (SUA-07 H2, F6).
 
-Mide la referencia 0.21.5 en la Gon-pc: get_hermes_home() es el override de
+Mide la referencia v0.22.0 (e06df9c) en la Gon-pc: get_hermes_home() es el override de
 contexto -> env HERMES_HOME -> default de la plataforma. El default de la
 plataforma no esta doblado: sin override y sin env devuelve "" y el
 resolvedor (raices/hogar.py) falla con error claro, igual que sin el modulo.

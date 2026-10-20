@@ -63,6 +63,10 @@ class Base(unittest.TestCase):
             {"ruteo": ("amazon", 0.93), "cierre": ("quedo", 0.91)}
         )
 
+    def esperar(self, auto):
+        for hilo in list(auto.hilos):
+            hilo.join(5)
+
     def auto(self, jev=None, **kwargs):
         decisor = jev_decisiones.Decisor(
             self.claw, llamar=jev or self.jev, tope_s=kwargs.pop("tope_s", 2.0)
@@ -70,7 +74,9 @@ class Base(unittest.TestCase):
         kwargs.setdefault("hogar", self.claw)
         kwargs.setdefault("corredor", corredor_ok)
         kwargs.setdefault("kanban", self.kanban.ruta)
-        return jev_auto.JevAuto("claw", decisor=decisor, **kwargs)
+        auto = jev_auto.JevAuto("claw", decisor=decisor, **kwargs)
+        self.addCleanup(self.esperar, auto)
+        return auto
 
     def decisiones(self):
         ruta = self.claw / "jev" / "decisiones.jsonl"
@@ -288,6 +294,7 @@ class RuteoPorMensajeTests(Base):
         otro = jev_auto.JevAuto(
             "scout", hogar=self.claw, corredor=corredor_ok, decisor=decisor
         )
+        self.addCleanup(self.esperar, otro)
         # otro perfil clasifica (tipo/modo) pero jamas rutea ni corre skill_select
         contexto = otro.pre_llm_call(**turno())["context"]
         self.assertTrue(contexto.startswith("Jev sugiere:"))
@@ -301,6 +308,7 @@ class RuteoPorMensajeTests(Base):
 
     def test_sin_decisor_el_contexto_es_solo_el_de_skill_select(self):
         auto = jev_auto.JevAuto("claw", hogar=self.claw, corredor=corredor_ok)
+        self.addCleanup(self.esperar, auto)
         respuesta = auto.pre_llm_call(**turno())
         self.assertEqual(
             respuesta, {"context": "JEV skill_select: web-navigation (cárgala)"}
