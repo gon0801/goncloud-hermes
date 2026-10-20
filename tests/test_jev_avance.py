@@ -97,6 +97,7 @@ class Base(unittest.TestCase):
         vivo=True,
         edad_min=1,
         extra=None,
+        raiz="running",
     ):
         marca = {"workflow_id": wf, "outcome": salida, "run_id": "r1", "pid": 4242}
         marca.update(extra or {})
@@ -106,7 +107,9 @@ class Base(unittest.TestCase):
         os.utime(ruta, (mtime, mtime))
         if vivo:
             self.vivos.add(wf)
-        self.kanban.tarea(wf, "claw", body=CONTRATO + json.dumps({"repository": repo}))
+        self.kanban.tarea(
+            wf, "claw", status=raiz, body=CONTRATO + json.dumps({"repository": repo})
+        )
         if rol:
             etapa = f"{wf}_{rol}"
             self.kanban.tarea(etapa, rol)
@@ -373,13 +376,15 @@ class RespuestaTests(Base):
 
     def test_orden_activas_primero_y_el_tope_solo_recorta_terminales(self):
         self.cadena("t_e", "delivered", repo="C:/x/Entregada", edad_min=5)
-        for i in range(6):
+        for i in range(jev_avance.TOPE_CADENAS + 1):
             self.cadena(
                 f"t_r{i}", "running", repo=f"C:/x/Repo{i}", rol="scout", edad_min=i
             )
         reply = self.texto()
         self.assertLess(reply.index("Repo0"), reply.index("Repo1"))
-        for i in range(6):  # ninguna cadena viva se oculta por el tope
+        for i in range(
+            jev_avance.TOPE_CADENAS + 1
+        ):  # ninguna cadena viva se oculta por el tope
             self.assertIn(f"Repo{i}", reply)
         self.assertNotIn("Entregada", reply)
         self.assertIn("y 1 más ya terminadas", reply)
@@ -403,6 +408,70 @@ class RespuestaTests(Base):
         self.assertNotIn("No hay cadenas", reply)
         for terminal in ("TermVieja", "CerrVieja", "ErrVieja"):
             self.assertNotIn(terminal, reply)
+
+    def test_raiz_archivada_o_hecha_es_terminal_aunque_la_marca_diga_otra_cosa(self):
+        # close() no reescribe el archivo y un root archivado se reporta
+        # 'blocked': el estado real de la raiz en el kanban es el que manda.
+        for wf, salida, raiz in (
+            ("t_c1", "blocked", "archived"),
+            ("t_c2", "paused", "archived"),
+            ("t_c3", "waiting", "archived"),
+            ("t_c4", "paused", "done"),
+        ):
+            self.cadena(
+                wf,
+                salida,
+                repo=f"C:/x/Cerr{wf}",
+                rol="scout",
+                edad_min=30 * 60,
+                raiz=raiz,
+            )
+        self.cadena(
+            "t_c5", "blocked", repo="C:/x/CerrReciente", raiz="archived", edad_min=20
+        )
+        self.cadena("t_v1", "paused", repo="C:/x/PausaReal", edad_min=30 * 60)
+        reply = self.texto()
+        for wf in ("t_c1", "t_c2", "t_c3", "t_c4"):
+            self.assertNotIn(f"Cerr{wf}", reply)
+        self.assertIn("PausaReal", reply)
+        # la cerrada reciente sale como cerrada, no como trabada
+        self.assertIn("CerrReciente: cerrada hace 20 min", reply)
+
+    def test_corrida_muerta_vieja_no_sale_y_la_viva_o_sin_comprobar_si(self):
+        self.cadena(
+            "t_m1", "running", repo="C:/x/MuertaVieja", vivo=False, edad_min=30 * 60
+        )
+        self.cadena(
+            "t_m2", "running", repo="C:/x/MuertaReciente", vivo=False, edad_min=30
+        )
+        self.cadena("t_m3", "running", repo="C:/x/VivaVieja", edad_min=30 * 60)
+        reply = self.texto()
+        self.assertNotIn("MuertaVieja", reply)
+        self.assertIn("MuertaReciente", reply)
+        self.assertIn("VivaVieja", reply)
+
+    def test_tope_duro_de_lineas_con_cientos_de_cadenas_detenidas(self):
+        for i in range(120):
+            self.cadena(
+                f"t_p{i}",
+                "paused",
+                repo=f"C:/x/Pausa{i}",
+                rol="scout",
+                edad_min=30 * 60 + i,
+                fallo="x" * 400,
+            )
+        self.cadena("t_vivo", "running", repo="C:/x/Viva", rol="scout")
+        reply = self.texto()
+        self.assertLessEqual(len(reply), 4096)
+        self.assertLessEqual(reply.count("•"), jev_avance.TOPE_CADENAS)
+        self.assertIn("Viva", reply)  # las que trabajan salen siempre
+        self.assertIn("más trabadas o en pausa", reply)
+        self.assertIn("Pausa0:", reply)  # las detenidas mas recientes primero
+
+    def test_cadena_nombrada_detenida_vieja_sale_sin_tope(self):
+        self.cadena("t_vieja", "blocked", repo="C:/x/Vieja", edad_min=40 * 60)
+        reply = self.pregunta(self.auto(), "como va la cadena t_vieja?")["reply"]
+        self.assertIn("Vieja", reply)
 
     def test_motivo_de_la_traba_sale_del_resumen_de_la_etapa(self):
         self.cadena(

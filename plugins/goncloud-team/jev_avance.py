@@ -33,7 +33,10 @@ except ImportError:  # carga suelta (pruebas): el plugin esta en sys.path
 HORAS_RECIENTES = 12
 TOPE_TEXTO = 300  # mas largo que esto ya es otra cosa que "como va"
 TOPE_CORTA = 60
-TOPE_CADENAS = 5
+TOPE_CADENAS = (
+    8  # lineas de cadenas: con motivos el mensaje cabe en los 4096 de Telegram
+)
+TOPE_CARACTERES = 3200
 TOPE_ARCHIVO = 2_000_000
 
 # Frases tipicas, ya sin acentos ni signos. El segundo valor exige "?": sin el,
@@ -108,9 +111,10 @@ _ROLES = {
     "adversary": "prueba adversaria",
     "entrega": "entrega",
 }
-_ACTIVAS = ("running", "pending")
 _DETENIDAS = ("blocked", "paused", "waiting", "error")
 _TERMINALES = ("delivered", "closed", "error")
+# Estado de la raiz en el kanban que cierra la cadena, diga lo que diga el outcome.
+_RAIZ_TERMINAL = {"archived": "closed", "done": "delivered"}
 
 
 def _plano(texto: str) -> str:
@@ -174,12 +178,12 @@ def _abrir_seguro(ruta):
         return None
 
 
-def _marcas(carpetas, ahora: float, horas, solo=None):
-    """Resultados/marcas de driver, uno por cadena.
+def _marcas(carpetas, solo=None):
+    """Resultados/marcas de driver, uno por cadena (`solo` deja una sola).
 
-    La ventana de `horas` aplica solo a las terminales (entregada, cerrada, con
-    error): una cadena viva o detenida cuenta por vieja que sea su marca.
-    `horas=None` quita la ventana; `solo` deja una sola cadena.
+    Sin ventana de tiempo: el outcome del archivo no dice si la cadena termino
+    (close() no lo reescribe y un root archivado se reporta 'blocked'); la
+    ventana la aplica leer_cadenas con el estado real del kanban.
     """
     vistas: dict = {}
     for carpeta in carpetas:
@@ -199,12 +203,6 @@ def _marcas(carpetas, ahora: float, horas, solo=None):
                 continue
             cadena = str(datos.get("workflow_id") or archivo.stem)
             if solo and cadena.lower() != solo:
-                continue
-            if (
-                horas is not None
-                and str(datos.get("outcome") or "") in _TERMINALES
-                and ahora - estado.st_mtime > horas * 3600
-            ):
                 continue
             datos["_mtime"] = estado.st_mtime
             if cadena not in vistas or vistas[cadena]["_mtime"] < estado.st_mtime:
@@ -229,24 +227,34 @@ def _ultimo_intento(conn, cadena: str):
     return (*fila, inicio[0] if inicio else None)
 
 
-def _repo_y_rol(conn, cadena: str, etapa):
-    """(repo, rol) del kanban; None donde no se sepa. Nunca lanza."""
-    repo = rol = None
+def _raiz(conn, cadena: str):
+    """(estado, repo) de la raiz de la cadena en el kanban; None donde no se sepa."""
+    estado = repo = None
     try:
-        raiz = conn.execute("SELECT body FROM tasks WHERE id = ?", (cadena,)).fetchone()
-        cuerpo = (raiz[0] or "") if raiz else ""
-        inicio = cuerpo.find("{")
-        contrato = json.loads(cuerpo[inicio:]) if inicio >= 0 else {}
-        origen = str(contrato.get("repository") or contrato.get("worktree") or "")
-        repo = Path(origen.replace("\\", "/")).name or None
-        if etapa:
-            fila = conn.execute(
-                "SELECT assignee FROM tasks WHERE id = ?", (etapa,)
-            ).fetchone()
-            rol = fila[0] if fila else None
+        fila = conn.execute(
+            "SELECT status, body FROM tasks WHERE id = ?", (cadena,)
+        ).fetchone()
+        if fila is not None:
+            estado = fila[0]
+            cuerpo = fila[1] or ""
+            inicio = cuerpo.find("{")
+            contrato = json.loads(cuerpo[inicio:]) if inicio >= 0 else {}
+            origen = str(contrato.get("repository") or contrato.get("worktree") or "")
+            repo = Path(origen.replace("\\", "/")).name or None
     except (sqlite3.Error, ValueError, AttributeError):
         pass
-    return repo, rol
+    return estado, repo
+
+
+def _rol(conn, etapa):
+    """El assignee de la etapa en el kanban, o None. Nunca lanza."""
+    try:
+        fila = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (etapa,)
+        ).fetchone()
+        return fila[0] if fila else None
+    except sqlite3.Error:
+        return None
 
 
 def _una_linea(texto, tope: int = 100) -> str:
@@ -274,15 +282,33 @@ def leer_cadenas(
 ):
     """Las cadenas activas o recientes con lo que hace falta para contarlas.
 
-    `solo` (un id de cadena) deja esa cadena, sin ventana de tiempo.
+    `solo` (un id de cadena) deja esa cadena, sin ventana de tiempo. El estado
+    de la raiz en el kanban manda sobre el outcome del archivo (que close() no
+    reescribe): archivada = cerrada, hecha = entregada. La ventana de `horas`
+    aplica a las terminales y a una corrida cuyo proceso ya murio; una cadena
+    detenida (pausa, traba) cuenta por vieja que sea.
     """
     router = _abrir_seguro(db_router)
     kanban_conn = _abrir_seguro(kanban)
     cadenas = []
     try:
-        for marca in _marcas(carpetas, ahora, None if solo else horas, solo):
+        for marca in _marcas(carpetas, solo):
             cadena = marca["workflow_id"]
             salida = str(marca.get("outcome") or "")
+            repo = None
+            if kanban_conn is not None:
+                estado_raiz, repo = _raiz(kanban_conn, cadena)
+                if salida not in _TERMINALES and estado_raiz in _RAIZ_TERMINAL:
+                    salida = _RAIZ_TERMINAL[estado_raiz]
+            vieja = ahora - marca["_mtime"] > horas * 3600
+            proceso = None
+            if salida == "running":
+                try:
+                    proceso = bool(vivo(dict(marca)))
+                except Exception:  # noqa: BLE001 - sin comprobar: se dice, no se inventa
+                    proceso = None
+            if not solo and vieja and (salida in _TERMINALES or proceso is False):
+                continue
             intento = None
             if router is not None:
                 try:
@@ -290,9 +316,9 @@ def leer_cadenas(
                 except sqlite3.Error:
                     intento = None
             etapa = intento[0] if intento else None
-            repo = rol = None
-            if kanban_conn is not None:
-                repo, rol = _repo_y_rol(kanban_conn, cadena, etapa)
+            rol = (
+                _rol(kanban_conn, etapa) if kanban_conn is not None and etapa else None
+            )
             info = {
                 "id": cadena,
                 "salida": salida,
@@ -303,15 +329,10 @@ def leer_cadenas(
                 "adapter": intento[1] if intento else None,
                 "minutos": None,
                 "motivo": None,
-                "vivo": None,
+                "vivo": proceso,
             }
             desde = _epoch(intento[5]) if intento else None
-            if salida == "running":
-                try:
-                    info["vivo"] = bool(vivo(dict(marca)))
-                except Exception:  # noqa: BLE001 - sin comprobar: se dice, no se inventa
-                    info["vivo"] = None
-            if salida in _DETENIDAS or (salida == "running" and info["vivo"] is False):
+            if salida in _DETENIDAS or (salida == "running" and proceso is False):
                 # El tiempo cuenta desde la detencion (la marca), no desde que
                 # arranco la etapa; sin fila del router, desde la marca.
                 desde = max(desde or 0, marca["_mtime"])
@@ -348,15 +369,18 @@ def _hace(minutos) -> str:
     return f"{horas} h {resto} min" if resto else f"{horas} h"
 
 
-def _orden(info) -> tuple:
+def _clase(info) -> str:
+    """'terminal', 'detenida' (pausa, traba, proceso muerto) o 'activa'."""
     salida = info["salida"]
-    grupo = (
-        0
-        if salida in _ACTIVAS
-        else 1
-        if salida in _DETENIDAS and salida not in _TERMINALES
-        else 2
-    )
+    if salida in _TERMINALES:
+        return "terminal"
+    if salida in _DETENIDAS or (salida == "running" and info["vivo"] is False):
+        return "detenida"
+    return "activa"
+
+
+def _orden(info) -> tuple:
+    grupo = ("activa", "detenida", "terminal").index(_clase(info))
     return (grupo, -info["mtime"])
 
 
@@ -396,17 +420,41 @@ def _linea(info, ahora: float) -> str:
 def armar_respuesta(cadenas, ahora: float, solo=None) -> str:
     """El mensaje para David: corto, en español y sin tecnicismos.
 
-    El tope recorta solo las terminales: una cadena viva o detenida siempre sale.
+    Tope duro de líneas (y de caracteres, por el límite de Telegram): las que
+    trabajan salen siempre; las detenidas (pausa, traba, proceso muerto) llenan
+    el cupo que queda, las más recientes primero, y las terminales el resto.
+    Lo que no cabe se cuenta, no se calla. Con `solo` no hay tope: es una.
     """
     if not cadenas:
         if solo:
             return f"No encontré la cadena {solo}."
         return f"No hay cadenas activas ni recientes (últimas {HORAS_RECIENTES} h)."
     ordenadas = sorted(cadenas, key=_orden)
-    vivas = [i for i in ordenadas if i["salida"] not in _TERMINALES]
-    terminales = [i for i in ordenadas if i["salida"] in _TERMINALES]
-    cupo = max(0, TOPE_CADENAS - len(vivas))
-    lineas = [_linea(info, ahora) for info in (*vivas, *terminales[:cupo])]
-    if len(terminales) > cupo:
-        lineas.append(f"… y {len(terminales) - cupo} más ya terminadas.")
+    grupos = {
+        clase: [i for i in ordenadas if _clase(i) == clase]
+        for clase in ("activa", "detenida", "terminal")
+    }
+    cupo = TOPE_CADENAS if not solo else len(ordenadas)
+    lineas: list = []
+    omitidas = {"activa": 0, "detenida": 0, "terminal": 0}
+    usados = 0
+    for clase in ("activa", "detenida", "terminal"):
+        libres = max(0, cupo - len(lineas))
+        for posicion, info in enumerate(grupos[clase]):
+            linea = _linea(info, ahora)
+            cabe = (clase == "activa" or posicion < libres) and (
+                usados + len(linea) <= TOPE_CARACTERES
+            )
+            if cabe:
+                lineas.append(linea)
+                usados += len(linea) + 1
+            else:
+                omitidas[clase] += 1
+    for clase, texto in (
+        ("activa", "en curso"),
+        ("detenida", "trabadas o en pausa"),
+        ("terminal", "ya terminadas"),
+    ):
+        if omitidas[clase]:
+            lineas.append(f"… y {omitidas[clase]} más {texto}.")
     return "Así van las cadenas:\n" + "\n".join(lineas)
