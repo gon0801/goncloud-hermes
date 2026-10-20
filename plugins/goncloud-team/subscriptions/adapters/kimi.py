@@ -6,7 +6,12 @@ import json
 import tomllib
 from pathlib import Path
 
-from ..process import PROMPT_PLACEHOLDER, SubscriptionProcessError, run_cli
+from ..process import (
+    PROMPT_PLACEHOLDER,
+    SubscriptionProcessError,
+    probe_workspace,
+    run_cli,
+)
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -198,13 +203,14 @@ class KimiAdapter(SubscriptionAdapter):
     def probe(self, route: RouteSpec) -> AdapterHealth:
         """``kimi doctor`` is non-generative; auth needs live inference."""
         try:
-            evidence = run_cli(
-                ["kimi", "doctor"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["kimi", "doctor"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error(self.account_class, error)
         if evidence.returncode != 0:

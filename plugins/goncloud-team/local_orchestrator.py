@@ -82,6 +82,25 @@ MAX_TERMINAL_BYTES = 1800
 #: the same on another run; instructions alone did not hold.
 _READ_ONLY_STAGES = frozenset({"scout", "ingenieria"})
 
+#: State folders vendor CLIs create in their working directory (sessions,
+#: memory, caches). Untracked files there are the read-only stage's own CLI
+#: noise, never stage work: the guard below ignores them and stage close
+#: removes the ones the stage created. A tracked file inside one is real
+#: repository content (repos version .claude/skills) and still counts.
+_CLI_STATE_DIRS = frozenset(
+    {
+        ".claude",
+        ".codex",
+        ".cursor",
+        ".gemini",
+        ".grok",
+        ".kimi",
+        ".muse",
+        ".opencode",
+        ".qwen",
+    }
+)
+
 #: Durable outcomes that prove no driver is working the chain: the stopped
 #: ones the driver writes when it quits. Live review F8: the result file
 #: doubles as the driver's running mark — every start overwrites it with
@@ -215,8 +234,27 @@ def _asegurar_contrato_local(conn):
             ).close()
 
 
+def _porcelain_path(line):
+    path = line[3:] if len(line) > 3 else ""
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    return path
+
+
+def _is_cli_state_untracked(line):
+    """True for an untracked (``??``) path under a CLI state folder."""
+    return (
+        line.startswith("?? ")
+        and _porcelain_path(line).split("/", 1)[0] in _CLI_STATE_DIRS
+    )
+
+
 def _workspace_fingerprint(repository):
-    """HEAD plus every tracked and untracked change, or None without git."""
+    """HEAD plus every tracked and untracked change, or None without git.
+
+    Untracked CLI state folders are filtered out, so the comparison and
+    the blocked evidence built from it never list them.
+    """
     try:
         head = subprocess.run(
             ["git", "-C", str(repository), "rev-parse", "HEAD"],
@@ -234,7 +272,65 @@ def _workspace_fingerprint(repository):
         return None
     if head.returncode != 0 or status.returncode != 0:
         return None
-    return head.stdout.strip(), status.stdout
+    kept = [
+        line for line in status.stdout.splitlines() if not _is_cli_state_untracked(line)
+    ]
+    return head.stdout.strip(), "".join(f"{line}\n" for line in kept)
+
+
+def _cli_state_untracked(repository):
+    """Repo-relative untracked paths under CLI state folders, or None."""
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(repository), "status", "--porcelain", "-z", "-uall"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if status.returncode != 0:
+        return None
+    return {
+        entry[3:]
+        for entry in status.stdout.split("\0")
+        if entry.startswith("?? ") and entry[3:].split("/", 1)[0] in _CLI_STATE_DIRS
+    }
+
+
+def _clean_new_cli_state(repository, before):
+    """Delete CLI state created since the ``before`` snapshot.
+
+    Files that already existed stay; folders the deletion leaves empty
+    are removed too, so the workspace returns to how the stage found it.
+    """
+    if before is None:
+        return
+    after = _cli_state_untracked(repository)
+    if after is None:
+        return
+    root = Path(repository)
+    try:
+        resolved_root = root.resolve()
+    except OSError:
+        return
+    for relative in sorted(after - before):
+        target = root / relative
+        try:
+            target.resolve().relative_to(resolved_root)
+            if target.is_dir() and not target.is_symlink():
+                target.rmdir()
+            else:
+                target.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            continue
+        parent = target.parent
+        while parent != root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
 
 def _edited_by_read_only_stage(role, before, after):
@@ -1998,6 +2094,9 @@ class LocalOrchestrator:
             before = (
                 _workspace_fingerprint(workspace) if role in _READ_ONLY_STAGES else None
             )
+            cli_state_before = (
+                _cli_state_untracked(workspace) if before is not None else None
+            )
             try:
                 result = self.stage_runner(bound, **assignment)
                 if (
@@ -2016,6 +2115,7 @@ class LocalOrchestrator:
                 after = _workspace_fingerprint(workspace)
                 if after is not None and after != before:
                     terminal = _edited_by_read_only_stage(role, before, after)
+            _clean_new_cli_state(workspace, cli_state_before)
             self._finish_stage(bound, workflow_id, stage["id"], role, terminal, result)
             if self.jev is not None:
                 self.jev.cerrar(contract["instruction"], role, terminal)

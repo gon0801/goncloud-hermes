@@ -516,6 +516,16 @@ def _run_with_process_tree(
                 pass
 
 
+def probe_workspace():
+    """Throwaway cwd for a vendor probe.
+
+    A probe has no workspace of its own; running it in the caller's cwd
+    lets the vendor CLI drop its state folders (.claude/, .codex/, ...)
+    into whatever checkout the host process happens to sit in.
+    """
+    return tempfile.TemporaryDirectory(prefix="goncloud-probe-")
+
+
 def run_cli(
     command: Sequence[str],
     prompt: str,

@@ -4439,5 +4439,209 @@ class ChainWorktreeTests(_OrchestratorHarness):
         self.assertFalse(self.worktree_root().exists(), "no worktree root is created")
 
 
+class ReadOnlyHarnessStateTests(ChainWorktreeTests):
+    """Encargo H-readonly-harness: el estado que el propio CLI crea en su
+    cwd (.claude/, .codex/, ...) no es trabajo de la etapa de solo
+    lectura: no bloquea, no sale en la evidencia y se limpia al cerrar
+    la etapa; un archivo seguido bajo esas carpetas sí cuenta."""
+
+    def _git_repo(self, *, tracked_claude=False):
+        sha = super()._git_repo()
+        if not tracked_claude:
+            return sha
+        guia = self.repo / ".claude" / "skills" / "guia.md"
+        guia.parent.mkdir(parents=True)
+        guia.write_text("guia base\n", encoding="utf-8")
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(self.repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        git("add", ".claude/skills/guia.md")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "skill seguida",
+        )
+        return git("rev-parse", "HEAD").stdout.strip()
+
+    def _scout_writes(self, *relpaths):
+        original = self.invoke
+
+        def invoke(request, route):
+            if request.role == "scout":
+                workspace = Path(request.workspace)
+                for rel in relpaths:
+                    destino = workspace / rel
+                    destino.parent.mkdir(parents=True, exist_ok=True)
+                    destino.write_text("estado del CLI\n", encoding="utf-8")
+            return original(request, route)
+
+        self.invoke = invoke
+
+    def _scout_edits(self, rel, texto):
+        original = self.invoke
+
+        def invoke(request, route):
+            if request.role == "scout":
+                (Path(request.workspace) / rel).write_text(texto, encoding="utf-8")
+            return original(request, route)
+
+        self.invoke = invoke
+
+    # (1) — solo estado del CLI: no bloquea y lo nuevo desaparece.
+    def test_solo_estado_del_cli_no_bloquea_y_se_borra(self):
+        sha = self._git_repo()
+        self._scout_writes(".claude/sessions/x")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "paused")
+        worktree = Path(result["worktree"])
+        self.assertFalse(
+            (worktree / ".claude" / "sessions" / "x").exists(),
+            "the CLI state created by the stage is cleaned at stage close",
+        )
+        self.assertFalse(
+            (worktree / ".claude").exists(),
+            "folders left empty by the cleanup go too",
+        )
+
+    # (2) — editar un archivo real sigue bloqueando (control).
+    def test_editar_un_archivo_real_si_bloquea(self):
+        sha = self._git_repo()
+        self._scout_edits("README.md", "tocado por scout\n")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "blocked")
+        worktree = Path(result["worktree"])
+        self.assertEqual(
+            (worktree / "README.md").read_text(encoding="utf-8"),
+            "tocado por scout\n",
+            "a real edit is left for the owner to revert, never cleaned",
+        )
+
+    # (3) — un archivo SEGUIDO bajo .claude/ sí cuenta como cambio.
+    def test_modificar_un_seguido_bajo_claude_si_bloquea(self):
+        sha = self._git_repo(tracked_claude=True)
+        self._scout_edits(".claude/skills/guia.md", "guia tocada\n")
+
+        result = self.start(revision=sha, stop_after="scout")
+
+        self.assertEqual(result["outcome"], "blocked")
+
+    # (4) — lo que ya estaba antes de la etapa no se toca; lo nuevo sí
+    # se borra, en cualquier carpeta de estado.
+    def test_estado_previo_se_queda_y_el_nuevo_se_borra(self):
+        sha = self._git_repo()
+        created = self.orchestrator.create(
+            request_key="local-1",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect this repository without external actions.",
+            sources=SOURCES,
+            max_steps=17,
+        )
+        worktree = Path(created["worktree"])
+        previo = worktree / ".claude" / "sessions" / "viejo"
+        previo.parent.mkdir(parents=True)
+        previo.write_text("ya estaba\n", encoding="utf-8")
+        self._scout_writes(".claude/sessions/nuevo", ".codex/state/y")
+
+        result = self.orchestrator.resume(
+            created["workflow_id"], stop_after="scout", home=self.root
+        )
+
+        self.assertEqual(result["outcome"], "paused")
+        self.assertTrue(previo.exists(), "pre-existing CLI state is untouched")
+        self.assertFalse(
+            (worktree / ".claude" / "sessions" / "nuevo").exists(),
+            "state created during the stage is cleaned",
+        )
+        self.assertFalse(
+            (worktree / ".codex").exists(),
+            "folders left empty by the cleanup go too",
+        )
+
+    # R1 — la huella ignora lo no seguido del harness (y su evidencia
+    # tampoco lo lista), pero no un seguido bajo .claude/.
+    def test_la_huella_ignora_el_estado_no_seguido_y_no_al_seguido(self):
+        self._git_repo(tracked_claude=True)
+        antes = local_orchestrator_module._workspace_fingerprint(self.repo)
+        self.assertIsNotNone(antes)
+        sesiones = self.repo / ".claude" / "sessions"
+        sesiones.mkdir(parents=True)
+        (sesiones / "x").write_text("estado del CLI\n", encoding="utf-8")
+
+        despues = local_orchestrator_module._workspace_fingerprint(self.repo)
+
+        self.assertEqual(antes, despues, "untracked CLI state is not a change")
+        bloqueo = local_orchestrator_module._edited_by_read_only_stage(
+            "scout", antes, despues
+        )
+        self.assertNotIn(".claude", " ".join(bloqueo["evidence"]))
+
+        (self.repo / ".claude" / "skills" / "guia.md").write_text(
+            "guia tocada\n", encoding="utf-8"
+        )
+        tocada = local_orchestrator_module._workspace_fingerprint(self.repo)
+        self.assertNotEqual(despues, tocada, "a tracked file under .claude counts")
+        self.assertIn(".claude/skills/guia.md", tocada[1])
+
+    # R3 — los probes de los adaptadores corren en un directorio
+    # temporal, no en el cwd del proceso (que puede ser el checkout
+    # principal de la tarjeta).
+    def test_los_probes_corren_en_un_directorio_temporal(self):
+        from subscriptions.adapters.claude import ClaudeAdapter
+        from subscriptions.types import RouteSpec
+
+        registrados = {}
+
+        def runner(command, **kwargs):
+            registrados["cwd"] = kwargs.get("cwd")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "loggedIn": True,
+                        "authMethod": "oauth_token",
+                        "apiProvider": "firstParty",
+                    }
+                ),
+                stderr="",
+            )
+
+        route = RouteSpec(
+            slot=1,
+            label="claude/x",
+            adapter="claude",
+            model="x",
+            billing_mode="subscription",
+        )
+        health = ClaudeAdapter(runner=runner).probe(route)
+
+        self.assertTrue(health.ready)
+        self.assertIsNotNone(registrados.get("cwd"))
+        self.assertNotEqual(
+            Path(registrados["cwd"]).resolve(),
+            Path.cwd().resolve(),
+            "the probe must not run in the process cwd",
+        )
+        self.assertFalse(
+            Path(registrados["cwd"]).exists(),
+            "the probe directory is temporary and is gone afterwards",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
