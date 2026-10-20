@@ -626,7 +626,7 @@ class KimiGrokTests(unittest.TestCase):
         runner = CaptureRunner(stdout=GROK_ACP)
 
         result = GrokAdapter(runner=runner).invoke(
-            replace(request(self.workspace), max_steps=17),
+            replace(request(self.workspace), max_steps=17, role="implementer"),
             route_for("grok", "grok-4.6", slot=6, reasoning_effort="xhigh"),
         )
 
@@ -635,10 +635,11 @@ class KimiGrokTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertEqual(command[command.index("--max-turns") + 1], "17")
         self.assertIn("Maximum autonomous steps: 17", captured["text"])
-        # bypassPermissions (2026-10-19): dontAsk niega lo que querria
-        # preguntar en una corrida headless ("permission required ... was
-        # not run"), y el sandbox workspace sigue confinando archivos y red.
-        # La guarda de solo lectura del orquestador cubre a scout/ingenieria.
+        # bypassPermissions (2026-10-19) en todos los roles: dontAsk niega lo
+        # que querria preguntar en una corrida headless ("permission required
+        # ... was not run") y Grok no tiene allowlist; el sandbox workspace
+        # sigue confinando archivos y red
+        # (test_grok_runs_bypass_in_every_role_inside_the_sandbox).
         self.assertEqual(
             command[command.index("--permission-mode") + 1], "bypassPermissions"
         )
@@ -1548,6 +1549,46 @@ class FailureEvidenceDetailTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.detail, "")
         self.assertEqual(attempts[0]["detail"], "grok answered")
+
+    def test_muse_bridge_error_is_kept_in_the_detail(self):
+        from muse_bridge import MuseBridgeError
+
+        error = MuseBridgeError("Muse output did not contain a terminal record")
+        with patch("subscriptions.adapters.muse.delegate_to_muse", side_effect=error):
+            result = MuseAdapter(runner=FakeCliRunner()).invoke(
+                request(self.workspace), route_for("muse", "muse-spark-1.3")
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("Muse output did not contain a terminal record", result.detail)
+
+    def test_grok_runs_bypass_in_every_role_inside_the_sandbox(self):
+        # Grok has no per-tool allowlist: dontAsk would deny a scout's
+        # read-only commands and fail the stage over (#57). Every role runs
+        # bypassPermissions, always inside --sandbox workspace; read-only
+        # roles are also held by the orchestrator's fingerprint guard.
+        for role in (
+            "scout",
+            "ingenieria",
+            "verifier",
+            "reviewer",
+            "implementer",
+            "entrega",
+            "adversary",
+        ):
+            with self.subTest(role=role):
+                runner = FakeCliRunner(stdout=GROK_ACP)
+                GrokAdapter(runner=runner).invoke(
+                    replace(request(self.workspace), role=role),
+                    route_for("grok", "grok-4.6"),
+                )
+                command = runner.command
+                self.assertEqual(
+                    command[command.index("--permission-mode") + 1],
+                    "bypassPermissions",
+                )
+                self.assertEqual(command[command.index("--sandbox") + 1], "workspace")
+                self.assertNotIn("dontAsk", command)
 
     def test_process_error_message_is_recorded_in_the_attempt_detail(self):
         def timeout_runner(command, **kwargs):

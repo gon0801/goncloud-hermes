@@ -555,6 +555,12 @@ def run_cli(
     overlay = dict(env_overlay or {})
     child_env = {**os.environ, **overlay}
     secrets = sensitive_values(child_env) + tuple(overlay.values())
+    # The assignment is a secret of the error channel: a CLI that echoes it
+    # into stderr must have it redacted HERE, before _cap drops the middle
+    # of an over-long stderr and the literal prompt stops matching for every
+    # later redaction pass. stdout/stream are the vendor's answer and stay
+    # semantically exact; the router boundary strips the prompt from them.
+    stderr_secrets = secrets + ((prompt,) if prompt else ())
     prompt_path: Path | None = None
     started = time.monotonic()
     try:
@@ -642,7 +648,7 @@ def run_cli(
     return ProcessEvidence(
         returncode=returncode,
         stdout=_cap(redacted_stdout),
-        stderr=_redact_and_cap(stderr, secrets),
+        stderr=_redact_and_cap(stderr, stderr_secrets),
         duration_seconds=time.monotonic() - started,
         stream=redacted_stdout,
     )

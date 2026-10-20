@@ -1464,6 +1464,85 @@ class MutationContinuationTests(RouterTestCase):
         # The part that matters: no invented continuation on the first attempt.
         self.assertEqual(attempt["mode"], "start")
 
+    def test_restart_recovery_uses_the_attempts_own_recorded_verdict(self):
+        """A crash between slots must not recount inherited dirt as mutation.
+
+        Slot 0 fails clean over the owner's dirty tree and the process dies
+        before slot 1. On restart the recovery path used to recompute
+        ``mutated`` with ``mutation_since``, which counts ANY dirty file —
+        including the inherited one — so the clean failure blocked instead
+        of resuming at the next slot. The attempt's own verdict, recorded
+        when it finished, is the delta the live decision read.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["claude"].result = completed("resumed slot", "claude")
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        router = self.router()
+        availability = router._availability
+
+        def crash(route):
+            if route.slot == 1:
+                raise KeyboardInterrupt
+            return availability(route)
+
+        with patch.object(router, "_availability", side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):
+                router.run(assignment, primary_and_next())
+
+        resumed = self.router().run(assignment, primary_and_next())
+
+        self.assertTrue(resumed.success)
+        self.assertEqual(resumed.text, "resumed slot")
+        self.assertEqual(len(self.fake_adapters["claude"].requests), 1)
+        attempt = self.router().store.stage_attempts("wf-6", "st-6")[0]
+        self.assertEqual(attempt["mutated"], 0)
+
+    def test_skipped_rows_span_is_not_own_stage_work_on_a_retry(self):
+        """A skipped row records stage baseline -> current HEAD as its span.
+
+        That span is inherited commits (a verifier running over the
+        implementer's work), not this stage's own work. Counting it in
+        ``own_stage_changes`` turned a clean failure on a same-generation
+        retry into a blocking mutation.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "implemented.py").write_text("stage work\n", encoding="utf-8")
+        self._run_git("add", "implemented.py")
+        self._run_git("commit", "-q", "-m", "implementer stage")
+
+        router = self.router()
+        router.store.set_cooldown("opencode_go", hours=1)
+        self.fake_adapters["claude"].result = failed(FailureKind.TASK_FAILURE, "claude")
+        assignment = replace(
+            request(self.git_repo), start_revision=start, current_revision=start
+        )
+        first = router.run(assignment, primary_and_next())
+        self.assertFalse(first.success)
+        rows = router.store.stage_attempts("wf-6", "st-6")
+        self.assertEqual([row["disposition"] for row in rows], ["skipped", "executed"])
+        self.assertNotEqual(rows[0]["end_revision"], rows[0]["start_revision"])
+
+        # Retry in the same generation: slot 0 fails clean, slot 1 fails
+        # clean, and slot 2 must still get its turn.
+        self.fake_adapters["opencode_go"].result = failed(
+            FailureKind.TASK_FAILURE, "opencode_go"
+        )
+        self.fake_adapters["muse"].result = completed("third slot", "muse")
+        resumed = self.router().run(assignment, routes_for_main())
+
+        self.assertTrue(resumed.success)
+        self.assertEqual(resumed.text, "third slot")
+        self.assertEqual(len(self.fake_adapters["muse"].requests), 1)
+
     def test_inherited_stage_changes_no_longer_block_a_clean_failed_attempt(self):
         """A stage that inherits another stage's work advances on a clean failure.
 
@@ -2062,6 +2141,45 @@ class GitInspectorTests(unittest.TestCase):
         self.assertEqual(inspector.changed_files(self.repo), ())
         (self.repo / "new.py").write_text("x", encoding="utf-8")
         self.assertEqual(inspector.changed_files(self.repo), ("new.py",))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires a POSIX fifo")
+    def test_fingerprint_never_reads_special_files_or_follows_symlinks(self):
+        # A dirty FIFO would block read_bytes() forever and a dirty symlink
+        # to /dev/zero would read forever; the fingerprint must classify
+        # both from lstat/readlink instead of opening them, and cap what it
+        # reads from a regular file. This test completing at all is half of
+        # the assertion; the other half is that the entries still compare.
+        self._git("init", "-q")
+        self._git("config", "user.email", "t@example.invalid")
+        self._git("config", "user.name", "t")
+        (self.repo / "base.txt").write_text("hi", encoding="utf-8")
+        self._git("add", "base.txt")
+        self._git("commit", "-q", "-m", "base")
+        (self.repo / "dirty.txt").write_text("dirty", encoding="utf-8")
+        os.mkfifo(self.repo / "a-pipe")
+        os.symlink("/dev/zero", self.repo / "a-link")
+        os.symlink(self.repo / "a-pipe", self.repo / "a-pipe-link")
+        inspector = GitInspector()
+        # The FIFO itself never reaches the reader: it is classified from
+        # lstat alone, and git only ever names it through the symlink.
+        fifo_digest, _ = GitInspector._dirty_digest(self.repo / "a-pipe", 1024)
+        self.assertTrue(fifo_digest.startswith("special:"))
+
+        first = inspector.tree_fingerprint(self.repo)
+        second = inspector.tree_fingerprint(self.repo)
+
+        self.assertEqual(first, second)
+        names = [name for name, _ in first[1]]
+        self.assertIn("a-pipe-link", names)
+        self.assertIn("a-link", names)
+        # Retargeting the link is a change the fingerprint must see, without
+        # ever reading through it.
+        (self.repo / "a-link").unlink()
+        os.symlink("/dev/null", self.repo / "a-link")
+        self.assertNotEqual(inspector.tree_fingerprint(self.repo), first)
+        # Editing the regular dirty file still changes its entry.
+        (self.repo / "dirty.txt").write_text("edited", encoding="utf-8")
+        self.assertNotEqual(inspector.tree_fingerprint(self.repo), first)
 
     def test_unstaged_and_renamed_paths_preserve_spaces_and_unicode(self):
         self._git("init", "-q")

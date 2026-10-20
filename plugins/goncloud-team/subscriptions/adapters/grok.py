@@ -85,6 +85,15 @@ def parse_grok_ndjson(output: str) -> dict:
     }
 
 
+#: Every role runs with bypassPermissions (decision of 2026-10-19, #57/#71):
+#: Grok has no per-tool allowlist, so dontAsk denies even the read-only
+#: commands a scout needs and the stage fails over (the bug #57 fixed).
+#: Read-only roles stay contained by --sandbox workspace and by the
+#: orchestrator's read-only fingerprint guard, which blocks the stage if
+#: it changed the repository.
+GROK_PERMISSION_MODE = "bypassPermissions"
+
+
 class GrokAdapter(SubscriptionAdapter):
     """Run one stage on the grok.com subscription, sandboxed, prompt by file."""
 
@@ -126,7 +135,7 @@ class GrokAdapter(SubscriptionAdapter):
             "--output-format",
             "streaming-json",
             "--permission-mode",
-            "bypassPermissions",
+            GROK_PERMISSION_MODE,
             "--sandbox",
             "workspace",
             "--model",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import threading
 import time
 from collections import deque
@@ -132,6 +133,14 @@ def default_db_path() -> Path:
     return Path.home() / ".goncloud" / "subscription-router.db"
 
 
+#: Bounds on what tree_fingerprint reads from one dirty file and from the
+#: whole dirty set. Past a bound the entry pins size+mtime instead of
+#: content: an untouched file still compares equal, and no dirty FIFO,
+#: device or oversized blob can hold the fingerprint (and the stage) open.
+_FINGERPRINT_MAX_FILE_BYTES = 8 * 1024 * 1024
+_FINGERPRINT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+
+
 class GitInspector:
     """Read-only Git evidence for one workspace (never mutates)."""
 
@@ -211,15 +220,58 @@ class GitInspector:
         and a file the attempt never touched compares equal.
         """
         entries = []
+        read_budget = _FINGERPRINT_MAX_TOTAL_BYTES
         for name in self.changed_files(workspace):
-            try:
-                digest = hashlib.sha256((workspace / name).read_bytes()).hexdigest()
-            except OSError:
-                # Gone or unreadable between the two reads; an empty digest
-                # still compares, and the pair difference stays honest.
-                digest = ""
+            digest, read_budget = self._dirty_digest(workspace / name, read_budget)
             entries.append((name, digest))
         return self.current_revision(workspace), tuple(entries)
+
+    @staticmethod
+    def _dirty_digest(path: Path, read_budget: int) -> tuple[str, int]:
+        """One dirty entry's digest, without ever opening a special file.
+
+        Symlinks are read as links (``readlink``), never followed; FIFOs,
+        devices and sockets are classified from ``lstat`` alone, so none of
+        them can block or stream forever into the hash. A regular file is
+        hashed in chunks only up to the per-file and total bounds; past a
+        bound its size and mtime pin the entry instead.
+        """
+        try:
+            info = path.lstat()
+        except OSError:
+            # Gone or unreadable between the two reads; an empty digest
+            # still compares, and the pair difference stays honest.
+            return "", read_budget
+        if stat.S_ISLNK(info.st_mode):
+            try:
+                target = os.readlink(path)
+            except OSError:
+                return "link:", read_budget
+            return "link:" + hashlib.sha256(
+                target.encode("utf-8", "surrogateescape")
+            ).hexdigest(), read_budget
+        if not stat.S_ISREG(info.st_mode):
+            return (
+                f"special:{info.st_mode:o}:{info.st_size}:{info.st_mtime_ns}",
+                read_budget,
+            )
+        if info.st_size > _FINGERPRINT_MAX_FILE_BYTES or info.st_size > read_budget:
+            return f"large:{info.st_size}:{info.st_mtime_ns}", read_budget
+        digest = hashlib.sha256()
+        read = 0
+        try:
+            with path.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    read += len(chunk)
+                    if read > _FINGERPRINT_MAX_FILE_BYTES:
+                        return (
+                            f"large:{info.st_size}:{info.st_mtime_ns}",
+                            read_budget,
+                        )
+                    digest.update(chunk)
+        except OSError:
+            return "", read_budget
+        return digest.hexdigest(), read_budget - read
 
 
 class _StageLeaseHeartbeat:
@@ -386,12 +438,19 @@ class SubscriptionRouter:
                     )
                     # The recorded file lists mix what the stage inherited
                     # with what the attempt did, so they decide nothing here
-                    # (owner, 2026-10-19). The attempt's own start revision
-                    # against the tree now is the same delta the live
-                    # decision read.
-                    _, _, mutated = self.git.mutation_since(
-                        request.workspace, latest["start_revision"]
-                    )
+                    # (owner, 2026-10-19). The live run recorded its own
+                    # mutation verdict on the attempt row; that recorded
+                    # verdict — not a fresh mutation_since, which counts
+                    # inherited dirt as this attempt's work — is the delta
+                    # the live decision read. Rows written before the
+                    # verdict was recorded fall back to the recomputation.
+                    recorded_mutated = latest.get("mutated")
+                    if recorded_mutated is not None:
+                        mutated = bool(recorded_mutated)
+                    else:
+                        _, _, mutated = self.git.mutation_since(
+                            request.workspace, latest["start_revision"]
+                        )
                     if (
                         latest["success"]
                         or latest["terminal"]
@@ -422,8 +481,15 @@ class SubscriptionRouter:
         # commit span between one attempt's own start and end revisions is
         # exactly that. The recorded file lists cannot tell inherited from
         # own, so they decide nothing here.
+        # Only an executed, completed attempt can have done this stage's own
+        # work. A skipped/denied row never invoked anything: its recorded
+        # span (stage baseline -> current HEAD) is inherited commits, and
+        # counting it would block a clean retry on work this stage never did.
         own_stage_changes = any(
-            row["start_revision"] and row["end_revision"] != row["start_revision"]
+            row["disposition"] == "executed"
+            and row["status"] == "completed"
+            and row["start_revision"]
+            and row["end_revision"] != row["start_revision"]
             for row in self.store.stage_attempts(request.workflow_id, request.stage_id)
         )
         last_failure: Optional[InvocationResult] = None
@@ -520,6 +586,7 @@ class SubscriptionRouter:
                     detail=skipped.text,
                     owner=owner,
                     disposition="denied" if denied else "skipped",
+                    mutated=False,
                 )
                 if denied:
                     return self._route_evidence(skipped, route, skipped_routes)
@@ -584,6 +651,7 @@ class SubscriptionRouter:
                     changed_files=list(request.changed_files),
                     detail=denied.text,
                     disposition="denied",
+                    mutated=False,
                 )
                 # Authorization says nothing about vendor health or quota.
                 return (
@@ -651,6 +719,10 @@ class SubscriptionRouter:
                 # success keeps the bounded result text as the record.
                 detail=result.detail or result.text[:2000],
                 disposition=disposition,
+                # Persist the verdict this live decision reads, so a restart
+                # recovery reads the same delta instead of recounting
+                # inherited dirt. A skipped attempt never invoked: no delta.
+                mutated=mutated if disposition == "executed" else False,
             )
             if not recorded:
                 return self._stage_busy()

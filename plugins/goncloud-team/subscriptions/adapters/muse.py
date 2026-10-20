@@ -72,7 +72,9 @@ class MuseAdapter(SubscriptionAdapter):
                 reasoning_effort=route.reasoning_effort,
             )
         except MuseBridgeError as error:
-            return self._failed_result(route, error.failure, request=request)
+            return self._failed_result(
+                route, error.failure, str(error), request=request
+            )
 
         if outcome.get("model") != route.model:
             return self._failed_result(
