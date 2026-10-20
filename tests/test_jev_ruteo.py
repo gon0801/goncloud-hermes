@@ -41,7 +41,14 @@ def turno(**cambios):
 
 
 def corredor_ok(texto, hogar):
-    return {"estado": "ok", "skill": "web-navigation", "motivo": None, "ms": 5}
+    return {
+        "estado": "ok",
+        "skill": "web-navigation",
+        "motivo": None,
+        "ms": 5,
+        "gate": 0.9,
+        "fit": 0.9,
+    }
 
 
 class Base(unittest.TestCase):
