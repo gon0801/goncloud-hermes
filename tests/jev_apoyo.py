@@ -48,11 +48,12 @@ class Kanban:
         conn = self._conn()
         try:
             conn.execute(
-                "INSERT INTO tasks (id, title, assignee, status, created_at,"
-                " idempotency_key) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (id, title, body, assignee, status, created_at,"
+                " idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     id,
                     title,
+                    extra.get("body"),
                     assignee,
                     status,
                     int(at if at is not None else time.time()),

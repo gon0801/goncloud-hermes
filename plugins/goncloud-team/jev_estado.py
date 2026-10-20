@@ -143,7 +143,8 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
             break
         cursor = fila["id"]
         tarea = conn.execute(
-            "SELECT id, title, assignee, status, idempotency_key FROM tasks WHERE id = ?",
+            "SELECT id, title, body, assignee, status, idempotency_key "
+            "FROM tasks WHERE id = ?",
             (fila["task_id"],),
         ).fetchone()
         if tarea is None:
@@ -151,6 +152,7 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
         clase = _relevante(conn, tarea)
         if clase is None:
             continue
+        encargo = _acotar(tarea["body"], 600)
         cierres.append(
             {
                 "evento": fila["id"],
@@ -158,6 +160,8 @@ def cierres_nuevos(conn, desde: int, limite: int = 3):
                 "clase": clase,
                 "assignee": tarea["assignee"],
                 "titulo": _acotar(tarea["title"], 100),
+                "encargo": encargo,
+                "body": encargo,
                 "desenlace": fila["kind"],
                 "reporte": _reporte(conn, tarea["id"], _json_de(fila["payload"])),
             }
@@ -171,6 +175,12 @@ def ficha_de_cierre(cierre: dict) -> str:
         f"({cierre['clase']}): {cierre['titulo']}\n"
         f"Desenlace reportado: {'completada' if cierre['desenlace'] == 'completed' else 'bloqueada'}\n"
     )
-    if cierre["reporte"]:
+    encargo = _acotar(
+        cierre.get("encargo") or cierre.get("body") or cierre.get("descripcion"),
+        600,
+    )
+    if encargo:
+        cuerpo += f"Encargo: {encargo}\n"
+    if cierre.get("reporte"):
         cuerpo += f"Reporte: {cierre['reporte']}\n"
     return cuerpo

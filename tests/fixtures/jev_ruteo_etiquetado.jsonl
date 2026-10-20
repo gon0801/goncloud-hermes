@@ -1,0 +1,12 @@
+{"mensaje": "preguntas pendientes de MeLi", "esperado": "meli"}
+{"mensaje": "llegó una personalizada", "esperado": "pers"}
+{"mensaje": "agrega un botón en la app de fotos", "esperado": "ingenieria"}
+{"mensaje": "revisa las ordenes flex para hoy y las recolecciones de Seller Flex", "esperado": "amazon"}
+{"mensaje": "revisa los correos de Gmail de hoy", "esperado": "mail"}
+{"mensaje": "limpia las promos y newsletters de Gmail", "esperado": "limpia"}
+{"mensaje": "cuantas cajas quedan en Odoo", "esperado": "odoo"}
+{"mensaje": "revisa el servidor goncloud por SSH, contenedores y logs", "esperado": "gonserver"}
+{"mensaje": "hay errores en el bridge de OpenClaw, revisalo", "esperado": "ingenieria"}
+{"mensaje": "disena un bot nuevo para avisos", "esperado": "eggbot"}
+{"mensaje": "envuelve la API de pagos en un plugin", "esperado": "tinkabot"}
+{"mensaje": "¿cómo va lo que te encargue ayer?", "esperado": "claw"}
