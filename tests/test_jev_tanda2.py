@@ -132,10 +132,15 @@ class CleanupEsperaHilosTests(Base):
     def test_el_cleanup_espera_los_hilos_de_fondo_antes_de_borrar(self):
         caso = CasoFondoLento("test_fondo_lento_sin_esperar")
         resultado = unittest.TestResult()
+        antes = set(threading.enumerate())  # solo cuentan los hilos de este caso
         caso.run(resultado)
         self.assertEqual(resultado.errors, [])
         self.assertEqual(resultado.failures, [])
-        vivos = [h.name for h in threading.enumerate() if h.name == "jev-fondo"]
+        vivos = [
+            h.name
+            for h in threading.enumerate()
+            if h.name == "jev-fondo" and h not in antes
+        ]
         self.assertEqual(vivos, [])
 
 
