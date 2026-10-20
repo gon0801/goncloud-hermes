@@ -14,9 +14,11 @@ sesión como evento interno (``_inject_watch_notification`` /
 
 Aquí, dentro del proceso del gateway y SIN modelo, un hilo revisa cada
 pocos segundos el buzón durable <raíz>/goncloud-local/avisos/*.json. Por
-cada aviso CON origin_session_key encola el evento y lo renombra a
-.encolado (fuera del glob *.json: en vida de este proceso no se duplica;
-F2/cr:4319598923). Al arrancar, el vigilante re-encola los .encolado que
+cada aviso CON origin_session_key primero lo reclama renombrándolo a
+.encolado (fuera del glob *.json) y solo quien gana ese renombre encola
+el evento: el gateway carga una copia del plugin por perfil, así que
+varios vigilantes pueden mirar el mismo buzón en el mismo proceso.
+Al arrancar, el vigilante re-encola los .encolado que
 quedaron — la cola vive en memoria y un reinicio la vacía — y un
 .encolado con más de 24 h pasa a .entregado. Es al-menos-una-vez: tras
 un reinicio puede llegar un aviso repetido, nunca uno perdido. Los
@@ -44,11 +46,15 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 import threading
 import time
+import types
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _PLUGIN = Path(__file__).resolve().parent
 if str(_PLUGIN) not in sys.path:
@@ -65,11 +71,48 @@ ENCOLADO_MAX_SEGUNDOS = 24 * 3600
 #: (gateway/run_notifications.py, _WATCHER_ROUTE_FIELDS).
 _CAMPOS_RUTA = ("platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 
-_bloqueo = threading.Lock()
+
+def _centinela():
+    """El estado compartido por TODAS las copias del módulo en el proceso.
+
+    El gateway carga una copia del plugin por perfil (módulo distinto,
+    globals distintos), así que el candado, el hilo y los encolados
+    propios viven en un módulo centinela en sys.modules, común a todas.
+    Se crea con setdefault: la primera copia que llega manda, y su
+    candado de arranque queda guardado en el propio centinela.
+    """
+    existente = sys.modules.get("goncloud_avisos_vigilante")
+    if existente is not None and hasattr(existente, "bloqueo"):
+        for atributo, fabrica in (
+            ("candado_arranque", threading.Lock),
+            ("encolados_propios", set),
+            ("reencolados", set),
+        ):
+            if not hasattr(existente, atributo):
+                setattr(existente, atributo, fabrica())
+        if not hasattr(existente, "hilo"):
+            existente.hilo = None
+        return existente
+    nuevo = types.ModuleType("goncloud_avisos_vigilante")
+    nuevo.bloqueo = threading.Lock()
+    nuevo.candado_arranque = threading.Lock()
+    # Alias por si otra copia busca el candado con otro nombre usual.
+    nuevo.lock = nuevo.bloqueo
+    nuevo.hilo = None
+    nuevo.encolados_propios = set()
+    nuevo.reencolados = set()
+    return sys.modules.setdefault("goncloud_avisos_vigilante", nuevo)
+
+
+_CENTINELA = _centinela()
+_bloqueo = _CENTINELA.bloqueo
 _hilo: threading.Thread | None = None
 #: Nombres (.json) de los .encolado que ESTE proceso puso en la cola: son
 #: los únicos cuyo drenaje puede certificarse mirando la cola (B2).
-_encolados_propios: set = set()
+#: Es el set del centinela: compartido por todas las copias del módulo.
+_encolados_propios: set = _CENTINELA.encolados_propios
+#: (buzón, nombre) ya re-encolados por este proceso en este arranque.
+_reencolados: set = _CENTINELA.reencolados
 
 
 def _despertar():
@@ -151,26 +194,68 @@ def _renombrar(ruta: Path, sufijo: str) -> None:
         pass  # otra pasada ya lo movió
 
 
-def entregar_avisos(buzon, cola) -> int:
-    """Una pasada del vigilante: encola cada aviso con origen y lo marca.
+def _reclamar(ruta: Path) -> Path | None:
+    """Reclama el aviso renombrándolo a .encolado ANTES de encolar.
 
-    Devuelve cuántos eventos encoló. Al encolar renombra a .encolado
-    (F2): .entregado aquí mentiría — el evento solo vive en la cola en
-    memoria y el gateway aún no lo inyecta; si el proceso muere, el
-    próximo arranque re-encola el .encolado. El bloqueo serializa las
-    pasadas de este proceso para que dos hilos nunca encolen lo mismo.
+    Solo el hilo cuyo os.replace funciona es dueño del aviso; los demás
+    reciben None y se saltan el archivo. Si el proceso muere entre el
+    reclamo y el put, el .encolado se re-encola al arrancar.
+    """
+    destino = ruta.with_suffix(".encolado")
+    try:
+        os.replace(ruta, destino)
+    except (FileNotFoundError, OSError):
+        return None  # otro vigilante ya lo tomó
+    return destino
+
+
+def _soltar_reclamo(reclamado: Path) -> None:
+    """Devuelve un reclamo a .json: no era nuestro o no se pudo encolar."""
+    try:
+        os.replace(reclamado, reclamado.with_suffix(".json"))
+    except OSError:
+        pass
+
+
+def entregar_avisos(buzon, cola) -> int:
+    """Una pasada del vigilante: reclama cada aviso y solo el dueño encola.
+
+    Devuelve cuántos eventos encoló. El reclamo (.json → .encolado) va
+    ANTES del put (F2 y duplicado en vivo 2026-10-19): con varias copias
+    del plugin en el mismo proceso, encolar antes de renombrar dejaba
+    que dos hilos encolaran el mismo archivo. .entregado aquí mentiría
+    — el evento solo vive en la cola en memoria; si el proceso muere
+    tras el reclamo, el próximo arranque re-encola el .encolado.
     """
     despertar = _despertar()
     encolados = 0
     with _bloqueo:
         for ruta, aviso in despertar.avisos_de_cadenas(Path(buzon)):
-            evento = construir_evento(aviso, nombre=ruta.name)
-            if evento is None:
+            if not str(aviso.get("origin_session_key") or "").strip():
+                continue  # sin origen: lo deja intacto para el despertar
+            reclamado = _reclamar(ruta)
+            if reclamado is None:
+                continue  # otro vigilante ya lo tomó
+            try:
+                evento = construir_evento(aviso, nombre=ruta.name)
+                if evento is None:
+                    _soltar_reclamo(reclamado)
+                    continue
+                cola.put(evento)
+            except Exception:
+                # Sin esto el .encolado quedaba sin reintento hasta el
+                # proximo arranque: vuelve a .json y la siguiente pasada
+                # (3 s) lo recoge.
+                logger.exception("aviso %s no encolado; vuelve a .json", ruta.name)
+                _soltar_reclamo(reclamado)
                 continue
-            cola.put(evento)
-            _renombrar(ruta, ".encolado")
             if evento.get("goncloud_aviso"):
                 _encolados_propios.add(evento["goncloud_aviso"])
+            logger.info(
+                "aviso encolado %s -> %s",
+                ruta.name,
+                evento.get("session_key", ""),
+            )
             encolados += 1
     return encolados
 
@@ -195,12 +280,22 @@ def reencolar_encolados(buzon, cola) -> int:
                 continue
             if not isinstance(aviso, dict):
                 continue
+            nombre_json = ruta.with_suffix(".json").name
+            clave = (str(buzon), nombre_json)
+            if nombre_json in _encolados_propios and clave in _reencolados:
+                continue  # este proceso ya lo re-encoló: una sola vez
             evento = construir_evento(aviso, nombre=ruta.name)
             if evento is None:
                 continue
             cola.put(evento)
             if evento.get("goncloud_aviso"):
                 _encolados_propios.add(evento["goncloud_aviso"])
+            _reencolados.add(clave)
+            logger.info(
+                "aviso re-encolado %s -> %s",
+                nombre_json,
+                evento.get("session_key", ""),
+            )
             encolados += 1
     return encolados
 
@@ -342,33 +437,42 @@ def iniciar_vigilante(
     global _hilo
     if exigir_gateway and not es_proceso_gateway():
         return None
-    if _hilo is not None and _hilo.is_alive():
-        return _hilo
-    if cola is None:
-        cola = _cola_del_gateway()
-    if cola is None:
-        return None
-    if buzon is None:
-        buzon = _buzon_del_hogar()
-    if buzon is None:
-        return None
-    buzon = Path(buzon)
-    alto = detener if detener is not None else threading.Event()
+    # Un vigilante por PROCESO, no por copia del módulo: el hilo vive en
+    # el centinela común y el candado de arranque serializa a las copias.
+    with _CENTINELA.candado_arranque:
+        vivo = getattr(_CENTINELA, "hilo", None)
+        if vivo is not None and vivo.is_alive():
+            _hilo = vivo
+            return _hilo
+        if cola is None:
+            cola = _cola_del_gateway()
+        if cola is None:
+            return None
+        if buzon is None:
+            buzon = _buzon_del_hogar()
+        if buzon is None:
+            return None
+        buzon = Path(buzon)
+        alto = detener if detener is not None else threading.Event()
 
-    def vigilar():
-        try:
-            reencolar_encolados(buzon, cola)
-        except Exception:
-            pass  # el buzón es durable: la vuelta normal lo recoge igual
-        while not alto.is_set():
+        def vigilar():
             try:
-                entregar_avisos(buzon, cola)
-                cerrar_encolados_drenados(buzon, cola)
-                purgar_encolados(buzon)
+                reencolar_encolados(buzon, cola)
             except Exception:
-                pass  # el buzón es durable: la próxima vuelta reintenta
-            alto.wait(intervalo)
+                pass  # el buzón es durable: la vuelta normal lo recoge igual
+            while not alto.is_set():
+                try:
+                    entregar_avisos(buzon, cola)
+                    cerrar_encolados_drenados(buzon, cola)
+                    purgar_encolados(buzon)
+                except Exception:
+                    pass  # el buzón es durable: la próxima vuelta reintenta
+                alto.wait(intervalo)
 
-    _hilo = threading.Thread(target=vigilar, name="goncloud-avisos-sesion", daemon=True)
-    _hilo.start()
-    return _hilo
+        _hilo = threading.Thread(
+            target=vigilar, name="goncloud-avisos-sesion", daemon=True
+        )
+        _CENTINELA.hilo = _hilo
+        _hilo.start()
+        logger.info("vigilante de avisos arrancado pid=%s buzon=%s", os.getpid(), buzon)
+        return _hilo

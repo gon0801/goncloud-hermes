@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -29,6 +30,8 @@ from .schemas import (
     SUBSCRIPTION_STATUS,
 )
 from .workflow import WorkflowService
+
+logger = logging.getLogger(__name__)
 
 
 def _raiz_handler(ctx, funcion):
@@ -315,7 +318,8 @@ def register(ctx) -> None:
 
         iniciar_vigilante()
     except Exception:
-        pass  # el buzón es durable: el aviso espera a la próxima vida
+        logger.exception("no se pudo arrancar el vigilante de avisos")
+        # el buzón es durable: el aviso espera a la próxima vida
 
     # JEV (H-jev-auto, tanda 2) se registra ANTES que la guarda: Hermes admite
     # varias funciones por gancho, pero los dobles de prueba guardan una sola por

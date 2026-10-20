@@ -13,10 +13,13 @@ que la lanzó, no al Bot Chat genérico.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import queue
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +29,7 @@ sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import local_orchestrator as local_orchestrator_module  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 from test_local_orchestrator import (  # noqa: E402
     DriverBootstrapTests,
     _OrchestratorHarness,
@@ -50,6 +54,36 @@ class ColaFalsa:
 
     def put(self, evento):
         self.eventos.append(evento)
+
+
+class ColaQueFallaAlPrincipio(ColaFalsa):
+    """put lanza hasta que se le quita la falla: el reclamo debe soltarse."""
+
+    def __init__(self):
+        super().__init__()
+        self.falla = True
+
+    def put(self, evento):
+        if self.falla:
+            raise RuntimeError("cola caida")
+        super().put(evento)
+
+
+class ColaQueAnotaElReclamo(ColaFalsa):
+    """Anota si al encolar el .json ya fue reclamado a .encolado."""
+
+    def __init__(self, ruta_json: Path):
+        super().__init__()
+        self._ruta_json = ruta_json
+        self.json_presente_al_put = None
+        self.encolado_presente_al_put = None
+
+    def put(self, evento):
+        self.json_presente_al_put = self._ruta_json.exists()
+        self.encolado_presente_al_put = self._ruta_json.with_suffix(
+            ".encolado"
+        ).exists()
+        super().put(evento)
 
 
 def escribir_aviso(buzon: Path, nombre: str, aviso: dict) -> Path:
@@ -241,6 +275,20 @@ class AvisosALaSesionTests(_OrchestratorHarness):
         self.assertEqual(len(cola.eventos), 1)
         self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
 
+    # M1: si construir/encolar falla tras el reclamo, el aviso vuelve a
+    # .json y la pasada siguiente lo reintenta (no queda .encolado huerfano).
+    def test_m1_put_que_lanza_devuelve_a_json_y_la_siguiente_pasada_encola(self):
+        ruta = escribir_aviso(self.buzon(), "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = ColaQueFallaAlPrincipio()
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 0)
+        self.assertTrue(ruta.exists())
+        self.assertFalse((self.buzon() / "t_abc-run-blocked.encolado").exists())
+        self.assertEqual(cola.eventos, [])
+        cola.falla = False
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon(), cola), 1)
+        self.assertEqual(len(cola.eventos), 1)
+        self.assertTrue((self.buzon() / "t_abc-run-blocked.encolado").exists())
+
     # (d/F2) reinicio con un .encolado: el arranque lo re-encola una vez,
     # porque la cola en memoria se perdió con el proceso anterior.
     def test_d_reinicio_reencola_el_encolado_una_vez(self):
@@ -378,6 +426,138 @@ class BootErrorOrigenTests(DriverBootstrapTests):
         # Y el vigilante lo puede encolar a esa sesión, como cualquier aviso.
         cola = ColaFalsa()
         self.assertEqual(avisos_sesion.entregar_avisos(avisos, cola), 1)
+        self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
+
+
+def _cargar_copia(nombre: str):
+    """Otra copia de avisos_sesion, como la que carga cada perfil."""
+    ruta = ROOT / "plugins/goncloud-team/avisos_sesion.py"
+    spec = importlib.util.spec_from_file_location(nombre, ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    sys.modules[nombre] = modulo
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+class ColaConBarrera(ColaFalsa):
+    """put sincroniza a los productores: si dos encolan, se ven."""
+
+    def __init__(self, barrera):
+        super().__init__()
+        self._barrera = barrera
+        self._candado = threading.Lock()
+
+    def put(self, evento):
+        try:
+            self._barrera.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        with self._candado:
+            self.eventos.append(evento)
+
+
+class VigilanteUnicoTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self._tmp)
+        self.buzon = Path(self._tmp.name) / "avisos"
+        self.buzon.mkdir(parents=True)
+
+    def _hilos_vivos(self):
+        return [
+            hilo
+            for hilo in threading.enumerate()
+            if hilo.name == "goncloud-avisos-sesion" and hilo.is_alive()
+        ]
+
+    def test_dos_copias_un_solo_vigilante(self):
+        escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        copia1 = _cargar_copia("avisos_copia_uno")
+        copia2 = _cargar_copia("avisos_copia_dos")
+        cola = ColaFalsa()
+        alto1, alto2 = threading.Event(), threading.Event()
+        hilo1 = copia1.iniciar_vigilante(
+            self.buzon,
+            cola=cola,
+            intervalo=0.05,
+            detener=alto1,
+            exigir_gateway=False,
+        )
+        try:
+            hilo2 = copia2.iniciar_vigilante(
+                self.buzon,
+                cola=cola,
+                intervalo=0.05,
+                detener=alto2,
+                exigir_gateway=False,
+            )
+            self.assertIsNotNone(hilo1)
+            self.assertIs(hilo1, hilo2)
+            self.assertEqual(len(self._hilos_vivos()), 1)
+        finally:
+            alto1.set()
+            alto2.set()
+            for hilo in self._hilos_vivos():
+                hilo.join(timeout=5)
+
+    def test_dos_hilos_mismo_buzon_exactamente_un_put(self):
+        escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        copia1 = _cargar_copia("avisos_copia_tres")
+        copia2 = _cargar_copia("avisos_copia_cuatro")
+        cola = ColaConBarrera(threading.Barrier(2))
+        salida = threading.Barrier(3)
+        resultados = []
+
+        def correr(modulo):
+            salida.wait(timeout=5)
+            resultados.append(modulo.entregar_avisos(self.buzon, cola))
+
+        hilos = [
+            threading.Thread(target=correr, args=(copia1,)),
+            threading.Thread(target=correr, args=(copia2,)),
+        ]
+        for hilo in hilos:
+            hilo.start()
+        salida.wait(timeout=5)
+        for hilo in hilos:
+            hilo.join(timeout=10)
+        self.assertEqual(len(cola.eventos), 1)
+        self.assertEqual(sum(resultados), 1)
+        self.assertTrue((self.buzon / "t_abc-run-blocked.encolado").exists())
+        self.assertFalse((self.buzon / "t_abc-run-blocked.json").exists())
+
+    # L1: el reclamo directo lo gana uno solo; el otro recibe None.
+    def test_reclamo_directo_dos_sobre_la_misma_ruta_uno_gana(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        primero = avisos_sesion._reclamar(ruta)
+        segundo = avisos_sesion._reclamar(ruta)
+        self.assertIsNotNone(primero)
+        self.assertEqual(primero, self.buzon / "t_abc-run-blocked.encolado")
+        self.assertTrue(primero.exists())
+        self.assertIsNone(segundo)
+        self.assertFalse(ruta.exists())
+
+    # L1: al encolar, el .json ya no existe (reclamo ANTES del put). Con
+    # el orden viejo (put y luego renombrar) esta prueba queda en rojo.
+    def test_put_ve_el_aviso_ya_reclamado(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        cola = ColaQueAnotaElReclamo(ruta)
+        self.assertEqual(avisos_sesion.entregar_avisos(self.buzon, cola), 1)
+        self.assertFalse(cola.json_presente_al_put)
+        self.assertTrue(cola.encolado_presente_al_put)
+
+    def test_reinicio_encolado_una_sola_reencolada_con_dos_copias(self):
+        ruta = escribir_aviso(self.buzon, "t_abc-run-blocked.json", AVISO_CON_ORIGEN)
+        ruta.replace(ruta.with_suffix(".encolado"))
+        copia1 = _cargar_copia("avisos_copia_cinco")
+        copia2 = _cargar_copia("avisos_copia_seis")
+        # Simula proceso nuevo: sin memoria de encolados propios.
+        copia1._encolados_propios.clear()
+        cola = ColaFalsa()
+        total = copia1.reencolar_encolados(self.buzon, cola)
+        total += copia2.reencolar_encolados(self.buzon, cola)
+        self.assertEqual(total, 1)
+        self.assertEqual(len(cola.eventos), 1)
         self.assertEqual(cola.eventos[0]["session_key"], SESSION_KEY)
 
 
