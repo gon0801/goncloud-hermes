@@ -47,6 +47,9 @@ jobs:
           # donde reusar_completa.sh busca el check `espejo-de-g` al reusar.
           # En push/dispatch no hay PR y `||` cae al SHA del evento.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Sin credenciales git persistidas: ningun paso hace push/fetch/
+          # pull autenticado (solo `git rev-parse` local y `gh` con GH_TOKEN).
+          persist-credentials: false
 
       - name: Reusa el veredicto si el arbol ya paso la bateria (solo push)
         # Al unir a la rama por defecto: si el arbol del commit empujado es

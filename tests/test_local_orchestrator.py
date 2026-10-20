@@ -770,6 +770,38 @@ class DriverBootstrapTests(unittest.TestCase):
             ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
         )
 
+    def test_segundo_arranque_roto_reemplaza_el_motivo_del_aviso_pendiente(self):
+        # B1 (H#45): el comentario del bootstrap promete que un relanzamiento
+        # sobrescribe en el lugar un aviso aún sin leer, pero el código solo
+        # creaba el aviso si no existía: el segundo arranque roto conservaba
+        # el PRIMER motivo. Dos arranques rotos seguidos, aviso sin entregar:
+        # un solo archivo y su motivo es el del segundo. El motivo del
+        # bootstrap es constante, así que entre arranques se siembra el
+        # primero para que los dos motivos sean distinguibles.
+        self.out = self.root / "goncloud-local" / "t_boot.json"
+        self.out.parent.mkdir()
+        avisos = self.root / "goncloud-local" / "avisos"
+
+        self.run_driver()
+
+        nombre = avisos / "t_boot-boot-error.json"
+        evento = json.loads(nombre.read_text(encoding="utf-8"))
+        evento["motivo"] = "primer motivo"
+        nombre.write_text(json.dumps(evento), encoding="utf-8")
+        entregado = avisos / "t_boot-boot-error.entregado"
+        entregado.write_text("ya entregado", encoding="utf-8")
+        self.out.unlink(missing_ok=True)
+
+        self.run_driver()
+
+        self.assertEqual(
+            [p.name for p in sorted(avisos.iterdir())],
+            ["t_boot-boot-error.entregado", "t_boot-boot-error.json"],
+        )
+        evento = json.loads(nombre.read_text(encoding="utf-8"))
+        self.assertEqual(evento["motivo"], "local driver failed; check durable status")
+        self.assertEqual(entregado.read_text(encoding="utf-8"), "ya entregado")
+
     def test_bootstrap_que_falla_al_importar_tambien_deja_el_aviso(self):
         # H54 F1: hermes_bootstrap existe pero su import falla (dep rota):
         # el plugin nunca entraba en sys.path, `from carpetas import ...`
