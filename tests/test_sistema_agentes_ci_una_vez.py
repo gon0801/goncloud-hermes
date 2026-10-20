@@ -250,6 +250,15 @@ class ContratoDisparadores(unittest.TestCase):
             "que se prueba (checkout fijado a head.sha)",
         )
 
+    def test_el_checkout_no_deja_credenciales_git(self) -> None:
+        """(2c) Ningun paso hace push/fetch autenticado: el checkout no las persiste."""
+        self.assertIn(
+            "persist-credentials: false",
+            self.job,
+            "el checkout del job de bateria no debe dejar credenciales git en "
+            ".git/config (cr 4311208158)",
+        )
+
     def test_permisos_minimos_sin_tokens_nuevos(self) -> None:
         """(4) Solo lectura de contenido, PRs y check runs; github.token."""
         permisos = bloque(self.texto, "permissions:")
