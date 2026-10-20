@@ -2172,6 +2172,28 @@ class GitInspectorTests(unittest.TestCase):
             ["git", *args], cwd=self.repo, capture_output=True, text=True, check=True
         )
 
+    def _con_watchdog(self, funcion, *, segundos=10):
+        # T2 (#73): si una regresión reintroduce un open() bloqueante, la
+        # llamada debe dar rojo por timeout, no colgar la suite entera.
+        resultado = {}
+
+        def correr():
+            try:
+                resultado["valor"] = funcion()
+            except BaseException as exc:  # noqa: BLE001 - se relanza abajo
+                resultado["error"] = exc
+
+        hilo = threading.Thread(target=correr, daemon=True)
+        hilo.start()
+        hilo.join(timeout=segundos)
+        if hilo.is_alive():
+            self.fail(
+                f"la llamada no termino en {segundos}s: posible open() bloqueante"
+            )
+        if "error" in resultado:
+            raise resultado["error"]
+        return resultado.get("valor")
+
     def test_non_git_workspace_reports_no_mutation(self):
         inspector = GitInspector()
 
@@ -2259,7 +2281,9 @@ class GitInspectorTests(unittest.TestCase):
             return info
 
         with patch.object(Path, "lstat", racy_lstat):
-            digest, _ = GitInspector._dirty_digest(target, 1024)
+            digest, _ = self._con_watchdog(
+                lambda: GitInspector._dirty_digest(target, 1024)
+            )
         self.assertTrue(swapped)
         self.assertTrue(digest.startswith("special:"), digest)
         # Same race with a symlink to /dev/zero: O_NOFOLLOW refuses it
@@ -2278,7 +2302,9 @@ class GitInspectorTests(unittest.TestCase):
             return info
 
         with patch.object(Path, "lstat", racy_lstat2):
-            digest2, _ = GitInspector._dirty_digest(target2, 1024)
+            digest2, _ = self._con_watchdog(
+                lambda: GitInspector._dirty_digest(target2, 1024)
+            )
         self.assertTrue(swapped2)
         self.assertEqual(digest2, "")
 

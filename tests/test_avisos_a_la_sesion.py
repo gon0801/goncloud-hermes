@@ -22,6 +22,7 @@ import queue
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -543,18 +544,54 @@ class VigilanteUnicoTests(unittest.TestCase):
                 hilo.join(timeout=5)
 
     def test_el_logger_cae_en_el_arbol_que_hermes_escribe(self):
-        # H62 B3-3 / H70 L2: importado como módulo de primer nivel, __name__
-        # queda fuera de hermes_plugins.* y Hermes no escribe esos .log.
-        # No basta el prefijo: el nombre exacto debe ser el hijo del logger
-        # del paquete (__init__) bajo el árbol de Hermes.
+        # H62 B3-3 / H70 L2 + T1 (#73): importado como módulo de primer
+        # nivel, __name__ queda fuera de hermes_plugins.* y Hermes no
+        # escribe esos .log. La prueba anterior esperaba el mismo literal
+        # que el código traía fijo, así que no discriminaba: aquí el módulo
+        # se carga como submódulo de un paquete con OTRO nombre
+        # (hermes_plugins.plugin_prueba) y se exige ese nombre; con el
+        # literal fijo de antes (hermes_plugins.goncloud_team.*) sale roja.
+        plugin_dir = ROOT / "plugins/goncloud-team"
+        nombres = (
+            "hermes_plugins",
+            "hermes_plugins.plugin_prueba",
+            "hermes_plugins.plugin_prueba.avisos_sesion",
+        )
+        previos = {nombre: sys.modules.get(nombre) for nombre in nombres}
+        paquete_raiz = types.ModuleType("hermes_plugins")
+        paquete_raiz.__path__ = []
+        paquete = types.ModuleType("hermes_plugins.plugin_prueba")
+        paquete.__path__ = [str(plugin_dir)]
+        sys.modules["hermes_plugins"] = paquete_raiz
+        sys.modules["hermes_plugins.plugin_prueba"] = paquete
+        sys.modules.pop("hermes_plugins.plugin_prueba.avisos_sesion", None)
+        # Como el __init__ de Hermes: el logger del paquete ya existe.
+        logging.getLogger("hermes_plugins.plugin_prueba")
+        try:
+            modulo = importlib.import_module(
+                "hermes_plugins.plugin_prueba.avisos_sesion"
+            )
+            self.assertEqual(
+                modulo.logger.name, "hermes_plugins.plugin_prueba.avisos_sesion"
+            )
+            self.assertIs(
+                modulo.logger.parent,
+                logging.getLogger("hermes_plugins.plugin_prueba"),
+            )
+        finally:
+            for nombre, previo in previos.items():
+                if previo is None:
+                    sys.modules.pop(nombre, None)
+                else:
+                    sys.modules[nombre] = previo
+        # Y el camino de siempre sigue en su árbol: hijo directo del logger
+        # del paquete (__init__) bajo Hermes, no solo con el mismo prefijo.
         plugin = _plugin_package()
         avisos_pkg = importlib.import_module("goncloud_team.avisos_sesion")
         esperado = f"hermes_plugins.{plugin.__name__}.avisos_sesion"
         self.assertEqual(plugin.logger.name, plugin.__name__)
         self.assertEqual(avisos_sesion.logger.name, esperado)
         self.assertEqual(avisos_pkg.logger.name, esperado)
-        # Bajo Hermes, el logger de __init__ es hermes_plugins.<paquete>:
-        # el de avisos debe ser su hijo directo, no solo compartir prefijo.
         logger_init_hermes = logging.getLogger(f"hermes_plugins.{plugin.__name__}")
         self.assertIs(avisos_sesion.logger.parent, logger_init_hermes)
 
