@@ -103,7 +103,7 @@ def linea_de_aviso(aviso: dict) -> str | None:
     cadena = _campo_corto(aviso.get("workflow_id"))
     if not cadena:
         return None
-    repo = _redacta(aviso.get("repo"))
+    repo = _campo_corto(aviso.get("repo"))
     lugar = f"{cadena} ({repo})" if repo else cadena
     motivo = _motivo_corto(aviso.get("motivo"))
     detalle = f": {motivo}" if motivo else ""

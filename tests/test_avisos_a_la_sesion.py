@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import logging
 import os
 import queue
 import sys
@@ -542,12 +543,20 @@ class VigilanteUnicoTests(unittest.TestCase):
                 hilo.join(timeout=5)
 
     def test_el_logger_cae_en_el_arbol_que_hermes_escribe(self):
-        # H62 B3-3: importado como módulo de primer nivel, __name__ queda
-        # fuera de hermes_plugins.* y Hermes no escribe esos .log.
-        self.assertTrue(
-            avisos_sesion.logger.name.startswith("hermes_plugins."),
-            avisos_sesion.logger.name,
-        )
+        # H62 B3-3 / H70 L2: importado como módulo de primer nivel, __name__
+        # queda fuera de hermes_plugins.* y Hermes no escribe esos .log.
+        # No basta el prefijo: el nombre exacto debe ser el hijo del logger
+        # del paquete (__init__) bajo el árbol de Hermes.
+        plugin = _plugin_package()
+        avisos_pkg = importlib.import_module("goncloud_team.avisos_sesion")
+        esperado = f"hermes_plugins.{plugin.__name__}.avisos_sesion"
+        self.assertEqual(plugin.logger.name, plugin.__name__)
+        self.assertEqual(avisos_sesion.logger.name, esperado)
+        self.assertEqual(avisos_pkg.logger.name, esperado)
+        # Bajo Hermes, el logger de __init__ es hermes_plugins.<paquete>:
+        # el de avisos debe ser su hijo directo, no solo compartir prefijo.
+        logger_init_hermes = logging.getLogger(f"hermes_plugins.{plugin.__name__}")
+        self.assertIs(avisos_sesion.logger.parent, logger_init_hermes)
 
     def test_el_log_del_aviso_no_expone_la_session_key_completa(self):
         # cr 4320005117: el chat id de la session_key no va al log; se

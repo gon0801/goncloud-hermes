@@ -1506,6 +1506,56 @@ class MutationContinuationTests(RouterTestCase):
         attempt = self.router().store.stage_attempts("wf-6", "st-6")[0]
         self.assertEqual(attempt["mutated"], 0)
 
+    def test_fila_vieja_sin_mutated_recalcula_con_mutation_since(self):
+        """H71 L3: una fila completada antes de la columna `mutated` (NULL).
+
+        La rama de compatibilidad recalcula con mutation_since: sobre el
+        árbol sucio heredado eso da mutado, así que la falla que bloquea
+        tras mutación se recupera (bloquea) en vez de avanzar — al revés
+        que la fila nueva con veredicto grabado en 0 del caso anterior.
+        Se siembra una BD vieja SIN la columna; el store la migra a NULL.
+        """
+        start = self._run_git("rev-parse", "HEAD").stdout.strip()
+        (self.git_repo / "README.md").write_text("owner edit", encoding="utf-8")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE subscription_attempts ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, "
+                "stage_id TEXT NOT NULL, slot INTEGER NOT NULL, attempt INTEGER NOT NULL, "
+                "adapter TEXT NOT NULL, model TEXT NOT NULL, billing_mode TEXT NOT NULL, "
+                "mode TEXT NOT NULL, success INTEGER NOT NULL, failure TEXT, "
+                "session_id TEXT NOT NULL DEFAULT '', start_revision TEXT NOT NULL DEFAULT '', "
+                "end_revision TEXT NOT NULL DEFAULT '', changed_files TEXT NOT NULL DEFAULT '[]', "
+                "detail TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'completed', "
+                "owner TEXT NOT NULL DEFAULT '', terminal INTEGER NOT NULL DEFAULT 0, "
+                "disposition TEXT NOT NULL DEFAULT 'executed', generation INTEGER NOT NULL DEFAULT 0, "
+                "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), "
+                "UNIQUE(workflow_id, stage_id, slot, attempt))"
+            )
+            conn.execute(
+                "INSERT INTO subscription_attempts "
+                "(workflow_id, stage_id, slot, attempt, adapter, model, billing_mode, "
+                "mode, success, failure, start_revision, end_revision, changed_files) "
+                "VALUES ('wf-6','st-6',0,0,'opencode_go','model-x','subscription',"
+                "'start',0,'task_failure',?,?, '[]')",
+                (start, start),
+            )
+            conn.commit()
+        self.fake_adapters["claude"].result = completed("must not run", "claude")
+        assignment = replace(
+            request(self.git_repo),
+            start_revision=start,
+            current_revision=start,
+            result_transform=lambda result: result,
+        )
+        router = self.router()
+        # La migración añadió la columna y la fila vieja quedó en NULL.
+        self.assertIsNone(router.store.stage_attempts("wf-6", "st-6")[0]["mutated"])
+        result = router.run(assignment, primary_and_next())
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, FailureKind.TASK_FAILURE)
+        self.assertEqual(self.fake_adapters["claude"].requests, [])
+
     def test_skipped_rows_span_is_not_own_stage_work_on_a_retry(self):
         """A skipped row records stage baseline -> current HEAD as its span.
 
@@ -2177,9 +2227,60 @@ class GitInspectorTests(unittest.TestCase):
         (self.repo / "a-link").unlink()
         os.symlink("/dev/null", self.repo / "a-link")
         self.assertNotEqual(inspector.tree_fingerprint(self.repo), first)
-        # Editing the regular dirty file still changes its entry.
+        # Editing the regular dirty file still changes its entry. H71 F5:
+        # compare against the fingerprint taken after the link retarget,
+        # not the original: against `first` this would pass even if the
+        # edit went unseen, because the link already differs.
+        after_link = inspector.tree_fingerprint(self.repo)
         (self.repo / "dirty.txt").write_text("edited", encoding="utf-8")
-        self.assertNotEqual(inspector.tree_fingerprint(self.repo), first)
+        self.assertNotEqual(inspector.tree_fingerprint(self.repo), after_link)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NOFOLLOW"),
+        "requires POSIX fifo and O_NOFOLLOW",
+    )
+    def test_dirty_digest_no_se_bloquea_si_el_fichero_se_vuelve_fifo(self):
+        # H71 L2: entre el lstat (regular) y el open, otra mano puede
+        # cambiar el fichero por un FIFO: abrirlo sin O_NONBLOCK se
+        # bloquearía para siempre. La digest debe clasificarlo sin abrirlo
+        # a ciegas (fstat tras abrir y descartar si no es regular).
+        target = self.repo / "swap.txt"
+        target.write_text("x", encoding="utf-8")
+        real_lstat = Path.lstat
+        swapped = False
+
+        def racy_lstat(path):
+            nonlocal swapped
+            info = real_lstat(path)
+            if path == target and not swapped:
+                swapped = True
+                target.unlink()
+                os.mkfifo(target)
+            return info
+
+        with patch.object(Path, "lstat", racy_lstat):
+            digest, _ = GitInspector._dirty_digest(target, 1024)
+        self.assertTrue(swapped)
+        self.assertTrue(digest.startswith("special:"), digest)
+        # Same race with a symlink to /dev/zero: O_NOFOLLOW refuses it
+        # instead of streaming zeros into the hash.
+        target2 = self.repo / "swap2.txt"
+        target2.write_text("x", encoding="utf-8")
+        swapped2 = False
+
+        def racy_lstat2(path):
+            nonlocal swapped2
+            info = real_lstat(path)
+            if path == target2 and not swapped2:
+                swapped2 = True
+                target2.unlink()
+                os.symlink("/dev/zero", target2)
+            return info
+
+        with patch.object(Path, "lstat", racy_lstat2):
+            digest2, _ = GitInspector._dirty_digest(target2, 1024)
+        self.assertTrue(swapped2)
+        self.assertEqual(digest2, "")
 
     def test_unstaged_and_renamed_paths_preserve_spaces_and_unicode(self):
         self._git("init", "-q")

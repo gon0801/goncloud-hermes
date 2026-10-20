@@ -54,10 +54,22 @@ import time
 import types
 from pathlib import Path
 
-# B3-3: este módulo también se importa como módulo de primer nivel
-# (sys.path del plugin), y ese __name__ queda fuera del árbol
-# hermes_plugins.* que Hermes sí escribe en sus .log. Nombre fijo.
-logger = logging.getLogger("hermes_plugins.goncloud_team.avisos_sesion")
+
+# B3-3 / H70 L2: este módulo también se importa como módulo de primer
+# nivel (sys.path del plugin), y ese __name__ queda fuera del árbol
+# hermes_plugins.* que Hermes sí escribe en sus .log. El nombre se deriva
+# del paquete del plugin (hijo del logger de __init__ bajo Hermes), no de
+# __name__: cargado como goncloud_team.avisos_sesion o como avisos_sesion
+# a secas, el logger cae siempre en el mismo sitio del árbol.
+def _nombre_logger() -> str:
+    hoja = __name__.rsplit(".", 1)[-1]
+    if __name__.startswith("hermes_plugins."):
+        return __name__
+    paquete = (__package__ or "").rsplit(".", 1)[-1] or "goncloud_team"
+    return f"hermes_plugins.{paquete}.{hoja}"
+
+
+logger = logging.getLogger(_nombre_logger())
 
 _PLUGIN = Path(__file__).resolve().parent
 if str(_PLUGIN) not in sys.path:

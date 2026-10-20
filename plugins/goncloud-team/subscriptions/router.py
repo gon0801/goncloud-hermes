@@ -259,13 +259,43 @@ class GitInspector:
             return f"large:{info.st_size}:{info.st_mtime_ns}", read_budget
         digest = hashlib.sha256()
         read = 0
+        # H71 L2: the lstat above is not the open. Between them another
+        # hand can swap the file for a FIFO or a symlink to /dev/zero and
+        # a plain open("rb") would block forever. Open without following
+        # links and without blocking, then fstat the open descriptor and
+        # classify anything that is not a regular file from it alone.
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
         try:
-            with path.open("rb") as handle:
+            descriptor = os.open(path, flags)
+        except OSError:
+            return "", read_budget
+        try:
+            with os.fdopen(descriptor, "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not stat.S_ISREG(opened.st_mode):
+                    return (
+                        f"special:{opened.st_mode:o}:{opened.st_size}:"
+                        f"{opened.st_mtime_ns}",
+                        read_budget,
+                    )
+                if (
+                    opened.st_size > _FINGERPRINT_MAX_FILE_BYTES
+                    or opened.st_size > read_budget
+                ):
+                    return (
+                        f"large:{opened.st_size}:{opened.st_mtime_ns}",
+                        read_budget,
+                    )
                 while chunk := handle.read(64 * 1024):
                     read += len(chunk)
                     if read > _FINGERPRINT_MAX_FILE_BYTES:
                         return (
-                            f"large:{info.st_size}:{info.st_mtime_ns}",
+                            f"large:{opened.st_size}:{opened.st_mtime_ns}",
                             read_budget,
                         )
                     digest.update(chunk)
