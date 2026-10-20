@@ -550,7 +550,7 @@ class Aplicar(InstaladorDeRaices):
             "los datos del operador son sagrados",
         )
         otro = tempfile.TemporaryDirectory()
-        self.addCleanup(otro.cleanup)
+        self.addCleanup(cleanup_temp_directory, otro)
         home2 = Path(otro.name) / "hermes"
         home2.mkdir()
         self.modulo.main(

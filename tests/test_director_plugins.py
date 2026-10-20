@@ -235,6 +235,51 @@ class ConfiguracionDelDirectorTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "administrados y locales: jev"):
                     module.director_plugins_locales()
 
+    def _locales_con_manifiesto(self, manifiesto):
+        with tempfile.TemporaryDirectory() as directory:
+            ruta = Path(directory) / "manifiesto.json"
+            ruta.write_text(json.dumps(manifiesto), encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {module.DIRECTOR_PLUGINS_OVERRIDE: str(ruta)}
+            ):
+                return module.director_plugins_locales()
+
+    def test_goncloud_team_en_local_es_duplicado(self):
+        # F2 de #52: el deploy antepone siempre "goncloud-team" a
+        # plugins.enabled; nombrarlo tambien en "local" duplicaba la
+        # entrada que el merge escribe en config.yaml.
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["goncloud-team"]
+        with self.assertRaisesRegex(ValueError, "duplicados.*goncloud-team"):
+            self._locales_con_manifiesto(manifiesto)
+
+    def test_un_nombre_repetido_dentro_de_local_es_duplicado(self):
+        # F2 de #52: la guarda tampoco veia un nombre repetido dentro de
+        # la propia lista "local".
+        manifiesto = json.loads(
+            (ROOT / "director-plugins.json").read_text(encoding="utf-8")
+        )
+        manifiesto["local"] = ["forja-queue-cap", "forja-queue-cap"]
+        with self.assertRaisesRegex(ValueError, "duplicados.*forja-queue-cap"):
+            self._locales_con_manifiesto(manifiesto)
+
+    def test_el_readme_nombra_la_lista_local_y_el_enabled_del_deploy(self):
+        # F1 de #52: la seccion del README debe declarar el mismo
+        # plugins.enabled que el deploy escribe, con la lista "local".
+        seccion = (
+            (ROOT / "README.md")
+            .read_text(encoding="utf-8")
+            .split("## Plugins externos del director", 1)[1]
+            .split("\n## ", 1)[0]
+        )
+        self.assertIn("`local`", seccion)
+        self.assertIn("forja-queue-cap", seccion)
+        self.assertIn(
+            "[goncloud-team, jev, jev-skill-router-mcp, forja-queue-cap]", seccion
+        )
+
 
 PRISTINA = "def call_adapter():\n    return {}\n"
 PATCHADA = "def call_adapter():\n    document = {'model': 'x'}\n    return {}\n"
@@ -677,6 +722,9 @@ class DespliegueFrescoTests(unittest.TestCase):
         resultado = self.run_configure()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertIn("hermes plugins", resultado.stdout)
+        # F1 de #52: el aviso no manda instalar los `local` desde el
+        # manifiesto; no tienen repo y se instalan aparte.
+        self.assertIn("`local`", resultado.stdout)
         config = yaml.safe_load(
             (self.runtime / "profiles" / "claw" / "config.yaml").read_text(
                 encoding="utf-8"
