@@ -799,11 +799,16 @@ class WorkflowService:
         creado (review F5).
         """
         try:
+            # L1 (#72): la decisión "no es repo git" lee el texto de git, que
+            # git traduce según el locale (LANG=es_ES: "no es un repositorio
+            # git"). Forzar C en este probe — y en toda decisión que lea texto
+            # de git — para que la comparación sea siempre contra el inglés.
             probe = subprocess.run(
                 ["git", "-C", repository, "rev-parse", "--is-inside-work-tree"],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
             )
         except (OSError, subprocess.SubprocessError) as exc:
             # Review F13: un probe que FALLA (error, timeout) en un
@@ -1072,8 +1077,9 @@ class WorkflowService:
         (ps) and the lease check run BEFORE the transaction (review F15);
         inside it the chain state is re-read and the mark fence compares
         run_id and outcome against what was judged outside — anything that
-        changed aborts the close before the first archive lands, and the
-        caller then queues the new chain behind it (review F3).
+        changed aborts the close before the first archive lands; the
+        close simply does not happen — the caller gets False and
+        answers busy instead (review F3).
         ``archive_task`` opens its own transaction and refuses nesting
         (reference 0.22), so the archive rides this transaction with the
         same guarded, idempotent UPDATE the native primitive applies.

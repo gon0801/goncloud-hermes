@@ -1,4 +1,4 @@
-"""Doble de hermes_cli construido desde la referencia 0.21.5 (SUA-07 H2).
+"""Doble de hermes_cli construido desde la referencia v0.22.0 (e06df9c) (SUA-07 H2).
 
 Mismas firmas y mismas reglas observables que la referencia copiada en
 ~/.local/state/encargos-loop/artifacts/SUA07-H2/referencia-hermes-cli/: la

@@ -1,6 +1,6 @@
 """Doble de kanban_db: las funciones que usan las raices y el plugin goncloud.
 
-Reglas copiadas de la referencia 0.21.5:
+Reglas copiadas de la referencia v0.22.0 (e06df9c):
 - create_task (:1255) deduplica por idempotency_key SOLO contra tareas NO
   archivadas (:1325-1332); el estado inicial sale de initial_task_state
   (triage si triage=True, todo si un padre no esta done, ready en otro caso).

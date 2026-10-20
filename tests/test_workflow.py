@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -138,6 +139,32 @@ class WorkflowTestCase(unittest.TestCase):
                 {task.workspace_path for task in stage_tasks},
                 {str(self.repo.resolve())},
             )
+
+    def test_start_en_directorio_sin_git_con_locale_espanol_arranca_igual(self) -> None:
+        # L1 (#72): git traduce "not a git repository" según el locale; con
+        # LANG=es_ES.UTF-8 en el entorno, un directorio sin git debe seguir
+        # arrancando como antes (sin worktree), y el probe que decide eso
+        # debe correr con LC_ALL=C y LANGUAGE=C.
+        real_run = subprocess.run
+        entornos_probe = []
+
+        def espiar(cmd, *args, **kwargs):
+            if "--is-inside-work-tree" in [str(c) for c in cmd]:
+                entornos_probe.append(kwargs.get("env"))
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch.dict(
+            os.environ,
+            {"LANG": "es_ES.UTF-8", "LANGUAGE": "es_ES:es", "LC_ALL": "es_ES.UTF-8"},
+        ):
+            with mock.patch.object(subprocess, "run", side_effect=espiar):
+                started = self.start()
+        self.assertEqual(list(started["stages"]), list(INITIAL_STAGES))
+        self.assertTrue(entornos_probe, "el probe git debio correr")
+        for env in entornos_probe:
+            self.assertIsNotNone(env, "el probe debe forzar el locale C")
+            self.assertEqual(env.get("LC_ALL"), "C")
+            self.assertEqual(env.get("LANGUAGE"), "C")
 
     def test_start_auto_closes_a_stopped_chain_in_the_same_repo(self) -> None:
         # Regresion H-payload: el INSERT del auto-cierre usa task_events.payload
@@ -669,6 +696,13 @@ class SchemaTextTests(unittest.TestCase):
             text = json.dumps(schema, ensure_ascii=False).lower()
             self.assertNotIn("queues behind", text, name)
             self.assertNotIn("queued behind", text, name)
+
+    # L2 (#72): la docstring de _auto_close_stopped_chain ya no promete cola.
+    def test_no_source_promises_queues_the_new_chain(self) -> None:
+        for archivo in ("workflow.py", "local_orchestrator.py"):
+            text = (PLUGIN_DIR / archivo).read_text(encoding="utf-8").lower()
+            self.assertNotIn("queues the new chain", text, archivo)
+            self.assertNotIn("queued behind", text, archivo)
 
     # F16 (#53) — repository se exige contra el workspace de la CADENA
     # (su worktree), no contra el de la tarjeta de etapa.
