@@ -426,6 +426,29 @@ class RespuestaTests(Base):
         self.assertIn("desde hace 7 min", reply)
         self.assertNotIn("5 h", reply)
 
+    def test_pausada_sin_fila_del_router_cuenta_desde_la_marca(self):
+        self.cadena("t_p1", "paused", edad_min=9)
+        self.assertIn("desde hace 9 min", self.texto())
+
+    def test_el_resumen_de_la_etapa_gana_al_fallo_generico_del_router(self):
+        self.cadena(
+            "t_a1",
+            "blocked",
+            rol="verifier",
+            fallo="exit 1",
+            extra={
+                "corrective_stages": {
+                    "verifier": {
+                        "status": "blocked",
+                        "terminal": {"summary": "faltan permisos de red"},
+                    }
+                }
+            },
+        )
+        reply = self.texto()
+        self.assertIn("Motivo: faltan permisos de red.", reply)
+        self.assertNotIn("exit 1", reply)
+
     def test_como_va_la_cadena_x_muestra_solo_esa(self):
         self.cadena("t_uno", "running", repo="C:/x/RepoUno", rol="scout")
         self.cadena("t_dos", "running", repo="C:/x/RepoDos", rol="scout")

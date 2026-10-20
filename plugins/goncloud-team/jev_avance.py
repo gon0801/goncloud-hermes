@@ -313,13 +313,12 @@ def leer_cadenas(
                     info["vivo"] = None
             if salida in _DETENIDAS or (salida == "running" and info["vivo"] is False):
                 # El tiempo cuenta desde la detencion (la marca), no desde que
-                # arranco la etapa.
-                if intento:
-                    desde = max(desde or 0, marca["_mtime"])
+                # arranco la etapa; sin fila del router, desde la marca.
+                desde = max(desde or 0, marca["_mtime"])
                 info["motivo"] = (
                     _una_linea(
-                        (intento[4] if intento else None)
-                        or _motivo_de_etapas(marca)
+                        _motivo_de_etapas(marca)
+                        or (intento[4] if intento else None)
                         or marca.get("motivo")
                         or marca.get("error")
                     )
