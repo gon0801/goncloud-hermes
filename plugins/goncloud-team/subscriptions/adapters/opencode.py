@@ -11,7 +11,7 @@ import os
 import re
 from pathlib import Path
 
-from ..process import SubscriptionProcessError, run_cli
+from ..process import SubscriptionProcessError, probe_workspace, run_cli
 from ..types import (
     AdapterHealth,
     FailureKind,
@@ -174,13 +174,14 @@ class OpenCodeAdapter(SubscriptionAdapter):
             )
         expected = _CREDENTIAL_NAMES.get(route.adapter, route.adapter)
         try:
-            evidence = run_cli(
-                ["opencode", "auth", "list"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["opencode", "auth", "list"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
         except SubscriptionProcessError as error:
             return health_for_process_error(route.adapter, error)
         if evidence.returncode != 0:
@@ -214,13 +215,14 @@ class OpenCodeAdapter(SubscriptionAdapter):
             return cached
         major = 1
         try:
-            evidence = run_cli(
-                ["opencode", "--version"],
-                "",
-                Path.cwd(),
-                self.probe_timeout_seconds,
-                runner=self.runner,
-            )
+            with probe_workspace() as probe_dir:
+                evidence = run_cli(
+                    ["opencode", "--version"],
+                    "",
+                    Path(probe_dir),
+                    self.probe_timeout_seconds,
+                    runner=self.runner,
+                )
             found = _VERSION_LINE.search(evidence.stdout)
             if found:
                 major = max(1, int(found.group(1)))

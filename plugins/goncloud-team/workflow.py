@@ -142,6 +142,111 @@ AUTO_CLOSE_REASON = (
 _REVIEW_MARKER = "GONCLOUD_REVIEW_V1\n"
 _SUBSCRIPTION_MARKER = "GONCLOUD_SUBSCRIPTION_V1\n"
 
+#: Whole-folder lines the r2 exclude wrote under the marker. Kept only to
+#: migrate an r2 file: `.claude/`, `.cursor/` and `.opencode/` can hold
+#: versioned config (skills, agents, commands, settings), so hiding the
+#: whole folder makes a new file there invisible to git.
+_CLI_STATE_EXCLUDE_OLD_LINES = frozenset(
+    {
+        ".claude/",
+        ".codex/",
+        ".cursor/",
+        ".gemini/",
+        ".grok/",
+        ".kimi/",
+        ".muse/",
+        ".opencode/",
+        ".qwen/",
+    }
+)
+
+#: LA lista de rutas de estado de los CLI (prefijos), ÚNICA para los
+#: tres usos: el exclude común (R4b, abajo), la huella de solo lectura
+#: (R1) y la limpieza al cerrar la etapa (R2, ambos en
+#: local_orchestrator, que la importa de aquí). Solo subcarpetas de
+#: estado de `.claude` y las carpetas de estado de los demás CLI:
+#: `.claude/` entero, `.cursor/` y `.opencode/` pueden guardar config
+#: versionable (skills, reglas, agentes), así que un archivo nuevo ahí
+#: SÍ cuenta como cambio y nunca se borra como estado.
+CLI_STATE_PREFIXES = (
+    ".claude/memory/",
+    ".claude/sessions/",
+    ".claude/state/",
+    ".codex/",
+    ".gemini/",
+    ".grok/",
+    ".kimi/",
+    ".muse/",
+    ".qwen/",
+)
+
+#: Lines for the common ``info/exclude``: exactly the shared prefixes.
+_CLI_STATE_EXCLUDE_LINES = CLI_STATE_PREFIXES
+_CLI_STATE_EXCLUDE_MARKER = "# goncloud: carpetas de estado de los CLI"
+
+
+def _exclude_cli_state_dirs(repository: str) -> None:
+    """Add the CLI state lines to the repo's common ``info/exclude``.
+
+    One line per entry of ``_CLI_STATE_EXCLUDE_LINES``, under the marker
+    comment, only the ones missing — idempotent across chains on the same
+    repo. The exclude lives in the common git dir, so it covers the main
+    checkout and every worktree at once and a stray ``git add -A`` never
+    picks the state up. An r2 exclude that put a whole ``.claude/`` (or
+    ``.cursor/`` / ``.opencode/``) under the marker is migrated: those
+    managed lines are replaced by the new ones.
+    Best effort: the chain's work does not depend on it (the read-only
+    guard already filters this state), so a failure here never blocks it.
+    """
+    try:
+        probe = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return
+    common = Path(probe.stdout.strip())
+    if not common.is_absolute():
+        common = Path(repository) / common
+    exclude = common / "info" / "exclude"
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    except OSError:
+        return
+    present = text.splitlines()
+    if _CLI_STATE_EXCLUDE_MARKER in present:
+        marker_at = present.index(_CLI_STATE_EXCLUDE_MARKER)
+        before = present[:marker_at]
+        after = present[marker_at + 1 :]
+        managed = _CLI_STATE_EXCLUDE_OLD_LINES | set(_CLI_STATE_EXCLUDE_LINES)
+        rest = [line for line in after if line not in managed]
+        outside = set(before) | set(rest)
+        block = [line for line in _CLI_STATE_EXCLUDE_LINES if line not in outside]
+        migrated = before + [_CLI_STATE_EXCLUDE_MARKER] + block + rest
+        if migrated == present:
+            return
+        try:
+            exclude.write_text(
+                "".join(f"{line}\n" for line in migrated), encoding="utf-8"
+            )
+        except OSError:
+            return
+        return
+    missing = [line for line in _CLI_STATE_EXCLUDE_LINES if line not in present]
+    chunk = "" if not text or text.endswith("\n") else "\n"
+    chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
+    chunk += "".join(f"{line}\n" for line in missing)
+    try:
+        with exclude.open("a", encoding="utf-8") as handle:
+            handle.write(chunk)
+    except OSError:
+        return
+
 
 def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
     """(alive, stopped) according to the local driver's own result-file mark.
@@ -622,6 +727,18 @@ class WorkflowService:
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
+            if worktree is not None:
+                # R5: Hermes copia el workspace_path de la raíz (creada con
+                # el repo, línea de create_task de la raíz) a cada hija en
+                # decompose_triage_task, y su worker corre donde la tarjeta
+                # apunta. No hay API de Hermes para pasarlo por hija, así
+                # que se reapunta la columna aquí, igual que la migración
+                # del cuerpo de arriba — la raíz se queda en el repo.
+                for child_id in child_ids:
+                    conn.execute(
+                        "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                        (worktree, child_id),
+                    ).close()
             result = self._start_result(root_id, child_ids)
             if worktree is not None:
                 result["worktree"] = worktree
@@ -698,6 +815,7 @@ class WorkflowService:
 
         if wt_path.is_dir() and (wt_path / ".git").exists():
             # Misma clave (relanzamiento): el worktree ya es suyo.
+            _exclude_cli_state_dirs(repository)
             return str(wt_path), base_sha
         branch_exists = git("rev-parse", "--verify", "--quiet", branch)
         if branch_exists.returncode == 0:
@@ -720,6 +838,7 @@ class WorkflowService:
                 "git worktree add failed for chain "
                 f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
             )
+        _exclude_cli_state_dirs(repository)
         return str(wt_path), base_sha
 
     def _rama_base_del_repo(self, repository: str) -> str | None:

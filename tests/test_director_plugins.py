@@ -34,19 +34,12 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 MANIFIESTO = json.loads((ROOT / "director-plugins.json").read_text(encoding="utf-8"))
-PATCH = ROOT / "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch"
 
 JEV_REPO = "https://github.com/ajensenwaud/hermes-jev-plugin"
-JSR_REPO = "https://github.com/ydmw74/jev-skill-router"
+JSR_REPO = "https://github.com/gon0801/jev-skill-router"
 JEV_SHA = "b3d29f71770a3447ad0b3db00658f64a8edc7dd3"
-JSR_SHA = "76ee09e049dbc10c76f98cfefc6ca16b42cfad38"
-PATCH_SHA = "fb7c8aa20f8f6cfd85fd4035777e3215c1c716eaf429fb11f0223f4d1c89d879"
+JSR_SHA = "2fc5cac7d1c37e23322be0d1242f5249e94df159"
 MCP_SERVER = "src/jev_skill_router/mcp_server.py"
-PRISTINE_SHA = "eb28e49d7815d1e200f42ae52c6545c529ecbfb28fb31f935d28f4c8d1aa4e04"
-PATCHED_SHA = "d05f612687eab85578d7f66cb7f8860eb341e669f0a6bcf087dcc397b953d68b"
-PATCH2 = ROOT / "patches/claw/jev-skill-router-mcp/0002-skills-root.patch"
-PATCH2_SHA = "f3d67ea61c8fb50e851e5b7af1d0a28a9b592dd9caab59ca219e40d6a14ae7e6"
-FINAL_SHA = "d6b95558301f5435f4b675ba4bb687e16caec7e4d0b46b37055d0f6b62f21b98"
 JEV_PATCH = ROOT / "patches/claw/jev/0001-secret-scope.patch"
 JEV_PATCH_SHA = "4a82061e6241dc7f64c41aeb13d7115f32be44f7b23b7e93d4112a8a62f0306c"
 JEV_CLIENT = "client.py"
@@ -82,30 +75,16 @@ class ManifiestoTests(unittest.TestCase):
         self.assertEqual(jsr["repo"], JSR_REPO)
         self.assertEqual(jsr["sha"], JSR_SHA)
         self.assertEqual(jsr["toolsets"], [])
-        self.assertEqual(
-            jsr["patches"],
-            [
-                {
-                    "file": MCP_SERVER,
-                    "patch": "patches/claw/jev-skill-router-mcp/0001-model-en-call-adapter.patch",
-                    "sha256_pristine": PRISTINE_SHA,
-                    "sha256_patched": PATCHED_SHA,
-                },
-                {
-                    "file": MCP_SERVER,
-                    "patch": "patches/claw/jev-skill-router-mcp/0002-skills-root.patch",
-                    "sha256_pristine": PATCHED_SHA,
-                    "sha256_patched": FINAL_SHA,
-                },
-            ],
-        )
+        # Las correcciones del router ya viven en gon0801 al sha fijado: sin
+        # parches locales que reaplicar (y que un configure_team revertiria).
+        self.assertEqual(jsr["patches"], [])
+        self.assertNotIn("ydmw74", json.dumps(MANIFIESTO))
+
+    def test_no_quedan_parches_del_router_en_el_repo(self):
+        self.assertFalse((ROOT / "patches/claw/jev-skill-router-mcp").exists())
 
     def test_el_patch_del_repo_no_cambia_ni_se_pierde(self):
-        for ruta, sha, archivo in (
-            (JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),
-            (PATCH, PATCH_SHA, MCP_SERVER),
-            (PATCH2, PATCH2_SHA, MCP_SERVER),
-        ):
+        for ruta, sha, archivo in ((JEV_PATCH, JEV_PATCH_SHA, JEV_CLIENT),):
             with self.subTest(patch=ruta.name):
                 self.assertTrue(ruta.is_file())
                 self.assertEqual(hashlib.sha256(ruta.read_bytes()).hexdigest(), sha)
@@ -121,7 +100,13 @@ class ManifiestoTests(unittest.TestCase):
         # valga en cualquier arbol que corra la bateria.
         try:
             resultado = subprocess.run(
-                ["git", "check-attr", "text", "--", PATCH.relative_to(ROOT).as_posix()],
+                [
+                    "git",
+                    "check-attr",
+                    "text",
+                    "--",
+                    JEV_PATCH.relative_to(ROOT).as_posix(),
+                ],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,

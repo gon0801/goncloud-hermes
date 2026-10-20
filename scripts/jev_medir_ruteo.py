@@ -34,6 +34,8 @@ def cargar_casos(ruta) -> list[dict]:
         if not linea:
             continue
         dato = json.loads(linea)
+        if not isinstance(dato, dict):
+            continue
         mensaje = dato.get("mensaje") or dato.get("texto") or dato.get("message")
         esperado = (
             dato.get("esperado")
@@ -41,7 +43,9 @@ def cargar_casos(ruta) -> list[dict]:
             or dato.get("correcto")
             or dato.get("ruta")
         )
-        casos.append({"mensaje": str(mensaje or ""), "esperado": str(esperado or "")})
+        if not mensaje or not esperado:
+            continue
+        casos.append({"mensaje": str(mensaje), "esperado": str(esperado)})
     return casos
 
 
@@ -74,7 +78,9 @@ def medir(decisor, casos: list[dict]) -> dict:
                 "esperado": caso["esperado"],
                 "obtenido": obtenido,
                 "confianza": confianza,
-                "acierto": obtenido is not None and obtenido == caso["esperado"],
+                "acierto": error is None
+                and obtenido is not None
+                and obtenido == caso["esperado"],
                 "sobre_umbral": confianza is not None
                 and confianza >= jev_decisiones.UMBRAL,
                 "error": error,
@@ -94,6 +100,8 @@ def formatear(resultado: dict) -> str:
         confianza = f"{fila['confianza']:.2f}" if fila["confianza"] is not None else "?"
         marca = "ok" if fila["acierto"] else "FALLA"
         detalle = fila["obtenido"] or f"error: {fila['error']}"
+        if fila["error"] and fila["obtenido"]:
+            detalle = f"{detalle} (error: {fila['error']})"
         lineas.append(
             f"[{marca}] esperado={fila['esperado']} obtenido={detalle} "
             f"confianza={confianza} :: {fila['mensaje']}"

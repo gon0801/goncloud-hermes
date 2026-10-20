@@ -497,11 +497,13 @@ class PieVisibleTests(Base):
     def test_una_llave_de_config_del_ctx_gana_sobre_el_entorno(self):
         os.environ.pop("GONCLOUD_JEV_AUTO_VISIBLE", None)
         apagado = self.modulo.registrar(_CtxFalso(config={"jev_auto_visible": False}))
+        apagado.decisor = None  # el decisor real jamas corre en pruebas
         apagado.hogar = self.hogar
         apagado.corredor = self.corredor_ok
         self.assertIsNotNone(apagado.pre_llm_call(**turno()))
         self.assertIsNone(self.transformar(apagado))
         encendido = self.modulo.registrar(_CtxFalso(config={"jev_auto_visible": True}))
+        encendido.decisor = None  # el decisor real jamas corre en pruebas
         encendido.hogar = self.hogar
         encendido.corredor = self.corredor_ok
         with mock.patch.dict(os.environ, {"GONCLOUD_JEV_AUTO_VISIBLE": "0"}):
@@ -515,6 +517,7 @@ class PieVisibleTests(Base):
                 auto = self.modulo.registrar(
                     _CtxFalso(config={"jev_auto_visible": valor})
                 )
+                auto.decisor = None  # el decisor real jamas corre en pruebas
                 auto.hogar = self.hogar
                 auto.corredor = self.corredor_ok
                 os.environ.pop("GONCLOUD_JEV_AUTO_VISIBLE", None)
@@ -527,6 +530,7 @@ class PieVisibleTests(Base):
                 auto = self.modulo.registrar(
                     _CtxFalso(config={"jev_auto_visible": valor})
                 )
+                auto.decisor = None  # el decisor real jamas corre en pruebas
                 auto.hogar = self.hogar
                 auto.corredor = self.corredor_ok
                 with mock.patch.dict(os.environ, {"GONCLOUD_JEV_AUTO_VISIBLE": "0"}):
@@ -919,6 +923,46 @@ class HijoRealTests(Base):
         # S1: gate tal cual y fit = fits[sugerida], no el de otra skill.
         self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.9, 0.87))
 
+    ROUTER_CON_CONFIG = (
+        "CFG = {'deny': ['web-navigation'], 'gate': 0.33}\n"
+        "\n"
+        "def load_roster():\n"
+        "    return [{'name': 'web-navigation'}, {'name': 'otra'}]\n"
+        "\n"
+        "def load_config():\n"
+        "    return CFG\n"
+        "\n"
+        "def filter_roster(roster, cfg):\n"
+        "    return [r for r in roster if r['name'] not in cfg['deny']]\n"
+        "\n"
+        "def suggest(request, roster, cfg=None):\n"
+        "    if cfg is None:\n"
+        "        return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': 0.5}\n"
+        "    return {'suggested': roster[0]['name'], 'decision': 'suggest',"
+        " 'gate': cfg['gate'], 'fits': {roster[0]['name']: 0.9}}\n"
+    )
+
+    def test_el_hijo_aplica_config_y_filtro_del_router(self):
+        # Hueco B: allow/deny y jev-skill-router.json valen en la ruta
+        # automatica; sin ellos sugeriria la skill vetada.
+        self.escribir_router(self.ROUTER_CON_CONFIG)
+        with self.con_respaldo():
+            veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+        self.assertEqual(veredicto["estado"], "ok")
+        self.assertEqual(veredicto["skill"], "otra")
+        self.assertEqual((veredicto["gate"], veredicto["fit"]), (0.33, 0.9))
+
+    def test_plugin_viejo_sin_config_ni_filtro_cae_a_la_llamada_de_siempre(self):
+        for faltante in ("load_config", "filter_roster"):
+            with self.subTest(sin=faltante):
+                self.escribir_router(self.ROUTER_CON_CONFIG + f"del {faltante}\n")
+                with self.con_respaldo():
+                    veredicto = self.modulo._ejecutar_router(MENSAJE, self.hogar)
+                self.assertEqual(veredicto["estado"], "ok")
+                self.assertEqual(veredicto["skill"], "web-navigation")
+                self.assertEqual(veredicto["gate"], 0.5)
+
     def test_el_hijo_sin_fits_deja_fit_none_y_gate_pasa(self):
         self.escribir_router(
             "def load_roster():\n"
@@ -1083,7 +1127,7 @@ class HogarTests(Base):
 
     def test_la_ruta_del_plugin_deriva_el_perfil_del_despliegue(self):
         # El layout vivo de la PC: <perfil>/plugins/goncloud-team/jev_auto.py
-        # sube dos niveles al perfil, como el parche 0002-skills-root.
+        # sube dos niveles al perfil, como el _skills_root() del router.
         copia = self.cargar_copia(
             self.hogar / "perfil" / "plugins" / "goncloud-team" / "jev_auto.py",
             "jev_auto_derivacion",
@@ -1205,7 +1249,8 @@ class MedirSkillsTests(unittest.TestCase):
             umbrales=(0.6,),
         )
         self.assertEqual([f["umbral"] for f in resultado["tabla"]], [0.6])
-        self.assertTrue(resultado["filas"][0]["acierto"])
+        self.assertFalse(resultado["filas"][0]["acierto"])
+        self.assertEqual(resultado["aciertos"], 0)
         self.assertIn("error: sin router", medir_mod.formatear(resultado))
 
 
@@ -1276,6 +1321,63 @@ class CableadoTests(unittest.TestCase):
         self.plugin.register(scout)
         scout.hooks["pre_llm_call"].__self__.decisor = None  # JEV real jamas en pruebas
         self.assertIsNone(scout.hooks["pre_llm_call"](**turno()))
+
+    def test_los_cinco_ganchos_de_jev_quedan_alcanzables_y_el_de_bucle_corre(self):
+        # Hermes admite varias funciones por gancho: con un ctx que las
+        # guarda todas, JEV queda alcanzable en los cinco y la guarda no
+        # sombrea al detector de bucle en pre_tool_call.
+        class CtxMulti(_CtxFalso):
+            def register_hook(self, nombre, funcion):
+                self.hooks.setdefault(nombre, []).append(funcion)
+
+        ctx = CtxMulti()
+        self.plugin.register(ctx)
+        jev = [
+            funcion
+            for funciones in ctx.hooks.values()
+            for funcion in funciones
+            if type(getattr(funcion, "__self__", None)).__name__ == "JevAuto"
+        ]
+        self.assertEqual(
+            sorted(funcion.__name__ for funcion in jev),
+            [
+                "post_llm_call",
+                "post_tool_call",
+                "pre_llm_call",
+                "pre_tool_call",
+                "transform_llm_output",
+            ],
+        )
+        self.assertEqual(len(ctx.hooks["pre_tool_call"]), 2)  # JEV + guarda
+        auto = jev[0].__self__
+        llamadas = []
+
+        class DecisorFalso:
+            def resuelva(self):
+                return "", ()
+
+            def bucle(self, ficha, entrada, clave=None, secretos=None):
+                llamadas.append(entrada)
+
+                class Decision:
+                    error = None
+                    opcion = "bucle"
+                    confianza = 0.95
+
+                return Decision()
+
+        auto.decisor = DecisorFalso()
+        detector = next(
+            f
+            for f in ctx.hooks["pre_tool_call"]
+            if getattr(f, "__self__", None) is auto
+        )
+        detector(tool_name="read_file", args={}, session_id="s1")
+        detector(tool_name="read_file", args={}, session_id="s1")
+        for hilo in list(auto.hilos):
+            hilo.join(5)
+        self.assertEqual(len(llamadas), 1)
+        self.assertTrue(any("Jev advierte" in a for a in auto._avisos.get("s1", [])))
 
     def test_la_consulta_registrada_deja_registro_y_pie(self):
         ctx = _CtxFalso()
