@@ -32,7 +32,7 @@ config_schema:
   jev_umbral:
     type: float
     default: 0.85
-    description: Probabilidad mínima de JEV para actuar con su respuesta; por debajo gana la regla actual
+    description: En una decisión sí/no, JEV manda «sí» con p ≥ umbral y «no» con p ≤ 1 − umbral; solo la zona intermedia deja la regla actual
   jev_timeout_seconds:
     type: float
     default: 3.0
