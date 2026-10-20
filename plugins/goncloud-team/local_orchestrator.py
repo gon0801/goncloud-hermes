@@ -478,9 +478,9 @@ def _result_file(workflow_id, home):
 def _write_result(workflow_id, payload, *, home=None):
     """Publish one bounded driver result atomically; readers never see half.
 
-    home=None resolves the environment's Hermes home, so writers outside
-    the driver process (workflow.start queueing a chain, r5 punto 1) share
-    the exact same file the driver reads and writes.
+    home=None resolves the environment's Hermes home, so the driver
+    and its detached bootstrap — the writers of this file — share the
+    exact same file the driver reads and writes.
     """
     home = Path(home or os.environ.get("HERMES_HOME") or _default_home())
     results = Path(home) / "goncloud-local"

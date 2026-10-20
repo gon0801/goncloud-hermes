@@ -4694,9 +4694,23 @@ class ChainWorktreeTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
     # F7 (#53) — una revisión que empieza por '-' no es una opción de git.
     def test_a_dash_revision_is_data_not_a_git_option(self):
         self._git_repo()
-        with self.assertRaises(WorkflowError) as ctx:
-            self.service()._ensure_worktree("wf-guion", str(self.repo), "-h")
+        real_run = subprocess.run
+        vistos = []
+
+        def espiar(*args, **kwargs):
+            if args:
+                vistos.append([str(a) for a in args[0]])
+            return real_run(*args, **kwargs)
+
+        with patch.object(workflow_module.subprocess, "run", espiar):
+            with self.assertRaises(WorkflowError) as ctx:
+                self.service()._ensure_worktree("wf-guion", str(self.repo), "-h")
         self.assertIn("does not resolve", str(ctx.exception))
+        rev_parse = [c for c in vistos if "rev-parse" in c and "--verify" in c]
+        self.assertTrue(rev_parse, vistos)
+        argv = rev_parse[0]
+        self.assertIn("--end-of-options", argv)
+        self.assertLess(argv.index("--end-of-options"), argv.index("-h^{commit}"))
 
     # F13 (#53) — solo "not a git repository" es no-git; otro fallo del
     # probe (ownership, permisos) es error, no checkout original.

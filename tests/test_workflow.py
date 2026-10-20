@@ -702,6 +702,7 @@ class SchemaTextTests(unittest.TestCase):
         for archivo in ("workflow.py", "local_orchestrator.py"):
             text = (PLUGIN_DIR / archivo).read_text(encoding="utf-8").lower()
             self.assertNotIn("queues the new chain", text, archivo)
+            self.assertNotIn("queueing a chain", text, archivo)
             self.assertNotIn("queued behind", text, archivo)
 
     # F16 (#53) — repository se exige contra el workspace de la CADENA

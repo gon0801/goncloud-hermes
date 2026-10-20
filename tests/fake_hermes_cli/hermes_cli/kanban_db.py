@@ -1,16 +1,16 @@
 """Doble de kanban_db: las funciones que usan las raices y el plugin goncloud.
 
 Reglas copiadas de la referencia v0.22.0 (e06df9c):
-- create_task (:1255) deduplica por idempotency_key SOLO contra tareas NO
-  archivadas (:1325-1332); el estado inicial sale de initial_task_state
+- create_task deduplica por idempotency_key SOLO contra tareas NO
+  archivadas; el estado inicial sale de initial_task_state
   (triage si triage=True, todo si un padre no esta done, ready en otro caso).
-- link_tasks (:1632) rechaza ids desconocidos, auto-enlace y ciclos.
-- complete_task (:2731) solo pasa de running/ready/blocked/review a done con
+- link_tasks rechaza ids desconocidos, auto-enlace y ciclos.
+- complete_task solo pasa de running/ready/blocked/review a done con
   padres satisfechos; deja el resultado en la columna result y cierra una
   corrida con su metadata.
-- block_task (:3216) solo pasa de running/ready a blocked.
-- unblock_task (:3652) devuelve blocked a ready.
-- archive_task (:3884) deja la tarjeta archived y es idempotente.
+- block_task solo pasa de running/ready a blocked.
+- unblock_task devuelve blocked a ready.
+- archive_task deja la tarjeta archived y es idempotente.
 - Promocion por dependencias: al completar una tarjeta, sus hijas todo cuyos
   padres estan done pasan a ready, y sus padres todo/triage cuyas hijas estan
   done o archived pasan a ready (es lo que deja ejecutable la raiz directora
