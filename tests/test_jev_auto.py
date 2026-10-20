@@ -107,10 +107,16 @@ class Base(unittest.TestCase):
 
         return corredor
 
+    def esperar(self, auto):
+        for hilo in list(auto.hilos):
+            hilo.join(5)
+
     def auto(self, perfil="claw", corredor=None, **kwargs):
         kwargs.setdefault("hogar", self.hogar)
         kwargs.setdefault("corredor", corredor or self.corredor_ok)
-        return self.modulo.JevAuto(perfil, **kwargs)
+        auto = self.modulo.JevAuto(perfil, **kwargs)
+        self.addCleanup(self.esperar, auto)
+        return auto
 
     def registro(self):
         ruta = self.hogar / "jev" / "consultas.jsonl"
@@ -1010,6 +1016,7 @@ class HijoRealTests(Base):
             "    raise RuntimeError('backend HTTP 500: kaboom')\n"
         )
         auto = self.modulo.JevAuto("claw", hogar=self.hogar)  # corredor real
+        self.addCleanup(self.esperar, auto)
         with self.con_respaldo():
             respuesta = auto.pre_llm_call(**turno())
         self.assertIn("JEV skill_select no respondió", respuesta["context"])
