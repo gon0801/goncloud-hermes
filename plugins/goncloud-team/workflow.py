@@ -160,13 +160,15 @@ _CLI_STATE_EXCLUDE_OLD_LINES = frozenset(
     }
 )
 
-#: Lines for the common ``info/exclude``: only state subfolders of
-#: `.claude`, and the state-only folders of the other CLIs. Deliberately
-#: separate from local_orchestrator._CLI_STATE_DIRS — the read-only
-#: fingerprint filter (R1) and the close-out cleanup (R2) ignore those
-#: whole folders, but the exclude must not hide versionable config under
-#: `.claude/`, `.cursor/` or `.opencode/`.
-_CLI_STATE_EXCLUDE_LINES = (
+#: LA lista de rutas de estado de los CLI (prefijos), ÚNICA para los
+#: tres usos: el exclude común (R4b, abajo), la huella de solo lectura
+#: (R1) y la limpieza al cerrar la etapa (R2, ambos en
+#: local_orchestrator, que la importa de aquí). Solo subcarpetas de
+#: estado de `.claude` y las carpetas de estado de los demás CLI:
+#: `.claude/` entero, `.cursor/` y `.opencode/` pueden guardar config
+#: versionable (skills, reglas, agentes), así que un archivo nuevo ahí
+#: SÍ cuenta como cambio y nunca se borra como estado.
+CLI_STATE_PREFIXES = (
     ".claude/memory/",
     ".claude/sessions/",
     ".claude/state/",
@@ -177,6 +179,9 @@ _CLI_STATE_EXCLUDE_LINES = (
     ".muse/",
     ".qwen/",
 )
+
+#: Lines for the common ``info/exclude``: exactly the shared prefixes.
+_CLI_STATE_EXCLUDE_LINES = CLI_STATE_PREFIXES
 _CLI_STATE_EXCLUDE_MARKER = "# goncloud: carpetas de estado de los CLI"
 
 

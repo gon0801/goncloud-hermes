@@ -523,7 +523,9 @@ def probe_workspace():
     lets the vendor CLI drop its state folders (.claude/, .codex/, ...)
     into whatever checkout the host process happens to sit in.
     """
-    return tempfile.TemporaryDirectory(prefix="goncloud-probe-")
+    return tempfile.TemporaryDirectory(
+        prefix="goncloud-probe-", ignore_cleanup_errors=True
+    )
 
 
 def run_cli(

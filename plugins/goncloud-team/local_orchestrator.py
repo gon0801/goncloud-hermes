@@ -39,6 +39,9 @@ try:
     from .subscriptions.router import GitInspector, default_db_path
     from .subscriptions.state import SubscriptionStateStore
     from .workflow import (
+        CLI_STATE_PREFIXES as _CLI_STATE_PREFIXES,
+    )
+    from .workflow import (
         CLOSE_COMMENT_MARKER as _CLOSE_COMMENT_MARKER,
     )
     from .workflow import (
@@ -59,6 +62,9 @@ except ImportError:
     from subscriptions.redaction import SENSITIVE_TEXT, usable_secret
     from subscriptions.router import GitInspector, default_db_path
     from subscriptions.state import SubscriptionStateStore
+    from workflow import (
+        CLI_STATE_PREFIXES as _CLI_STATE_PREFIXES,
+    )
     from workflow import (
         CLOSE_COMMENT_MARKER as _CLOSE_COMMENT_MARKER,
     )
@@ -82,24 +88,14 @@ MAX_TERMINAL_BYTES = 1800
 #: the same on another run; instructions alone did not hold.
 _READ_ONLY_STAGES = frozenset({"scout", "ingenieria"})
 
-#: State folders vendor CLIs create in their working directory (sessions,
-#: memory, caches). Untracked files there are the read-only stage's own CLI
-#: noise, never stage work: the guard below ignores them and stage close
-#: removes the ones the stage created. A tracked file inside one is real
-#: repository content (repos version .claude/skills) and still counts.
-_CLI_STATE_DIRS = frozenset(
-    {
-        ".claude",
-        ".codex",
-        ".cursor",
-        ".gemini",
-        ".grok",
-        ".kimi",
-        ".muse",
-        ".opencode",
-        ".qwen",
-    }
-)
+#: The CLI state prefixes live ONCE in workflow.CLI_STATE_PREFIXES,
+#: shared by the read-only fingerprint (R1), the stage-close cleanup
+#: (R2) and the common exclude (R4b). Untracked files under those
+#: prefixes are the read-only stage's own CLI noise, never stage work:
+#: the guard below ignores them and stage close removes the ones the
+#: stage created. Anything else untracked — a new .claude/skills file,
+#: .cursor/, .opencode/ — is real work and still counts; a tracked file
+#: always counts.
 
 #: Durable outcomes that prove no driver is working the chain: the stopped
 #: ones the driver writes when it quits. Live review F8: the result file
@@ -241,12 +237,14 @@ def _porcelain_path(line):
     return path
 
 
+def _is_cli_state_path(relative):
+    """True when a repo-relative path sits under a CLI state prefix."""
+    return any(relative.startswith(prefix) for prefix in _CLI_STATE_PREFIXES)
+
+
 def _is_cli_state_untracked(line):
-    """True for an untracked (``??``) path under a CLI state folder."""
-    return (
-        line.startswith("?? ")
-        and _porcelain_path(line).split("/", 1)[0] in _CLI_STATE_DIRS
-    )
+    """True for an untracked (``??``) path under a CLI state prefix."""
+    return line.startswith("?? ") and _is_cli_state_path(_porcelain_path(line))
 
 
 def _workspace_fingerprint(repository):
@@ -298,16 +296,18 @@ def _cli_state_untracked(repository):
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
     if status.returncode != 0:
         return None
     return {
         entry[3:]
         for entry in status.stdout.split("\0")
-        if entry[:3] in {"?? ", "!! "} and entry[3:].split("/", 1)[0] in _CLI_STATE_DIRS
+        if entry[:3] in {"?? ", "!! "} and _is_cli_state_path(entry[3:])
     }
 
 
