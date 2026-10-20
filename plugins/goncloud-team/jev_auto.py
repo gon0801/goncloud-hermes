@@ -36,8 +36,9 @@ Encargo H-jev-hermes (el esquema de OpenClaw, por codigo y no por SOUL): en el
 mismo gancho, y en paralelo a skill_select, JEV rutea el mensaje (claw directo,
 un especialista o la cadena de ingenieria) y la linea "Jev sugiere: X (conf)"
 entra al contexto; las tarjetas de especialista y las etapas de cadena
-Goncloud que terminaron desde el turno anterior (incluido blocked) traen su
-"Jev cierre: X (conf)". Confianza >= 0.85 se sigue, debajo decide claw; JEV
+Goncloud que terminaron desde el turno anterior traen su "Jev cierre: X
+(conf)": un completed solo con reporte (y solo puede salir quedo/corregir)
+y un blocked (corregir/bloqueado). Confianza >= 0.85 se sigue, debajo decide claw; JEV
 con tope de 2 s y fail-open (jev_decisiones.py).
 """
 

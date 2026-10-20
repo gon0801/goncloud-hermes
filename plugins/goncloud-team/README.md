@@ -48,7 +48,10 @@ Durably enforced by the database graph:
   bot-chat, kanban or subagents): the suggested skill rides the turn context
   as a `JEV skill_select: ...` line — the old rule "consult before loading a
   skill" becomes "the platform already consulted: use the context's
-  suggestion" — and a `transform_llm_output` hook appends a `JEV: ...` footer
+  suggestion" — with fit >= `UMBRAL_SKILL_FIT` (0.6) the line says
+  `(cárgala)` and the footer is `JEV: X`; below that (or with no fit) the
+  line says `posible X (fit …): decide tú` and the footer marks it
+  `JEV: X? (dudosa)` — and a `transform_llm_output` hook appends a `JEV: ...` footer
   to that same turn's reply, once per turn and switchable off with the
   plugin config key `jev_auto_visible` or the `GONCLOUD_JEV_AUTO_VISIBLE`
   variable (on by default, same `false`/`0`/`no`/`off` parsing for both).
@@ -61,16 +64,19 @@ Durably enforced by the database graph:
   fail-open with a bounded reason), `JEV_TYPESAFE_API_KEY` resolves through
   `agent.secret_scope.get_secret` and only ever travels to the child
   environment, and each consult lands in `<claw home>/jev/consultas.jsonl`
-  with no message text (just its length and a short sha256) and no key.
+  with no message text (just its length and a short sha256), no key, and
+  the router's `gate`/`fit` fields.
 - the same hook also routes the message (claw direct, one of the specialists,
   or the engineering chain) in parallel with `skill_select` and adds
   `Jev sugiere: X (conf)`; Goncloud stage cards and specialist cards that
-  finished (completed or blocked) since the previous turn add
-  `Jev cierre: X (conf)` (quedo/corregir/bloqueado, cursor in
+  finished since the previous turn add `Jev cierre: X (conf)`: a completed
+  card only when it left a report (and it can only come out
+  quedo/corregir), a blocked card as corregir/bloqueado (cursor in
   `<claw home>/jev/cierre-cursor.json`). Confidence >= 0.85 is followed, below
   it claw decides. Every JEV call has a hard 2 s cap, no retries, and fails
-  open; each decision is one line in `<claw home>/jev/decisiones.jsonl` (ids
-  and message length only, output, confidence, latency, error).
+  open; each decision is one line in `<claw home>/jev/decisiones.jsonl`
+  (`input` capped at 200 redacted chars and `rawLen`, output, confidence,
+  latency, error).
 
 ### JEV tanda 2: todos los perfiles (David 2026-10-19)
 
@@ -88,7 +94,7 @@ back. Which Hermes hook backs each point:
 
 Clean text: before any query `jev_texto.limpiar` keeps only the current user
 message (no `[Replying to: ..]`, media/system notes, `[Sender]`, Telegram
-headers, fenced metadata blocks, `System:` or date lines, nor our own
+headers, fenced metadata blocks, nor our own
 `JEV skill_select:`/`Jev sugiere:` lines). `decisiones.jsonl` records
 `input` (first 200 chars, redacted) and `rawLen` (length before cleaning).
 Savings: texts under 15 characters skip JEV, and the same question is not

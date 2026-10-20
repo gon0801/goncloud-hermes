@@ -275,6 +275,13 @@ class BucleFueraDeChatTests(Base):
         self.esperar(auto)
         self.assertEqual(len(jev.llamadas), 2 * jev_auto.TOPE_BUCLES_POR_TURNO)
 
+    def test_el_libro_de_lineas_tambien_se_poda(self):
+        auto = self.auto("claw", Falso({"bucle": ("avanza", 0.99)}))
+        for n in range(40):
+            auto._lineas[(f"s{n}", "t")] = ["Jev sugiere: claw (90%)"]
+        auto._podar()
+        self.assertLessEqual(len(auto._lineas), 16)
+
     def test_los_libros_de_bucle_no_crecen_sin_tope(self):
         auto = self.auto("claw", Falso({"bucle": ("avanza", 0.99)}))
         for n in range(40):

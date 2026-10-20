@@ -6,6 +6,10 @@ la base real tiene `payload` — las pruebas pasaban y en vivo todo start con
 una cadena parada tronaba (`no column named payload_json`). La copia del
 esquema real vive en tests/fixtures/kanban_schema_real.json; si el doble se
 desalinea otra vez, esto falla en CI.
+
+El doble se instala con hermes_falso (por modulo, sin sys.path): dejarlo en
+sys.path/sys.modules haria que test_sistema_agentes_kanban_real creyera que
+hay hermes real y corriera contra el doble.
 """
 
 import json
@@ -15,11 +19,16 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "tests" / "fake_hermes_cli"))
 sys.path.insert(0, str(REPO / "tests"))
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
-from hermes_cli.kanban_db_connect import connect  # noqa: E402
+import hermes_falso  # noqa: E402
+
+hermes_falso.instalar()
+try:
+    from hermes_cli.kanban_db_connect import connect  # noqa: E402
+finally:
+    hermes_falso.desinstalar()
 
 FIXTURE = REPO / "tests" / "fixtures" / "kanban_schema_real.json"
 
