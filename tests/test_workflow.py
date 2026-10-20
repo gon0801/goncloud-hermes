@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -33,6 +34,20 @@ from workflow import (  # noqa: E402
     WorkflowError,
     WorkflowService,
 )
+
+if "goncloud_team" not in sys.modules:
+    import importlib.util
+
+    _SPEC = importlib.util.spec_from_file_location(
+        "goncloud_team",
+        PLUGIN_DIR / "__init__.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    _PLUGIN = importlib.util.module_from_spec(_SPEC)
+    sys.modules["goncloud_team"] = _PLUGIN
+    _SPEC.loader.exec_module(_PLUGIN)
+
+from goncloud_team import schemas as schemas_module  # noqa: E402
 
 
 SOURCES = [
@@ -540,6 +555,29 @@ class WorkflowTestCase(unittest.TestCase):
                 if task.idempotency_key == f"goncloud-consult:{scout_id}:txn-boundary"
             ]
             self.assertEqual(len(matching), 1)
+
+
+class SchemaTextTests(unittest.TestCase):
+    # F23 (#44) — r6 eliminó la cola: ningún schema promete encolar.
+    def test_no_schema_promises_a_queue_that_no_longer_exists(self) -> None:
+        for name in dir(schemas_module):
+            if not name.isupper():
+                continue
+            schema = getattr(schemas_module, name)
+            if not isinstance(schema, dict):
+                continue
+            text = json.dumps(schema, ensure_ascii=False).lower()
+            self.assertNotIn("queues behind", text, name)
+            self.assertNotIn("queued behind", text, name)
+
+    # F16 (#53) — repository se exige contra el workspace de la CADENA
+    # (su worktree), no contra el de la tarjeta de etapa.
+    def test_subscription_run_repository_names_the_chain_workspace(self) -> None:
+        description = schemas_module.SUBSCRIPTION_RUN["parameters"]["properties"][
+            "repository"
+        ]["description"]
+        self.assertNotIn("stage workspace", description)
+        self.assertIn("chain", description)
 
 
 class SpecialistRolesTests(unittest.TestCase):

@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import local_orchestrator as local_orchestrator_module  # noqa: E402
 import entrega_pr as entrega_pr_module  # noqa: E402
+import workflow as workflow_module  # noqa: E402
 from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
@@ -664,6 +665,28 @@ class DriverBootstrapTests(unittest.TestCase):
         result = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual(result["stop_after"], "scout")
+
+    # F21 (#44) — un resume busy NO se vuelca al fichero de resultado:
+    # busy no es outcome de parada y pisaría la marca del driver vivo.
+    def test_a_busy_resume_never_overwrites_the_result_file(self):
+        (self.plugin / "local_orchestrator.py").write_text(
+            "class LocalOrchestrator:\n"
+            "    def resume(self, workflow_id, stop_after=None, launch_run_id=None):\n"
+            "        return {'workflow_id': workflow_id, 'outcome': 'busy',\n"
+            "                'busy': True, 'cadena_viva': 'otra'}\n",
+            encoding="utf-8",
+        )
+        marca = {"workflow_id": "t_boot", "outcome": "running", "run_id": "vivo"}
+        self.out.write_text(json.dumps(marca), encoding="utf-8")
+
+        run = self.run_driver()
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            json.loads(self.out.read_text(encoding="utf-8")),
+            marca,
+            "the live driver's mark survives a busy relaunch",
+        )
 
     def test_an_unloadable_driver_still_leaves_an_error_result(self):
         # H45 F5: el resultado va anidado en goncloud-local como en
@@ -2974,6 +2997,46 @@ class RetryAndQueueTests(_OrchestratorHarness):
         attempts = self.router.store.stage_attempts(first["workflow_id"], scout_id)
         self.assertEqual(len(attempts), 1, "the router sees only the new generation")
 
+    # F21 (#44) — el busy de resume nombra la cadena VIVA, no la que se
+    # relanza, y no se escribe como marca de la relanzada.
+    def test_resume_busy_names_the_live_chain_not_the_relaunched_one(self):
+        first = self.paused()
+        contexto = self.orchestrator._context(first["workflow_id"])
+        with (
+            patch.object(
+                LocalOrchestrator, "_live_worker", return_value="cadena-viva-otra"
+            ),
+            patch.object(LocalOrchestrator, "_context", return_value=contexto),
+        ):
+            result = self.orchestrator.resume(first["workflow_id"], home=self.root)
+        self.assertEqual(result["outcome"], "busy")
+        self.assertEqual(result["cadena_viva"], "cadena-viva-otra")
+        self.assertIn("cadena-viva-otra", result["mensaje"])
+
+    # F22 (#44) — si abrir la generación falla, la etapa sigue blocked:
+    # la generación se abre ANTES del unblock, nunca después.
+    def test_a_failed_generation_opening_leaves_the_stage_blocked(self):
+        self.responses["scout"] = fenced(envelope(status="blocked"))
+        first = self.start()
+        self.assertEqual(first["outcome"], "blocked")
+        scout_id = first["stages"]["scout"]["id"]
+        with patch.object(
+            SubscriptionStateStore,
+            "open_generation",
+            side_effect=RuntimeError("store caido"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.orchestrator.resume(first["workflow_id"], home=self.root)
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, scout_id).status,
+                "blocked",
+                "no unblock without its new generation",
+            )
+        self.assertEqual(
+            self.router.store.current_generation(first["workflow_id"], scout_id), 0
+        )
+
     def test_the_retry_never_touches_done_stages_or_the_review_ceiling(self):
         self.reviews = [{"decision": "reject", "severity": "high"}] * 2
         first = self.start()
@@ -3534,9 +3597,12 @@ class RetryAndQueueTests(_OrchestratorHarness):
     # pid reciclado (dueño nacido después de la marca) lee muerto.
     def test_the_report_signs_started_at_and_a_recycled_pid_reads_dead(self):
         first = self.paused()
+        # F24: dos instantes alrededor de la llamada, no un now() suelto.
+        antes = datetime.now(timezone.utc).replace(microsecond=0)
         self.orchestrator._report(
             first["workflow_id"], "running", home=self.root, run_id="busy-run"
         )
+        despues = datetime.now(timezone.utc).replace(microsecond=0)
         written = json.loads(
             (self.root / "goncloud-local" / f"{first['workflow_id']}.json").read_text(
                 encoding="utf-8"
@@ -3544,11 +3610,11 @@ class RetryAndQueueTests(_OrchestratorHarness):
         )
         self.assertEqual(written["outcome"], "running")
         self.assertEqual(written["pid"], os.getpid())
-        self.assertEqual(
-            written["started_at"],
-            datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "the same stamp format _running_mark uses",
-        )
+        # F24: la marca cae entre los dos instantes que rodean la llamada;
+        # comparar contra un now() recalculado falla al cruzar el segundo.
+        marca = datetime.fromisoformat(written["started_at"])
+        self.assertLessEqual(antes, marca, "the same stamp _running_mark uses")
+        self.assertLessEqual(marca, despues)
 
         # A live pid whose owner was born AFTER the mark: recycled, dead.
         live = self.sleeper()
@@ -4592,6 +4658,234 @@ class ChainWorktreeTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
         self.assertIn("ignorados", receipt["worktree"]["reason"])
         self.assertTrue(worktree.is_dir())
 
+    # F5 (#53) — el perdedor de la carrera de worktree add reintenta sin
+    # -b sobre la rama que el ganador acaba de crear, no aborta.
+    def test_worktree_add_loser_retries_without_minus_b(self):
+        sha = self._git_repo()
+        real_run = subprocess.run
+        estado = {"robada": False}
+
+        def roba_rama(*args, **kwargs):
+            cmd = [str(a) for a in args[0]]
+            if (
+                not estado["robada"]
+                and "worktree" in cmd
+                and "add" in cmd
+                and "-b" in cmd
+            ):
+                estado["robada"] = True
+                rama = cmd[cmd.index("-b") + 1]
+                real_run(
+                    ["git", "-C", str(self.repo), "branch", rama, sha],
+                    check=True,
+                    capture_output=True,
+                )
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr=f"fatal: '{rama}' already exists"
+                )
+            return real_run(*args, **kwargs)
+
+        with patch.object(workflow_module.subprocess, "run", roba_rama):
+            creado = self.service()._ensure_worktree("wf-carrera", str(self.repo), sha)
+        self.assertTrue(estado["robada"])
+        self.assertIsNotNone(creado)
+        self.assertTrue(Path(creado[0]).is_dir(), "the loser reuses the worktree")
+
+    # F7 (#53) — una revisión que empieza por '-' no es una opción de git.
+    def test_a_dash_revision_is_data_not_a_git_option(self):
+        self._git_repo()
+        with self.assertRaises(WorkflowError) as ctx:
+            self.service()._ensure_worktree("wf-guion", str(self.repo), "-h")
+        self.assertIn("does not resolve", str(ctx.exception))
+
+    # F13 (#53) — solo "not a git repository" es no-git; otro fallo del
+    # probe (ownership, permisos) es error, no checkout original.
+    def test_probe_errors_other_than_not_a_repo_fail_closed(self):
+        self._git_repo()
+
+        def dubious(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args[0] if args else [],
+                128,
+                stdout="",
+                stderr="fatal: detected dubious ownership in repository",
+            )
+
+        with patch.object(workflow_module.subprocess, "run", dubious):
+            with self.assertRaises(WorkflowError):
+                self.service()._ensure_worktree("wf-dubious", str(self.repo), "HEAD")
+
+        def no_repo(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args[0] if args else [],
+                128,
+                stdout="",
+                stderr="fatal: not a git repository (or any parent): .git",
+            )
+
+        with patch.object(workflow_module.subprocess, "run", no_repo):
+            self.assertIsNone(
+                self.service()._ensure_worktree("wf-nogit", str(self.repo), "HEAD")
+            )
+
+    # F17 (#53) — relanzar una cadena ENTREGADA cuyo worktree falla no
+    # archiva su raíz done: solo 'archived' cuenta como inexistente.
+    def test_relaunching_a_delivered_chain_failure_keeps_its_root_done(self):
+        sha = self._git_repo()
+        first = self.start(request_key="entregada", revision=sha)
+        self.assertEqual(first["outcome"], "delivered")
+        with connect_closing(self.db) as conn:
+            self.assertEqual(get_task(conn, first["workflow_id"]).status, "done")
+
+        bloqueo = self.root / "bloqueo"
+        bloqueo.write_text("archivo\n", encoding="utf-8")
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": str(bloqueo / "wt")}):
+            with self.assertRaises(WorkflowError):
+                self.orchestrator.create(
+                    request_key="entregada",
+                    repository=str(self.repo),
+                    revision=sha,
+                    instruction="Inspect this repository without external actions.",
+                    sources=SOURCES,
+                    max_steps=17,
+                )
+        with connect_closing(self.db) as conn:
+            self.assertEqual(
+                get_task(conn, first["workflow_id"]).status,
+                "done",
+                "a delivered root is never archived by a failed relaunch",
+            )
+
+    # F19 (#53) — un RuntimeError al crear el worktree (p. ej. bucle de
+    # symlinks en resolve) también archiva la raíz recién creada.
+    def test_a_runtime_error_creating_the_worktree_archives_the_fresh_root(self):
+        sha = self._git_repo()
+        # Un expanduser/resolve que revienta con RuntimeError (bucle de
+        # symlinks, '~' sin home): no es WorkflowError/OSError/Subprocess.
+        real_expand = Path.expanduser
+
+        def explota(ruta):
+            if str(ruta).startswith("~"):
+                raise RuntimeError("no se pudo expandir '~'")
+            return real_expand(ruta)
+
+        with patch.dict(os.environ, {"GONCLOUD_WORKTREE_ROOT": "~/wt-rama"}):
+            with patch.object(Path, "expanduser", explota):
+                with self.assertRaises(RuntimeError):
+                    self.start(request_key="runtime-error", revision=sha)
+        with connect_closing(self.db) as conn:
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+        self.assertEqual(len(roots), 1)
+        self.assertEqual(roots[0].status, "archived", "the fresh root is archived")
+
+    # F18 (#53) — si git status falla, el worktree se conserva: un stdout
+    # vacío con código != 0 no es "limpio".
+    def test_cleanup_keeps_the_worktree_when_git_status_fails(self):
+        sha = self._git_repo()
+        chain = self.paused(request_key="status-falla", revision=sha)
+        worktree = chain["worktree"]
+
+        def fake_run(cmd, **kwargs):
+            args = [str(a) for a in cmd]
+            if "rev-list" in args:
+                return subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+            if "status" in args:
+                return subprocess.CompletedProcess(
+                    args, 128, stdout="", stderr="fatal: status roto"
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.object(workflow_module.subprocess, "run", fake_run):
+            info = self.service().cleanup_chain_worktree(
+                {
+                    "worktree": worktree,
+                    "worktree_base": sha,
+                    "repository": str(self.repo),
+                },
+                chain["workflow_id"],
+            )
+        self.assertFalse(info["removed"])
+        self.assertIn("status", info["reason"])
+        self.assertTrue(Path(worktree).is_dir())
+
+    # F7 (#66) — un exclude no-UTF-8 no tumba el start ni deja el repo
+    # ocupado: se lee con surrogateescape y sus bytes se conservan.
+    def test_a_non_utf8_exclude_does_not_break_the_start(self):
+        sha = self._git_repo()
+        exclude = self._common_exclude_path()
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_bytes("ignorado.txt\n\xff\xfe binario\n".encode("latin-1"))
+
+        result = self.start(request_key="exclude-noutf8", revision=sha)
+
+        self.assertEqual(result["outcome"], "delivered")
+        self.assertIn(b"\xff\xfe", exclude.read_bytes())
+
+    # F15 (#53) — la migración de hijas es atómica con el cuerpo de la
+    # raíz: si una hija falla, la raíz no queda apuntando al worktree.
+    def test_child_migration_rolls_back_with_the_root_body(self):
+        # Cadena previa sin worktree: nace con el repo aún no-git sobre la
+        # revisión que el repo git tendrá al volver su .git.
+        sha = self._git_repo()
+        git_dir = self.repo / ".git"
+        git_dir.rename(self.root / "git-bak")
+        primero = self.start(revision=sha)
+        self.assertEqual(primero["outcome"], "delivered")
+        (self.root / "git-bak").rename(git_dir)
+        with connect_closing(self.db) as conn:
+            hijos = [stage["id"] for stage in primero["stages"].values()]
+            conn.execute(
+                "CREATE TRIGGER goncloud_falla_hija BEFORE UPDATE OF body "
+                f"ON tasks WHEN OLD.id = '{hijos[2]}' "
+                "BEGIN SELECT RAISE(ABORT, 'boom hija'); END"
+            )
+            conn.commit()
+        with self.assertRaises(Exception):
+            self.orchestrator.create(
+                request_key="local-1",
+                repository=str(self.repo),
+                revision=sha,
+                instruction="Inspect this repository without external actions.",
+                sources=SOURCES,
+                max_steps=17,
+            )
+        with connect_closing(self.db) as conn:
+            conn.execute("DROP TRIGGER IF EXISTS goncloud_falla_hija")
+            conn.commit()
+            raiz = get_task(conn, primero["workflow_id"])
+        self.assertNotIn('"worktree"', raiz.body or "")
+
+    # F8 (#66) — la descomposición y el reapunte de hijas son UNA
+    # transacción: si el reapunte falla, no quedan hijas a medio apuntar.
+    def test_decomposition_and_child_repoint_are_one_transaction(self):
+        sha = self._git_repo()
+        with connect_closing(self.db) as conn:
+            conn.execute(
+                "CREATE TRIGGER goncloud_falla_reapunte BEFORE UPDATE OF "
+                "workspace_path ON tasks "
+                "BEGIN SELECT RAISE(ABORT, 'boom reapunte'); END"
+            )
+            conn.commit()
+        with self.assertRaises(Exception):
+            self.start(request_key="atomica", revision=sha)
+        with connect_closing(self.db) as conn:
+            conn.execute("DROP TRIGGER IF EXISTS goncloud_falla_reapunte")
+            conn.commit()
+            roots = [
+                task
+                for task in list_tasks(conn, include_archived=True)
+                if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
+            ]
+            self.assertEqual(len(roots), 1)
+            self.assertIsNone(
+                WorkflowService._decomposed_child_ids(conn, roots[0].id),
+                "no half-repointed children survive a failed start",
+            )
+
     # R4 — el exclude del git común trae las carpetas de estado CLI una
     # sola vez aunque se creen dos cadenas, y git status no las ve.
     def test_el_exclude_comun_ignora_el_estado_cli_una_sola_vez(self):
@@ -4873,9 +5167,17 @@ class ReadOnlyHarnessStateTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness
         ):
             self.assertIsNone(local_orchestrator_module._cli_state_untracked(self.repo))
 
-    # L3 — un symlink dentro del estado que apunta fuera del repo: la
-    # limpieza no sigue el enlace y el archivo externo sobrevive.
+    # L3 + cr8101 + F4/F10 (#66) — un symlink dentro del estado que
+    # apunta fuera del repo: la limpieza quita el ENLACE sin seguirlo y
+    # el archivo externo sobrevive. El soporte de symlinks se comprueba
+    # ANTES de start: un skipTest dentro del runner se lo traga run_stage.
     def test_un_enlace_en_el_estado_no_borra_el_archivo_externo(self):
+        sondeo = self.root / "sondeo-enlace"
+        try:
+            sondeo.symlink_to(self.root)
+        except OSError as exc:
+            self.skipTest(f"sin symlinks en esta plataforma: {exc}")
+        sondeo.unlink()
         sha = self._git_repo()
         externo = self.root / "fuera-del-repo.txt"
         externo.write_text("no tocar\n", encoding="utf-8")
@@ -4885,10 +5187,7 @@ class ReadOnlyHarnessStateTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness
             if request.role == "scout":
                 destino = Path(request.workspace) / ".claude" / "sessions" / "evil"
                 destino.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    destino.symlink_to(externo)
-                except OSError as exc:
-                    self.skipTest(f"sin symlinks en esta plataforma: {exc}")
+                destino.symlink_to(externo)
             return original(request, route)
 
         self.invoke = invoke
@@ -4896,8 +5195,70 @@ class ReadOnlyHarnessStateTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness
         result = self.start(revision=sha, stop_after="scout")
 
         self.assertEqual(result["outcome"], "paused")
+        enlace = Path(result["worktree"]) / ".claude" / "sessions" / "evil"
+        self.assertFalse(os.path.lexists(enlace), "the new link itself is cleaned")
         self.assertTrue(externo.exists(), "the file outside the repo survives")
         self.assertEqual(externo.read_text(encoding="utf-8"), "no tocar\n")
+
+    # F4 (#66) — el guard de ruta sí se ejercita: si la CARPETA de estado
+    # es un symlink a un directorio externo, el archivo externo al que
+    # apunta la ruta reportada no se borra (sin el guard, unlink lo
+    # seguiría y lo eliminaría).
+    def test_la_carpeta_de_estado_enlazada_fuera_no_pierde_su_contenido(self):
+        self._git_repo()
+        externo_dir = self.root / "externo-dir"
+        externo_dir.mkdir()
+        precioso = externo_dir / "evil"
+        precioso.write_text("no tocar\n", encoding="utf-8")
+        sesiones = self.repo / ".claude" / "sessions"
+        sesiones.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            sesiones.symlink_to(externo_dir, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"sin symlinks en esta plataforma: {exc}")
+        with patch.object(
+            local_orchestrator_module,
+            "_cli_state_untracked",
+            return_value={".claude/sessions/evil"},
+        ):
+            local_orchestrator_module._clean_new_cli_state(
+                self.repo, {".claude/sessions/evil"}
+            )
+            local_orchestrator_module._clean_new_cli_state(self.repo, set())
+        self.assertTrue(precioso.exists(), "the outside file survives the guard")
+        self.assertEqual(precioso.read_text(encoding="utf-8"), "no tocar\n")
+
+    # cr8103 (#66) — la salida task_failure del router también limpia el
+    # estado CLI creado en ese intento, no solo las salidas que llegan
+    # al final de run_stage.
+    def test_task_failure_tambien_limpia_el_estado_cli_del_intento(self):
+        sha = self._git_repo()
+        created = self.orchestrator.create(
+            request_key="local-1",
+            repository=str(self.repo),
+            revision=sha,
+            instruction="Inspect this repository without external actions.",
+            sources=SOURCES,
+            max_steps=17,
+        )
+        worktree = Path(created["worktree"])
+
+        def runner(service, **assignment):
+            estado = Path(assignment["repository"]) / ".claude" / "sessions" / "x"
+            estado.parent.mkdir(parents=True, exist_ok=True)
+            estado.write_text("estado del CLI\n", encoding="utf-8")
+            return {"adapter": "router", "failure": "task_failure"}
+
+        self.orchestrator.stage_runner = runner
+        result = self.orchestrator.resume(
+            created["workflow_id"], stop_after="scout", home=self.root
+        )
+
+        self.assertEqual(result["outcome"], "running")
+        self.assertFalse(
+            (worktree / ".claude" / "sessions" / "x").exists(),
+            "CLI state from a task_failure attempt is cleaned too",
+        )
 
     # (2) — editar un archivo real sigue bloqueando (control).
     def test_editar_un_archivo_real_si_bloquea(self):

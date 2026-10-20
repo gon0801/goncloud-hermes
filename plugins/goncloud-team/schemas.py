@@ -143,8 +143,9 @@ LOCAL_CLOSE = {
         "mark whose pid is gone counts as a dead driver, and no "
         "live subscription lease; a running chain is refused. Note that "
         "WorkflowService.start now frees a stopped chain by itself and "
-        "queues behind a live one, so an explicit close is only needed to "
-        "abandon a chain. Archives the "
+        "answers busy without creating anything behind a live one (there "
+        "is no queue: relaunch when its aviso arrives), so an explicit "
+        "close is only needed to abandon a chain. Archives the "
         "director root and every stage that is not done with the native "
         "Kanban archive, keeps the done stages as evidence, records the "
         "reason as a comment on the root, and also frees a root stuck in "
@@ -291,7 +292,7 @@ SUBSCRIPTION_RUN = {
             "repository": {
                 "type": "string",
                 "description": (
-                    "Absolute repository path; must match the stage workspace. "
+                    "Absolute repository path; must match the chain workspace. "
                     "For chains with a worktree, this is the chain's worktree "
                     "path (branch cadena/<workflow_id>) — never the original "
                     "checkout."

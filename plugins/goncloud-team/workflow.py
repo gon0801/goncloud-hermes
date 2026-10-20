@@ -215,7 +215,14 @@ def _exclude_cli_state_dirs(repository: str) -> None:
     exclude = common / "info" / "exclude"
     try:
         exclude.parent.mkdir(parents=True, exist_ok=True)
-        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        # F7 (#66): un exclude editado en otra codificación (cp1252 en
+        # Windows) no debe tumbar el start: surrogateescape conserva
+        # sus bytes al leer y al reescribir.
+        text = (
+            exclude.read_text(encoding="utf-8", errors="surrogateescape")
+            if exclude.exists()
+            else ""
+        )
     except OSError:
         return
     present = text.splitlines()
@@ -232,7 +239,9 @@ def _exclude_cli_state_dirs(repository: str) -> None:
             return
         try:
             exclude.write_text(
-                "".join(f"{line}\n" for line in migrated), encoding="utf-8"
+                "".join(f"{line}\n" for line in migrated),
+                encoding="utf-8",
+                errors="surrogateescape",
             )
         except OSError:
             return
@@ -242,7 +251,7 @@ def _exclude_cli_state_dirs(repository: str) -> None:
     chunk += _CLI_STATE_EXCLUDE_MARKER + "\n"
     chunk += "".join(f"{line}\n" for line in missing)
     try:
-        with exclude.open("a", encoding="utf-8") as handle:
+        with exclude.open("a", encoding="utf-8", errors="surrogateescape") as handle:
             handle.write(chunk)
     except OSError:
         return
@@ -616,12 +625,18 @@ class WorkflowService:
                 for active in list_tasks(conn, include_archived=True):
                     if not (active.body or "").startswith(_CONTRACT_MARKER):
                         continue
-                    if active.status in {"done", "archived"}:
-                        continue
-                    if active.idempotency_key == idempotency_key:
-                        # Review F12: la raíz ya existía (relanzamiento) —
-                        # si el worktree falla, esta raíz NO se archiva.
+                    if (
+                        active.idempotency_key == idempotency_key
+                        and active.status != "archived"
+                    ):
+                        # Review F12 + F17 (#53): la raíz ya existía
+                        # (relanzamiento, también de una cadena ENTREGADA:
+                        # create_task deduplica contra toda no archivada)
+                        # — si el worktree falla, esta raíz NO se archiva.
+                        # Solo 'archived' cuenta como "no existe".
                         own_existing = active.id
+                        continue
+                    if active.status in {"done", "archived"}:
                         continue
                     try:
                         active_repo = (
@@ -669,7 +684,10 @@ class WorkflowService:
             # queda libre y el siguiente start arranca (no busy).
             try:
                 created = self._ensure_worktree(root_id, str(repo), revision)
-            except (WorkflowError, subprocess.SubprocessError, OSError):
+            except Exception:
+                # F19 (#53): también un RuntimeError (bucle de symlinks en
+                # resolve, '~' sin home en expanduser) deja la raíz recién
+                # creada archivada, como el cleanup de _auto_close.
                 # Review F12: archive_task abre su propia transacción (no se
                 # anida); SOLO se archiva la raíz que ESTE start acaba de
                 # crear — una preexistente (relanzamiento de una cadena
@@ -693,52 +711,72 @@ class WorkflowService:
                 # MOMENTO (no la rama por defecto del remoto).
                 stored["base_branch"] = self._rama_base_del_repo(str(repo))
                 if migrated:
+                    # F15 (#53): raíz e hijas en LA MISMA transacción: un
+                    # fallo intermedio no deja la raíz en el worktree con
+                    # hijas en el checkout original.
                     with write_txn(conn):
                         conn.execute(
                             "UPDATE tasks SET body = ? WHERE id = ?",
                             (_contract_body(stored), root_id),
                         ).close()
-                    # Review F10/F9: las tarjetas hijas de una cadena
-                    # anterior conservaban el workspace original en su
-                    # cuerpo — apuntan al worktree de la cadena.
-                    for child_id in self._decomposed_child_ids(conn, root_id) or []:
-                        child = self._require_task(conn, child_id)
-                        if str(repo) in (child.body or ""):
-                            conn.execute(
-                                "UPDATE tasks SET body = ? WHERE id = ?",
-                                (
-                                    (child.body or "").replace(str(repo), worktree),
-                                    child_id,
-                                ),
-                            ).close()
+                        # Review F10/F9: las tarjetas hijas de una cadena
+                        # anterior conservaban el workspace original en su
+                        # cuerpo — apuntan al worktree de la cadena.
+                        for child_id in self._decomposed_child_ids(conn, root_id) or []:
+                            child = self._require_task(conn, child_id)
+                            if str(repo) in (child.body or ""):
+                                conn.execute(
+                                    "UPDATE tasks SET body = ? WHERE id = ?",
+                                    (
+                                        (child.body or "").replace(str(repo), worktree),
+                                        child_id,
+                                    ),
+                                ).close()
 
             child_ids = self._decomposed_child_ids(conn, root_id)
             if child_ids is None:
-                child_ids = decompose_triage_task(
-                    conn,
-                    root_id,
-                    root_assignee="claw",
-                    children=self._initial_children(root_id, stored),
-                    author=self.actor_role,
-                )
-                if child_ids is None:
-                    child_ids = self._decomposed_child_ids(conn, root_id)
+                # F8 (#66): descomposición y reapunte en UNA transacción:
+                # ninguna ventana en la que Hermes reclame una hija aún
+                # apuntando al checkout principal.
+                with write_txn(conn):
+                    child_ids = decompose_triage_task(
+                        conn,
+                        root_id,
+                        root_assignee="claw",
+                        children=self._initial_children(root_id, stored),
+                        author=self.actor_role,
+                    )
+                    if child_ids is None:
+                        child_ids = self._decomposed_child_ids(conn, root_id)
+                    if (
+                        worktree is not None
+                        and child_ids is not None
+                        and len(child_ids) == len(INITIAL_STAGES)
+                    ):
+                        for child_id in child_ids:
+                            conn.execute(
+                                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                                (worktree, child_id),
+                            ).close()
             if child_ids is None or len(child_ids) != len(INITIAL_STAGES):
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
                 )
-            if worktree is not None:
+            if worktree is not None and child_ids is not None:
                 # R5: Hermes copia el workspace_path de la raíz (creada con
                 # el repo, línea de create_task de la raíz) a cada hija en
                 # decompose_triage_task, y su worker corre donde la tarjeta
                 # apunta. No hay API de Hermes para pasarlo por hija, así
                 # que se reapunta la columna aquí, igual que la migración
-                # del cuerpo de arriba — la raíz se queda en el repo.
-                for child_id in child_ids:
-                    conn.execute(
-                        "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-                        (worktree, child_id),
-                    ).close()
+                # del cuerpo de arriba — la raíz se queda en el repo. En el
+                # camino nuevo ya corrió dentro de la transacción de arriba
+                # (F8); esto cubre las hijas preexistentes (relanzamiento).
+                with write_txn(conn):
+                    for child_id in child_ids:
+                        conn.execute(
+                            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                            (worktree, child_id),
+                        ).close()
             result = self._start_result(root_id, child_ids)
             if worktree is not None:
                 result["worktree"] = worktree
@@ -780,7 +818,15 @@ class WorkflowService:
             # que RESPONDE "no es repo git" (returncode != 0) conserva la
             # conducta de hoy (punto 4).
             raise WorkflowError(f"git probe failed for {repository}: {exc}") from exc
-        if probe.returncode != 0 or probe.stdout.strip() != "true":
+        if probe.returncode != 0:
+            # F13 (#53): solo "not a git repository" es no-git; cualquier
+            # otro fallo (dubious ownership, permisos, repo corrupto) es
+            # error — degradar al checkout original es fail-open.
+            detalle = (probe.stderr or probe.stdout or "").strip()
+            if "not a git repository" in detalle.lower():
+                return None
+            raise WorkflowError(f"git probe failed for {repository}: {detalle[:200]}")
+        if probe.stdout.strip() != "true":
             return None
         repo_path = Path(repository)
         configured = os.environ.get("GONCLOUD_WORKTREE_ROOT") or str(
@@ -803,7 +849,11 @@ class WorkflowService:
                 timeout=300,
             )
 
-        resolved = git("rev-parse", f"{revision}^{{commit}}")
+        # F7 (#53): la revisión del dueño es dato, nunca una opción
+        # (--verify + --end-of-options: el rev-parse pelado no lo acepta).
+        resolved = git(
+            "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}"
+        )
         if resolved.returncode != 0:
             # Review F8/F9: sin fallback silencioso a HEAD — la cadena
             # trabajaría en un baseline que el dueño no aprobó.
@@ -834,6 +884,18 @@ class WorkflowService:
                 base_sha,
             )
         if attempt.returncode != 0:
+            # F5 (#53): carrera entre dos starts con la misma clave: el
+            # ganador ya creó la ruta o la rama cuando el perdedor llega.
+            # Se revalida y se reintenta SIN -b; no se recrea nada.
+            if wt_path.is_dir() and (wt_path / ".git").exists():
+                _exclude_cli_state_dirs(repository)
+                return str(wt_path), base_sha
+            branch_now = git("rev-parse", "--verify", "--quiet", branch)
+            if branch_now.returncode == 0:
+                retry = git("worktree", "add", "--end-of-options", str(wt_path), branch)
+                if retry.returncode == 0:
+                    _exclude_cli_state_dirs(repository)
+                    return str(wt_path), base_sha
             raise WorkflowError(
                 "git worktree add failed for chain "
                 f"{root_id}: {(attempt.stderr or attempt.stdout).strip()[:300]}"
@@ -929,6 +991,10 @@ class WorkflowService:
         # con ellos no se quita (build/, cachés, secretos locales...). Se
         # conserva y el motivo lo dice.
         dirty = git("status", "--porcelain", "--ignored")
+        if dirty.returncode != 0:
+            # F18 (#53): un git status que falla no es un worktree limpio.
+            info["reason"] = "no se pudo comprobar con git status; se conserva"
+            return info
         if dirty.stdout.strip():
             info["reason"] = "tiene cambios sin commit o archivos ignorados"
             return info

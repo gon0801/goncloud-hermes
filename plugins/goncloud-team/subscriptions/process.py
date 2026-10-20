@@ -523,9 +523,16 @@ def probe_workspace():
     lets the vendor CLI drop its state folders (.claude/, .codex/, ...)
     into whatever checkout the host process happens to sit in.
     """
-    return tempfile.TemporaryDirectory(
-        prefix="goncloud-probe-", ignore_cleanup_errors=True
-    )
+    try:
+        return tempfile.TemporaryDirectory(
+            prefix="goncloud-probe-", ignore_cleanup_errors=True
+        )
+    except OSError as exc:
+        # F9 (#66): crear el directorio también es parte del probe; los
+        # callers solo traducen SubscriptionProcessError a no-ready.
+        raise SubscriptionProcessError(
+            f"could not create the probe workspace: {exc}"
+        ) from exc
 
 
 def run_cli(
