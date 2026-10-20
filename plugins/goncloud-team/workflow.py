@@ -735,29 +735,23 @@ class WorkflowService:
 
             child_ids = self._decomposed_child_ids(conn, root_id)
             if child_ids is None:
-                # F8 (#66): descomposición y reapunte en UNA transacción:
-                # ninguna ventana en la que Hermes reclame una hija aún
-                # apuntando al checkout principal.
-                with write_txn(conn):
-                    child_ids = decompose_triage_task(
-                        conn,
-                        root_id,
-                        root_assignee="claw",
-                        children=self._initial_children(root_id, stored),
-                        author=self.actor_role,
-                    )
-                    if child_ids is None:
-                        child_ids = self._decomposed_child_ids(conn, root_id)
-                    if (
-                        worktree is not None
-                        and child_ids is not None
-                        and len(child_ids) == len(INITIAL_STAGES)
-                    ):
-                        for child_id in child_ids:
-                            conn.execute(
-                                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-                                (worktree, child_id),
-                            ).close()
+                # NO envolver en write_txn: el Hermes real v0.22.0 abre
+                # decompose_triage_task con `with write_txn(conn):` SIN
+                # allow_nested (kanban_db_graph.py:113-116, "helpers that
+                # open their own write_txn must not be called in here") y
+                # write_txn lanza RuntimeError "already inside a
+                # transaction" al anidar sin opt-in
+                # (kanban_db_connect.py:1241-1260). Envolverla (F8 de
+                # H#66) hacía fallar toda cadena nueva en producción.
+                child_ids = decompose_triage_task(
+                    conn,
+                    root_id,
+                    root_assignee="claw",
+                    children=self._initial_children(root_id, stored),
+                    author=self.actor_role,
+                )
+                if child_ids is None:
+                    child_ids = self._decomposed_child_ids(conn, root_id)
             if child_ids is None or len(child_ids) != len(INITIAL_STAGES):
                 raise WorkflowError(
                     "workflow root exists without a complete native stage graph"
@@ -768,9 +762,9 @@ class WorkflowService:
                 # decompose_triage_task, y su worker corre donde la tarjeta
                 # apunta. No hay API de Hermes para pasarlo por hija, así
                 # que se reapunta la columna aquí, igual que la migración
-                # del cuerpo de arriba — la raíz se queda en el repo. En el
-                # camino nuevo ya corrió dentro de la transacción de arriba
-                # (F8); esto cubre las hijas preexistentes (relanzamiento).
+                # del cuerpo de arriba — la raíz se queda en el repo. El
+                # reapunte va DESPUÉS de decompose, en su propio write_txn
+                # (como en 875b7a7), nunca dentro de su transacción.
                 with write_txn(conn):
                     for child_id in child_ids:
                         conn.execute(

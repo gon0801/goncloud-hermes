@@ -308,7 +308,8 @@ def link_tasks(conn, parent_id, child_id, *, expected_child_run_id=None):
         raise ValueError("unknown task")
     if _habria_ciclo(conn, parent_id, child_id):
         raise ValueError("link would create a cycle")
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db.py:1580: write_txn(conn) sin allow_nested.
+    with write_txn(conn):
         _link(conn, parent_id, child_id)
         hijo = _task_row(conn, child_id)
         if hijo["status"] == "ready" and not _parents_satisfied(conn, child_id):
@@ -357,7 +358,8 @@ def complete_task(
     del summary, created_cards, expected_run_id, fire_lifecycle_hook, force
     if not _parents_satisfied(conn, task_id):
         return False
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db.py:2697: write_txn(conn) sin allow_nested.
+    with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return False
         ahora = int(time.time())
@@ -385,7 +387,8 @@ def block_task(conn, task_id, *, reason=None, kind=None, expected_run_id=None):
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db.py:3165: write_txn(conn) sin allow_nested.
+    with write_txn(conn):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'blocked'"
             " WHERE id = ? AND status IN ('running', 'ready')",
@@ -399,7 +402,8 @@ def block_task(conn, task_id, *, reason=None, kind=None, expected_run_id=None):
 
 def unblock_task(conn, task_id):
     """Referencia :3652: blocked -> ready; False en otro caso."""
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db.py:3585: write_txn(conn) sin allow_nested.
+    with write_txn(conn):
         cursor = conn.execute(
             "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'blocked'",
             (task_id,),
@@ -417,7 +421,8 @@ def claim_task(conn, task_id, *, claimer, expected_run_id=None):
     para reclamar (padres sin done, estado distinto de ready).
     """
     del expected_run_id
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db.py:2210: write_txn(conn) sin allow_nested.
+    with write_txn(conn):
         fila = _task_row(conn, task_id)
         if fila is None or fila["status"] != "ready":
             return None

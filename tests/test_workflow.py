@@ -22,13 +22,19 @@ from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 from hermes_cli.kanban_db import (  # noqa: E402
     add_comment,
+    block_task,
+    claim_task,
     complete_task,
+    create_task,
     get_task,
+    link_tasks,
     list_events,
     list_tasks,
     parent_ids,
+    unblock_task,
 )
-from hermes_cli.kanban_db_connect import connect_closing  # noqa: E402
+from hermes_cli.kanban_db_connect import connect_closing, write_txn  # noqa: E402
+from hermes_cli.kanban_db_graph import decompose_triage_task  # noqa: E402
 from workflow import (  # noqa: E402
     INITIAL_STAGES,
     WorkflowError,
@@ -555,6 +561,100 @@ class WorkflowTestCase(unittest.TestCase):
                 if task.idempotency_key == f"goncloud-consult:{scout_id}:txn-boundary"
             ]
             self.assertEqual(len(matching), 1)
+
+
+class HermesTxnContractTests(unittest.TestCase):
+    """Contrato transaccional del Hermes real v0.22.0 contra el doble.
+
+    decompose_triage_task abre ``with write_txn(conn):`` SIN allow_nested
+    (hermes_cli/kanban_db_graph.py:116, con el comentario de :113-114 de que
+    los helpers que abren su propio write_txn no deben llamarse dentro) y
+    write_txn lanza RuntimeError al anidar sin opt-in
+    (kanban_db_connect.py:1241-1260). El doble viejo abría con
+    allow_nested=True y no discriminaba: envolver decompose en un
+    write_txn propio pasaba en tests y fallaba siempre en producción.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, self.tmp)
+        self.db_path = Path(self.tmp.name) / "kanban.db"
+
+    def _triage_root(self, conn) -> str:
+        return create_task(
+            conn,
+            title="root",
+            assignee="claw",
+            created_by="claw",
+            workspace_kind="dir",
+            workspace_path="/tmp",
+            triage=True,
+        )
+
+    def _children(self):
+        return [
+            {"title": "uno", "assignee": "claw", "parents": ()},
+            {"title": "dos", "assignee": "claw", "parents": (0,)},
+        ]
+
+    def test_decompose_inside_write_txn_raises_runtime_error(self) -> None:
+        with connect_closing(self.db_path) as conn:
+            root_id = self._triage_root(conn)
+            with self.assertRaisesRegex(RuntimeError, "already inside a transaction"):
+                with write_txn(conn):
+                    decompose_triage_task(
+                        conn,
+                        root_id,
+                        root_assignee="claw",
+                        children=self._children(),
+                        author="claw",
+                    )
+
+    def test_decompose_outside_write_txn_still_works(self) -> None:
+        with connect_closing(self.db_path) as conn:
+            root_id = self._triage_root(conn)
+            ids = decompose_triage_task(
+                conn,
+                root_id,
+                root_assignee="claw",
+                children=self._children(),
+                author="claw",
+            )
+            self.assertIsNotNone(ids)
+            self.assertEqual(len(ids), 2)
+
+    def test_non_nested_helpers_raise_inside_write_txn(self) -> None:
+        # Real v0.22.0 sin allow_nested: link_tasks kanban_db.py:1580,
+        # complete_task :2697, block_task :3165, unblock_task :3585,
+        # claim_task :2210. create_task :1278 y add_comment :1706 son
+        # las primitivas opt-in (allow_nested=True) y sí componen.
+        with connect_closing(self.db_path) as conn:
+            a = create_task(conn, title="a", assignee="claw", created_by="claw")
+            b = create_task(conn, title="b", assignee="claw", created_by="claw")
+            with write_txn(conn):
+                with self.assertRaisesRegex(
+                    RuntimeError, "already inside a transaction"
+                ):
+                    link_tasks(conn, a, b)
+                with self.assertRaisesRegex(
+                    RuntimeError, "already inside a transaction"
+                ):
+                    complete_task(conn, a, summary="x")
+                with self.assertRaisesRegex(
+                    RuntimeError, "already inside a transaction"
+                ):
+                    block_task(conn, a, reason="x")
+                with self.assertRaisesRegex(
+                    RuntimeError, "already inside a transaction"
+                ):
+                    unblock_task(conn, a)
+                with self.assertRaisesRegex(
+                    RuntimeError, "already inside a transaction"
+                ):
+                    claim_task(conn, a, claimer="claw")
+                # Opt-in del real: no lanzan anidadas.
+                create_task(conn, title="c", assignee="claw", created_by="claw")
+                add_comment(conn, a, "claw", "nested ok")
 
 
 class SchemaTextTests(unittest.TestCase):

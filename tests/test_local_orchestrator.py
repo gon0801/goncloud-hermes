@@ -4859,9 +4859,13 @@ class ChainWorktreeTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
             raiz = get_task(conn, primero["workflow_id"])
         self.assertNotIn('"worktree"', raiz.body or "")
 
-    # F8 (#66) — la descomposición y el reapunte de hijas son UNA
-    # transacción: si el reapunte falla, no quedan hijas a medio apuntar.
-    def test_decomposition_and_child_repoint_are_one_transaction(self):
+    # F8 revertido (H-menores-C r2, H#66): decompose NO puede ir dentro
+    # de nuestro write_txn — el real abre el suyo sin allow_nested
+    # (kanban_db_graph.py:116) y anidar lanza RuntimeError. El reapunte
+    # va después, en su propio write_txn: si falla, la descomposición
+    # (transacción propia del real) ya quedó y ninguna hija quedó
+    # reapuntada a medias.
+    def test_child_repoint_runs_after_decompose_in_its_own_txn(self):
         sha = self._git_repo()
         with connect_closing(self.db) as conn:
             conn.execute(
@@ -4881,10 +4885,16 @@ class ChainWorktreeTests(_ChainWorktreeHarnessMixin, _OrchestratorHarness):
                 if (task.body or "").startswith("GONCLOUD_ENGINEERING_V1")
             ]
             self.assertEqual(len(roots), 1)
-            self.assertIsNone(
-                WorkflowService._decomposed_child_ids(conn, roots[0].id),
-                "no half-repointed children survive a failed start",
+            child_ids = WorkflowService._decomposed_child_ids(conn, roots[0].id)
+            self.assertIsNotNone(
+                child_ids, "decompose commits in its own native transaction"
             )
+            for child_id in child_ids:
+                self.assertEqual(
+                    Path(get_task(conn, child_id).workspace_path).resolve(),
+                    self.repo.resolve(),
+                    "a failed repoint leaves no child half-repointed",
+                )
 
     # R4 — el exclude del git común trae las carpetas de estado CLI una
     # sola vez aunque se creen dos cadenas, y git status no las ve.

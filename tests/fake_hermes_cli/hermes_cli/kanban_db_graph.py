@@ -19,7 +19,10 @@ def decompose_triage_task(conn, root_id, *, root_assignee, children, author):
         return None
     del root_assignee
     ids = []
-    with write_txn(conn, allow_nested=True):
+    # Real v0.22.0 kanban_db_graph.py:116: `with write_txn(conn):` SIN
+    # allow_nested (comentario :113-114: los helpers que abren su propio
+    # write_txn no deben llamarse dentro). Anidada lanza RuntimeError.
+    with write_txn(conn):
         for spec in children:
             padres = tuple(ids[i] for i in spec.get("parents", ()))
             ids.append(
