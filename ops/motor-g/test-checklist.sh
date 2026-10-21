@@ -17,10 +17,15 @@ echo "$cmd" >> "$FAKE/bitacora"
 [ -e "$FAKE/ssh_caido" ] && { echo "ssh: connect to host gwpc port 22: Connection timed out" >&2; exit 255; }
 case "$cmd" in
   *"gateway stop"*) echo parked > "$FAKE/gateway" ;;  # como Hermes real: stop ESTACIONA claw
-  *"gateway restart"*|*"gateway start"*) echo running > "$FAKE/gateway" ;;
+  *"gateway restart"*|*"gateway start"*)
+    [ -e "$FAKE/gateway_caido" ] || echo running > "$FAKE/gateway" ;;  # caído de verdad: ni el restart lo revive
   *"gateway status"*)
     [ -e "$FAKE/gateway_caido" ] && { printf 'Gateway is not running\r\n'; exit 0; }  # rc 0: debe fallar por el texto, no por ssh
     [ -e "$FAKE/gateway_vacio" ] && exit 0
+    if [ -e "$FAKE/gateway_lento" ] && [ "$(cat "$FAKE/gateway_lento")" -gt 0 ]; then
+      echo $(( $(cat "$FAKE/gateway_lento") - 1 )) > "$FAKE/gateway_lento"
+      printf 'Profile claw: parked (levantando)\r\n'; exit 0  # aún a medio servir tras el restart
+    fi
     if [ "$(cat "$FAKE/gateway")" = parked ]; then
       printf 'Profile claw: parked (hermes -p claw gateway start)\r\n'
     else
@@ -35,10 +40,22 @@ case "$cmd" in
     for n in $(cat "$FAKE/crons"); do [ "$(id_de "$n")" = "$id" ] || echo "$n"; done > "$FAKE/crons.nuevo"
     mv "$FAKE/crons.nuevo" "$FAKE/crons" ;;
   *"findstr /c:goncloud_local_run"*) cat "$FAKE/cadena" ;;
-  *"configure_team.py"*) echo configurado > "$FAKE/cadena_nueva"; echo LIBRE > "$FAKE/cadena" ;;
+  *"configure_team.py"*)
+    # Como refuse_regression: sin --allow-regression no sobrescribe perfiles desplegados
+    # desde un commit que este checkout no contiene (así murió el rollback del intento 5).
+    if [ -e "$FAKE/regresion" ] && ! printf '%s' "$cmd" | grep -q -- "--allow-regression"; then
+      echo 'ValueError: HEAD does not contain the deployed revision; merge it first or pass --allow-regression' >&2
+      exit 1
+    fi
+    rm -f "$FAKE/regresion"
+    if [ -e "$FAKE/configura_malo" ] || printf '%s' "$cmd" | grep -q -- "--allow-regression"; then
+      echo REGISTRADA > "$FAKE/cadena"   # volvió a un SHA con cadena, o configure falla a propósito
+    else
+      echo LIBRE > "$FAKE/cadena"
+    fi ;;
   *"rev-parse HEAD"*) cat "$FAKE/sha" ;;
-  *"merge --ff-only"*) echo def9876543210 > "$FAKE/sha" ;;
-  *"checkout -B"*) echo "${cmd##* }" > "$FAKE/sha" ;;
+  *"merge --ff-only"*) echo def9876543210 > "$FAKE/sha"; rm -f "$FAKE/regresion" ;;
+  *"checkout -B"*) echo "${cmd##* }" > "$FAKE/sha"; touch "$FAKE/regresion" ;;  # el checkout quedó detrás de lo desplegado
   *"echo "*"sha-anterior"*) echo "$cmd" | sed 's/^echo \([0-9a-f]*\)>.*/\1/' > "$FAKE/guardado" ;;
   *"type "*"sha-anterior"*) cat "$FAKE/guardado" 2>/dev/null || exit 1 ;;
 esac
@@ -47,6 +64,8 @@ FAKE
 chmod +x "$tmp/bin/ssh"
 
 export FAKE="$tmp/fake" SSH_BIN="$tmp/bin/ssh"
+# La espera del gateway, rápida para la prueba (el deploy real espera hasta 20×3s).
+export GATEWAY_ESPERA_INTENTOS=5 GATEWAY_ESPERA_SEGUNDOS=0
 fallos=0
 caso() { # nombre esperado(0|!0) comando...
   local nombre="$1" espera="$2"; shift 2
@@ -89,11 +108,22 @@ caso "desplegar no estacionó claw" 0 test "$(cat "$FAKE/gateway")" = running
 caso "desplegar subió el checkout" 0 test "$(cat "$FAKE/sha")" = def9876543210
 caso "rollback.sh sale 0" 0 bash "$aqui/rollback.sh"
 caso "rollback volvió al SHA anterior" 0 test "$(cat "$FAKE/sha")" = abc1234567890
+caso "rollback pasó --allow-regression a configure_team" 0 grep -q -- "configure_team.py\" --allow-regression" "$FAKE/bitacora"  # sin la flag, refuse_regression lo mata
+caso "rollback re-registró la cadena (volvió atrás de verdad)" 0 test "$(cat "$FAKE/cadena")" = REGISTRADA
+caso "checklist rojo tras rollback (la cadena volvió)" '!0' bash "$aqui/checklist.sh"
+caso "re-despliegue tras rollback sale 0" 0 bash "$aqui/desplegar.sh"
+caso "checklist verde tras re-desplegar" 0 bash "$aqui/checklist.sh"
 
 estado_limpio; touch "$FAKE/ssh_caido"
 caso "desplegar con ssh caído sale != 0" '!0' bash "$aqui/desplegar.sh"
 estado_limpio
 caso "rollback sin SHA guardado sale != 0" '!0' bash "$aqui/rollback.sh"
+estado_limpio; echo 3 > "$FAKE/gateway_lento"
+caso "desplegar espera un gateway que tarda en servir" 0 bash "$aqui/desplegar.sh"
+estado_limpio; touch "$FAKE/gateway_caido"
+caso "desplegar con gateway que nunca sube sale != 0" '!0' bash "$aqui/desplegar.sh"
+estado_limpio; touch "$FAKE/configura_malo"
+caso "desplegar falla si el checklist final no da verde" '!0' bash "$aqui/desplegar.sh"
 
 [ "$fallos" = 0 ] && echo "todo ok" || echo "$fallos caso(s) mal"
 exit "$fallos"
