@@ -16,9 +16,16 @@ id_de() { printf 'ab%s' "$(printf %s "$1" | cksum | cut -d' ' -f1)"; }  # id hex
 echo "$cmd" >> "$FAKE/bitacora"
 [ -e "$FAKE/ssh_caido" ] && { echo "ssh: connect to host gwpc port 22: Connection timed out" >&2; exit 255; }
 case "$cmd" in
+  *"gateway stop"*) echo parked > "$FAKE/gateway" ;;  # como Hermes real: stop ESTACIONA claw
+  *"gateway restart"*|*"gateway start"*) echo running > "$FAKE/gateway" ;;
   *"gateway status"*)
-    [ -e "$FAKE/gateway_caido" ] && { printf 'Gateway is not running\r\n'; exit 1; }
-    printf '✓ Gateway is running via the default-profile multiplexer\r\n' ;;
+    [ -e "$FAKE/gateway_caido" ] && { printf 'Gateway is not running\r\n'; exit 0; }  # rc 0: debe fallar por el texto, no por ssh
+    [ -e "$FAKE/gateway_vacio" ] && exit 0
+    if [ "$(cat "$FAKE/gateway")" = parked ]; then
+      printf 'Profile claw: parked (hermes -p claw gateway start)\r\n'
+    else
+      printf '✓ Gateway is running via the default-profile multiplexer\r\n'
+    fi ;;
   *"cron list"*)
     for n in $(cat "$FAKE/crons"); do
       printf '  %s [active]\r\n    Name:      %s\r\n    Schedule:  every 1m\r\n\r\n' "$(id_de "$n")" "$n"
@@ -52,7 +59,7 @@ caso() { # nombre esperado(0|!0) comando...
 }
 estado_limpio() {
   rm -rf "$FAKE"; mkdir -p "$FAKE"
-  printf '' > "$FAKE/crons"; echo LIBRE > "$FAKE/cadena"; echo abc1234567890 > "$FAKE/sha"
+  printf '' > "$FAKE/crons"; echo LIBRE > "$FAKE/cadena"; echo abc1234567890 > "$FAKE/sha"; echo running > "$FAKE/gateway"
 }
 
 estado_limpio
@@ -61,6 +68,10 @@ touch "$FAKE/ssh_caido"
 caso "ssh caído sale != 0" '!0' bash "$aqui/checklist.sh"
 estado_limpio; touch "$FAKE/gateway_caido"
 caso "gateway caído sale != 0" '!0' bash "$aqui/checklist.sh"
+estado_limpio; touch "$FAKE/gateway_vacio"
+caso "gateway con salida vacía sale != 0" '!0' bash "$aqui/checklist.sh"
+estado_limpio; echo parked > "$FAKE/gateway"
+caso "gateway parked sale != 0" '!0' bash "$aqui/checklist.sh"
 estado_limpio; echo REGISTRADA > "$FAKE/cadena"
 caso "cadena aún registrada sale != 0" '!0' bash "$aqui/checklist.sh"
 estado_limpio; echo SIN_PLUGIN > "$FAKE/cadena"
@@ -73,7 +84,8 @@ caso "checklist rojo antes de desplegar" '!0' bash "$aqui/checklist.sh"
 caso "desplegar.sh sale 0" 0 bash "$aqui/desplegar.sh"
 caso "checklist verde tras desplegar" 0 bash "$aqui/checklist.sh"
 caso "desplegar borró solo los crons de raíces" 0 test "$(cat "$FAKE/crons")" = otro
-caso "desplegar reinició el gateway" 0 grep -q "schtasks /run /tn Hermes_Gateway" "$FAKE/bitacora"
+caso "desplegar reinició claw con restart" 0 grep -q -- "-p claw gateway restart" "$FAKE/bitacora"
+caso "desplegar no estacionó claw" 0 test "$(cat "$FAKE/gateway")" = running
 caso "desplegar subió el checkout" 0 test "$(cat "$FAKE/sha")" = def9876543210
 caso "rollback.sh sale 0" 0 bash "$aqui/rollback.sh"
 caso "rollback volvió al SHA anterior" 0 test "$(cat "$FAKE/sha")" = abc1234567890

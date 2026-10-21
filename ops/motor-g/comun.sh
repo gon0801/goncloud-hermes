@@ -25,6 +25,9 @@ ids_de_cron() {
 # Despliega el checkout actual de la PC: perfiles de Hermes + reinicio del gateway.
 aplica_y_reinicia() {
   en_pc "\"$PC_PYTHON\" \"$PC_REPO\\scripts\\configure_team.py\""
-  en_pc "\"$PC_HERMES\" -p claw gateway stop" || true
-  en_pc "schtasks /run /tn Hermes_Gateway"
+  # `gateway stop` ESTACIONA claw (gateway.parked) y schtasks no lo regresa: se reinicia en caliente con
+  # `restart` (unserve/serve; si ya estaba parked lo desestaciona). schtasks solo levanta el host si no corre.
+  en_pc "\"$PC_HERMES\" -p claw gateway restart" && return 0
+  en_pc "schtasks /run /tn Hermes_Gateway" || return 1
+  en_pc "\"$PC_HERMES\" -p claw gateway restart"
 }
