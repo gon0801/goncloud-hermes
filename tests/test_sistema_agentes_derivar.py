@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 _especificacion = importlib.util.spec_from_file_location(
-    "compartido_derivar", REPO / "plugins/goncloud-team/raices/compartido.py"
+    "compartido_derivar", REPO / "tests/compartido_g.py"
 )
 compartido = importlib.util.module_from_spec(_especificacion)
 _especificacion.loader.exec_module(compartido)

@@ -37,7 +37,7 @@ La matriz vigente, la evidencia durable y los gates estan en [docs/model-routing
 
 ## Instalacion reproducible
 
-Windows: la versión vigente de H se acredita por pares (versión, code_sha) certificados en `plugins/goncloud-team/raices/certificadas.json`; H se actualiza solo y ninguna versión se fija a mano. Tras cada subida de Hermes se certifica el par vivo con `plugins/goncloud-team/raices/certificar.py` en la PC (corre las pruebas del kanban real en un home temporal vacío y valida la candidata) y el par entra al repo por PR. Runtime instalado en `%LOCALAPPDATA%\hermes`, upstream en `hermes-agent`, perfiles en `profiles`. No se modifica upstream.
+Windows: runtime instalado en `%LOCALAPPDATA%\hermes`, upstream en `hermes-agent`, perfiles en `profiles`. No se modifica upstream.
 
 Despues de instalar ese commit con el instalador oficial de Windows, y despues de cada instalacion o actualizacion de Hermes, en una consola elevada:
 
@@ -147,7 +147,7 @@ La seleccion de proveedor y las pruebas con inferencia real se registran en [est
 
 Telegram: GO — gateway corriendo y aceptacion bidireccional aprobada con el workflow `t_4fe237e6` (ver [estado](docs/status.md)). Tras cada redespliegue del plugin, la sesion de Telegram debe renovarse con `/new`: una sesion restaurada conserva la lista de herramientas con la que nacio.
 
-Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje y llama `goncloud_local_run`, que crea la cadena durable y la deja corriendo en segundo plano por el router de suscripciones; `goncloud_local_status` reporta el avance. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway es uno solo para todos los perfiles y lee el `config.yaml` raiz, donde esta encendido; `configure_team.py` le escribe ahi la lista blanca `kanban.dispatch_profiles` (los once especialistas de `team.json`) para que despache sus tarjetas y nunca una etapa de la cadena, que debe correr por el router. Cada perfil conversa por proveedores Hermes nativos compilados de su carril de la tabla v6; el router de suscripciones sigue siendo quien ejecuta las etapas de los workflows.
+Telegram es solo transporte para el trabajo tecnico: el director recibe el mensaje, reparte la lectura a sus agentes y entrega todo lo que cambia algo al motor con la skill `motor`. El director conserva su terminal en Telegram por decision del propietario (Gmail, Calendario y Drive corren por la skill `google-workspace`, autorizada en el perfil `claw`; las demas cuentas de correo, por `himalaya` con su configuracion fuera de Git, ver [estado](docs/status.md)); ante un bloqueo su rol le exige reportar y parar. El despachador nativo del gateway es uno solo para todos los perfiles y lee el `config.yaml` raiz, donde esta encendido; `configure_team.py` le escribe ahi la lista blanca `kanban.dispatch_profiles` (los once especialistas de `team.json`) para que despache sus tarjetas y nunca una etapa de la cadena, que debe correr por el router. Cada perfil conversa por proveedores Hermes nativos compilados de su carril de la tabla v6; el router de suscripciones sigue siendo quien ejecuta las etapas de los workflows.
 
 ## Especialistas
 
@@ -263,7 +263,7 @@ En esta computadora, pre-commit esta instalado en `C:\Python314\python.exe`; se 
 
 La prueba `tests/test_sistema_agentes_pin.py` recalcula los digests y exige que el espejo no traiga ni un archivo de mas ni de menos. La CI (`.github/workflows/sistema-agentes.yml`) baja cada archivo del pin desde `raw.githubusercontent.com` en el commit fijado (`scripts/verificar_pin_g.py`) y lo compara byte a byte, ademas de correr `python3 -m unittest discover -s tests -p "test_sistema_agentes_*.py"`.
 
-Para actualizar la copia (por ejemplo, cuando G mueve el contrato): un solo PR que cambia `pin.json` y los archivos juntos, sin ediciones de por medio. `tests/ensayos-h.json` y su recorrido (`tests/test_sistema_agentes_ensayos.py`) llevan la cuenta de que cada clausula de los ensayos del bloque SUA-07 tenga su prueba antes de cerrar su rebanada.
+Para actualizar la copia (por ejemplo, cuando G mueve el contrato): un solo PR que cambia `pin.json` y los archivos juntos, sin ediciones de por medio.
 
 ## Alcance de autonomia
 

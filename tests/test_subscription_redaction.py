@@ -13,8 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path.home() / "AppData/Local/hermes/hermes-agent"))
 sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
 
-import local_orchestrator  # noqa: E402
-from subscriptions import redaction  # noqa: E402
 from subscriptions.redaction import redact_text, sensitive_values  # noqa: E402
 
 ENVELOPE = '{"status":"completed","summary":"stage done","evidence":["a b c"]}'
@@ -78,12 +76,6 @@ class RedactionTests(unittest.TestCase):
                 self.assertEqual(sensitive_values({"ADV_API_KEY": value}), ())
                 with patch.dict(os.environ, {"ADV_API_KEY": value}):
                     self.assertEqual(redact_text(ENVELOPE), ENVELOPE)
-                    self.assertEqual(local_orchestrator._sanitize(ENVELOPE), ENVELOPE)
-                # The instruction is a secret too, with the same floor: a
-                # two-letter assignment must not rewrite "status".
-                self.assertEqual(
-                    local_orchestrator._sanitize(ENVELOPE, value), ENVELOPE
-                )
         self.assertEqual(sensitive_values({"ADV_API_KEY": "abcdef"}), ("abcdef",))
         self.assertEqual(
             sensitive_values({"ADV_TOKEN": "Bearer abcdef"}),
@@ -92,7 +84,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_redaction_is_a_fixed_point_at_both_boundaries(self):
         text = ("token=redact secret=s3cr3t-value " * 20) + ENVELOPE
-        for boundary in (redact_text, local_orchestrator._sanitize):
+        for boundary in (redact_text,):
             with (
                 self.subTest(boundary=boundary.__name__),
                 patch.dict(
@@ -111,13 +103,13 @@ class RedactionTests(unittest.TestCase):
         # AWS ids and HTTP Basic are upper-case shapes; lower-case prose that
         # happens to share the letters is evidence, not a credential.
         prose = "akiafixture012345678 uses basic authenticationflowcontrol here"
-        for boundary in (redact_text, local_orchestrator._sanitize):
+        for boundary in (redact_text,):
             with self.subTest(boundary=boundary.__name__):
                 self.assertEqual(boundary(prose), prose)
 
     def test_common_credential_shapes_are_redacted_by_both_boundaries(self):
         for name, (sample, marker) in SHAPED.items():
-            for boundary in (redact_text, local_orchestrator._sanitize):
+            for boundary in (redact_text,):
                 with self.subTest(shape=name, boundary=boundary.__name__):
                     cleaned = boundary(f"worker said: {sample} and moved on")
                     self.assertNotIn(marker, cleaned)
@@ -128,14 +120,14 @@ class RedactionTests(unittest.TestCase):
         # Hermes as "[redacted]      " and the Odoo login failed for hours.
         # Only credentials are redacted; an address is not one.
         call = 'fill_input("#login", "owner@example.test")'
-        for boundary in (redact_text, local_orchestrator._sanitize):
+        for boundary in (redact_text,):
             with self.subTest(boundary=boundary.__name__):
                 self.assertEqual(boundary(call), call)
 
     def test_a_password_inside_a_url_is_still_redacted(self):
         # Grok review 2026-09-27: the email shape used to catch this by luck.
         url = "https://admin:S3cretPass@odoo.example.com/web"
-        for boundary in (redact_text, local_orchestrator._sanitize):
+        for boundary in (redact_text,):
             with self.subTest(boundary=boundary.__name__):
                 cleaned = boundary(url)
                 self.assertNotIn("S3cretPass", cleaned)
@@ -143,7 +135,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_git_revisions_survive_redaction(self):
         # Evidence carries commit hashes; hex heuristics would erase them.
-        for boundary in (redact_text, local_orchestrator._sanitize):
+        for boundary in (redact_text,):
             with self.subTest(boundary=boundary.__name__):
                 self.assertIn(REVISION, boundary(f"revision {REVISION} verified"))
 
@@ -157,7 +149,6 @@ class RedactionTests(unittest.TestCase):
         probe = (
             "import sys, time\n"
             "sys.path.insert(0, sys.argv[1])\n"
-            "import local_orchestrator\n"
             "from subscriptions.redaction import redact_text\n"
             "for n in (25_000, 100_000):\n"
             "    blob = 'a.' * n\n"
@@ -165,7 +156,6 @@ class RedactionTests(unittest.TestCase):
             "    for _ in range(5):\n"
             "        t0 = time.perf_counter()\n"
             "        assert redact_text(blob) == blob\n"
-            "        assert local_orchestrator._sanitize(blob) == blob\n"
             "        tiempos.append(time.perf_counter() - t0)\n"
             "    print(','.join(f'{t:.6f}' for t in tiempos))\n"
         )
@@ -177,10 +167,9 @@ class RedactionTests(unittest.TestCase):
                 timeout=120,
                 env={
                     **os.environ,
-                    # El doble de hermes_cli debe llegar al hijo: el hijo
-                    # importa local_orchestrator, que importa hermes_cli.
-                    # Sin el doble el subproceso muere en el import en el
-                    # runner (y en la PC pisaria el doble heredado).
+                    # El doble de hermes_cli debe llegar al hijo: sin el, el
+                    # subproceso muere en el import en el runner (y en la PC
+                    # pisaria el doble heredado).
                     "PYTHONPATH": os.pathsep.join(
                         [
                             str(ROOT / "tests" / "fake_hermes_cli"),
@@ -212,10 +201,6 @@ class RedactionTests(unittest.TestCase):
         grandes = [0.500, 0.041, 0.042]
         self.assertFalse(grandes[0] < pequenas[0] * 8)
         self.assertTrue(_crecimiento_lineal(pequenas, grandes))
-
-    def test_the_orchestrator_shares_the_router_patterns(self):
-        # Two copies drifted once (ghp_/xai- reached Telegram); one source now.
-        self.assertIs(local_orchestrator._SENSITIVE, redaction.SENSITIVE_TEXT)
 
 
 if __name__ == "__main__":

@@ -127,141 +127,6 @@ class FakeContext:
         return json.loads(self.tools[name].handler(dict(payload_args)))
 
 
-class FakeOrchestrator:
-    def __init__(self):
-        self.calls = []
-
-    def create(self, **kwargs):
-        self.calls.append(("create", kwargs))
-        return {"workflow_id": "t_local"}
-
-    def launch_detached(self, workflow_id, **kwargs):
-        self.calls.append(("launch", workflow_id, kwargs))
-        return {"workflow_id": workflow_id, "driver_pid": 7, "result_file": "x"}
-
-    def status(self, workflow_id):
-        self.calls.append(("status", workflow_id))
-        return {"workflow_id": workflow_id, "outcome": "running"}
-
-    def close_hint(self, workflow_id):
-        self.calls.append(("close_hint", workflow_id))
-        return "paused or blocked chain: close it with goncloud_local_close"
-
-
-class TransportToolTests(unittest.TestCase):
-    def test_local_run_creates_then_detaches_and_only_claw_may_call(self):
-        ctx = FakeContext(profile_name="claw")
-        orchestrator = FakeOrchestrator()
-        _PLUGIN._build_orchestrator = lambda context: orchestrator
-
-        _PLUGIN.register(ctx)
-        result = ctx.call(
-            "goncloud_local_run",
-            {
-                "request_key": "tg-1",
-                "repository": "C:/repo",
-                "instruction": "Inspect.",
-                "sources": [
-                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
-                ],
-                "max_steps": 20,
-            },
-        )
-
-        self.assertEqual(result["workflow_id"], "t_local")
-        self.assertEqual(result["driver_pid"], 7)
-        self.assertEqual([call[0] for call in orchestrator.calls], ["create", "launch"])
-        self.assertEqual(
-            ctx.tools["goncloud_local_run"].schema["parameters"]["required"],
-            ["request_key", "repository", "instruction", "sources"],
-        )
-
-        worker = FakeContext(profile_name="scout")
-        _PLUGIN.register(worker)
-        refused = worker.call("goncloud_local_run", {"request_key": "tg-2"})
-        self.assertIn("error", refused)
-
-    def test_local_run_forwards_stop_after_for_read_only_requests(self):
-        ctx = FakeContext(profile_name="claw")
-        orchestrator = FakeOrchestrator()
-        _PLUGIN._build_orchestrator = lambda context: orchestrator
-
-        _PLUGIN.register(ctx)
-        ctx.call(
-            "goncloud_local_run",
-            {
-                "request_key": "tg-3",
-                "repository": "C:/repo",
-                "instruction": "Inspect only.",
-                "sources": [
-                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
-                ],
-                "stop_after": "scout",
-            },
-        )
-
-        launch = next(call for call in orchestrator.calls if call[0] == "launch")
-        self.assertEqual(launch[2].get("stop_after"), "scout")
-        schema = ctx.tools["goncloud_local_run"].schema["parameters"]["properties"]
-        self.assertIn("scout", schema["stop_after"]["enum"])
-
-    def test_local_run_rejects_a_bad_stop_after_before_creating_the_chain(self):
-        ctx = FakeContext(profile_name="claw")
-        orchestrator = FakeOrchestrator()
-        _PLUGIN._build_orchestrator = lambda context: orchestrator
-
-        _PLUGIN.register(ctx)
-        result = ctx.call(
-            "goncloud_local_run",
-            {
-                "request_key": "tg-4",
-                "repository": "C:/repo",
-                "instruction": "Inspect only.",
-                "sources": [
-                    {"reference": "owner", "observed_at": "2026-09-14T00:00:00Z"}
-                ],
-                "stop_after": "Scout",
-            },
-        )
-
-        self.assertIn("error", result)
-        # Creating first would leave a seven-card chain nobody drives and no
-        # workflow id in the answer to reach it by.
-        self.assertEqual(orchestrator.calls, [])
-
-    def test_local_status_reads_the_driver_view(self):
-        ctx = FakeContext(profile_name="claw")
-        orchestrator = FakeOrchestrator()
-        _PLUGIN._build_orchestrator = lambda context: orchestrator
-
-        _PLUGIN.register(ctx)
-        result = ctx.call("goncloud_local_status", {"workflow_id": "t_local"})
-
-        self.assertEqual(result["outcome"], "running")
-        self.assertEqual(
-            orchestrator.calls, [("status", "t_local"), ("close_hint", "t_local")]
-        )
-        self.assertIn("goncloud_local_close", result["close_hint"])
-
-    def test_a_failing_close_hint_degrades_to_none_without_an_error(self):
-        # Live review F4: the hint opens its own subscription store (BEGIN
-        # IMMEDIATE plus migrations); a store failure must leave the status
-        # readable — the hint is additive, never a failure of the read.
-        class LockedHint(FakeOrchestrator):
-            def close_hint(self, workflow_id):
-                raise sqlite3.OperationalError("database is locked")
-
-        ctx = FakeContext(profile_name="claw")
-        orchestrator = LockedHint()
-        _PLUGIN._build_orchestrator = lambda context: orchestrator
-
-        _PLUGIN.register(ctx)
-        result = ctx.call("goncloud_local_status", {"workflow_id": "t_local"})
-
-        self.assertEqual(result["outcome"], "running")
-        self.assertIsNone(result["close_hint"])
-
-
 class PluginRegistrationTests(unittest.TestCase):
     def test_tool_binds_profile_from_context(self):
         ctx = FakeContext(profile_name="implementer")
@@ -306,6 +171,19 @@ class PluginRegistrationTests(unittest.TestCase):
 
         self.assertIn("error", result)
         self.assertIn("stage identity", result["error"])
+
+    def test_the_retired_chain_and_root_tools_are_gone(self):
+        ctx = FakeContext(profile_name="claw")
+        _PLUGIN._build_service = lambda context: ctx.service
+        _PLUGIN.register(ctx)
+        manifest = yaml.safe_load(
+            (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+        )
+
+        retired = ("goncloud_local_", "goncloud_root_")
+        for name in [*ctx.tools, *manifest["provides_tools"]]:
+            self.assertFalse(name.startswith(retired), name)
+        self.assertIn("goncloud_subscription_run", ctx.tools)
 
     def test_manifest_advertises_subscription_tools(self):
         manifest = yaml.safe_load(

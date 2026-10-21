@@ -253,11 +253,11 @@ def _cargar_cliente(hogar: Path):
 def _ruta_cliente_de_claw(hogar: Path) -> Path | None:
     try:
         try:
-            from .raices import hogar as raices_hogar
+            from . import hogar as hogar_de_hermes
         except ImportError:
-            from raices import hogar as raices_hogar
+            import hogar as hogar_de_hermes
         ruta = (
-            raices_hogar.raiz_del_hogar(hogar)
+            hogar_de_hermes.raiz_del_hogar(hogar)
             / "profiles"
             / "claw"
             / "plugins"

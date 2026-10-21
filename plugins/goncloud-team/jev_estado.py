@@ -31,7 +31,7 @@ def _acotar(texto, tope: int = 160) -> str:
 
 
 def ruta_del_kanban(raiz) -> Path:
-    """HERMES_KANBAN_DB o <raiz>/kanban.db, como el ticker de raices."""
+    """HERMES_KANBAN_DB o <raiz>/kanban.db, como el resto del plugin."""
     elegida = os.environ.get("HERMES_KANBAN_DB")
     return Path(elegida) if elegida else Path(raiz) / "kanban.db"
 

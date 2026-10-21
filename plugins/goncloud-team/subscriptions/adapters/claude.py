@@ -33,8 +33,7 @@ _PERMISSION_MODE = "dontAsk"
 #: saved into the assignment's scratch, which dontAsk would deny without
 #: Write/Edit. The tool list narrows each role's normal path; it is not
 #: isolation -- Bash can still write -- and the workspace fingerprint is
-#: only checked for scout and ingenieria (local_orchestrator's
-#: _READ_ONLY_STAGES).
+#: only checked for scout and ingenieria (the read-only stages).
 _WRITING_ROLES = frozenset({"implementer", "entrega", "adversary"})
 
 #: Bare tool names in Claude Code permission-rule syntax allow every use of

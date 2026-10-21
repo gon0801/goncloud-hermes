@@ -47,7 +47,6 @@ class DiscoveryTests(unittest.TestCase):
                     if loader.errors:
                         raise AssertionError('\\n'.join(loader.errors))
                     modules = {
-                        'test_local_orchestrator',
                         'test_subscription_configuration',
                         'test_subscription_tools',
                     }

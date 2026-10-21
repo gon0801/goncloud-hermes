@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """El despliegue lleva shared/sistema-agentes junto al plugin (hallazgo F1).
 
-En la copia desplegada, compartido.py busca la copia fijada en parents[3]:
+En la copia desplegada, la copia fijada va en profiles/<rol>/shared/sistema-agentes:
 profiles/<rol>/shared/sistema-agentes. configure_team debe copiarla a cada
 perfil que recibe el plugin. Las pruebas que no necesitan yaml ni hermes_cli
 corren en la Mac; la del despliegue real queda para la PC.
@@ -25,7 +25,6 @@ SPEC = importlib.util.spec_from_file_location(
 configure_team = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(configure_team)
 
-COMPARTIDO = REPO / "plugins/goncloud-team/raices/compartido.py"
 ORIGEN = REPO / "shared/sistema-agentes"
 
 
@@ -48,36 +47,6 @@ class ArchivosCompartidos(unittest.TestCase):
             archivos,
         )
         json.loads(archivos["shared/sistema-agentes/pin.json"])
-
-
-class CopiaDesplegada(unittest.TestCase):
-    def test_compartido_halla_la_copia_fijada_junto_al_plugin_copiado(self):
-        with tempfile.TemporaryDirectory() as directorio:
-            perfil = Path(directorio) / "profiles" / "claw"
-            destino_plugin = perfil / "plugins" / "goncloud-team" / "raices"
-            destino_plugin.mkdir(parents=True)
-            (destino_plugin / "compartido.py").write_bytes(COMPARTIDO.read_bytes())
-            for relativa, contenido in configure_team.archivos_compartidos().items():
-                destino = perfil / relativa
-                destino.parent.mkdir(parents=True, exist_ok=True)
-                destino.write_bytes(contenido)
-
-            spec = importlib.util.spec_from_file_location(
-                "compartido_desplegado", destino_plugin / "compartido.py"
-            )
-            compartido = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(compartido)
-            self.assertTrue(compartido.G_DIR.is_dir())
-            self.assertTrue(compartido.PIN.is_file())
-            plan = (
-                compartido.G_DIR
-                / "scripts/tests/fixtures/sistema-agentes/planes/validos/"
-                "pedido-chico.json"
-            )
-            self.assertEqual(
-                compartido.contrato.validar_plan(compartido.contrato.cargar_json(plan)),
-                [],
-            )
 
 
 UPSTREAM = Path(
@@ -130,15 +99,6 @@ class DespliegueReal(unittest.TestCase):
                 self.assertEqual(
                     pin.read_bytes(),
                     (ORIGEN / "pin.json").read_bytes(),
-                    rol,
-                )
-                self.assertTrue(
-                    (
-                        runtime
-                        / "profiles"
-                        / rol
-                        / "plugins/goncloud-team/raices/compartido.py"
-                    ).is_file(),
                     rol,
                 )
 
