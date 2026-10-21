@@ -10,8 +10,11 @@ falla() { echo "FALLA: $1" >&2; mal=1; }
 
 estado="$(en_pc "\"$PC_HERMES\" -p claw gateway status" 2>&1 | tr -d '\r')" \
   || { echo "FALLA: Hermi no responde por ssh ($PC_HOST)" >&2; exit 1; }
-# "parked" es un estado válido de claw (Hermi lo reporta así con el gateway multiplexado); solo cuenta como caído lo que diga que no corre.
-printf '%s\n' "$estado" | grep -qiE "not running|stopped|failed|error" && falla "el gateway no está corriendo"
+# Comprobación positiva: claw debe salir servido o "is running". "parked" (gateway stop lo estaciona y lo saca del host) o una salida vacía fallan.
+if printf '%s\n' "$estado" | grep -qi "parked" \
+   || ! printf '%s\n' "$estado" | grep -qiE "is running|claw.*served|served.*claw"; then
+  falla "claw no está servido ni corriendo (parked, caído o sin salida)"
+fi
 
 yaml="$PC_PERFIL_CLAW\\plugins\\goncloud-team\\plugin.yaml"
 cadena="$(en_pc "if not exist \"$yaml\" (echo SIN_PLUGIN) else (findstr /c:goncloud_local_run \"$yaml\" >nul && echo REGISTRADA || echo LIBRE)" 2>&1 | tr -d '\r\n ')" \
