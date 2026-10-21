@@ -126,7 +126,7 @@ def _review_releases_delivery(review: Any) -> bool:
 
 _WORKFLOW_KEY_PREFIX = "goncloud-workflow:"
 _CONTRACT_MARKER = "GONCLOUD_ENGINEERING_V1\n"
-#: Public alias: local_orchestrator reads workflow contracts through it.
+#: Public alias of the contract marker.
 CONTRACT_MARKER = _CONTRACT_MARKER
 #: Marker of the durable close receipt on the director root; a second close
 #: recognizes it instead of writing another comment. The close tool and the
@@ -162,8 +162,7 @@ _CLI_STATE_EXCLUDE_OLD_LINES = frozenset(
 
 #: LA lista de rutas de estado de los CLI (prefijos), ÚNICA para los
 #: tres usos: el exclude común (R4b, abajo), la huella de solo lectura
-#: (R1) y la limpieza al cerrar la etapa (R2, ambos en
-#: local_orchestrator, que la importa de aquí). Solo subcarpetas de
+#: (R1) y la limpieza al cerrar la etapa (R2). Solo subcarpetas de
 #: estado de `.claude` y las carpetas de estado de los demás CLI:
 #: `.claude/` entero, `.cursor/` y `.opencode/` pueden guardar config
 #: versionable (skills, reglas, agentes), así que un archivo nuevo ahí
@@ -258,41 +257,16 @@ def _exclude_cli_state_dirs(repository: str) -> None:
 
 
 def _driver_signals(workflow_id: str) -> tuple[bool, bool]:
-    """(alive, stopped) according to the local driver's own result-file mark.
+    """(alive, stopped) for a chain's local driver: there is none any more.
 
-    The mark is the local driver's lifecycle record — local_orchestrator
-    owns it, so the import stays deferred and one-directional. Three
-    answers, never two collapsed into one: a running mark whose pid is
-    alive is live work; a stopped outcome, or a running mark whose pid is
-    gone, is positive evidence the driver stopped; anything else — no mark
-    at all, an unreadable or non-object file that still reads as running —
-    proves nothing (review F2: "no evidence" read as "stopped" had start
-    archiving chains with a lying close reason). A helper that cannot even
-    load answers alive: fail closed, never archive on missing evidence.
+    The seven-step local driver is retired (the motor takes the work that
+    changes code), so nothing writes a lifecycle mark. No mark proves
+    nothing, and "no evidence" never reads as "stopped": a chain from before
+    the retirement stays busy until someone closes it. Kept as the seam
+    ``start`` judges stopped chains through.
     """
-    try:
-        try:
-            from .local_orchestrator import (
-                driver_mark_live,
-                driver_stopped,
-                read_driver_mark,
-            )
-        except ImportError:
-            from local_orchestrator import (
-                driver_mark_live,
-                driver_stopped,
-                read_driver_mark,
-            )
-    except ImportError:
-        return True, False
-    mark = read_driver_mark(workflow_id)
-    if (
-        isinstance(mark, dict)
-        and mark.get("outcome") == "running"
-        and driver_mark_live(mark)
-    ):
-        return True, False
-    return False, driver_stopped(mark)
+    del workflow_id
+    return True, False
 
 
 _SUBSCRIPTION_EVIDENCE_KEYS = (
@@ -1096,14 +1070,8 @@ class WorkflowService:
         """
         if isinstance(store, _StoreUnavailable):
             return False
-        # Outside the transaction (review F15): the mark, the pid it names
-        # (ps) and the lease check — no subprocess under the Kanban write
-        # lock. The fence inside compares this snapshot against the file.
-        try:
-            from .local_orchestrator import read_driver_mark
-        except ImportError:
-            from local_orchestrator import read_driver_mark
-        seen = read_driver_mark(workflow_id)
+        # Outside the transaction (review F15): the stop verdict and the
+        # lease check — no subprocess under the Kanban write lock.
         alive, stopped = _driver_signals(workflow_id)
         if alive or not stopped:
             return False
@@ -1121,14 +1089,6 @@ class WorkflowService:
                     for task_id in [*initial_ids, *correction.values()]
                 ]
                 if any(status == "running" for _, status in members):
-                    return False
-                # The fence (review F15): the file's last write is still
-                # the one judged outside. A new write means a driver woke
-                # or the state moved — the verdict is stale, abort.
-                fresh = read_driver_mark(workflow_id)
-                if (fresh or {}).get("outcome") != (seen or {}).get("outcome") or (
-                    fresh or {}
-                ).get("run_id") != (seen or {}).get("run_id"):
                     return False
                 for member_id, member_status in members:
                     # Done stages are the chain's evidence: they stay as

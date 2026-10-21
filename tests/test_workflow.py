@@ -699,7 +699,7 @@ class SchemaTextTests(unittest.TestCase):
 
     # L2 (#72): la docstring de _auto_close_stopped_chain ya no promete cola.
     def test_no_source_promises_queues_the_new_chain(self) -> None:
-        for archivo in ("workflow.py", "local_orchestrator.py"):
+        for archivo in ("workflow.py",):
             text = (PLUGIN_DIR / archivo).read_text(encoding="utf-8").lower()
             self.assertNotIn("queues the new chain", text, archivo)
             self.assertNotIn("queueing a chain", text, archivo)

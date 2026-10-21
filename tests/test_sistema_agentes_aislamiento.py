@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-COMPARTIDO = REPO / "plugins/goncloud-team/raices/compartido.py"
+COMPARTIDO = REPO / "tests/compartido_g.py"
 G = REPO / "shared/sistema-agentes/g"
 PLAN_CHICO = (
     G / "scripts/tests/fixtures/sistema-agentes/planes/validos/pedido-chico.json"

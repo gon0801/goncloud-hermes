@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 from .jev_auto import registrar as registrar_jev_auto
@@ -16,42 +14,13 @@ from .schemas import (
     ENGINEERING_REVIEW,
     ENGINEERING_START,
     ENGINEERING_STATUS,
-    LOCAL_CLOSE,
-    LOCAL_RUN,
-    LOCAL_STATUS,
     MUSE_DELEGATE,
-    ROOT_CONTROL,
-    ROOT_INSTRUCTION_PUT,
-    ROOT_READ,
-    ROOT_RECONCILE,
-    ROOT_RESOLVE,
-    ROOT_SUBMIT,
     SUBSCRIPTION_RUN,
     SUBSCRIPTION_STATUS,
 )
 from .workflow import WorkflowService
 
 logger = logging.getLogger(__name__)
-
-
-def _raiz_handler(ctx, funcion):
-    def handle(args: dict, **kwargs) -> str:
-        del kwargs
-        try:
-            raiz = Path(__file__).resolve().parent
-            if str(raiz) not in sys.path:
-                sys.path.insert(0, str(raiz))
-            herramientas = importlib.import_module("raices.herramientas")
-            resultado = getattr(herramientas, funcion)(
-                dict(args or {}), ctx.profile_name
-            )
-            return json.dumps(
-                resultado, ensure_ascii=False, sort_keys=True, default=str
-            )
-        except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
-
-    return handle
 
 
 def _jev_config(ctx):
@@ -69,119 +38,6 @@ def _jev_config(ctx):
 def _build_service(ctx):
     """Bind the durable service to the calling profile; test seam."""
     return WorkflowService(actor_role=ctx.profile_name, jev_config=_jev_config(ctx))
-
-
-def _build_orchestrator(ctx):
-    """The proven local entry point a messaging transport submits to; test seam."""
-    from .local_orchestrator import LocalOrchestrator, jev_de_produccion
-
-    jev_config = _jev_config(ctx)
-    return LocalOrchestrator(
-        service_factory=lambda role: WorkflowService(
-            actor_role=role, jev_config=jev_config
-        ),
-        jev=jev_de_produccion(),
-        jev_config=jev_config,
-    )
-
-
-def _transport_handlers(ctx):
-    """Bind the transport tools: create the chain, detach the driver, report."""
-
-    def local_run(args: dict, **kwargs) -> str:
-        try:
-            if ctx.profile_name != "claw":
-                raise PermissionError("only the claw director may start local work")
-            arguments = dict(args or {})
-            stop_after = arguments.get("stop_after") or None
-            # Validate the stop before the chain exists: a bad value would
-            # otherwise leave seven orphan cards and no id to reach them by.
-            from .local_orchestrator import capturar_origen_sesion, check_stop_after
-
-            check_stop_after(stop_after)
-            # The session launching the chain (encargo H-avisos-a-la-sesion):
-            # captured like delegate_task captures its origin, stored in
-            # the chain's contract, and copied by the driver into every
-            # mailbox aviso so the gateway can inject it back HERE — in
-            # this conversation — instead of the hidden Bot Chat.
-            origen = capturar_origen_sesion(
-                str(
-                    kwargs.get("session_key") or kwargs.get("gateway_session_key") or ""
-                )
-            )
-            orchestrator = _build_orchestrator(ctx)
-            created = orchestrator.create(
-                request_key=str(arguments.get("request_key", "")),
-                repository=str(arguments.get("repository", "")),
-                revision=arguments.get("revision"),
-                instruction=str(arguments.get("instruction", "")),
-                sources=arguments.get("sources"),
-                max_steps=int(arguments.get("max_steps", 20)),
-                affects_business_rules=bool(
-                    arguments.get("affects_business_rules", False)
-                ),
-                origin_session_key=origen.get("origin_session_key", ""),
-                origin_routing=origen.get("origin_routing"),
-            )
-            if created.get("busy"):
-                # Contrato r6: el repo ya tiene una cadena viva — no se
-                # creó nada y la respuesta va clara a claw, que relanza
-                # cuando le llegue el aviso de la cadena viva.
-                return json.dumps(
-                    created,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                )
-            launched = orchestrator.launch_detached(
-                created["workflow_id"], stop_after=stop_after
-            )
-            return json.dumps(
-                {**created, **launched}, ensure_ascii=False, sort_keys=True, default=str
-            )
-        except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
-
-    def local_status(args: dict, **kwargs) -> str:
-        del kwargs
-        try:
-            workflow_id = str((args or {}).get("workflow_id", ""))
-            orchestrator = _build_orchestrator(ctx)
-            result = dict(orchestrator.status(workflow_id))
-            driver = getattr(orchestrator, "driver_result", None)
-            if driver is not None:
-                result["driver"] = driver(workflow_id)
-            # The hint is additive (live review F4): its own failure — it
-            # opens the subscription store, which can be locked or
-            # unreadable — must never turn the status read into
-            # {"error": ...}; like driver_result it is read defensively and
-            # degrades to None.
-            hint = getattr(orchestrator, "close_hint", None)
-            if hint is not None:
-                try:
-                    result["close_hint"] = hint(workflow_id)
-                except Exception:
-                    result["close_hint"] = None
-            return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
-
-    def local_close(args: dict, **kwargs) -> str:
-        del kwargs
-        try:
-            if ctx.profile_name != "claw":
-                raise PermissionError("only the claw director may close local work")
-            arguments = dict(args or {})
-            orchestrator = _build_orchestrator(ctx)
-            receipt = orchestrator.close(
-                str(arguments.get("workflow_id", "")),
-                reason=str(arguments.get("reason", "")),
-            )
-            return json.dumps(receipt, ensure_ascii=False, sort_keys=True, default=str)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False, sort_keys=True)
-
-    return local_run, local_status, local_close
 
 
 def _handler(ctx, method_name: str):
@@ -248,50 +104,6 @@ def register(ctx) -> None:
         emoji="🧠",
     )
 
-    local_run, local_status, local_close = _transport_handlers(ctx)
-    ctx.register_tool(
-        name="goncloud_local_run",
-        toolset="goncloud_team",
-        schema=LOCAL_RUN,
-        handler=local_run,
-        emoji="📨",
-    )
-    ctx.register_tool(
-        name="goncloud_local_status",
-        toolset="goncloud_team",
-        schema=LOCAL_STATUS,
-        handler=local_status,
-        emoji="📈",
-    )
-    ctx.register_tool(
-        name="goncloud_local_close",
-        toolset="goncloud_team",
-        schema=LOCAL_CLOSE,
-        handler=local_close,
-        emoji="🔒",
-    )
-
-    for name, schema, funcion, emoji in (
-        ("goncloud_root_submit", ROOT_SUBMIT, "enviar_raiz", "🌱"),
-        ("goncloud_root_read", ROOT_READ, "leer_raiz", "📄"),
-        ("goncloud_root_control", ROOT_CONTROL, "controlar_raiz", "🎛"),
-        ("goncloud_root_resolve", ROOT_RESOLVE, "resolver_excepcion", "🧷"),
-        (
-            "goncloud_root_instruction_put",
-            ROOT_INSTRUCTION_PUT,
-            "guardar_instruccion",
-            "📥",
-        ),
-        ("goncloud_root_reconcile", ROOT_RECONCILE, "reconciliar_raiz", "⚖"),
-    ):
-        ctx.register_tool(
-            name=name,
-            toolset="goncloud_team",
-            schema=schema,
-            handler=_raiz_handler(ctx, funcion),
-            emoji=emoji,
-        )
-
     def guard_reviewer_completion(tool_name, args, task_id=None, **kwargs):
         del kwargs
         if tool_name != "kanban_complete":
@@ -326,19 +138,6 @@ def register(ctx) -> None:
                 "action": "block",
                 "message": f"Goncloud review completion guard unavailable: {exc}",
             }
-
-    # Avisos a la sesión (encargo H-avisos-a-la-sesion): SOLO en el proceso
-    # del gateway — iniciar_vigilante no arranca nada si no resuelve la
-    # completion_queue real — un hilo sin modelo drena el buzón de cadenas
-    # y encola cada aviso con origin_session_key en la sesión que lanzó la
-    # cadena, para que el gateway lo inyecte ahí y no en el Bot Chat.
-    try:
-        from .avisos_sesion import iniciar_vigilante
-
-        iniciar_vigilante()
-    except Exception:
-        logger.exception("no se pudo arrancar el vigilante de avisos")
-        # el buzón es durable: el aviso espera a la próxima vida
 
     # JEV (H-jev-auto, tanda 2) se registra ANTES que la guarda: Hermes admite
     # varias funciones por gancho, pero los dobles de prueba guardan una sola por

@@ -192,11 +192,11 @@ def _hogar_perfil() -> Path:
 
 
 def _raiz_del_hogar(casa: Path) -> Path:
-    """La raiz de Hermes (donde vive kanban.db): la decide raices/hogar.py."""
+    """La raiz de Hermes (donde vive kanban.db): la decide hogar.py."""
     try:
-        from .raices import hogar
+        from . import hogar
     except ImportError:
-        from raices import hogar
+        import hogar
     return hogar.raiz_del_hogar(casa)
 
 

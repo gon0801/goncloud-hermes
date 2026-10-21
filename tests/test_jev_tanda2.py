@@ -18,13 +18,11 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import jev_apoyo  # noqa: E402,F401
-from goncloud_test_support import cleanup_temp_directory  # noqa: E402
-
-import jev_auto  # noqa: E402
-import jev_decisiones  # noqa: E402
-import jev_texto  # noqa: E402
-import local_orchestrator  # noqa: E402
+import jev_apoyo  # noqa: F401
+import jev_auto
+import jev_decisiones
+import jev_texto
+from goncloud_test_support import cleanup_temp_directory
 
 ENCARGO = "revisa las ordenes flex para hoy y las recolecciones"
 
@@ -791,14 +789,6 @@ class EtapasDeLaCadenaTests(Base):
         self.assertEqual(
             linea, "Jev sugiere: tipo=codigo (0.93), modo=investigar (0.90)"
         )
-        prompt = local_orchestrator.LocalOrchestrator._instruction(
-            "Arregla el bridge de OpenClaw que falla", "duties", "scout", linea
-        )
-        self.assertIn(linea, prompt)
-        sin = local_orchestrator.LocalOrchestrator._instruction(
-            "Arregla el bridge de OpenClaw que falla", "duties", "scout"
-        )
-        self.assertNotIn("Jev sugiere", sin)
 
     def test_jev_caido_la_etapa_sigue_sin_linea(self):
         jev = Falso({}, falla=RuntimeError("caido"))

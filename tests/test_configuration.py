@@ -340,7 +340,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
-        self.assertIn("goncloud_local_status", claw)
+        self.assertIn("motor estado", claw)
         self.assertIn("no leas logs", claw)
         self.assertIn("no revises el codigo del plugin", claw)
 
@@ -348,7 +348,7 @@ class ConfigurationTests(unittest.TestCase):
         # 2026-09-15 01:08: the profiles carried the plugin from
         # feat/subscription-router-recovery; a reapply from feat/hermes-team
         # (a sibling branch without those commits) silently downgraded every
-        # managed file and goncloud_local_run lost check_stop_after. A reapply
+        # managed file and the chain lost check_stop_after. A reapply
         # must refuse a HEAD that does not contain the deployed revision.
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
@@ -510,7 +510,7 @@ class DirectorNativeChainTests(unittest.TestCase):
         )
         claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
         self.assertIn(
-            "El codigo sigue por goncloud_local_run, no por estas tarjetas", claw
+            "El codigo sigue por el motor (skill motor), no por estas tarjetas", claw
         )
 
     def test_the_director_hands_specialist_work_to_a_card(self):
@@ -1377,16 +1377,6 @@ class LaCopiaDelPerfilTraeCertificadasTests(unittest.TestCase):
             },
         )
 
-    def test_la_copia_del_plugin_trae_certificadas_json_byte_a_byte(self):
-        runtime = self.temporary / "runtime"
-        resultado = self.deploy(runtime)
-        self.assertEqual(resultado.returncode, 0, resultado.stderr)
-
-        origen = ROOT / "plugins/goncloud-team/raices/certificadas.json"
-        copia = runtime / "profiles/claw/plugins/goncloud-team/raices/certificadas.json"
-        self.assertTrue(copia.exists(), "la copia del perfil trae certificadas.json")
-        self.assertEqual(copia.read_bytes(), origen.read_bytes())
-
 
 class NoTextBridgeTests(unittest.TestCase):
     def test_no_text_tool_call_bridge_remains(self):
@@ -1480,7 +1470,7 @@ class PotetoSoloEnPerfilesConPotetoTests(unittest.TestCase):
                 )
 
         sys.path.insert(0, str(ROOT / "plugins/goncloud-team"))
-        from raices import poteto  # noqa: E402
+        import poteto
 
         for perfil in team["kanban"]["dispatch_profiles"]:
             self.assertIsNone(

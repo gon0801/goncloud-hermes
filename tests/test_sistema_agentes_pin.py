@@ -17,7 +17,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 _spec = importlib.util.spec_from_file_location(
-    "compartido", REPO / "plugins/goncloud-team/raices/compartido.py"
+    "compartido", REPO / "tests/compartido_g.py"
 )
 compartido = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compartido)

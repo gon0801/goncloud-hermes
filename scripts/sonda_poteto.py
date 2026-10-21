@@ -18,7 +18,7 @@ PLUGIN = REPO / "plugins" / "goncloud-team"
 if str(PLUGIN) not in sys.path:
     sys.path.insert(0, str(PLUGIN))
 
-from raices import poteto  # noqa: E402
+import poteto  # noqa: E402
 
 
 def generacion_y_digest(copia_desplegada: Path) -> tuple[int | str, str]:

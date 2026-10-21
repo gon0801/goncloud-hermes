@@ -170,16 +170,16 @@ def secretos_del_scope() -> tuple[str, ...]:
 
 
 def _raiz_hermes() -> Path | None:
-    """La raíz del home de Hermes vía raices.hogar, o None si no se resuelve.
+    """La raíz del home de Hermes vía hogar.py, o None si no se resuelve.
 
     Es la misma resolución que usa el resto del plugin (el gateway no
     define HERMES_HOME: cuenta el override de contexto de hermes_constants).
     """
     try:
         try:
-            from raices.hogar import raiz_del_hogar
+            from hogar import raiz_del_hogar
         except ImportError:
-            from .raices.hogar import raiz_del_hogar  # type: ignore
+            from .hogar import raiz_del_hogar  # type: ignore
 
         return Path(raiz_del_hogar())
     except Exception:
@@ -320,7 +320,7 @@ _ENV_POR_PUNTO = (
 def entorno_jev(config: JevConfig) -> dict:
     """La config efectiva como entorno, para procesos que la resuelven ahí.
 
-    Es el portador hacia el driver desacoplado de local_orchestrator: el
+    Es el portador hacia los procesos desacoplados: el
     hijo arranca sin ctx del gateway, hereda este entorno y su
     config_jev() reconstruye la misma config (umbral, tope, interruptores
     y registro). Nunca lleva la llave.

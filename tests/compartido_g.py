@@ -8,7 +8,7 @@ sin editarse.
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[1]
 G_DIR = REPO / "shared/sistema-agentes/g"
 G_SCRIPTS = G_DIR / "scripts"
 PIN = REPO / "shared/sistema-agentes/pin.json"
@@ -21,7 +21,9 @@ if str(G_SCRIPTS) not in sys.path:
 _antes = sys.dont_write_bytecode
 sys.dont_write_bytecode = True
 try:
-    import sistema_agentes.contrato as contrato  # noqa: E402, F401
-    import sistema_agentes.derivar as derivar  # noqa: E402, F401
+    from sistema_agentes import (
+        contrato,  # noqa: F401
+        derivar,  # noqa: F401
+    )
 finally:
     sys.dont_write_bytecode = _antes

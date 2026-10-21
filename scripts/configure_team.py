@@ -122,11 +122,8 @@ DIRECTOR_PLUGINS_OVERRIDE = "GONCLOUD_DIRECTOR_PLUGINS"
 def archivos_compartidos():
     """The fixed copy of G every plugin-bearing profile needs beside it.
 
-    ``raices/compartido.py`` resolves ``shared/sistema-agentes`` through
-    ``parents[3]`` (finding F1 of PR #19): in the deployed copy that is the
-    profile directory, so the mirror must land in
-    ``profiles/<rol>/shared/sistema-agentes`` for the deployed plugin to find
-    it. Managed like any other file, so a later retirement removes it.
+    The mirror lands in ``profiles/<rol>/shared/sistema-agentes``, beside the
+    deployed plugin. Managed like any other file, so a later retirement removes it.
     """
     origen = ROOT / "shared" / "sistema-agentes"
     return {
@@ -1028,7 +1025,7 @@ def configure(
     plugin_root = ROOT / "plugins" / "goncloud-team"
     if str(plugin_root) not in sys.path:
         sys.path.insert(0, str(plugin_root))
-    from raices import poteto
+    import poteto
 
     if not (plugin_root / "plugin.yaml").is_file():
         raise ValueError(
@@ -1101,14 +1098,6 @@ def configure(
             "plugins/goncloud-team/model-routing.source.json": (
                 ROOT / "model-routing.source.json"
             ).read_bytes(),
-            # F7: la puerta de capacidades lee certificadas.json junto al
-            # módulo cargado (RUTA_CERTIFICADAS = Path(__file__).with_name);
-            # el filtro de plugin_files solo copia .py/.yaml/.md, así que el
-            # json no viajaba y en el gateway leer_certificadas daba () (el
-            # submit respondía siempre version-no-certificada).
-            "plugins/goncloud-team/raices/certificadas.json": (
-                plugin_root / "raices/certificadas.json"
-            ).read_bytes(),
         }
         if is_team:
             # La copia de poteto se verifica antes de preparar el paquete:
@@ -1171,12 +1160,6 @@ def configure(
             # the watcher reports when one of them leaves the catalogs.
             files["scripts/pinned-models.json"] = (
                 ROOT / "scripts/pinned-models.json"
-            ).read_text(encoding="utf-8")
-            # H6b: la skill de raíces del director. SOLO claw la recibe: es
-            # quien responde a despertar-raices con las herramientas
-            # goncloud_root_*; ningún especialista las tiene.
-            files["skills/raices/SKILL.md"] = (
-                ROOT / "skills" / "raices" / "SKILL.md"
             ).read_text(encoding="utf-8")
             # G.1: la skill `motor` SOLO la recibe el director: es quien
             # recibe los pedidos de cambio y los entrega al motor de la PC;
