@@ -23,3 +23,6 @@ done
 
 aplica_y_reinicia
 echo "desplegado: $(en_pc "git -C \"$PC_REPO\" rev-parse HEAD" | tr -d '\r\n ')"
+# El deploy solo da 0 con el checklist verde: si algo quedó (cadena, cron, gateway caído) falla
+# aquí mismo y no después en la verificación (el intento 5 devolvió 0 y el checklist 1).
+"$(dirname "${BASH_SOURCE[0]}")/checklist.sh"
