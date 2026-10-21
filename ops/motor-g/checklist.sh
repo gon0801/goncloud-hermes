@@ -8,7 +8,7 @@ set -uo pipefail
 mal=0
 falla() { echo "FALLA: $1" >&2; mal=1; }
 
-estado="$(en_pc "\"$PC_HERMES\" -p claw gateway status" 2>&1)" \
+estado="$(en_pc "\"$PC_HERMES\" -p claw gateway status" 2>&1 | tr -d '\r')" \
   || { echo "FALLA: Hermi no responde por ssh ($PC_HOST)" >&2; exit 1; }
 printf '%s\n' "$estado" | grep -qi "is running" || falla "el gateway no está corriendo"
 
@@ -17,7 +17,7 @@ cadena="$(en_pc "if not exist \"$yaml\" (echo SIN_PLUGIN) else (findstr /c:goncl
   || { echo "FALLA: no pude leer el plugin de claw por ssh" >&2; exit 1; }
 [ "$cadena" = "LIBRE" ] || falla "la cadena fija sigue registrada o no se pudo comprobar ($cadena)"
 
-crons="$(en_pc "\"$PC_HERMES\" -p default cron list" 2>&1)" \
+crons="$(en_pc "\"$PC_HERMES\" -p default cron list" 2>&1 | tr -d '\r')" \
   || { echo "FALLA: no pude listar los crons por ssh" >&2; exit 1; }
 for nombre in "${CRONS_RETIRADOS[@]}"; do
   printf '%s\n' "$crons" | grep -q "Name: *$nombre\$" && falla "existe el cron $nombre"

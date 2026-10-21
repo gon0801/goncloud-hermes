@@ -9,6 +9,7 @@ mkdir -p "$tmp/bin"
 
 cat > "$tmp/bin/ssh" <<'FAKE'
 #!/usr/bin/env bash
+# Como la PC real (Windows), la salida de Hermes lleva CRLF.
 # Uso real: ssh -o BatchMode=yes -o ConnectTimeout=15 <host> "<comando de cmd.exe>"
 cmd="${@: -1}"
 id_de() { printf 'ab%s' "$(printf %s "$1" | cksum | cut -d' ' -f1)"; }  # id hexadecimal, como los de Hermes
@@ -16,11 +17,11 @@ echo "$cmd" >> "$FAKE/bitacora"
 [ -e "$FAKE/ssh_caido" ] && { echo "ssh: connect to host gwpc port 22: Connection timed out" >&2; exit 255; }
 case "$cmd" in
   *"gateway status"*)
-    [ -e "$FAKE/gateway_caido" ] && { echo "Gateway is not running"; exit 1; }
-    echo "✓ Gateway is running via the default-profile multiplexer" ;;
+    [ -e "$FAKE/gateway_caido" ] && { printf 'Gateway is not running\r\n'; exit 1; }
+    printf '✓ Gateway is running via the default-profile multiplexer\r\n' ;;
   *"cron list"*)
     for n in $(cat "$FAKE/crons"); do
-      printf '  %s [active]\n    Name:      %s\n    Schedule:  every 1m\n\n' "$(id_de "$n")" "$n"
+      printf '  %s [active]\r\n    Name:      %s\r\n    Schedule:  every 1m\r\n\r\n' "$(id_de "$n")" "$n"
     done ;;
   *"cron remove"*)
     id="${cmd##* }"
