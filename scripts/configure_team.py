@@ -1178,6 +1178,12 @@ def configure(
             files["skills/raices/SKILL.md"] = (
                 ROOT / "skills" / "raices" / "SKILL.md"
             ).read_text(encoding="utf-8")
+            # G.1: la skill `motor` SOLO la recibe el director: es quien
+            # recibe los pedidos de cambio y los entrega al motor de la PC;
+            # los especialistas solo leen. Se carga desde skills/ del perfil.
+            files["skills/motor/SKILL.md"] = (
+                ROOT / "skills" / "motor" / "SKILL.md"
+            ).read_text(encoding="utf-8")
         shipped = set(files)
         if preserve_local_soul and (profile / "SOUL.md").exists():
             files.pop("SOUL.md")

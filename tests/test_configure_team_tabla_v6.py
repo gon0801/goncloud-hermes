@@ -665,8 +665,8 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
 
-class SkillRaicesDelDirector(unittest.TestCase):
-    """H6b: la skill raices se publica SOLO en el paquete del director (claw),
+class SkillMotorDelDirector(unittest.TestCase):
+    """G.1: la skill motor se publica SOLO en el paquete del director (claw),
     junto a sus otros files; ningún otro perfil la recibe."""
 
     def setUp(self):
@@ -695,9 +695,9 @@ class SkillRaicesDelDirector(unittest.TestCase):
     def test_la_skill_llega_al_paquete_de_claw_y_a_ningun_otro(self):
         resultado = self.deploy()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
-        esperada = (ROOT / "skills" / "raices" / "SKILL.md").read_text("utf-8")
+        esperada = (ROOT / "skills" / "motor" / "SKILL.md").read_text("utf-8")
         publicada = (
-            self.runtime / "profiles" / "claw" / "skills" / "raices" / "SKILL.md"
+            self.runtime / "profiles" / "claw" / "skills" / "motor" / "SKILL.md"
         ).read_text("utf-8")
         self.assertEqual(publicada, esperada)
         perfiles = sorted(
@@ -708,7 +708,7 @@ class SkillRaicesDelDirector(unittest.TestCase):
         self.assertTrue(perfiles, "el deploy crea los perfiles de equipo")
         for perfil in perfiles:
             self.assertFalse(
-                (self.runtime / "profiles" / perfil / "skills" / "raices").exists(),
+                (self.runtime / "profiles" / perfil / "skills" / "motor").exists(),
                 f"la skill no viaja al paquete de {perfil}",
             )
 
