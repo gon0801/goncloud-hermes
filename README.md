@@ -174,6 +174,8 @@ python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/mo
 
 `check` sale con 1 y lista cada diferencia (agente, posicion o thinking). La foto se toma en el host del gateway con un parse de solo lectura de `openclaw.json`; su formato esta en el encabezado del archivo.
 
+Cada dia a las 08:00, `scripts/vigila_modelos.py` corre en la Mac (`scripts/ai.goncloud.vigila-modelos.plist` en `~/Library/LaunchAgents`). Lee la tabla de `origin`, la config real de claw (Mini) y de los 21 perfiles de Hermes (PC) por ssh, y compara por agente la cadena ordenada de modelo y esfuerzo. No usa ningun modelo de IA. Si algo difiere o una maquina no contesta, deja un aviso en la cola del motor de la Mac, que lo manda a Telegram por Server Alerts; el detalle queda en `~/Library/Logs/goncloud/vigila-modelos.log`. Se agrego porque el 2026-10-18 claw volvio al orden de antes de la v6 y nadie se entero en cuatro dias.
+
 ## Cambiar un modelo
 
 Un modelo entra a la tabla despues de probarse con una llamada real, nunca antes. Una version nueva de un modelo en uso la cambia el vigia solo (ver abajo); a mano queda pasar a otro modelo.
