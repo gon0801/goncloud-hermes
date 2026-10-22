@@ -72,12 +72,7 @@ DIRIGIR = [
 ]
 CARRILES = {
     "dirigir": DIRIGIR,
-    "dirigir-claw": [
-        ("claude-opus-5-5", "medium"),
-        ("claude-sonnet-5-5", "high"),
-        ("glm-5.3", "high"),
-        ("k3", "high"),
-    ],
+    "dirigir-claw": DIRIGIR,
     "planear": [
         ("claude-opus-5-5", "high"),
         ("k3", "high"),
@@ -242,11 +237,12 @@ class PerfilV6Tests(unittest.TestCase):
                     profile,
                 )
 
-    def test_claw_lleva_medium_en_el_primario_y_entrega_high(self):
+    def test_claw_y_entrega_llevan_opus_high(self):
+        # David, 2026-10-22: el director de Hermes y main de OpenClaw van en high.
         claw = configure_team.native_config(LIVE, "claw")
         entrega = configure_team.native_config(LIVE, "entrega")
         self.assertEqual(
-            claw["agent"]["reasoning_overrides"]["claude-opus-5-5"], "medium"
+            claw["agent"]["reasoning_overrides"]["claude-opus-5-5"], "high"
         )
         self.assertEqual(
             entrega["agent"]["reasoning_overrides"]["claude-opus-5-5"], "high"
