@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 from datetime import datetime
 import io
 import json
@@ -159,13 +160,23 @@ class TestPolitica(unittest.TestCase):
         }
         self.assertEqual(module.juzga_claw(job, pol, 0), [])
 
-    def test_apagadas_a_proposito_empieza_vacia_y_se_valida_como_las_demas(self):
-        self.assertEqual(self.base["apagadas_a_proposito"], {})
+    def test_apagadas_a_proposito_lleva_la_entrada_decidida_y_se_valida_como_las_demas(
+        self,
+    ):
+        self.assertEqual(
+            list(self.base["apagadas_a_proposito"]),
+            ["ai.goncloud.tmux-activity-watch"],
+        )
         for valor in ([], {"a": 1}, {"a": ""}):
             datos = json.loads(json.dumps(self.base))
             datos["apagadas_a_proposito"] = valor
             with self.assertRaisesRegex(module.PoliticaError, "apagadas_a_proposito"):
                 self.carga(datos)
+
+    def test_una_clave_desconocida_sigue_siendo_error(self):
+        self.base["otra"] = {}
+        with self.assertRaisesRegex(module.PoliticaError, "clave desconocida: otra"):
+            self.carga(self.base)
 
     def test_una_clave_que_falta_falla(self):
         del self.base["marca_fallo"]
@@ -292,14 +303,23 @@ class TestJueces(unittest.TestCase):
             module.juzga_launchd(otro, self.pol), [module.Falla.TERMINO_MAL]
         )
 
-    def test_launchd_real_de_la_mac_solo_levanta_la_tarea_sin_cargar(self):
+    def test_launchd_real_de_la_mac_no_levanta_nada_con_la_apagada_en_la_lista(self):
         halladas = {
             f["label"]: module.juzga_launchd(f, self.pol)
             for f in carga("mac-launchd.json")
         }
         self.assertEqual(
             {n: f for n, f in halladas.items() if f},
-            {"ai.goncloud.tmux-activity-watch": [module.Falla.NO_CORRE]},
+            {},
+        )
+        sin_lista = dataclasses.replace(self.pol, apagadas_a_proposito={})
+        self.assertEqual(
+            [
+                f["label"]
+                for f in carga("mac-launchd.json")
+                if module.juzga_launchd(f, sin_lista)
+            ],
+            ["ai.goncloud.tmux-activity-watch"],
         )
 
     def test_claw_con_ultima_corrida_en_error_termino_mal(self):
@@ -824,6 +844,60 @@ class TestEstado(unittest.TestCase):
                 json.loads(self.estado.read_text("utf-8"))["hallazgos"],
             )
 
+    def test_una_fecha_imposible_en_el_estado_no_truena_la_manana(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        for fecha in ("2026-13-01", "2026-02-30"):
+            self.estado.write_text(
+                json.dumps(
+                    {"hallazgos": {"mini|NO_CORRE|a": fecha}, "recordatorio": ""}
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(len(self.corre([h], datetime(2026, 10, 23, 8, 0))), 1)
+            self.assertEqual(
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+                {"mini|NO_CORRE|a": "2026-10-23"},
+            )
+
+    def test_una_lectura_que_truena_no_declara_arreglado_ni_repite_el_aviso(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        cola = self.dir / "cola"
+        argv = [
+            "--maquina", "mini", "--raiz", str(ROOT), "--aviso", str(cola),
+            "--registro", str(self.dir / "vigia.log"), "--estado", str(self.estado),
+        ]  # fmt: skip
+        caida = lector("las tareas de launchd", error=RuntimeError("timeout"))
+        module.main(
+            argv, lectores=[caida], ahora=datetime(2026, 10, 22, 15, 0).timestamp()
+        )
+        textos = [p.read_text("utf-8") for p in cola.glob("*.txt")]
+        for p in cola.glob("*.txt"):
+            p.unlink()
+        self.assertEqual(len(textos), 1)
+        self.assertIn("No pude revisar las tareas de launchd", textos[0])
+        self.assertNotIn("ya se arregl", textos[0])
+        self.assertIn(
+            "mini|NO_CORRE|ai.goncloud.shopify-token", self.estado.read_text("utf-8")
+        )
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 16, 0)), [])
+
+    def test_una_lectura_que_truena_no_recuerda_lo_que_no_vio(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        estado, hoy = module.lee_estado(self.estado), "2026-10-23"
+        _, arreglados, pendientes, nuevo = module.concilia(estado, [], True, hoy, False)
+        self.assertEqual((arreglados, pendientes), ([], {}))
+        self.assertEqual(nuevo["hallazgos"], estado["hallazgos"])
+
+    def test_lo_que_se_apaga_a_proposito_no_se_anuncia_como_arreglado(self):
+        tarea = "ai.goncloud.tmux-activity-watch"
+        self.corre(
+            [hallazgo(tarea, module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 15, 0)), [])
+        self.assertEqual(module.lee_estado(self.estado)["hallazgos"], {})
+
     def test_sin_archivo_de_estado_se_crea_en_su_carpeta(self):
         self.estado = self.dir / "nueva" / "estado.json"
         self.corre(
@@ -837,8 +911,12 @@ class TestEstado(unittest.TestCase):
 
     def test_seco_no_lee_ni_escribe_el_estado(self):
         h = hallazgo("a", module.Falla.NO_CORRE)
-        with contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(module, "lee_estado") as lee,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.corre([h], datetime(2026, 10, 22, 14, 0), "--seco")
+        lee.assert_not_called()
         self.assertFalse(self.estado.exists())
         self.corre([h], datetime(2026, 10, 22, 14, 0))
         antes = self.estado.read_text("utf-8")
@@ -858,14 +936,26 @@ class TestEstado(unittest.TestCase):
         self.assertEqual(ruta.name, "estado.json")
         self.assertNotIn(ROOT, ruta.parents)
 
+    def test_las_rutas_por_omision_son_las_del_encargo(self):
+        with mock.patch.object(module.sys, "platform", "darwin"):
+            self.assertEqual(
+                module._ruta_del_estado(),
+                Path.home() / ".local/state/goncloud-vigia/estado.json",
+            )
+        with (
+            mock.patch.object(module.sys, "platform", "win32"),
+            mock.patch.dict(module.os.environ, {"LOCALAPPDATA": ""}),
+        ):
+            self.assertEqual(
+                str(module._ruta_del_estado()).replace("\\", "/").split("/")[-2:],
+                ["goncloud-vigia-estado", "estado.json"],
+            )
+
 
 class TestApagadasAProposito(unittest.TestCase):
     def setUp(self):
         base = json.loads((ROOT / "tareas-programadas.json").read_text("utf-8"))
-        base["apagadas_a_proposito"] = {
-            "ai.goncloud.tmux-activity-watch": "David la apagó",
-            "monday-pedidos-semanal": "David la apagó",
-        }
+        self.assertIn("ai.goncloud.tmux-activity-watch", base["apagadas_a_proposito"])
         with tempfile.TemporaryDirectory() as tmp:
             ruta = Path(tmp) / "tareas-programadas.json"
             ruta.write_text(json.dumps(base), encoding="utf-8")

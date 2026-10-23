@@ -436,6 +436,16 @@ def _ruta_del_estado():
     return Path.home() / ".local" / "state" / "goncloud-vigia" / "estado.json"
 
 
+def _fecha_valida(valor):
+    if not (isinstance(valor, str) and FECHA.fullmatch(valor)):
+        return False
+    try:
+        datetime.strptime(valor, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
 def lee_estado(ruta):
     """Lo que ya se avisó: ``{"hallazgos": {clave: fecha}, "recordatorio": fecha}``.
 
@@ -452,9 +462,7 @@ def lee_estado(ruta):
         return vacio
     return {
         "hallazgos": {
-            k: v
-            for k, v in avisados.items()
-            if _clave_valida(k) and isinstance(v, str) and FECHA.fullmatch(v)
+            k: v for k, v in avisados.items() if _clave_valida(k) and _fecha_valida(v)
         },
         "recordatorio": recordatorio if isinstance(recordatorio, str) else "",
     }
@@ -467,8 +475,11 @@ def guarda_estado(ruta, estado):
     os.replace(temporal, ruta)
 
 
-def concilia(estado, hallazgos, manana, hoy):
+def concilia(estado, hallazgos, manana, hoy, completo=True):
     """Compara lo que hay con lo ya avisado: ``(nuevos, arreglados, pendientes, estado nuevo)``.
+
+    Con una lectura incompleta no se sabe qué se arregló: lo avisado que no salió
+    se queda en el estado y no se declara arreglado ni se recuerda.
 
     Un hallazgo no urgente que todavía no toca avisar (por la tarde) no entra al estado.
     """
@@ -479,12 +490,16 @@ def concilia(estado, hallazgos, manana, hoy):
         for k, h in actuales.items()
         if k not in avisados and (h.falla.urgente or manana)
     ]
-    arreglados = [_hallazgo_de(k) for k in avisados if k not in actuales]
-    quedan = {k: fecha for k, fecha in avisados.items() if k in actuales}
+    arreglados = (
+        [_hallazgo_de(k) for k in avisados if k not in actuales] if completo else []
+    )
+    quedan = {
+        k: fecha for k, fecha in avisados.items() if k in actuales or not completo
+    }
     pendientes = {}
     if manana and estado["recordatorio"] != hoy:
         for k, fecha in quedan.items():
-            if fecha != hoy:
+            if fecha != hoy and k in actuales:
                 pendientes.setdefault(fecha, []).append(actuales[k])
     nuevo = {
         "hallazgos": {**quedan, **{clave_de(h): hoy for h in nuevos}},
@@ -777,8 +792,9 @@ def main(argv=None, lectores=None, ahora=None):
     hoy = reloj.strftime("%Y-%m-%d", reloj.localtime(ahora))
     ruta_estado = args.estado or _ruta_del_estado()
     nuevos, arreglados, pendientes, estado = concilia(
-        lee_estado(ruta_estado), hallazgos, manana, hoy
+        lee_estado(ruta_estado), hallazgos, manana, hoy, not sin_leer
     )
+    arreglados = [h for h in arreglados if h.tarea not in pol.apagadas_a_proposito]
     aviso = texto_aviso(nuevos, sin_leer, pol, manana, arreglados, pendientes)
     try:
         if aviso:
