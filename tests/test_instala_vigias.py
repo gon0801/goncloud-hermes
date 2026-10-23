@@ -346,6 +346,51 @@ class Instalacion(InstalaVigias):
         self.assertNotIn("schtasks /create", self.lee("ssh.log"))
 
 
+class EstadoDeAvisos(InstalaVigias):
+    def pon_estados(self):
+        estados = {}
+        for home in (self.mac, self.mini):
+            carpeta = home / ".local" / "state" / "goncloud-vigia"
+            carpeta.mkdir(parents=True)
+            (carpeta / "estado.json").write_text('{"hallazgos": {"a": 1}}')
+            (carpeta / "otro").write_text("x")
+            estados[carpeta] = {
+                ruta.name: ruta.read_text() for ruta in carpeta.iterdir()
+            }
+        return estados
+
+    def assertIntactos(self, estados):
+        for carpeta, contenido in estados.items():
+            self.assertEqual(
+                {ruta.name: ruta.read_text() for ruta in carpeta.iterdir()},
+                contenido,
+                carpeta,
+            )
+
+    def test_instalar_no_toca_la_carpeta_del_estado(self):
+        estados = self.pon_estados()
+        self.instala()
+        self.assertIntactos(estados)
+        self.assertNotIn("goncloud-vigia-estado", self.lee("ssh.log"))
+        self.assertNotIn(".local/state", self.lee("ssh.log"))
+
+    def test_el_rollback_no_toca_la_carpeta_del_estado(self):
+        for home in (self.mac, self.mini):
+            (home / "goncloud-vigia").mkdir()
+        estados = self.pon_estados()
+        self.instala()
+        hecho = self.corre("instala_vigias_rollback.sh")
+        self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+        self.assertIntactos(estados)
+        self.assertNotIn("goncloud-vigia-estado", self.lee("ssh.log"))
+
+    def test_el_rollback_sin_copia_anterior_tampoco_toca_el_estado(self):
+        estados = self.pon_estados()
+        self.instala()
+        self.assertEqual(self.corre("instala_vigias_rollback.sh").returncode, 0)
+        self.assertIntactos(estados)
+
+
 class Comprobacion(InstalaVigias):
     def setUp(self):
         super().setUp()
