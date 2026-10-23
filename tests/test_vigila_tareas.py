@@ -614,6 +614,7 @@ class TestMain(unittest.TestCase):
             argv = [
                 "--maquina", "mini", "--raiz", str(raiz),
                 "--aviso", str(self.cola), "--registro", str(self.registro),
+                "--estado", str(Path(tmp) / "estado.json"),
                 *extra,
             ]  # fmt: skip
             self.codigo = module.main(argv, lectores=lectores, ahora=ahora)
@@ -698,7 +699,8 @@ class TestMain(unittest.TestCase):
             registro.write_text("x")
             codigo = module.main(
                 ["--maquina", "mini", "--aviso", str(cola),
-                 "--registro", str(registro / "vigia.log")],
+                 "--registro", str(registro / "vigia.log"),
+                 "--estado", str(Path(tmp) / "estado.json")],
                 lectores=[lector("x", [h])],
                 ahora=1792724232.0,
             )  # fmt: skip
@@ -720,6 +722,133 @@ class TestMain(unittest.TestCase):
         ):
             self.corre([lector("x")], raiz=raiz)
         self.assertEqual(self.codigo, 2)
+
+
+class TestEstado(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.estado = self.dir / "estado.json"
+
+    def corre(self, hallazgos, cuando, *extra):
+        cola = self.dir / "cola"
+        argv = [
+            "--maquina", "mini", "--raiz", str(ROOT), "--aviso", str(cola),
+            "--registro", str(self.dir / "vigia.log"),
+            "--estado", str(self.estado), *extra,
+        ]  # fmt: skip
+        module.main(argv, lectores=[lector("x", hallazgos)], ahora=cuando.timestamp())
+        avisos = [p.read_text("utf-8") for p in sorted(cola.glob("*.txt"))]
+        for p in cola.glob("*.txt"):
+            p.unlink()
+        return avisos
+
+    def test_el_mismo_hallazgo_en_tres_corridas_avisa_una_sola_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        cuando = [datetime(2026, 10, 22, hora, 0) for hora in (14, 15, 16)]
+        avisos = [self.corre([h], c) for c in cuando]
+        self.assertEqual([len(a) for a in avisos], [1, 0, 0])
+        self.assertIn("no está corriendo", avisos[0][0])
+
+    def test_un_hallazgo_que_desaparece_avisa_que_se_arreglo_una_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        arreglo = self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(
+            arreglo,
+            [
+                "En la Mini · Tareas programadas:\n"
+                "• La renovación del token de Shopify: ya se arregló.\n" + module.CIERRE
+            ],
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 16, 0)), [])
+
+    def test_si_vuelve_despues_de_arreglarse_se_avisa_de_nuevo(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 16, 0))), 1)
+
+    def test_al_dia_siguiente_la_primera_corrida_de_la_manana_lo_recuerda_una_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 20, 0)), [])
+        recordatorio = self.corre([h], datetime(2026, 10, 23, 8, 0))
+        self.assertEqual(
+            recordatorio,
+            [
+                "En la Mini · Tareas programadas:\n"
+                "Sigue pendiente desde 22 de octubre:\n"
+                "• La renovación del token de Shopify: no está corriendo.\n"
+                + module.CIERRE
+            ],
+        )
+        self.assertEqual(self.corre([h], datetime(2026, 10, 23, 9, 0)), [])
+        self.assertEqual(self.corre([h], datetime(2026, 10, 23, 15, 0)), [])
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 24, 8, 0))), 1)
+
+    def test_lo_avisado_hoy_no_se_recuerda_hoy(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 8, 0))), 1)
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 9, 0)), [])
+
+    def test_un_no_urgente_de_la_tarde_se_avisa_la_manana_siguiente(self):
+        h = hallazgo("a", module.Falla.EN_VENTANA)
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 15, 0)), [])
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 16, 0)), [])
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 17, 0)), [])
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 23, 8, 0))), 1)
+
+    def test_un_estado_danado_se_trata_como_vacio_y_se_reescribe(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        for roto in (
+            "{no es json",
+            "[]",
+            '{"hallazgos": 3}',
+            '{"hallazgos": {"x": 1}}',
+        ):
+            self.estado.write_text(roto, encoding="utf-8")
+            self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 14, 0))), 1)
+            self.assertEqual(self.corre([h], datetime(2026, 10, 22, 15, 0)), [])
+            self.assertIn(
+                "mini|NO_CORRE|a",
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+            )
+
+    def test_sin_archivo_de_estado_se_crea_en_su_carpeta(self):
+        self.estado = self.dir / "nueva" / "estado.json"
+        self.corre(
+            [hallazgo("a", module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+        )
+        self.assertEqual(
+            json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+            {"mini|NO_CORRE|a": "2026-10-22"},
+        )
+        self.assertEqual(list(self.estado.parent.glob(".*")), [])
+
+    def test_seco_no_lee_ni_escribe_el_estado(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.corre([h], datetime(2026, 10, 22, 14, 0), "--seco")
+        self.assertFalse(self.estado.exists())
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        antes = self.estado.read_text("utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.corre([], datetime(2026, 10, 23, 8, 0), "--seco")
+        self.assertEqual(self.estado.read_text("utf-8"), antes)
+
+    def test_el_estado_se_escribe_con_os_replace(self):
+        with mock.patch.object(module.os, "replace", wraps=module.os.replace) as r:
+            self.corre(
+                [hallazgo("a", module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+            )
+        self.assertIn(self.estado, [Path(c.args[1]) for c in r.call_args_list])
+
+    def test_la_ruta_por_omision_vive_fuera_de_la_copia_instalada(self):
+        ruta = module._ruta_del_estado()
+        self.assertEqual(ruta.name, "estado.json")
+        self.assertNotIn(ROOT, ruta.parents)
 
 
 class TestLectores(unittest.TestCase):

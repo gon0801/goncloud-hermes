@@ -326,6 +326,10 @@ class SinLeer:
 MAQUINAS = {"mac": "la Mac", "mini": "la Mini", "pc": "la PC"}
 CIERRE = "Pídele a tu asistente que lo revise; lo demás sigue trabajando."
 MAX_LINEAS = 8
+MESES = (
+    "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre"
+).split()
+FECHA = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _nombre_llano(tarea, pol):
@@ -346,24 +350,54 @@ def _linea(nombres, falla):
     return f"• {_lista(nombres)}: {falla.frase}."
 
 
-def texto_aviso(hallazgos, sin_leer, politica, manana):
-    """El aviso para David, o ``None`` si no hay nada que decir.
-
-    Solo usa la máquina, la tarea y la falla: ``Hallazgo.detalle`` (rutas, ids, errores)
-    se queda en el registro.
-    """
-    entran = [h for h in hallazgos if h.falla.urgente or manana]
-    if not entran and not sin_leer:
-        return None
+def _lineas_de(hallazgos, politica):
     cuerpo = []
     for falla in Falla:
         nombres = []
-        for h in entran:
+        for h in hallazgos:
             nombre = _nombre_llano(h.tarea, politica)
             if h.falla is falla and nombre not in nombres:
                 nombres.append(nombre)
         if nombres:
             cuerpo.append(_linea(nombres, falla))
+    return cuerpo
+
+
+def _lineas_arreglados(arreglados, politica):
+    nombres = []
+    for h in arreglados:
+        nombre = _nombre_llano(h.tarea, politica)
+        if nombre not in nombres:
+            nombres.append(nombre)
+    if len(nombres) > 3:
+        return [f"• {len(nombres)} tareas: ya se arreglaron."]
+    return [f"• {n}: ya se arregló." for n in nombres]
+
+
+def _fecha_llana(fecha):
+    _, mes, dia = fecha.split("-")
+    return f"{int(dia)} de {MESES[int(mes) - 1]}"
+
+
+def texto_aviso(hallazgos, sin_leer, politica, manana, arreglados=(), pendientes=None):
+    """El aviso para David, o ``None`` si no hay nada que decir.
+
+    ``hallazgos`` son los que se avisan por primera vez, ``arreglados`` los que ya no
+    aparecen y ``pendientes`` (``{fecha del primer aviso: hallazgos}``) el recordatorio del día.
+    Solo usa la máquina, la tarea y la falla: ``Hallazgo.detalle`` (rutas, ids, errores)
+    se queda en el registro.
+    """
+    entran = [h for h in hallazgos if h.falla.urgente or manana]
+    pendientes = pendientes or {}
+    todos = [*entran, *arreglados, *(h for hs in pendientes.values() for h in hs)]
+    if not todos and not sin_leer:
+        return None
+    cuerpo = _lineas_de(entran, politica) + _lineas_arreglados(arreglados, politica)
+    for fecha, hs in sorted(pendientes.items()):
+        cuerpo += [
+            f"Sigue pendiente desde {_fecha_llana(fecha)}:",
+            *_lineas_de(hs, politica),
+        ]
     no_pude = (
         [f"• No pude revisar {_lista([s.que for s in sin_leer])}."] if sin_leer else []
     )
@@ -372,8 +406,86 @@ def texto_aviso(hallazgos, sin_leer, politica, manana):
         sobran = len(cuerpo) - (cupo - 1)
         cuerpo = [*cuerpo[: cupo - 1], f"• Y {sobran} avisos más."]
     cuerpo += no_pude
-    maquina = MAQUINAS[(entran or sin_leer)[0].maquina]
+    maquina = MAQUINAS[(todos or sin_leer)[0].maquina]
     return "\n".join([f"En {maquina} · Tareas programadas:", *cuerpo, CIERRE])
+
+
+def clave_de(h):
+    return f"{h.maquina}|{h.falla.name}|{h.tarea}"
+
+
+def _clave_valida(clave):
+    partes = clave.split("|", 2) if isinstance(clave, str) else []
+    return len(partes) == 3 and partes[1] in Falla.__members__
+
+
+def _hallazgo_de(clave):
+    maquina, falla, tarea = clave.split("|", 2)
+    return Hallazgo(maquina, tarea, Falla[falla], "")
+
+
+def _ruta_del_estado():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or r"C:\Users\ehven\AppData\Local"
+        return Path(base) / "goncloud-vigia-estado" / "estado.json"
+    return Path.home() / ".local" / "state" / "goncloud-vigia" / "estado.json"
+
+
+def lee_estado(ruta):
+    """Lo que ya se avisó: ``{"hallazgos": {clave: fecha}, "recordatorio": fecha}``.
+
+    Un archivo que falta o no se entiende cuenta como vacío.
+    """
+    vacio = {"hallazgos": {}, "recordatorio": ""}
+    try:
+        datos = json.loads(Path(ruta).read_text(encoding="utf-8"))
+        avisados = datos["hallazgos"]
+        recordatorio = datos.get("recordatorio", "")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return vacio
+    if not isinstance(avisados, dict):
+        return vacio
+    return {
+        "hallazgos": {
+            k: v
+            for k, v in avisados.items()
+            if _clave_valida(k) and isinstance(v, str) and FECHA.fullmatch(v)
+        },
+        "recordatorio": recordatorio if isinstance(recordatorio, str) else "",
+    }
+
+
+def guarda_estado(ruta, estado):
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    temporal = ruta.with_name(f".{ruta.name}.tmp")
+    temporal.write_text(json.dumps(estado, indent=2, ensure_ascii=False), "utf-8")
+    os.replace(temporal, ruta)
+
+
+def concilia(estado, hallazgos, manana, hoy):
+    """Compara lo que hay con lo ya avisado: ``(nuevos, arreglados, pendientes, estado nuevo)``.
+
+    Un hallazgo no urgente que todavía no toca avisar (por la tarde) no entra al estado.
+    """
+    actuales = {clave_de(h): h for h in hallazgos}
+    avisados = estado["hallazgos"]
+    nuevos = [
+        h
+        for k, h in actuales.items()
+        if k not in avisados and (h.falla.urgente or manana)
+    ]
+    arreglados = [_hallazgo_de(k) for k in avisados if k not in actuales]
+    quedan = {k: fecha for k, fecha in avisados.items() if k in actuales}
+    pendientes = {}
+    if manana and estado["recordatorio"] != hoy:
+        for k, fecha in quedan.items():
+            if fecha != hoy:
+                pendientes.setdefault(fecha, []).append(actuales[k])
+    nuevo = {
+        "hallazgos": {**quedan, **{clave_de(h): hoy for h in nuevos}},
+        "recordatorio": hoy if pendientes else estado["recordatorio"],
+    }
+    return nuevos, arreglados, pendientes, nuevo
 
 
 @dataclass(frozen=True)
@@ -630,6 +742,9 @@ def main(argv=None, lectores=None, ahora=None):
     )
     ap.add_argument("--aviso", type=Path, default=Path("~/.motor/avisos/pendientes"))
     ap.add_argument("--registro", type=Path, default=None)
+    ap.add_argument(
+        "--estado", type=Path, default=None, help="archivo de lo que ya se avisó"
+    )
     args = ap.parse_args(argv)
     ahora = reloj.time() if ahora is None else ahora
     try:
@@ -654,10 +769,16 @@ def main(argv=None, lectores=None, ahora=None):
         return 1 if urgente else 0
 
     manana = reloj.localtime(ahora).tm_hour < 12
-    aviso = texto_aviso(hallazgos, sin_leer, pol, manana)
+    hoy = reloj.strftime("%Y-%m-%d", reloj.localtime(ahora))
+    ruta_estado = args.estado or _ruta_del_estado()
+    nuevos, arreglados, pendientes, estado = concilia(
+        lee_estado(ruta_estado), hallazgos, manana, hoy
+    )
+    aviso = texto_aviso(nuevos, sin_leer, pol, manana, arreglados, pendientes)
     try:
         if aviso:
             encola(args.aviso.expanduser(), aviso, "vigila-tareas")
+        guarda_estado(ruta_estado, estado)
         if hallazgos or sin_leer:
             _deja_en_el_registro(
                 args.registro or _ruta_del_registro(), hallazgos, sin_leer, ahora
