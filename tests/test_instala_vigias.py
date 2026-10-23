@@ -20,6 +20,8 @@ VIGIA_FALSO = (
     "import os, sys\n"
     "open(os.environ['FAKE'] + '/seco.log', 'a').write(' '.join(sys.argv) + '\\n')\n"
     "maquina = sys.argv[sys.argv.index('--maquina') + 1] if '--maquina' in sys.argv else 'modelos'\n"
+    "if os.environ.get('SECO_TRACEBACK_' + maquina.upper()):\n"
+    "    raise RuntimeError('truena')\n"
     "sys.exit(int(os.environ.get('SECO_RC_' + maquina.upper(), os.environ.get('SECO_RC', '0'))))\n"
 )
 
@@ -32,7 +34,9 @@ case $host in
   gwpc)
     cat > /dev/null
     case $cmd in
-      *--seco*) exit "${SECO_RC_PC:-0}" ;;
+      *--seco*)
+        [ -z "$SECO_TRACEBACK_PC" ] || { echo 'Traceback (most recent call last):' >&2; exit 1; }
+        exit "${SECO_RC_PC:-0}" ;;
       schtasks*) eval "$cmd" ;;
       *"schtasks /delete"*) schtasks /delete /f /tn GoncloudVigia ;;
       *"if not exist"*) exit "${FAKE_PC_SIN_COPIA:-0}" ;;
@@ -280,11 +284,40 @@ class Instalacion(InstalaVigias):
             ],
             check=True,
         )
-        env = {"MOTOR_SHA": ""}
-        hecho = self.corre(**env)
-        self.assertNotEqual(
-            hecho.returncode, 0 if "no encuentro" in hecho.stdout else 99
+        hecho = self.corre(MOTOR_SHA="")
+        self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+        registro = (self.mac / "Library/Logs/goncloud/instala-vigias.log").read_text()
+        self.assertIn(f"instala_vigias {self.sha}", registro)
+        self.assertTrue(
+            (self.mac / "goncloud-vigia/scripts/vigila_tareas.py").is_file()
         )
+
+    def test_sin_motor_sha_y_sin_origin_head_no_instala(self):
+        hecho = self.corre(MOTOR_SHA="")
+        self.assertNotEqual(hecho.returncode, 0)
+        self.assertIn("no encuentro", hecho.stdout)
+        self.assertFalse((self.mac / "goncloud-vigia").exists())
+
+    def test_un_vigia_posix_que_truena_no_se_enciende_y_la_copia_vieja_queda(self):
+        for maquina, home in (("mini", self.mini), ("mac", self.mac)):
+            with self.subTest(maquina=maquina):
+                self.setUp()
+                copia_vieja = home / "goncloud-vigia"
+                copia_vieja.mkdir(exist_ok=True)
+                (copia_vieja / "viejo").write_text("x")
+                hecho = self.corre(**{f"SECO_TRACEBACK_{maquina.upper()}": "1"})
+                self.assertNotEqual(hecho.returncode, 0)
+                self.assertIn(f"FALLA {maquina}", hecho.stdout)
+                self.assertIn("truena (traceback)", hecho.stdout)
+                self.assertTrue((copia_vieja / "viejo").is_file())
+                self.assertFalse(self.cargado(home, "ai.goncloud.vigila-tareas"))
+
+    def test_un_vigia_de_la_pc_que_truena_no_crea_la_tarea(self):
+        hecho = self.corre(SECO_TRACEBACK_PC="1")
+        self.assertNotEqual(hecho.returncode, 0)
+        self.assertIn("FALLA pc", hecho.stdout)
+        self.assertIn("truena (traceback)", hecho.stdout)
+        self.assertNotIn("schtasks /create", self.lee("ssh.log"))
 
 
 class Comprobacion(InstalaVigias):
@@ -306,6 +339,20 @@ class Comprobacion(InstalaVigias):
         hecho = self.comprueba(SECO_RC="2")
         self.assertEqual(hecho.returncode, 1)
         self.assertIn("--seco salió con 2", hecho.stdout)
+
+    def test_falla_si_un_vigia_truena_aunque_salga_con_1(self):
+        for maquina, home in (("mini", self.mini), ("mac", self.mac)):
+            ruta = home / "goncloud-vigia/scripts/vigila_tareas.py"
+            original = ruta.read_text()
+            ruta.write_text("raise RuntimeError('truena')\n")
+            hecho = self.comprueba()
+            ruta.write_text(original)
+            self.assertEqual(hecho.returncode, 1, hecho.stdout)
+            self.assertNotIn(f"OK {maquina}", hecho.stdout)
+            self.assertIn(f"FALLA {maquina}", hecho.stdout)
+        hecho = self.comprueba(SECO_TRACEBACK_PC="1")
+        self.assertEqual(hecho.returncode, 1, hecho.stdout)
+        self.assertIn("FALLA pc", hecho.stdout)
 
     def test_falla_si_falta_la_copia_fija(self):
         shutil.rmtree(self.mini / "goncloud-vigia")
