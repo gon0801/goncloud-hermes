@@ -414,7 +414,7 @@ class TestJueces(unittest.TestCase):
         )
 
     def test_memoria_de_claw_con_el_log_real(self):
-        log = (DATOS / "mini-gateway-memoria.log").read_text(encoding="utf-8")
+        log = (DATOS / "mini-gateway-memoria.txt").read_text(encoding="utf-8")
         self.assertAlmostEqual(module.memoria_alta_mb(log, AHORA_MS), 4413.44, places=1)
         despues = AHORA_MS + 5 * 3600 * 1000
         self.assertAlmostEqual(module.memoria_alta_mb(log, despues), 2252.8, places=1)
