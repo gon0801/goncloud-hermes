@@ -5,14 +5,16 @@
   <key>Label</key><string>ai.goncloud.vigila-modelos</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/python3</string>
-    <string>/Users/dn/dev/goncloud-hermes/scripts/vigila_modelos.py</string>
+    <string>@PYTHON@</string>
+    <string>@HOME@/goncloud-vigia/scripts/vigila_modelos.py</string>
+    <string>--raiz</string>
+    <string>@HOME@/goncloud-vigia</string>
     <string>--aviso</string>
-    <string>/Users/dn/.motor/avisos/pendientes</string>
+    <string>@HOME@/goncloud-vigia/avisos</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardOutPath</key><string>/Users/dn/Library/Logs/goncloud/vigila-modelos.log</string>
-  <key>StandardErrorPath</key><string>/Users/dn/Library/Logs/goncloud/vigila-modelos.log</string>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/goncloud/vigila-modelos.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/goncloud/vigila-modelos.log</string>
 </dict>
 </plist>
