@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
-  "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. 2026-10-17: rows renamed to the v6 lanes (carriles) of the new table; the thinking flags are still the values measured on 2026-10-12, not new measurements.",
+  "source": "Measured on the live claw gateway, 2026-10-12: every agent's chain equals a row of model-routing.source.json. 2026-10-17: rows renamed to the v6 lanes (carriles) of the new table; the thinking flags are still the values measured on 2026-10-12, not new measurements. 2026-10-22: claw calls DeepSeek through the second OpenCode Go account (opencode-go-2), per tabla v6-02, because live claw already used opencode-go-2 and applying the old table moved it to the other account.",
   "second_account_suffix": "-2",
-  "id_overrides": {},
+  "id_overrides": {
+    "opencode-go/deepseek-v4.1-flash": "opencode-go-2/deepseek-v4.1-flash"
+  },
   "agents": {
     "main": {
       "row": "dirigir-claw",

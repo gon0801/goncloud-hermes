@@ -35,7 +35,9 @@ def desired_agent(labels, mapping, *, thinking):
         # The table repeats position 0 to mean "same model, second OpenCode Go
         # account"; claw addresses that account as a provider of its own.
         provider, model = ids[0].split("/", 1)
-        ids[1] = f"{provider}{mapping['second_account_suffix']}/{model}"
+        suffix = mapping["second_account_suffix"]
+        if not provider.endswith(suffix):
+            ids[1] = f"{provider}{suffix}/{model}"
     agent = {"model": {"primary": ids[0], "fallbacks": ids[1:]}}
     efforts = {
         model_id: {"params": {"thinking": effort}}
