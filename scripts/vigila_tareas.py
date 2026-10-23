@@ -22,7 +22,8 @@ import shutil
 import subprocess
 import sys
 import time as reloj
-from zoneinfo import ZoneInfo
+from xml.parsers.expat import ExpatError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from vigia_comun import encola
 
@@ -64,7 +65,7 @@ def _hora(v):
     return isinstance(v, str) and HORA.fullmatch(v) is not None
 
 
-def _lista(item):
+def _lista_de(item):
     return lambda v: isinstance(v, list) and all(item(x) for x in v)
 
 
@@ -84,8 +85,11 @@ _ESQUEMA = {
         "motivo": (_texto, "texto"),
     },
     "launchd": {
-        "prefijos": (_lista(_texto), "una lista de texto"),
-        "salidas_ok": (_mapa(_lista(_entero)), "un objeto de texto a lista de enteros"),
+        "prefijos": (_lista_de(_texto), "una lista de texto"),
+        "salidas_ok": (
+            _mapa(_lista_de(_entero)),
+            "un objeto de texto a lista de enteros",
+        ),
     },
     "limites": {
         "claw_rss_mb": (_numero, "un número"),
@@ -144,6 +148,15 @@ class Politica:
         _valida(datos, _ESQUEMA)
         if datos["schema_version"] != VERSION:
             raise PoliticaError(f"schema_version: esperaba {VERSION}")
+        ventana = datos["ventana_reinicio"]
+        try:
+            ZoneInfo(ventana["zona"])
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise PoliticaError(
+                f"ventana_reinicio.zona: no conozco la zona {ventana['zona']}"
+            ) from e
+        if ventana["desde"] >= ventana["hasta"]:
+            raise PoliticaError("ventana_reinicio.desde: debe ser menor que hasta")
         return cls(
             modelo_propio=datos["modelo_propio"],
             ventana=Ventana(**datos["ventana_reinicio"]),
@@ -228,11 +241,11 @@ def juzga_claw(job, pol, ahora_ms):
     if _atrasada(proxima, ahora_ms):
         fallas.append(Falla.NO_CORRE)
     fallas += _modelo_propio(
-        f"claw:{job['name']}", job.get("payload", {}).get("model"), pol
+        f"claw:{job['name']}", (job.get("payload") or {}).get("model"), pol
     )
     if (
         proxima is not None
-        and job.get("schedule", {}).get("kind") != "every"
+        and (job.get("schedule") or {}).get("kind") != "every"
         and _en_ventana(proxima, pol.ventana)
     ):
         fallas.append(Falla.EN_VENTANA)
@@ -342,11 +355,14 @@ def texto_aviso(hallazgos, sin_leer, politica, manana):
                 nombres.append(nombre)
         if nombres:
             cuerpo.append(_linea(nombres, falla))
-    if sin_leer:
-        cuerpo.append(f"• No pude revisar {_lista([s.que for s in sin_leer])}.")
-    if len(cuerpo) > MAX_LINEAS - 2:
-        sobran = len(cuerpo) - (MAX_LINEAS - 3)
-        cuerpo = [*cuerpo[: MAX_LINEAS - 3], f"• Y {sobran} avisos más."]
+    no_pude = (
+        [f"• No pude revisar {_lista([s.que for s in sin_leer])}."] if sin_leer else []
+    )
+    cupo = MAX_LINEAS - 2 - len(no_pude)
+    if len(cuerpo) > cupo:
+        sobran = len(cuerpo) - (cupo - 1)
+        cuerpo = [*cuerpo[: cupo - 1], f"• Y {sobran} avisos más."]
+    cuerpo += no_pude
     maquina = MAQUINAS[(entran or sin_leer)[0].maquina]
     return "\n".join([f"En {maquina} · Tareas programadas:", *cuerpo, CIERRE])
 
@@ -380,10 +396,25 @@ def lee_launchd(prefijos, carpeta=None):
     for ruta in sorted(carpeta.glob("*.plist")):
         try:
             plist = plistlib.loads(ruta.read_bytes())
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            continue
-        label = plist.get("Label", ruta.stem)
+        except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
+            plist = None
+        label = plist.get("Label", ruta.stem) if plist else ruta.stem
         if not label.startswith(tuple(prefijos)):
+            continue
+        if plist is None:
+            r = _corre(["launchctl", "print", f"gui/{os.getuid()}/{label}"])
+            filas.append(
+                {
+                    "label": label,
+                    "periodico": False,
+                    "keepalive": False,
+                    "cargado": False,
+                    "state": _campo(r.stdout, "state"),
+                    "runs": None,
+                    "last_exit_code": None,
+                    "rutas_que_faltan": [str(ruta)],
+                }
+            )
             continue
         r = _corre(["launchctl", "print", f"gui/{os.getuid()}/{label}"])
         args = plist.get("ProgramArguments") or [plist.get("Program", "")]
@@ -616,12 +647,12 @@ def main(argv=None, lectores=None, ahora=None):
     manana = reloj.localtime(ahora).tm_hour < 12
     aviso = texto_aviso(hallazgos, sin_leer, pol, manana)
     try:
+        if aviso:
+            encola(args.aviso.expanduser(), aviso, "vigila-tareas")
         if hallazgos or sin_leer:
             _deja_en_el_registro(
                 args.registro or _ruta_del_registro(), hallazgos, sin_leer, ahora
             )
-        if aviso:
-            encola(args.aviso.expanduser(), aviso, "vigila-tareas")
     except OSError as e:
         print(f"vigila_tareas: no pude dejar el aviso: {e}", file=sys.stderr)
         return 2

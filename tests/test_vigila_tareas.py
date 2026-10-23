@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 
@@ -114,7 +115,7 @@ class TestPolitica(unittest.TestCase):
         self.assertEqual((pol.claw_rss_mb, pol.chrome_perfil_mb), (3584, 3072))
         self.assertEqual(pol.marca_fallo, "FALLO:")
         self.assertIn("ai.goncloud.vigila-modelos", pol.salidas_ok)
-        self.assertEqual(len(pol.modelo_propio), 4)
+        self.assertEqual(len(pol.modelo_propio), 5)
 
     def test_una_clave_de_mas_falla_y_nombra_la_clave(self):
         for ruta, clave in ((None, "intrusa"), ("limites", "limites.intrusa")):
@@ -136,6 +137,25 @@ class TestPolitica(unittest.TestCase):
             (datos if padre is None else datos[padre])[clave] = valor
             with self.assertRaisesRegex(module.PoliticaError, esperada):
                 self.carga(datos)
+
+    def test_zona_desconocida_o_ventana_al_reves_fallan(self):
+        for clave, valor, esperada in (
+            ("zona", "America/Nowhere", "ventana_reinicio.zona"),
+            ("desde", "05:10", "ventana_reinicio.desde"),
+        ):
+            datos = json.loads(json.dumps(self.base))
+            datos["ventana_reinicio"][clave] = valor
+            with self.assertRaisesRegex(module.PoliticaError, esperada):
+                self.carga(datos)
+
+    def test_el_repaso_nocturno_de_memoria_va_a_sonnet(self):
+        pol = module.Politica.carga(ROOT / "tareas-programadas.json")
+        job = {
+            "name": "Memory Dreaming Promotion",
+            "enabled": True,
+            "payload": {"model": "anthropic/claude-sonnet-5-5"},
+        }
+        self.assertEqual(module.juzga_claw(job, pol, 0), [])
 
     def test_una_clave_que_falta_falla(self):
         del self.base["marca_fallo"]
@@ -319,6 +339,13 @@ class TestJueces(unittest.TestCase):
             nextRunAtMs=en_ventana, schedule={"kind": "every", "everyMs": 1}
         )
         self.assertEqual(module.juzga_claw(cada, self.pol, AHORA_MS), [])
+        for borde in ("2026-10-23T03:45", "2026-10-23T05:10"):
+            job = job_claw(nextRunAtMs=ms_la(borde))
+            self.assertEqual(
+                module.juzga_claw(job, self.pol, AHORA_MS),
+                [module.Falla.EN_VENTANA],
+                borde,
+            )
         for fuera in ("2026-10-23T05:11", "2026-10-23T03:44"):
             job = job_claw(nextRunAtMs=ms_la(fuera))
             self.assertEqual(module.juzga_claw(job, self.pol, AHORA_MS), [], fuera)
@@ -376,6 +403,20 @@ class TestJueces(unittest.TestCase):
         self.assertEqual(
             module.juzga_hermes("claw", job_hermes(), self.pol, AHORA_MS, salida), []
         )
+
+    def test_una_respuesta_que_menciona_la_marca_a_media_frase_no_cuenta(self):
+        salida = "## Prompt\n\nx\n\n## Response\n\nNo hubo ningún FALLO: todo bien.\n"
+        self.assertEqual(
+            module.juzga_hermes("claw", job_hermes(), self.pol, AHORA_MS, salida), []
+        )
+
+    def test_la_respuesta_final_es_lo_que_sigue_al_ultimo_response(self):
+        salida = "## Response\n\ncita\n\n## Response\n\nFALLO: de verdad\n"
+        self.assertEqual(module.respuesta_final(salida), "FALLO: de verdad")
+
+    def test_claw_con_payload_o_schedule_nulos_no_truena(self):
+        job = job_claw(payload=None, schedule=None)
+        self.assertEqual(module.juzga_claw(job, self.pol, AHORA_MS), [])
 
     def test_hermes_sin_agente_no_declara_fallo(self):
         salida = "# Cron Job: x\n\n## Response\n\nFALLO: el script lo dijo\n"
@@ -520,6 +561,13 @@ class TestAviso(unittest.TestCase):
         self.assertLessEqual(len(texto.splitlines()), 8)
         self.assertTrue(texto.splitlines()[-1].startswith("Pídele"))
 
+    def test_al_recortar_se_conserva_lo_que_no_se_pudo_revisar(self):
+        hallazgos = [hallazgo(f"t{i}", falla) for i, falla in enumerate(module.Falla)]
+        texto = self.aviso(hallazgos, [module.SinLeer("mini", "el cron")])
+        self.assertIn("No pude revisar el cron", texto)
+        self.assertIn("avisos más", texto)
+        self.assertLessEqual(len(texto.splitlines()), 8)
+
     def test_ninguna_ruta_id_ni_error_llega_al_aviso(self):
         detalle = (
             "falta /Users/gon/scripts/renueva.sh id 35798aa2-d734-4d9a-bc6a-25634eeb1a24 "
@@ -613,6 +661,21 @@ class TestMain(unittest.TestCase):
         self.corre([lector("la PC", error=OSError("no contesta"))])
         self.assertEqual((self.codigo, len(self.avisos)), (0, 1))
 
+    def test_si_el_registro_no_se_puede_escribir_el_aviso_sale_igual(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        with tempfile.TemporaryDirectory() as tmp:
+            cola = Path(tmp) / "cola"
+            registro = Path(tmp) / "archivo"
+            registro.write_text("x")
+            codigo = module.main(
+                ["--maquina", "mini", "--aviso", str(cola),
+                 "--registro", str(registro / "vigia.log")],
+                lectores=[lector("x", [h])],
+                ahora=1792724232.0,
+            )  # fmt: skip
+            self.assertEqual(codigo, 2)
+            self.assertEqual(len(list(cola.glob("*.txt"))), 1)
+
     def test_politica_rota_sale_2(self):
         with tempfile.TemporaryDirectory() as raiz:
             (Path(raiz) / "tareas-programadas.json").write_text('{"intrusa": 1}')
@@ -677,7 +740,7 @@ class TestLectores(unittest.TestCase):
                 plistlib.dumps(
                     {
                         "Label": "ai.goncloud.x",
-                        "ProgramArguments": ["/no/existe/nada.sh"],
+                        "ProgramArguments": ["/bin/sh", "/no/existe/nada.sh"],
                         "StartInterval": 60,
                     }
                 )
@@ -685,12 +748,49 @@ class TestLectores(unittest.TestCase):
             (Path(tmp) / "otro.plist").write_bytes(
                 plistlib.dumps({"Label": "com.apple.x"})
             )
-            filas = module.lee_launchd(("ai.goncloud.",), Path(tmp))
+            with mock.patch.object(
+                module,
+                "_corre",
+                lambda argv: subprocess.CompletedProcess(argv, 113, "", ""),
+            ):
+                filas = module.lee_launchd(("ai.goncloud.",), Path(tmp))
         self.assertEqual(len(filas), 1)
         self.assertEqual(set(filas[0]), CAMPOS_LAUNCHD)
         self.assertEqual(filas[0]["rutas_que_faltan"], ["/no/existe/nada.sh"])
         self.assertTrue(filas[0]["periodico"])
         self.assertFalse(filas[0]["cargado"])
+
+    def test_un_plist_nuestro_que_no_se_puede_leer_no_se_salta(self):
+        roto = {
+            "ai.goncloud.binario.plist": b"bplist00 roto",
+            "ai.goncloud.xml.plist": b"<?xml version='1.0'?><plist><dict>",
+            "ai.goncloud.sinpermiso.plist": plistlib.dumps(
+                {"Label": "ai.goncloud.sinpermiso"}
+            ),
+            "com.apple.roto.plist": b"bplist00 roto",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for nombre, datos in roto.items():
+                (Path(tmp) / nombre).write_bytes(datos)
+            (Path(tmp) / "ai.goncloud.sinpermiso.plist").chmod(0)
+            try:
+                with mock.patch.object(
+                    module,
+                    "_corre",
+                    lambda argv: subprocess.CompletedProcess(argv, 113, "", ""),
+                ):
+                    filas = module.lee_launchd(("ai.goncloud.",), Path(tmp))
+            finally:
+                (Path(tmp) / "ai.goncloud.sinpermiso.plist").chmod(0o600)
+            self.assertEqual(
+                [f["label"] for f in filas],
+                ["ai.goncloud.binario", "ai.goncloud.sinpermiso", "ai.goncloud.xml"],
+            )
+            pol = politica()
+            for fila in filas:
+                self.assertEqual(
+                    module.juzga_launchd(fila, pol), [module.Falla.NO_CORRE]
+                )
 
 
 if __name__ == "__main__":

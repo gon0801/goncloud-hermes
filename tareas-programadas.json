@@ -3,6 +3,7 @@
   "modelo_propio": {
     "claw:cuotas-proveedores": "anthropic/claude-haiku-5-5",
     "claw:verif-digest-20h": "anthropic/claude-sonnet-5-5",
+    "claw:Memory Dreaming Promotion": "anthropic/claude-sonnet-5-5",
     "claw:revision-aciertos-jev": "anthropic/claude-sonnet-5-5",
     "hermes:claw/monday-pedidos-semanal": "claude-sonnet-5-5"
   },
@@ -42,6 +43,7 @@
     "ai.goncloud.claw-autoupdate": "La actualización automática de claw",
     "ai.goncloud.claw-reinicio": "El reinicio programado de claw",
     "ai.goncloud.vigila-modelos": "La revisión diaria de modelos",
+    "ai.goncloud.vigila-tareas": "La revisión de tareas programadas",
     "ai.goncloud.sincronizar-pstack": "La sincronización de pstack",
     "claw-openclaw-keepalive": "El vigilante que mantiene claw encendido",
     "ai.openclaw.gateway": "El servicio de claw",
@@ -50,6 +52,9 @@
     "monday-pedidos-semanal": "El reporte semanal de pedidos de Monday",
     "respaldo-diario-hermes": "El respaldo diario de Hermes",
     "packing-digest-20h": "El resumen de empaque de las 20:00",
+    "ai.goncloud.tmux-activity-watch": "El vigilante de actividad de tmux",
+    "skill-collection-review-main": "La revisión de la colección de skills",
+    "claw": "Claw",
     "cuotas-proveedores": "El chequeo diario de cuotas de proveedores"
   }
 }
