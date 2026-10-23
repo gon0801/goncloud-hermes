@@ -22,9 +22,11 @@
     ],
     "salidas_ok": {
       "ai.goncloud.vigila-modelos": [
+        0,
         1
       ],
       "ai.goncloud.vigila-tareas": [
+        0,
         1
       ]
     }

@@ -10,12 +10,29 @@ La política (modelos acordados, ventana de reinicio, límites, nombres llanos) 
 """
 
 from dataclasses import dataclass
+from datetime import datetime, time
+from enum import Enum
 import json
 from pathlib import Path
 import re
+from zoneinfo import ZoneInfo
 
 RAIZ = Path(__file__).resolve().parents[1]
 HORA = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+ATRASO_MAX_MS = 90 * 60 * 1000
+DIA_MS = 24 * 3600 * 1000
+MB = {
+    "KIB": 1 / 1024,
+    "MIB": 1,
+    "GIB": 1024,
+    "TIB": 1024 * 1024,
+    "KB": 1 / 1000,
+    "MB": 1,
+    "GB": 1000,
+}
+MEMORIA = re.compile(
+    r"^(\S+) .*memory pressure.*?\brss=([\d.]+) ?([KMGT]i?B)", re.IGNORECASE
+)
 
 
 class PoliticaError(ValueError):
@@ -128,3 +145,141 @@ class Politica:
             marca_fallo=datos["marca_fallo"],
             nombres_llanos=datos["nombres_llanos"],
         )
+
+
+class Falla(Enum):
+    """El valor es ``(urgente, frase llana)``."""
+
+    NO_CORRE = (True, "no está corriendo")
+    TERMINO_MAL = (True, "su última corrida falló")
+    FALLO_DECLARADO = (True, "avisó que algo falló y quedó marcada como buena")
+    MODELO_PROPIO = (False, "usa un modelo distinto al acordado")
+    EN_VENTANA = (False, "está programada a la hora del reinicio de claw")
+    PESA_DEMASIADO = (False, "usa más memoria o espacio de lo normal")
+
+    @property
+    def urgente(self):
+        return self.value[0]
+
+    @property
+    def frase(self):
+        return self.value[1]
+
+
+@dataclass(frozen=True)
+class Hallazgo:
+    maquina: str
+    tarea: str
+    falla: Falla
+    detalle: str
+
+
+def juzga_launchd(fila, pol):
+    fallas = []
+    if (
+        fila["rutas_que_faltan"]
+        or not fila["cargado"]
+        or (fila["keepalive"] and fila["state"] != "running")
+    ):
+        fallas.append(Falla.NO_CORRE)
+    codigo = fila["last_exit_code"]
+    if (
+        fila["periodico"]
+        and codigo is not None
+        and codigo not in pol.salidas_ok.get(fila["label"], (0,))
+    ):
+        fallas.append(Falla.TERMINO_MAL)
+    return fallas
+
+
+def _en_ventana(ms, ventana):
+    local = datetime.fromtimestamp(ms / 1000, ZoneInfo(ventana.zona)).time()
+    return (
+        time.fromisoformat(ventana.desde) <= local <= time.fromisoformat(ventana.hasta)
+    )
+
+
+def _modelo_propio(clave, modelo, pol):
+    if modelo and pol.modelo_propio.get(clave) != modelo:
+        return [Falla.MODELO_PROPIO]
+    return []
+
+
+def _atrasada(proxima_ms, ahora_ms):
+    return proxima_ms is not None and ahora_ms - proxima_ms > ATRASO_MAX_MS
+
+
+def juzga_claw(job, pol, ahora_ms):
+    if not job.get("enabled"):
+        return []
+    fallas = []
+    if job.get("lastRunStatus") == "error":
+        fallas.append(Falla.TERMINO_MAL)
+    proxima = job.get("nextRunAtMs")
+    if _atrasada(proxima, ahora_ms):
+        fallas.append(Falla.NO_CORRE)
+    fallas += _modelo_propio(
+        f"claw:{job['name']}", job.get("payload", {}).get("model"), pol
+    )
+    if (
+        proxima is not None
+        and job.get("schedule", {}).get("kind") != "every"
+        and _en_ventana(proxima, pol.ventana)
+    ):
+        fallas.append(Falla.EN_VENTANA)
+    return fallas
+
+
+def respuesta_final(texto):
+    """Lo que el agente contestó al final de una salida de cron de Hermes, sin el prompt."""
+    antes, marca, despues = texto.rpartition("\n## Response\n")
+    return despues.strip() if marca else ""
+
+
+def _iso_ms(valor):
+    return int(datetime.fromisoformat(valor).timestamp() * 1000) if valor else None
+
+
+def juzga_hermes(perfil, job, pol, ahora_ms, salida=None):
+    if not job.get("enabled"):
+        return []
+    fallas = []
+    estado = job.get("last_status")
+    if (
+        (estado is not None and estado != "ok")
+        or (job.get("failure_streak") or 0) > 0
+        or job.get("last_delivery_error")
+    ):
+        fallas.append(Falla.TERMINO_MAL)
+    if (
+        salida is not None
+        and not job.get("no_agent")
+        and respuesta_final(salida).startswith(pol.marca_fallo)
+    ):
+        fallas.append(Falla.FALLO_DECLARADO)
+    if _atrasada(_iso_ms(job.get("next_run_at")), ahora_ms):
+        fallas.append(Falla.NO_CORRE)
+    fallas += _modelo_propio(f"hermes:{perfil}/{job['name']}", job.get("model"), pol)
+    return fallas
+
+
+def memoria_alta_mb(log, ahora_ms):
+    """El mayor ``rss`` (MB) de las líneas ``memory pressure`` de las últimas 24 h."""
+    mayor = 0.0
+    for linea in log.splitlines():
+        m = MEMORIA.match(linea)
+        if not m:
+            continue
+        try:
+            ms = _iso_ms(m.group(1))
+        except ValueError:
+            continue
+        if ms is not None and ahora_ms - ms <= DIA_MS:
+            mayor = max(mayor, float(m.group(2)) * MB[m.group(3).upper()])
+    return mayor
+
+
+def juzga_limites(rss_mb, perfil_mb, pol):
+    if rss_mb > pol.claw_rss_mb or perfil_mb > pol.chrome_perfil_mb:
+        return [Falla.PESA_DEMASIADO]
+    return []
