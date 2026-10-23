@@ -283,3 +283,59 @@ def juzga_limites(rss_mb, perfil_mb, pol):
     if rss_mb > pol.claw_rss_mb or perfil_mb > pol.chrome_perfil_mb:
         return [Falla.PESA_DEMASIADO]
     return []
+
+
+@dataclass(frozen=True)
+class SinLeer:
+    maquina: str
+    que: str
+
+
+MAQUINAS = {"mac": "la Mac", "mini": "la Mini", "pc": "la PC"}
+CIERRE = "Pídele a tu asistente que lo revise; lo demás sigue trabajando."
+MAX_LINEAS = 8
+
+
+def _nombre_llano(tarea, pol):
+    return pol.nombres_llanos.get(tarea, tarea)
+
+
+def _lista(nombres):
+    cola = [n[:1].lower() + n[1:] for n in nombres[1:]]
+    nombres = [nombres[0], *cola]
+    if len(nombres) == 1:
+        return nombres[0]
+    return f"{', '.join(nombres[:-1])} y {nombres[-1]}"
+
+
+def _linea(nombres, falla):
+    if len(nombres) > 3:
+        return f"• {len(nombres)} tareas: {falla.frase}."
+    return f"• {_lista(nombres)}: {falla.frase}."
+
+
+def texto_aviso(hallazgos, sin_leer, politica, manana):
+    """El aviso para David, o ``None`` si no hay nada que decir.
+
+    Solo usa la máquina, la tarea y la falla: ``Hallazgo.detalle`` (rutas, ids, errores)
+    se queda en el registro.
+    """
+    entran = [h for h in hallazgos if h.falla.urgente or manana]
+    if not entran and not sin_leer:
+        return None
+    cuerpo = []
+    for falla in Falla:
+        nombres = []
+        for h in entran:
+            nombre = _nombre_llano(h.tarea, politica)
+            if h.falla is falla and nombre not in nombres:
+                nombres.append(nombre)
+        if nombres:
+            cuerpo.append(_linea(nombres, falla))
+    if sin_leer:
+        cuerpo.append(f"• No pude revisar {_lista([s.que for s in sin_leer])}.")
+    if len(cuerpo) > MAX_LINEAS - 2:
+        sobran = len(cuerpo) - (MAX_LINEAS - 3)
+        cuerpo = [*cuerpo[: MAX_LINEAS - 3], f"• Y {sobran} avisos más."]
+    maquina = MAQUINAS[(entran or sin_leer)[0].maquina]
+    return "\n".join([f"En {maquina} · Tareas programadas:", *cuerpo, CIERRE])

@@ -428,5 +428,107 @@ class TestJueces(unittest.TestCase):
         self.assertEqual(module.juzga_limites(2252, perfil, self.pol), [])
 
 
+def hallazgo(tarea, falla, maquina="mini", detalle=""):
+    return module.Hallazgo(maquina, tarea, falla, detalle)
+
+
+class TestAviso(unittest.TestCase):
+    def setUp(self):
+        self.pol = politica()
+
+    def aviso(self, hallazgos, sin_leer=(), manana=True):
+        return module.texto_aviso(hallazgos, list(sin_leer), self.pol, manana)
+
+    def test_sin_nada_que_decir_devuelve_none(self):
+        self.assertIsNone(self.aviso([]))
+        solo_no_urgente = [hallazgo("a", module.Falla.EN_VENTANA)]
+        self.assertIsNone(self.aviso(solo_no_urgente, manana=False))
+
+    def test_una_tarea_lleva_su_nombre_llano_y_la_frase(self):
+        texto = self.aviso(
+            [hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)]
+        )
+        self.assertEqual(
+            texto,
+            "En la Mini · Tareas programadas:\n"
+            "• La renovación del token de Shopify: no está corriendo.\n"
+            "Pídele a tu asistente que lo revise; lo demás sigue trabajando.",
+        )
+
+    def test_encabezado_por_maquina(self):
+        for maquina, nombre in (
+            ("mac", "la Mac"),
+            ("mini", "la Mini"),
+            ("pc", "la PC"),
+        ):
+            texto = self.aviso([hallazgo("x", module.Falla.NO_CORRE, maquina)])
+            self.assertTrue(texto.startswith(f"En {nombre} · Tareas programadas:"))
+
+    def test_dos_o_tres_tareas_se_juntan_y_mas_de_tres_se_cuentan(self):
+        dos = [hallazgo(n, module.Falla.TERMINO_MAL) for n in ("a", "b")]
+        self.assertIn("• a y b: su última corrida falló.", self.aviso(dos))
+        tres = [hallazgo(n, module.Falla.TERMINO_MAL) for n in ("a", "b", "c")]
+        self.assertIn("• a, b y c: su última corrida falló.", self.aviso(tres))
+        cuatro = [hallazgo(n, module.Falla.TERMINO_MAL) for n in "abcd"]
+        texto = self.aviso(cuatro)
+        self.assertIn("• 4 tareas: su última corrida falló.", texto)
+        self.assertNotIn("a, b", texto)
+
+    def test_nombres_llanos_en_lista_van_en_minuscula_y_sin_repetir(self):
+        hallazgos = [
+            hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE),
+            hallazgo("ai.goncloud.respaldo-completo", module.Falla.NO_CORRE),
+            hallazgo("ai.goncloud.respaldo-completo", module.Falla.NO_CORRE),
+        ]
+        self.assertIn(
+            "• La renovación del token de Shopify y el respaldo completo de la Mini: "
+            "no está corriendo.",
+            self.aviso(hallazgos),
+        )
+
+    def test_las_no_urgentes_solo_entran_por_la_manana(self):
+        hallazgos = [
+            hallazgo("a", module.Falla.NO_CORRE),
+            hallazgo("b", module.Falla.PESA_DEMASIADO),
+        ]
+        tarde = self.aviso(hallazgos, manana=False)
+        self.assertNotIn("memoria", tarde)
+        self.assertIn(
+            "• b: usa más memoria o espacio de lo normal.", self.aviso(hallazgos)
+        )
+
+    def test_lo_que_no_se_pudo_leer_entra_como_no_pude_revisar(self):
+        texto = self.aviso([], [module.SinLeer("pc", "los trabajos de Hermes")])
+        self.assertEqual(
+            texto,
+            "En la PC · Tareas programadas:\n"
+            "• No pude revisar los trabajos de Hermes.\n"
+            "Pídele a tu asistente que lo revise; lo demás sigue trabajando.",
+        )
+
+    def test_nunca_pasa_de_ocho_lineas(self):
+        hallazgos = [hallazgo(f"t{i}", falla) for i, falla in enumerate(module.Falla)]
+        sin_leer = [
+            module.SinLeer("mini", "el cron"),
+            module.SinLeer("mini", "launchd"),
+        ]
+        texto = self.aviso(hallazgos, sin_leer)
+        self.assertLessEqual(len(texto.splitlines()), 8)
+        self.assertTrue(texto.splitlines()[-1].startswith("Pídele"))
+
+    def test_ninguna_ruta_id_ni_error_llega_al_aviso(self):
+        detalle = (
+            "falta /Users/gon/scripts/renueva.sh id 35798aa2-d734-4d9a-bc6a-25634eeb1a24 "
+            "error: command exited with code 127"
+        )
+        hallazgos = [
+            hallazgo("ai.goncloud.shopify-token", falla, detalle=detalle)
+            for falla in module.Falla
+        ]
+        texto = self.aviso(hallazgos)
+        for resto in ("/Users", "renueva.sh", "35798aa2", "127", "exited", "error:"):
+            self.assertNotIn(resto, texto)
+
+
 if __name__ == "__main__":
     unittest.main()
