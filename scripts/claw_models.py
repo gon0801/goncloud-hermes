@@ -55,7 +55,14 @@ def desired_claw(source, mapping):
         if row is None:
             raise ValueError(f"{agent} points at a row the table lacks: {spec['row']}")
         entries[agent] = desired_agent(row, mapping, thinking=spec["thinking"])
-    return {"agents": {"entries": entries}}
+    desired = {"agents": {"entries": entries}}
+    default_row = source.get("profile_inheritance", {}).get("default")
+    if default_row is not None:
+        # Claw's default model is the row the table gives Hermes' ``default`` profile.
+        desired["agents"]["defaults"] = desired_agent(
+            source["chains"][default_row], mapping, thinking=False
+        )
+    return desired
 
 
 def _thinking(entry):
@@ -71,6 +78,18 @@ def drift(desired, live, mapping):
     wanted = desired["agents"]["entries"]
     found = live["agents"]["entries"]
     lines = []
+    if "defaults" in desired["agents"]:
+        want = desired["agents"]["defaults"]["model"]
+        have = live["agents"].get("defaults", {}).get("model") or {}
+        want_chain = [want["primary"], *want["fallbacks"]]
+        have_chain = [have.get("primary"), *(have.get("fallbacks") or [])]
+        for position in range(max(len(want_chain), len(have_chain))):
+            a = have_chain[position] if position < len(have_chain) else "nothing"
+            b = want_chain[position] if position < len(want_chain) else "nothing"
+            if a != b:
+                lines.append(
+                    f"defaults position {position}: claw has {a}, the table wants {b}"
+                )
     for agent in sorted(set(wanted) | set(found)):
         if agent not in found:
             lines.append(f"{agent}: in claw-routing.json but not in claw")
