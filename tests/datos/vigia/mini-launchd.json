@@ -1,0 +1,72 @@
+[
+  {
+    "cargado": false,
+    "keepalive": false,
+    "label": "ai.goncloud.claw-autoupdate",
+    "last_exit_code": null,
+    "periodico": true,
+    "runs": null,
+    "rutas_que_faltan": [],
+    "state": null
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.claw-reinicio",
+    "last_exit_code": null,
+    "periodico": false,
+    "runs": 0,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.respaldo-completo",
+    "last_exit_code": 0,
+    "periodico": true,
+    "runs": 2,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.shopify-token",
+    "last_exit_code": null,
+    "periodico": true,
+    "runs": 0,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": true,
+    "label": "ai.openclaw.gateway",
+    "last_exit_code": 1,
+    "periodico": false,
+    "runs": 3,
+    "rutas_que_faltan": [],
+    "state": "running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "cc.goncloud.forja-nightly-restart",
+    "last_exit_code": 0,
+    "periodico": true,
+    "runs": 2,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "cc.goncloud.forja-tab-guard",
+    "last_exit_code": 0,
+    "periodico": true,
+    "runs": 267,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  }
+]

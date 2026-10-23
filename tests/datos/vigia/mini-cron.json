@@ -1,0 +1,2186 @@
+{
+  "jobs": [
+    {
+      "createdAtMs": 1790142910082,
+      "declarationKey": "memory-core:memory-dreaming-promotion",
+      "delivery": {
+        "mode": "none"
+      },
+      "description": "[managed-by=memory-core.short-term-promotion] Promote weighted short-term recalls into MEMORY.md (limit=10, minScore=0.750, minRecallCount=3, minUniqueQueries=3, recencyHalfLifeDays=14, maxAgeDays=30).",
+      "effectiveAgentId": "main",
+      "enabled": true,
+      "id": "35798aa2-d734-4d9a-bc6a-25634eeb1a24",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792663200039,
+      "lastRunStatus": "ok",
+      "name": "Memory Dreaming Promotion",
+      "nextRunAtMs": 1792749600000,
+      "payload": {
+        "kind": "agentTurn",
+        "lightContext": true
+      },
+      "schedule": {
+        "expr": "0 3 * * *",
+        "kind": "cron"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 41171,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792663200039,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792749600000
+      },
+      "updatedAtMs": 1792663241210,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1790280933049,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "effectiveAgentId": "main",
+      "enabled": true,
+      "failureAlert": {
+        "after": 1,
+        "channel": "telegram",
+        "cooldownMs": 3600000,
+        "mode": "announce"
+      },
+      "id": "7c7c50e9-5a0e-40bd-bcb3-ba95f8a9d022",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792673220047,
+      "lastRunStatus": "ok",
+      "name": "cuotas-proveedores",
+      "nextRunAtMs": 1792759620000,
+      "payload": {
+        "fallbacks": [
+          "opencode-go-2/deepseek-v4.1-flash",
+          "zai/glm-5.3-flash",
+          "xai/grok-4.7"
+        ],
+        "kind": "agentTurn",
+        "lightContext": true,
+        "model": "anthropic/claude-haiku-5-5",
+        "thinking": "low",
+        "timeoutSeconds": 300
+      },
+      "schedule": {
+        "expr": "47 6 * * *",
+        "kind": "cron",
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 11007,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792673220047,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792759620000,
+        "scheduleActivatedAtMs": 1790280967300,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1792723579572,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1790280922130,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Extras de la manana: ventas posteriores al digest 20:00 (dedup contra -extras- del mismo dia); mail combinado + Telegram a Gon e Isabel",
+      "displayName": "Packing extras 7AM",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "failureAlert": {
+        "after": 1,
+        "channel": "telegram",
+        "cooldownMs": 3600000,
+        "mode": "announce"
+      },
+      "id": "7bb5fac4-a1bb-4b85-b4ed-7ceeb187cbc3",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792674000041,
+      "lastRunStatus": "ok",
+      "name": "packing-extras-7h",
+      "nextRunAtMs": 1792760400000,
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 3600
+      },
+      "schedule": {
+        "expr": "0 7 * * 1-5",
+        "kind": "cron",
+        "staggerMs": 0,
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 611694,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792674000041,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792760400000,
+        "scheduleActivatedAtMs": 1790280962622,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1792674611735,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "pers",
+      "createdAtMs": 1791169342989,
+      "declarationKey": "skill-collection-review:pers",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (pers)",
+      "effectiveAgentId": "pers",
+      "enabled": true,
+      "id": "506bb2fd-9fc6-4910-9b31-660a583983b1",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792166322333,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-pers",
+      "nextRunAtMs": 1792771122333,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 143922296,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 477560,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792166322333,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792771122333
+      },
+      "updatedAtMs": 1792166799893,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1790280924887,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Extras de media manana: ventas posteriores a la corrida 07:00 (dedup contra -extras* del dia); mail combinado + Telegram a Gon e Isabel",
+      "displayName": "Packing extras 11AM",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "failureAlert": {
+        "after": 1,
+        "channel": "telegram",
+        "cooldownMs": 3600000,
+        "mode": "announce"
+      },
+      "id": "9386486d-37d6-4ae1-bf7b-12892527f2d9",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792688400051,
+      "lastRunStatus": "ok",
+      "name": "packing-extras-11h",
+      "nextRunAtMs": 1792774800000,
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 3600
+      },
+      "schedule": {
+        "expr": "0 11 * * 1-5",
+        "kind": "cron",
+        "staggerMs": 0,
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 1382756,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792688400051,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792774800000,
+        "scheduleActivatedAtMs": 1790280963601,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1792689782807,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "odoo",
+      "createdAtMs": 1791169344052,
+      "declarationKey": "skill-collection-review:odoo",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (odoo)",
+      "effectiveAgentId": "odoo",
+      "enabled": true,
+      "id": "a1f8dd05-3429-4b7a-88db-716ca078a681",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792225626843,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-odoo",
+      "nextRunAtMs": 1792830426843,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 203226791,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 11405,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792225626843,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792830426843
+      },
+      "updatedAtMs": 1792225638248,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "amazon",
+      "createdAtMs": 1791169342725,
+      "declarationKey": "skill-collection-review:amazon",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (amazon)",
+      "effectiveAgentId": "amazon",
+      "enabled": true,
+      "id": "979efd68-24bb-4343-9596-abbff42ed11d",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792254105899,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-amazon",
+      "nextRunAtMs": 1792858905899,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 231705842,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 25758,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792254105899,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792858905899
+      },
+      "updatedAtMs": 1792254131657,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "cursor",
+      "createdAtMs": 1792443198566,
+      "declarationKey": "skill-collection-review:cursor",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (cursor)",
+      "effectiveAgentId": "cursor",
+      "enabled": true,
+      "id": "bec9b07b-641a-451f-aca9-3abc785f1ed2",
+      "name": "skill-collection-review-cursor",
+      "nextRunAtMs": 1792864096807,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 236896807,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "nextRunAtMs": 1792864096807
+      },
+      "updatedAtMs": 1792443198566,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "eggbot",
+      "createdAtMs": 1791169346358,
+      "declarationKey": "skill-collection-review:eggbot",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (eggbot)",
+      "effectiveAgentId": "eggbot",
+      "enabled": true,
+      "id": "7716c524-3983-4020-bed8-c0c8071e8353",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792262204919,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-eggbot",
+      "nextRunAtMs": 1792867004919,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 239804864,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 7599,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792262204919,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792867004919
+      },
+      "updatedAtMs": 1792262212518,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "opencode",
+      "createdAtMs": 1792443198543,
+      "declarationKey": "skill-collection-review:opencode",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (opencode)",
+      "effectiveAgentId": "opencode",
+      "enabled": true,
+      "id": "4003eea6-629b-4610-b406-e1104ccfc8e4",
+      "name": "skill-collection-review-opencode",
+      "nextRunAtMs": 1792868204062,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 241004062,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "nextRunAtMs": 1792868204062
+      },
+      "updatedAtMs": 1792443198543,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "mail",
+      "createdAtMs": 1791169343518,
+      "declarationKey": "skill-collection-review:mail",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (mail)",
+      "effectiveAgentId": "mail",
+      "enabled": true,
+      "id": "54441fb0-2620-4a6c-a83c-f984ebdc9fd2",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792281534519,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-mail",
+      "nextRunAtMs": 1792886334519,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 259134464,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 15401,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792281534519,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792886334519
+      },
+      "updatedAtMs": 1792281549920,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "limpia",
+      "createdAtMs": 1791169343807,
+      "declarationKey": "skill-collection-review:limpia",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (limpia)",
+      "effectiveAgentId": "limpia",
+      "enabled": true,
+      "id": "aef2ad97-2220-495b-988e-d5b8d7d9f7c9",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792307333195,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-limpia",
+      "nextRunAtMs": 1792912133195,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 284933146,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 15503,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792307333195,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792912133195
+      },
+      "updatedAtMs": 1792307348698,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "skillverif",
+      "createdAtMs": 1791169344770,
+      "declarationKey": "skill-collection-review:skillverif",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (skillverif)",
+      "effectiveAgentId": "skillverif",
+      "enabled": true,
+      "id": "9dfb3081-1fbb-4c4c-9bbc-c58315e8b6d1",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792341595746,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-skillverif",
+      "nextRunAtMs": 1792946395746,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 319195695,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 6082,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792341595746,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792946395746
+      },
+      "updatedAtMs": 1792341601828,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "scout",
+      "createdAtMs": 1790142912902,
+      "declarationKey": "skill-collection-review:scout",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (scout)",
+      "effectiveAgentId": "scout",
+      "enabled": true,
+      "id": "06f25e53-7748-4290-8b34-1bb5962280c6",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792345075913,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-scout",
+      "nextRunAtMs": 1792949875913,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 322675889,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 23497,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792345075913,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792949875913
+      },
+      "updatedAtMs": 1792345099410,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1791532539020,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Fase A censo (dom-jue 20:00 CDMX): SC+Flex+MELI+Q3 a JSON",
+      "displayName": "packing-digest-faseA-censo",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "id": "f4b33b14-8af2-487c-82d8-10fa103ca9a3",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792720800056,
+      "lastRunStatus": "ok",
+      "name": "packing-digest-faseA-censo",
+      "nextRunAtMs": 1792980000000,
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 1200
+      },
+      "schedule": {
+        "expr": "0 20 * * 0-4",
+        "kind": "cron",
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 679825,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792720800056,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792980000000
+      },
+      "updatedAtMs": 1792721479881,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1791532543133,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Fase B armado (dom-jue 20:15 CDMX): decode+formato+HTML, sin enviar",
+      "displayName": "packing-digest-faseB-armado",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "id": "3feb7c34-3fba-42f3-96db-c770ff5abd60",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792721700044,
+      "lastRunStatus": "ok",
+      "name": "packing-digest-faseB-armado",
+      "nextRunAtMs": 1792980900000,
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 1200
+      },
+      "schedule": {
+        "expr": "15 20 * * 0-4",
+        "kind": "cron",
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 35933,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792721700044,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792980900000
+      },
+      "updatedAtMs": 1792721735977,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1791532549059,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Fase C envio (dom-jue 20:30 CDMX): Telegram+mail+personalizadas",
+      "displayName": "packing-digest-faseC-envio",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "id": "7ad289a8-6c80-44f0-8bc4-220ba5e051e3",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792722600040,
+      "lastRunStatus": "ok",
+      "name": "packing-digest-faseC-envio",
+      "nextRunAtMs": 1792981800000,
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 2400
+      },
+      "schedule": {
+        "expr": "30 20 * * 0-4",
+        "kind": "cron",
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 191196,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792722600040,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792981800000
+      },
+      "updatedAtMs": 1792722791236,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1790280930305,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Verifica que el digest packing 20h salio POR ARTEFACTO (faseB ok:true + par HTML + digest txts) y por la evidencia de entrega de faseC; si no, avisa a David por Telegram. Solo lectura.",
+      "effectiveAgentId": "main",
+      "enabled": true,
+      "id": "0aa73c30-19b4-4f06-ac8e-6661a7e1dfb3",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792723500043,
+      "lastRunStatus": "ok",
+      "name": "verif-digest-20h",
+      "nextRunAtMs": 1792982700000,
+      "payload": {
+        "fallbacks": [
+          "zai/glm-5.3",
+          "xai/grok-4.7",
+          "opencode-go-2/deepseek-v4.1-flash"
+        ],
+        "kind": "agentTurn",
+        "model": "anthropic/claude-sonnet-5-5",
+        "thinking": "medium",
+        "timeoutSeconds": 600
+      },
+      "schedule": {
+        "expr": "45 20 * * 0-4",
+        "kind": "cron",
+        "staggerMs": 0,
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 28708,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792723500043,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1792982700000,
+        "scheduleActivatedAtMs": 1790280965845,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1792723578371,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "meli",
+      "createdAtMs": 1791169343279,
+      "declarationKey": "skill-collection-review:meli",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (meli)",
+      "effectiveAgentId": "meli",
+      "enabled": true,
+      "id": "764f1c58-c2d2-4aa6-84ec-4d27de978da7",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792410417836,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-meli",
+      "nextRunAtMs": 1793015217836,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 388016183,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 17238,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792410417836,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793015217836
+      },
+      "updatedAtMs": 1792410435074,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "implementer",
+      "createdAtMs": 1790142912770,
+      "declarationKey": "skill-collection-review:implementer",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (implementer)",
+      "effectiveAgentId": "implementer",
+      "enabled": true,
+      "id": "c33a3c8f-2615-4d55-982d-bca3561d8883",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792412572317,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-implementer",
+      "nextRunAtMs": 1793017372317,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 390172266,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 43080,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792412572317,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793017372317
+      },
+      "updatedAtMs": 1792412615397,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "codex",
+      "createdAtMs": 1792443198517,
+      "declarationKey": "skill-collection-review:codex",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (codex)",
+      "effectiveAgentId": "codex",
+      "enabled": true,
+      "id": "d518e059-6838-440c-9b9d-b61b8e5d270c",
+      "name": "skill-collection-review-codex",
+      "nextRunAtMs": 1793028806889,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 401606889,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "nextRunAtMs": 1793028806889
+      },
+      "updatedAtMs": 1792443198517,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "claude",
+      "createdAtMs": 1792441292390,
+      "declarationKey": "skill-collection-review:claude",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (claude)",
+      "effectiveAgentId": "claude",
+      "enabled": true,
+      "id": "6a89b4c7-1956-4768-b0b1-38c37a62a88e",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792442123101,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-claude",
+      "nextRunAtMs": 1793046923101,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 419723059,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 9350,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792442123101,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793046923101
+      },
+      "updatedAtMs": 1792442132451,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "kimi",
+      "createdAtMs": 1792443198533,
+      "declarationKey": "skill-collection-review:kimi",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (kimi)",
+      "effectiveAgentId": "kimi",
+      "enabled": true,
+      "id": "1483e2af-050c-42df-bb74-2636788013f1",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792448050947,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-kimi",
+      "nextRunAtMs": 1793052850947,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 425650907,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 9909,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792448050947,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793052850947
+      },
+      "updatedAtMs": 1792448060856,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "adversary",
+      "createdAtMs": 1790142912837,
+      "declarationKey": "skill-collection-review:adversary",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (adversary)",
+      "effectiveAgentId": "adversary",
+      "enabled": true,
+      "id": "4fa8b00c-d82a-45b0-884e-06360c25d827",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792451558078,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-adversary",
+      "nextRunAtMs": 1793056358078,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 429158020,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 20335,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792451558078,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793056358078
+      },
+      "updatedAtMs": 1792451578413,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1790142912668,
+      "declarationKey": "skill-collection-review:main",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (main)",
+      "effectiveAgentId": "main",
+      "enabled": true,
+      "id": "8c26f371-f132-41af-a772-b3f13641c3ad",
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792493676547,
+      "lastRunError": "Gateway restarting.",
+      "lastRunStatus": "error",
+      "name": "skill-collection-review-main",
+      "nextRunAtMs": 1793098476547,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 471276323,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 1,
+        "consecutiveSkipped": 0,
+        "lastDeliveryStatus": "not-requested",
+        "lastDiagnosticSummary": "Gateway restarting.",
+        "lastDiagnostics": {
+          "entries": [
+            {
+              "severity": "error",
+              "source": "cron-setup",
+              "ts": 1792494011700
+            }
+          ],
+          "summary": "Gateway restarting."
+        },
+        "lastDurationMs": 335158,
+        "lastError": "Gateway restarting.",
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792493676547,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "nextRunAtMs": 1793098476547
+      },
+      "updatedAtMs": 1792494011705,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "tinkabot",
+      "createdAtMs": 1791169345023,
+      "declarationKey": "skill-collection-review:tinkabot",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (tinkabot)",
+      "effectiveAgentId": "tinkabot",
+      "enabled": true,
+      "id": "3e3f1b30-3e10-4ea0-8a17-a9e1efe8d83f",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792512684903,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-tinkabot",
+      "nextRunAtMs": 1793117484903,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 490283862,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 9421,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792512684903,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793117484903
+      },
+      "updatedAtMs": 1792512694324,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "ingenieria",
+      "createdAtMs": 1790142912745,
+      "declarationKey": "skill-collection-review:ingenieria",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (ingenieria)",
+      "effectiveAgentId": "ingenieria",
+      "enabled": true,
+      "id": "f999b502-3c0b-460c-b678-6691720faaca",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792519507843,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-ingenieria",
+      "nextRunAtMs": 1793124307843,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 497104622,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 292040,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792519507843,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793124307843
+      },
+      "updatedAtMs": 1792519799883,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "gonserver",
+      "createdAtMs": 1791169344528,
+      "declarationKey": "skill-collection-review:gonserver",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (gonserver)",
+      "effectiveAgentId": "gonserver",
+      "enabled": true,
+      "id": "c167c15d-5502-43aa-8909-7ae598f67db1",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792540137317,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-gonserver",
+      "nextRunAtMs": 1793144937084,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 517737084,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 33125,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792540137317,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793144937084
+      },
+      "updatedAtMs": 1792540170442,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "qwen",
+      "createdAtMs": 1792443198554,
+      "declarationKey": "skill-collection-review:qwen",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (qwen)",
+      "effectiveAgentId": "qwen",
+      "enabled": true,
+      "id": "1e6924a8-43a0-4c00-8c94-252068cdf778",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792557597504,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-qwen",
+      "nextRunAtMs": 1793162397504,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 535197474,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 8876,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792557597504,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793162397504
+      },
+      "updatedAtMs": 1792557606380,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "verifier",
+      "createdAtMs": 1790142912865,
+      "declarationKey": "skill-collection-review:verifier",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (verifier)",
+      "effectiveAgentId": "verifier",
+      "enabled": true,
+      "id": "017d46a0-cb71-4ec9-af4f-52c721dc18f2",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792583693352,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-verifier",
+      "nextRunAtMs": 1793188493352,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 561293150,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 344616,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792583693352,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793188493352
+      },
+      "updatedAtMs": 1792584037968,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "arras",
+      "createdAtMs": 1791169344289,
+      "declarationKey": "skill-collection-review:arras",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (arras)",
+      "effectiveAgentId": "arras",
+      "enabled": true,
+      "id": "d75d65d7-81fd-4e44-bb40-0d89694ef0f6",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792586356275,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-arras",
+      "nextRunAtMs": 1793191156275,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 563956180,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 12931,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792586356275,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793191156275
+      },
+      "updatedAtMs": 1792586369206,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "grok",
+      "createdAtMs": 1792463617896,
+      "declarationKey": "skill-collection-review:grok",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (grok)",
+      "effectiveAgentId": "grok",
+      "enabled": true,
+      "id": "1a971b00-98a8-4f5a-93fb-02ea69d3fc22",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792614466057,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-grok",
+      "nextRunAtMs": 1793219266057,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 592066028,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 10427,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792614466057,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793219266057
+      },
+      "updatedAtMs": 1792614476484,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "reviewer",
+      "createdAtMs": 1790142912797,
+      "declarationKey": "skill-collection-review:reviewer",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (reviewer)",
+      "effectiveAgentId": "reviewer",
+      "enabled": true,
+      "id": "d69a5c51-9691-4e53-b29b-eac12ddc10ee",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792632702885,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-reviewer",
+      "nextRunAtMs": 1793237502885,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 5502687,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 49811,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792632702885,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793237502885
+      },
+      "updatedAtMs": 1792632752696,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1790142912698,
+      "declarationKey": "skill-collection-review:operaciones",
+      "delivery": {
+        "mode": "none"
+      },
+      "displayName": "Skill collection review (operaciones)",
+      "effectiveAgentId": "operaciones",
+      "enabled": true,
+      "id": "bc1cf8df-4c9f-4ed9-8b90-d94c4d3218be",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792661585096,
+      "lastRunStatus": "ok",
+      "name": "skill-collection-review-operaciones",
+      "nextRunAtMs": 1793266385096,
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "anchorMs": 34384922,
+        "everyMs": 604800000,
+        "kind": "every"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 41007,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792661585096,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "nextRunAtMs": 1793266385096
+      },
+      "updatedAtMs": 1792661626103,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1792466429579,
+      "deleteAfterRun": true,
+      "delivery": {
+        "channel": "telegram",
+        "mode": "announce"
+      },
+      "effectiveAgentId": "main",
+      "enabled": true,
+      "id": "bf0c276f-fb68-40a3-900a-2a4e8267b352",
+      "name": "revision-aciertos-jev",
+      "nextRunAtMs": 1793638800000,
+      "owner": {
+        "agentId": "main"
+      },
+      "payload": {
+        "fallbacks": [
+          "zai/glm-5.3",
+          "xai/grok-4.7",
+          "opencode-go-2/deepseek-v4.1-flash"
+        ],
+        "kind": "agentTurn",
+        "model": "anthropic/claude-sonnet-5-5",
+        "thinking": "medium"
+      },
+      "schedule": {
+        "at": "2026-11-02T17:00:00.000Z",
+        "kind": "at"
+      },
+      "scheduledToolPolicy": {
+        "mode": "account",
+        "ownerAccountId": "default",
+        "ownerSessionKey": "agent:main:main",
+        "version": 1
+      },
+      "sessionTarget": "current",
+      "state": {
+        "nextRunAtMs": 1793638800000
+      },
+      "updatedAtMs": 1792723578840,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "tinkabot",
+      "createdAtMs": 1791169339738,
+      "declarationKey": "heartbeat:tinkabot",
+      "displayName": "Heartbeat (tinkabot)",
+      "effectiveAgentId": "tinkabot",
+      "enabled": false,
+      "id": "04c29cfb-8fab-4a49-bb1c-8b261a66cf53",
+      "name": "heartbeat-tinkabot",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 683862,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169339738,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "amazon",
+      "createdAtMs": 1791169330338,
+      "declarationKey": "heartbeat:amazon",
+      "displayName": "Heartbeat (amazon)",
+      "effectiveAgentId": "amazon",
+      "enabled": false,
+      "id": "0bb6d852-b448-42cd-8484-8781c04ad0c8",
+      "name": "heartbeat-amazon",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1305842,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169330338,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "mail",
+      "createdAtMs": 1791169331682,
+      "declarationKey": "heartbeat:mail",
+      "displayName": "Heartbeat (mail)",
+      "effectiveAgentId": "mail",
+      "enabled": false,
+      "id": "16a976f8-00db-4820-b600-295459e085c4",
+      "name": "heartbeat-mail",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1734464,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169331682,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1790142912615,
+      "declarationKey": "heartbeat:main",
+      "displayName": "Heartbeat (main)",
+      "effectiveAgentId": "main",
+      "enabled": false,
+      "id": "1d989427-41b1-4bcb-b4e2-fb811aa12f6e",
+      "name": "heartbeat-main",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1476323,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1790142912615,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "limpia",
+      "createdAtMs": 1791169331950,
+      "declarationKey": "heartbeat:limpia",
+      "displayName": "Heartbeat (limpia)",
+      "effectiveAgentId": "limpia",
+      "enabled": false,
+      "id": "2bdb7781-d23b-449a-b35c-b44ca31d98b1",
+      "name": "heartbeat-limpia",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 533146,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169331950,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "skillverif",
+      "createdAtMs": 1791169339487,
+      "declarationKey": "heartbeat:skillverif",
+      "displayName": "Heartbeat (skillverif)",
+      "effectiveAgentId": "skillverif",
+      "enabled": false,
+      "id": "3bad4a97-e011-4520-ae71-0e5106d04a1a",
+      "name": "heartbeat-skillverif",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 595695,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169339487,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "createdAtMs": 1792196399759,
+      "declarationKey": "raices-pasada",
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "effectiveAgentId": "main",
+      "enabled": false,
+      "failureAlert": {
+        "after": 1,
+        "channel": "telegram",
+        "cooldownMs": 3600000,
+        "mode": "announce"
+      },
+      "id": "4a4fb17e-8d9b-44f1-b0cc-da9904e4925f",
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDelivered": true,
+      "lastFailureNotificationDeliveryStatus": "delivered",
+      "lastRunAtMs": 1792427903265,
+      "lastRunError": "command exited with code 1",
+      "lastRunStatus": "error",
+      "name": "raices-pasada",
+      "payload": {
+        "kind": "command",
+        "timeoutSeconds": 240
+      },
+      "schedule": {
+        "anchorMs": 1792196399759,
+        "everyMs": 300000,
+        "kind": "every"
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 1,
+        "consecutiveSkipped": 0,
+        "lastDeliveryStatus": "not-requested",
+        "lastDiagnosticSummary": "{\"raices\": 0, \"escritas\": 0, \"avisos\": {\"consolidado\": null, \"excepciones\": null}, \"errores\": [\"managedTasks.root.list: gateway no disponible para managedTasks.root.list: { \\\"ok\\\": false, \\\"error\\\": { \\\"type\\\": \\\"gateway_request_error\\\", \\\"code\\\": \\\"INVALID_REQUEST\\\", \\\"message\\\": \\\"unknown method: managedTask\"]}",
+        "lastDiagnostics": {
+          "entries": [
+            {
+              "exitCode": 1,
+              "severity": "error",
+              "source": "exec",
+              "ts": 1792427904079
+            }
+          ],
+          "summary": "{\"raices\": 0, \"escritas\": 0, \"avisos\": {\"consolidado\": null, \"excepciones\": null}, \"errores\": [\"managedTasks.root.list: gateway no disponible para managedTasks.root.list: { \\\"ok\\\": false, \\\"error\\\": { \\\"type\\\": \\\"gateway_request_error\\\", \\\"code\\\": \\\"INVALID_REQUEST\\\", \\\"message\\\": \\\"unknown method: managedTask\"]}"
+        },
+        "lastDurationMs": 814,
+        "lastError": "command exited with code 1",
+        "lastFailureAlertAtMs": 1792427904087,
+        "lastFailureNotificationDelivered": true,
+        "lastFailureNotificationDeliveryStatus": "delivered",
+        "lastRunAtMs": 1792427903265,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "scheduleActivatedAtMs": 1792428055861
+      },
+      "updatedAtMs": 1792428055861,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "eggbot",
+      "createdAtMs": 1791169340249,
+      "declarationKey": "heartbeat:eggbot",
+      "displayName": "Heartbeat (eggbot)",
+      "effectiveAgentId": "eggbot",
+      "enabled": false,
+      "id": "518521c1-36d4-461c-b86a-a5dd4e0200b0",
+      "name": "heartbeat-eggbot",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 404864,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169340249,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "operaciones",
+      "createdAtMs": 1790280927577,
+      "delivery": {
+        "mode": "none"
+      },
+      "description": "Digest ventas por enviar (dom-jue 20:00 CDMX): census SC + MELI, reporte a Claw, HTML, mail combinado",
+      "effectiveAgentId": "operaciones",
+      "enabled": false,
+      "failureAlert": {
+        "after": 1,
+        "channel": "telegram",
+        "cooldownMs": 3600000,
+        "mode": "announce"
+      },
+      "id": "6f60a8a0-3f09-4818-a48c-24aae243385c",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1791514832190,
+      "lastRunError": "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.",
+      "lastRunStatus": "error",
+      "name": "packing-digest-20h",
+      "payload": {
+        "kind": "agentTurn",
+        "timeoutSeconds": 3600
+      },
+      "schedule": {
+        "expr": "0 20 * * 0-4",
+        "kind": "cron",
+        "tz": "America/Mexico_City"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 2,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDiagnosticSummary": "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.",
+        "lastDiagnostics": {
+          "entries": [
+            {
+              "severity": "error",
+              "source": "tool",
+              "ts": 1791516956783
+            },
+            {
+              "severity": "error",
+              "source": "agent-run",
+              "ts": 1791516956783
+            },
+            {
+              "severity": "error",
+              "source": "agent-run",
+              "ts": 1791516956784
+            }
+          ],
+          "summary": "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying."
+        },
+        "lastDurationMs": 2125090,
+        "lastError": "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.",
+        "lastFailureAlertAtMs": 1791514802203,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1791514832190,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "scheduleActivatedAtMs": 1791532552886,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1791532552886,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "meli",
+      "createdAtMs": 1791169331295,
+      "declarationKey": "heartbeat:meli",
+      "displayName": "Heartbeat (meli)",
+      "effectiveAgentId": "meli",
+      "enabled": false,
+      "id": "85fa2b72-f240-4745-86b0-64a94a18902f",
+      "name": "heartbeat-meli",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1016183,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169331295,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "gonserver",
+      "createdAtMs": 1791169337675,
+      "declarationKey": "heartbeat:gonserver",
+      "displayName": "Heartbeat (gonserver)",
+      "effectiveAgentId": "gonserver",
+      "enabled": false,
+      "id": "8d287736-8096-4efa-9cb1-2e11bf3b84cf",
+      "name": "heartbeat-gonserver",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1137084,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169337675,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "mail",
+      "createdAtMs": 1792393324336,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "description": "Sombra Jev vs flujo mail, solo lectura, 2026-10-19..25",
+      "displayName": "Jev sombra correo (7d)",
+      "effectiveAgentId": "mail",
+      "enabled": false,
+      "id": "a008cd69-2c10-4c39-bc6a-6471ae9b08f3",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792393329690,
+      "lastRunStatus": "ok",
+      "name": "jev-sombra-correo",
+      "payload": {
+        "kind": "agentTurn"
+      },
+      "schedule": {
+        "expr": "30 23 * * *",
+        "kind": "cron",
+        "staggerMs": 0,
+        "tz": "America/Vancouver"
+      },
+      "scheduledToolPolicy": {
+        "mode": "trusted",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 18888,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792393329690,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "scheduleActivatedAtMs": 1792393488476
+      },
+      "updatedAtMs": 1792393488476,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "arras",
+      "createdAtMs": 1791169335350,
+      "declarationKey": "heartbeat:arras",
+      "displayName": "Heartbeat (arras)",
+      "effectiveAgentId": "arras",
+      "enabled": false,
+      "id": "a25f48b4-0c00-4489-9d3b-72e3c454dd7f",
+      "name": "heartbeat-arras",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 556180,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169335350,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "agentId": "pers",
+      "createdAtMs": 1791169330731,
+      "declarationKey": "heartbeat:pers",
+      "displayName": "Heartbeat (pers)",
+      "effectiveAgentId": "pers",
+      "enabled": false,
+      "id": "af973e27-9d68-4ed6-bd70-9a15da9e4fc5",
+      "name": "heartbeat-pers",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1722296,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169330731,
+      "wakeMode": "next-heartbeat"
+    },
+    {
+      "createdAtMs": 1790997511804,
+      "delivery": {
+        "channel": "last",
+        "mode": "none"
+      },
+      "effectiveAgentId": "main",
+      "enabled": false,
+      "id": "bd74cf1c-ebdc-4f3a-be60-b0fb578752ae",
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1791046729510,
+      "lastRunStatus": "ok",
+      "name": "tablero-server-watch",
+      "payload": {
+        "kind": "command"
+      },
+      "schedule": {
+        "anchorMs": 1790997511804,
+        "everyMs": 300000,
+        "kind": "every"
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDeliveryStatus": "not-requested",
+        "lastDiagnosticSummary": "/etc/profile: line 113: which: command not found\n/etc/profile.d/lang.sh: line 19: /usr/bin/locale: No such file or directory",
+        "lastDiagnostics": {
+          "entries": [
+            {
+              "exitCode": 0,
+              "severity": "info",
+              "source": "exec",
+              "ts": 1791046730291
+            }
+          ],
+          "summary": "/etc/profile: line 113: which: command not found\n/etc/profile.d/lang.sh: line 19: /usr/bin/locale: No such file or directory"
+        },
+        "lastDurationMs": 781,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1791046729510,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "scheduleActivatedAtMs": 1791046870319
+      },
+      "updatedAtMs": 1791046870319,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "main",
+      "createdAtMs": 1790393582599,
+      "delivery": {
+        "channel": "telegram",
+        "mode": "none"
+      },
+      "description": "Renovar token de acceso de Shopify (dura 24h)",
+      "displayName": "Renovar token Shopify",
+      "effectiveAgentId": "main",
+      "enabled": false,
+      "id": "dbc3eee3-28d4-4043-bee9-8fd584341bf8",
+      "lastDelivered": false,
+      "lastDeliveryStatus": "not-requested",
+      "lastFailureNotificationDeliveryStatus": "not-requested",
+      "lastRunAtMs": 1792576800065,
+      "lastRunStatus": "ok",
+      "name": "Renueva el token de acceso de Shopify de la tienda theglamw…",
+      "owner": {
+        "agentId": "main"
+      },
+      "payload": {
+        "kind": "agentTurn",
+        "toolsAllowIsDefault": true
+      },
+      "schedule": {
+        "expr": "0 6 * * *",
+        "kind": "cron",
+        "tz": "America/New_York"
+      },
+      "scheduledToolPolicy": {
+        "mode": "account",
+        "ownerAccountId": "default",
+        "ownerSessionKey": "agent:main:main",
+        "version": 1
+      },
+      "sessionTarget": "isolated",
+      "state": {
+        "consecutiveErrors": 0,
+        "consecutiveSkipped": 0,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-requested",
+        "lastDurationMs": 60588,
+        "lastFailureNotificationDeliveryStatus": "not-requested",
+        "lastRunAtMs": 1792576800065,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "scheduleActivatedAtMs": 1792603126346,
+        "scheduleErrorCount": 0
+      },
+      "updatedAtMs": 1792723665072,
+      "wakeMode": "now"
+    },
+    {
+      "agentId": "odoo",
+      "createdAtMs": 1791169332206,
+      "declarationKey": "heartbeat:odoo",
+      "displayName": "Heartbeat (odoo)",
+      "effectiveAgentId": "odoo",
+      "enabled": false,
+      "id": "e78146aa-f08b-4c00-8318-2c047b758193",
+      "name": "heartbeat-odoo",
+      "payload": {
+        "kind": "heartbeat"
+      },
+      "schedule": {
+        "anchorMs": 1626791,
+        "everyMs": 1800000,
+        "kind": "every"
+      },
+      "sessionTarget": "main",
+      "state": {},
+      "updatedAtMs": 1791169332206,
+      "wakeMode": "next-heartbeat"
+    }
+  ],
+  "total": 52
+}

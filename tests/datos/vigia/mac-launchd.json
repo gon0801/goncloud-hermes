@@ -1,0 +1,62 @@
+[
+  {
+    "cargado": true,
+    "keepalive": true,
+    "label": "ai.goncloud.claude-mem-opencode-go",
+    "last_exit_code": null,
+    "periodico": false,
+    "runs": 1,
+    "rutas_que_faltan": [],
+    "state": "running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.node-path",
+    "last_exit_code": 0,
+    "periodico": false,
+    "runs": 1,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.sincronizar-pstack",
+    "last_exit_code": 0,
+    "periodico": true,
+    "runs": 6,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": false,
+    "keepalive": true,
+    "label": "ai.goncloud.tmux-activity-watch",
+    "last_exit_code": null,
+    "periodico": false,
+    "runs": null,
+    "rutas_que_faltan": [],
+    "state": null
+  },
+  {
+    "cargado": true,
+    "keepalive": false,
+    "label": "ai.goncloud.vigila-modelos",
+    "last_exit_code": 0,
+    "periodico": true,
+    "runs": 1,
+    "rutas_que_faltan": [],
+    "state": "not running"
+  },
+  {
+    "cargado": true,
+    "keepalive": true,
+    "label": "claw-openclaw-keepalive",
+    "last_exit_code": 0,
+    "periodico": false,
+    "runs": 37,
+    "rutas_que_faltan": [],
+    "state": "running"
+  }
+]

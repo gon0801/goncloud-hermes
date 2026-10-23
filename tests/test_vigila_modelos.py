@@ -1,5 +1,4 @@
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -156,15 +155,6 @@ class VigilaModelosTests(unittest.TestCase):
         self.assertIn("main, verifier", texto)
         self.assertIn("y 3 más", texto)
         self.assertIn("no pude revisar Hermes", texto)
-
-    def test_encola_deja_un_solo_archivo_listo_para_el_motor(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pend = Path(tmp) / "pendientes"
-            module.encola(pend, "hola")
-            archivos = list(pend.iterdir())
-            self.assertEqual(len(archivos), 1)
-            self.assertTrue(archivos[0].name.endswith("-vigila-modelos.txt"))
-            self.assertEqual(archivos[0].read_text(encoding="utf-8"), "hola")
 
 
 if __name__ == "__main__":

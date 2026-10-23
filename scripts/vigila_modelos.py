@@ -14,13 +14,13 @@ manda por Telegram. Sin diferencias no avisa nada.
 
 import argparse
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 
 from claw_models import split_label
+from vigia_comun import encola
 
 ROOT = Path(__file__).resolve().parents[1]
 MINI = "gon@100.73.187.5"
@@ -124,13 +124,6 @@ def texto_aviso(claw_mal, hermes_mal, sin_leer):
     return "\n".join(lineas)
 
 
-def encola(directorio, texto):
-    directorio.mkdir(parents=True, exist_ok=True)
-    tmp = directorio / ".vigila-modelos.tmp"
-    tmp.write_text(texto, encoding="utf-8")
-    os.replace(tmp, directorio / f"{int(time.time() * 1000)}-vigila-modelos.txt")
-
-
 def _corre(argv, entrada=None):
     r = subprocess.run(
         argv, input=entrada, capture_output=True, text=True, timeout=120, check=False
@@ -190,7 +183,11 @@ def main(argv=None):
         )
         return 0
     if args.aviso:
-        encola(args.aviso.expanduser(), texto_aviso(claw_mal, hermes_mal, sin_leer))
+        encola(
+            args.aviso.expanduser(),
+            texto_aviso(claw_mal, hermes_mal, sin_leer),
+            "vigila-modelos",
+        )
     return 1
 
 
