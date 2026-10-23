@@ -60,8 +60,9 @@ ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
 KIMI_CODING_URL = "https://api.kimi.com/coding/v1"
 
 #: Owner decision (2026-09-28): director's vision chain order is GLM 5.3 Flash
-#: first, then Kimi For Coding, then Claude Opus 5. Note: glm-5.3 (text only)
-#: and glm-5.3-flashx (not in the plan) cannot serve vision.
+#: first, then Kimi For Coding. 2026-10-22: the last fallback is Claude Haiku,
+#: not Opus (no fallback ends in Opus; Haiku reads images). Note: glm-5.3 (text
+#: only) and glm-5.3-flashx (not in the plan) cannot serve vision.
 _DIRECTOR_VISION_AUXILIARY = {
     "vision": {
         "provider": "zai",
@@ -74,7 +75,7 @@ _DIRECTOR_VISION_AUXILIARY = {
                 "base_url": KIMI_CODING_URL,
                 "api_mode": "chat_completions",
             },
-            {"provider": "anthropic", "model": "claude-opus-5-5"},
+            {"provider": "anthropic", "model": "claude-haiku-5-5"},
         ],
     }
 }

@@ -247,8 +247,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_the_director_keeps_the_owner_vision_chain(self):
         # The primary rejects vision (400 ModelProtocolUnsupported); the owner
         # sends the director's vision calls through a chain: GLM 5.3 Flash,
-        # then Kimi For Coding, then Claude Opus 5. Owner decision 2026-09-28,
-        # untouched by the 2026-10-17 rerouting.
+        # then Kimi For Coding, then Claude Haiku. Owner decisions 2026-09-28
+        # and 2026-10-22 (Haiku replaces Opus as the last fallback).
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
 
         desired = module.desired_profile_config(team["director"], team, Path("C:/h"))
@@ -267,7 +267,7 @@ class ConfigurationTests(unittest.TestCase):
                             "base_url": "https://api.kimi.com/coding/v1",
                             "api_mode": "chat_completions",
                         },
-                        {"provider": "anthropic", "model": "claude-opus-5-5"},
+                        {"provider": "anthropic", "model": "claude-haiku-5-5"},
                     ],
                 }
             },
