@@ -17,8 +17,10 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import vigila_tareas as module  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 DATOS = ROOT / "tests" / "datos" / "vigia"
 
@@ -755,7 +757,7 @@ class TestMain(unittest.TestCase):
 class TestEstado(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
+        self.addCleanup(cleanup_temp_directory, tmp)
         self.dir = Path(tmp.name)
         self.estado = self.dir / "estado.json"
 
