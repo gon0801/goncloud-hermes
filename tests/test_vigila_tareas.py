@@ -1,10 +1,16 @@
 import json
 from pathlib import Path
 import re
+import sys
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import vigila_tareas as module  # noqa: E402
+
 DATOS = ROOT / "tests" / "datos" / "vigia"
 
 CAMPOS_LAUNCHD = {
@@ -83,6 +89,52 @@ class TestDatosLimpios(unittest.TestCase):
         self.assertIn("2026-10-22", leeme)
         for ruta in DATOS.glob("*.json"):
             self.assertIn(ruta.name, leeme)
+
+
+class TestPolitica(unittest.TestCase):
+    def setUp(self):
+        self.base = json.loads((ROOT / "tareas-programadas.json").read_text("utf-8"))
+
+    def carga(self, datos):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "tareas-programadas.json"
+            ruta.write_text(json.dumps(datos), encoding="utf-8")
+            return module.Politica.carga(ruta)
+
+    def test_la_politica_del_repo_carga(self):
+        pol = module.Politica.carga(ROOT / "tareas-programadas.json")
+        self.assertEqual(pol.ventana.zona, "America/Los_Angeles")
+        self.assertEqual((pol.ventana.desde, pol.ventana.hasta), ("03:45", "05:10"))
+        self.assertEqual((pol.claw_rss_mb, pol.chrome_perfil_mb), (3584, 3072))
+        self.assertEqual(pol.marca_fallo, "FALLO:")
+        self.assertIn("ai.goncloud.vigila-modelos", pol.salidas_ok)
+        self.assertEqual(len(pol.modelo_propio), 4)
+
+    def test_una_clave_de_mas_falla_y_nombra_la_clave(self):
+        for ruta, clave in ((None, "intrusa"), ("limites", "limites.intrusa")):
+            datos = json.loads(json.dumps(self.base))
+            (datos if ruta is None else datos[ruta])["intrusa"] = 1
+            with self.assertRaisesRegex(module.PoliticaError, clave):
+                self.carga(datos)
+
+    def test_un_tipo_equivocado_falla_y_nombra_la_clave(self):
+        casos = (
+            ("limites", "claw_rss_mb", "3584", "limites.claw_rss_mb"),
+            ("limites", "chrome_perfil_mb", True, "limites.chrome_perfil_mb"),
+            ("ventana_reinicio", "desde", "25:99", "ventana_reinicio.desde"),
+            ("launchd", "prefijos", "ai.", "launchd.prefijos"),
+            (None, "marca_fallo", 1, "marca_fallo"),
+        )
+        for padre, clave, valor, esperada in casos:
+            datos = json.loads(json.dumps(self.base))
+            (datos if padre is None else datos[padre])[clave] = valor
+            with self.assertRaisesRegex(module.PoliticaError, esperada):
+                self.carga(datos)
+
+    def test_una_clave_que_falta_falla(self):
+        del self.base["marca_fallo"]
+        with self.assertRaisesRegex(module.PoliticaError, "marca_fallo"):
+            self.carga(self.base)
 
 
 if __name__ == "__main__":
