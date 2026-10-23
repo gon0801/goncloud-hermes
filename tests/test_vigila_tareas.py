@@ -835,7 +835,15 @@ class TestEstado(unittest.TestCase):
             "[]",
             '{"hallazgos": 3}',
             '{"hallazgos": {"x": 1}}',
+            '{"hallazgos": {"x": "2026-10-22"}}',
+            '{"hallazgos": {"otra|NO_CORRE|a": "2026-10-22"}}',
+            '{"hallazgos": {"|NO_CORRE|a": "2026-10-22"}}',
         ):
+            self.estado.write_text(roto, encoding="utf-8")
+            self.assertEqual(self.corre([], datetime(2026, 10, 22, 13, 0)), [])
+            self.assertEqual(
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"], {}
+            )
             self.estado.write_text(roto, encoding="utf-8")
             self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 14, 0))), 1)
             self.assertEqual(self.corre([h], datetime(2026, 10, 22, 15, 0)), [])
@@ -885,7 +893,7 @@ class TestEstado(unittest.TestCase):
     def test_una_lectura_que_truena_no_recuerda_lo_que_no_vio(self):
         h = hallazgo("a", module.Falla.NO_CORRE)
         self.corre([h], datetime(2026, 10, 22, 14, 0))
-        estado, hoy = module.lee_estado(self.estado), "2026-10-23"
+        estado, hoy = module.lee_estado(self.estado, "mini"), "2026-10-23"
         _, arreglados, pendientes, nuevo = module.concilia(estado, [], True, hoy, False)
         self.assertEqual((arreglados, pendientes), ([], {}))
         self.assertEqual(nuevo["hallazgos"], estado["hallazgos"])
@@ -896,7 +904,29 @@ class TestEstado(unittest.TestCase):
             [hallazgo(tarea, module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
         )
         self.assertEqual(self.corre([], datetime(2026, 10, 22, 15, 0)), [])
-        self.assertEqual(module.lee_estado(self.estado)["hallazgos"], {})
+        self.assertEqual(module.lee_estado(self.estado, "mini")["hallazgos"], {})
+
+    def test_la_clave_de_otra_maquina_no_se_declara_arreglada(self):
+        self.estado.write_text(
+            json.dumps(
+                {
+                    "hallazgos": {
+                        "mac|NO_CORRE|ai.goncloud.shopify-token": "2026-10-22"
+                    },
+                    "recordatorio": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 15, 0)), [])
+
+    def test_una_tarea_apagada_que_falla_distinto_si_se_avisa_y_se_arregla(self):
+        tarea = "ai.goncloud.tmux-activity-watch"
+        mal = hallazgo(tarea, module.Falla.TERMINO_MAL)
+        self.assertEqual(len(self.corre([mal], datetime(2026, 10, 22, 14, 0))), 1)
+        arreglo = self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(len(arreglo), 1)
+        self.assertIn("ya se arregl", arreglo[0])
 
     def test_sin_archivo_de_estado_se_crea_en_su_carpeta(self):
         self.estado = self.dir / "nueva" / "estado.json"

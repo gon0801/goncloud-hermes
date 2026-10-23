@@ -419,9 +419,9 @@ def clave_de(h):
     return f"{h.maquina}|{h.falla.name}|{h.tarea}"
 
 
-def _clave_valida(clave):
+def _clave_valida(clave, maquina):
     partes = clave.split("|", 2) if isinstance(clave, str) else []
-    return len(partes) == 3 and partes[1] in Falla.__members__
+    return len(partes) == 3 and partes[0] == maquina and partes[1] in Falla.__members__
 
 
 def _hallazgo_de(clave):
@@ -446,10 +446,10 @@ def _fecha_valida(valor):
     return True
 
 
-def lee_estado(ruta):
+def lee_estado(ruta, maquina):
     """Lo que ya se avisó: ``{"hallazgos": {clave: fecha}, "recordatorio": fecha}``.
 
-    Un archivo que falta o no se entiende cuenta como vacío.
+    Un archivo que falta o no se entiende cuenta como vacío. Solo cuentan las claves de ``maquina``.
     """
     vacio = {"hallazgos": {}, "recordatorio": ""}
     try:
@@ -462,7 +462,9 @@ def lee_estado(ruta):
         return vacio
     return {
         "hallazgos": {
-            k: v for k, v in avisados.items() if _clave_valida(k) and _fecha_valida(v)
+            k: v
+            for k, v in avisados.items()
+            if _clave_valida(k, maquina) and _fecha_valida(v)
         },
         "recordatorio": recordatorio if isinstance(recordatorio, str) else "",
     }
@@ -792,9 +794,13 @@ def main(argv=None, lectores=None, ahora=None):
     hoy = reloj.strftime("%Y-%m-%d", reloj.localtime(ahora))
     ruta_estado = args.estado or _ruta_del_estado()
     nuevos, arreglados, pendientes, estado = concilia(
-        lee_estado(ruta_estado), hallazgos, manana, hoy, not sin_leer
+        lee_estado(ruta_estado, args.maquina), hallazgos, manana, hoy, not sin_leer
     )
-    arreglados = [h for h in arreglados if h.tarea not in pol.apagadas_a_proposito]
+    arreglados = [
+        h
+        for h in arreglados
+        if not (h.falla is Falla.NO_CORRE and h.tarea in pol.apagadas_a_proposito)
+    ]
     aviso = texto_aviso(nuevos, sin_leer, pol, manana, arreglados, pendientes)
     try:
         if aviso:
