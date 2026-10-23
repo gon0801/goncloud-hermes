@@ -85,6 +85,7 @@ _ESQUEMA = {
         "motivo": (_texto, "texto"),
     },
     "excepciones_ventana": (_mapa(_texto), "un objeto de texto a texto"),
+    "apagadas_a_proposito": (_mapa(_texto), "un objeto de texto a texto"),
     "launchd": {
         "prefijos": (_lista_de(_texto), "una lista de texto"),
         "salidas_ok": (
@@ -134,6 +135,7 @@ class Politica:
     modelo_propio: dict
     ventana: Ventana
     excepciones_ventana: dict
+    apagadas_a_proposito: dict
     prefijos: tuple
     salidas_ok: dict
     claw_rss_mb: float
@@ -168,6 +170,7 @@ class Politica:
             modelo_propio=datos["modelo_propio"],
             ventana=Ventana(**datos["ventana_reinicio"]),
             excepciones_ventana=datos["excepciones_ventana"],
+            apagadas_a_proposito=datos["apagadas_a_proposito"],
             prefijos=tuple(datos["launchd"]["prefijos"]),
             salidas_ok={k: tuple(v) for k, v in datos["launchd"]["salidas_ok"].items()},
             claw_rss_mb=datos["limites"]["claw_rss_mb"],
@@ -206,7 +209,7 @@ class Hallazgo:
 
 def juzga_launchd(fila, pol):
     fallas = []
-    if (
+    if fila["label"] not in pol.apagadas_a_proposito and (
         fila["rutas_que_faltan"]
         or not fila["cargado"]
         or (fila["keepalive"] and fila["state"] != "running")
@@ -246,7 +249,7 @@ def juzga_claw(job, pol, ahora_ms):
     if job.get("lastRunStatus") == "error":
         fallas.append(Falla.TERMINO_MAL)
     proxima = job.get("nextRunAtMs")
-    if _atrasada(proxima, ahora_ms):
+    if job["name"] not in pol.apagadas_a_proposito and _atrasada(proxima, ahora_ms):
         fallas.append(Falla.NO_CORRE)
     fallas += _modelo_propio(
         f"claw:{job['name']}", (job.get("payload") or {}).get("model"), pol
@@ -288,7 +291,9 @@ def juzga_hermes(perfil, job, pol, ahora_ms, salida=None):
         and respuesta_final(salida).startswith(pol.marca_fallo)
     ):
         fallas.append(Falla.FALLO_DECLARADO)
-    if _atrasada(_iso_ms(job.get("next_run_at")), ahora_ms):
+    if job["name"] not in pol.apagadas_a_proposito and _atrasada(
+        _iso_ms(job.get("next_run_at")), ahora_ms
+    ):
         fallas.append(Falla.NO_CORRE)
     fallas += _modelo_propio(f"hermes:{perfil}/{job['name']}", job.get("model"), pol)
     return fallas

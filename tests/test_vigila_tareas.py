@@ -159,6 +159,14 @@ class TestPolitica(unittest.TestCase):
         }
         self.assertEqual(module.juzga_claw(job, pol, 0), [])
 
+    def test_apagadas_a_proposito_empieza_vacia_y_se_valida_como_las_demas(self):
+        self.assertEqual(self.base["apagadas_a_proposito"], {})
+        for valor in ([], {"a": 1}, {"a": ""}):
+            datos = json.loads(json.dumps(self.base))
+            datos["apagadas_a_proposito"] = valor
+            with self.assertRaisesRegex(module.PoliticaError, "apagadas_a_proposito"):
+                self.carga(datos)
+
     def test_una_clave_que_falta_falla(self):
         del self.base["marca_fallo"]
         with self.assertRaisesRegex(module.PoliticaError, "marca_fallo"):
@@ -849,6 +857,58 @@ class TestEstado(unittest.TestCase):
         ruta = module._ruta_del_estado()
         self.assertEqual(ruta.name, "estado.json")
         self.assertNotIn(ROOT, ruta.parents)
+
+
+class TestApagadasAProposito(unittest.TestCase):
+    def setUp(self):
+        base = json.loads((ROOT / "tareas-programadas.json").read_text("utf-8"))
+        base["apagadas_a_proposito"] = {
+            "ai.goncloud.tmux-activity-watch": "David la apagó",
+            "monday-pedidos-semanal": "David la apagó",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "tareas-programadas.json"
+            ruta.write_text(json.dumps(base), encoding="utf-8")
+            self.pol = module.Politica.carga(ruta)
+
+    def aviso(self, filas):
+        hallazgos = module.hallazgos_launchd(filas, "mac", self.pol)
+        return module.texto_aviso(hallazgos, [], self.pol, True)
+
+    def test_una_apagada_a_proposito_no_avisa_no_corre_y_otra_si(self):
+        texto = self.aviso(
+            [
+                fila_launchd(label="ai.goncloud.tmux-activity-watch", cargado=False),
+                fila_launchd(label="ai.goncloud.shopify-token", cargado=False),
+            ]
+        )
+        self.assertIn("La renovación del token de Shopify: no está corriendo", texto)
+        self.assertNotIn("tmux", texto)
+
+    def test_solo_la_apagada_en_la_lista_queda_sin_aviso(self):
+        fila = fila_launchd(label="ai.goncloud.tmux-activity-watch", cargado=False)
+        self.assertIsNone(self.aviso([fila]))
+
+    def test_sigue_avisando_lo_demas_de_una_tarea_apagada(self):
+        fila = fila_launchd(
+            label="ai.goncloud.tmux-activity-watch", cargado=False, last_exit_code=3
+        )
+        self.assertEqual(
+            module.juzga_launchd(fila, self.pol), [module.Falla.TERMINO_MAL]
+        )
+
+    def test_claw_y_hermes_tambien_respetan_la_lista(self):
+        atrasada = {"nextRunAtMs": AHORA_MS - 3 * 60 * MIN_MS}
+        self.assertEqual(
+            module.juzga_claw(job_claw(**atrasada), self.pol, AHORA_MS),
+            [module.Falla.NO_CORRE],
+        )
+        self.pol.apagadas_a_proposito["prueba"] = "motivo"
+        self.assertEqual(
+            module.juzga_claw(job_claw(**atrasada), self.pol, AHORA_MS), []
+        )
+        atrasado = job_hermes(next_run_at="2026-10-20T10:00:00-07:00")
+        self.assertEqual(module.juzga_hermes("claw", atrasado, self.pol, AHORA_MS), [])
 
 
 class TestLectores(unittest.TestCase):

@@ -16,6 +16,7 @@
   "excepciones_ventana": {
     "skill-collection-review-main": "OpenClaw no deja editarla (system-owned monitor job): corre el martes a las 03:54 de la Mini, dentro de la ventana de reinicio"
   },
+  "apagadas_a_proposito": {},
   "launchd": {
     "prefijos": [
       "ai.goncloud.",
