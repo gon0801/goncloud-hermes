@@ -840,6 +840,7 @@ class TestEstado(unittest.TestCase):
             '{"hallazgos": {"x": "2026-10-22"}}',
             '{"hallazgos": {"otra|NO_CORRE|a": "2026-10-22"}}',
             '{"hallazgos": {"|NO_CORRE|a": "2026-10-22"}}',
+            '{"hallazgos": {"mini|NOPE|a": "2026-10-22"}}',
         ):
             self.estado.write_text(roto, encoding="utf-8")
             self.assertEqual(self.corre([], datetime(2026, 10, 22, 13, 0)), [])
