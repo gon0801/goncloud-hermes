@@ -58,27 +58,36 @@ carga_plist() {
 
 es_0_o_1() { [ "$1" -eq 0 ] || [ "$1" -eq 1 ]; }
 
-# Un --seco sale 0 o 1; un traceback también sale 1, así que se mira el texto además del código.
+# Un --seco sale 0 o 1; un traceback o un SyntaxError también salen 1, así que se mira el stderr
+# (aparte del reporte, que cita lastRunError y last_error) además del código.
 juzga_seco() {
-  local etiqueta=$1 rc=$2 salida=$3
+  local etiqueta=$1 rc=$2 salida=$3 err=$4
   [ -z "$salida" ] || printf '%s\n' "$salida"
+  [ -z "$err" ] || printf '%s\n' "$err"
   echo "$etiqueta --seco salió con $rc"
-  if printf '%s\n' "$salida" | grep -q 'Traceback (most recent call last)'; then
+  if printf '%s\n' "$err" | grep -q -e 'Traceback (most recent call last)' -e '^[A-Za-z]*Error: '; then
     echo "FALLA $etiqueta: --seco truena (traceback)"; return 1
   fi
   es_0_o_1 "$rc" || { echo "FALLA $etiqueta: --seco salió con $rc"; return 1; }
 }
 
+# Corre un --seco con stdout y stderr separados y lo juzga.
+corre_seco() {
+  local etiqueta=$1 rc salida err archivo
+  shift
+  archivo=$(mktemp)
+  salida=$("$@" 2>"$archivo")
+  rc=$?
+  err=$(cat "$archivo"); rm -f "$archivo"
+  juzga_seco "$etiqueta" "$rc" "$salida" "$err"
+}
+
 # --seco del vigía de tareas (y del de modelos en la Mac) contra la carpeta `raiz`.
 seco_posix() {
-  local maquina=$1 host=$2 py=$3 raiz=$4 rc salida
-  salida=$(en "$host" "PYTHONDONTWRITEBYTECODE=1 '$py' '$raiz/scripts/vigila_tareas.py' --maquina $maquina --raiz '$raiz' --seco" 2>&1)
-  rc=$?
-  juzga_seco "$maquina: vigila_tareas" "$rc" "$salida" || return 1
+  local maquina=$1 host=$2 py=$3 raiz=$4
+  corre_seco "$maquina: vigila_tareas" en "$host" "PYTHONDONTWRITEBYTECODE=1 '$py' '$raiz/scripts/vigila_tareas.py' --maquina $maquina --raiz '$raiz' --seco" || return 1
   if [ "$maquina" = mac ]; then
-    salida=$(en "$host" "PYTHONDONTWRITEBYTECODE=1 '$py' '$raiz/scripts/vigila_modelos.py' --raiz '$raiz' --seco" 2>&1)
-    rc=$?
-    juzga_seco "$maquina: vigila_modelos" "$rc" "$salida" || return 1
+    corre_seco "$maquina: vigila_modelos" en "$host" "PYTHONDONTWRITEBYTECODE=1 '$py' '$raiz/scripts/vigila_modelos.py' --raiz '$raiz' --seco" || return 1
   fi
 }
 
@@ -111,14 +120,12 @@ instala_posix() {
 }
 
 instala_pc() {
-  local py=$PYTHON_PC rc salida
+  local py=$PYTHON_PC
   echo "== pc: copia fija en $W desde $SHA"
   git -C "$REPO" archive "$SHA" -- "${ARCHIVOS[@]}" |
     ssh "${SSH_OPTS[@]}" "$PC" "(if exist \"$W.nuevo\" rmdir /s /q \"$W.nuevo\") & mkdir \"$W.nuevo\" && tar -xf - -C \"$W.nuevo\"" ||
     { echo "FALLA pc: no pude copiar los archivos"; return 1; }
-  salida=$(ssh "${SSH_OPTS[@]}" "$PC" "\"$py\" \"$W.nuevo\\scripts\\vigila_tareas.py\" --maquina pc --raiz \"$W.nuevo\" --seco" 2>&1)
-  rc=$?
-  juzga_seco "pc: vigila_tareas" "$rc" "$salida" || return 1
+  corre_seco "pc: vigila_tareas" ssh "${SSH_OPTS[@]}" "$PC" "\"$py\" \"$W.nuevo\\scripts\\vigila_tareas.py\" --maquina pc --raiz \"$W.nuevo\" --seco" || return 1
   ssh "${SSH_OPTS[@]}" "$PC" "(if exist \"$W.anterior\" rmdir /s /q \"$W.anterior\") & (if exist \"$W\" move \"$W\" \"$W.anterior\" >nul) && move \"$W.nuevo\" \"$W\" >nul" ||
     { echo "FALLA pc: no pude cambiar la copia"; return 1; }
   ssh "${SSH_OPTS[@]}" "$PC" "schtasks /create /f /tn $TAREA_PC /sc minute /mo 30 /tr \"\\\"$py\\\" \\\"$W\\scripts\\vigila_tareas.py\\\" --maquina pc --raiz \\\"$W\\\"\"" ||
@@ -127,7 +134,7 @@ instala_pc() {
 }
 
 comprueba_posix() {
-  local maquina=$1 host py home dest agentes etiquetas e plist rc salida malo=0
+  local maquina=$1 host py home dest agentes etiquetas e plist malo=0
   host=$(dueno_de "$maquina") py=$(python_de "$maquina")
   home=$(en "$host" 'printf %s "$HOME"') || { echo "FALLA $maquina: no llegué a la máquina"; return 1; }
   dest=$home/goncloud-vigia agentes=$home/Library/LaunchAgents
@@ -140,23 +147,19 @@ comprueba_posix() {
     en "$host" "grep -q -e '$home/dev' -e '$home/.motor' -e '~/dev' -e '~/.motor' '$plist'" &&
       { echo "FALLA $maquina: $e apunta a ~/dev o ~/.motor"; malo=1; }
   done
-  salida=$(en "$host" "'$py' '$dest/scripts/vigila_tareas.py' --maquina $maquina --raiz '$dest' --seco" 2>&1)
-  rc=$?
-  juzga_seco "$maquina: vigila_tareas" "$rc" "$salida" || malo=1
+  corre_seco "$maquina: vigila_tareas" en "$host" "'$py' '$dest/scripts/vigila_tareas.py' --maquina $maquina --raiz '$dest' --seco" || malo=1
   [ "$malo" -eq 0 ] && echo "OK $maquina"
   return "$malo"
 }
 
 comprueba_pc() {
-  local malo=0 rc xml salida
+  local malo=0 xml
   ssh "${SSH_OPTS[@]}" "$PC" "if not exist \"$W\\scripts\\vigila_tareas.py\" exit 1" || { echo "FALLA pc: falta la copia fija $W"; malo=1; }
   xml=$(ssh "${SSH_OPTS[@]}" "$PC" "schtasks /query /tn $TAREA_PC /xml") || { echo "FALLA pc: la tarea $TAREA_PC no existe"; malo=1; }
   if printf %s "$xml" | grep -q -i -e '\\dev\\' -e '\.motor'; then
     echo "FALLA pc: $TAREA_PC apunta a dev o .motor"; malo=1
   fi
-  salida=$(ssh "${SSH_OPTS[@]}" "$PC" "\"$PYTHON_PC\" \"$W\\scripts\\vigila_tareas.py\" --maquina pc --raiz \"$W\" --seco" 2>&1)
-  rc=$?
-  juzga_seco "pc: vigila_tareas" "$rc" "$salida" || malo=1
+  corre_seco "pc: vigila_tareas" ssh "${SSH_OPTS[@]}" "$PC" "\"$PYTHON_PC\" \"$W\\scripts\\vigila_tareas.py\" --maquina pc --raiz \"$W\" --seco" || malo=1
   [ "$malo" -eq 0 ] && echo "OK pc"
   return "$malo"
 }

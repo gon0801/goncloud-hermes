@@ -36,6 +36,8 @@ case $host in
     case $cmd in
       *--seco*)
         [ -z "$SECO_TRACEBACK_PC" ] || { echo 'Traceback (most recent call last):' >&2; exit 1; }
+        [ -z "$SECO_SYNTAX_PC" ] || { echo '  File "vigila_tareas.py", line 1' >&2; echo 'SyntaxError: invalid syntax' >&2; exit 1; }
+        [ -z "$SECO_REPORTE_PC" ] || echo 'lastRunError: ValueError: citado en el reporte'
         exit "${SECO_RC_PC:-0}" ;;
       schtasks*) eval "$cmd" ;;
       *"schtasks /delete"*) schtasks /delete /f /tn GoncloudVigia ;;
@@ -57,6 +59,8 @@ case $1 in
   print) [ -e "$estado/${2##*/}" ] || exit 113 ;;
 esac
 """
+
+ROTO = "def f(:\n    pass\n"
 
 SCHTASKS = """#!/bin/sh
 printf '%s\n' "schtasks $*" >> "$FAKE/schtasks.log"
@@ -259,6 +263,28 @@ class Instalacion(InstalaVigias):
         self.assertFalse(self.cargado(self.mini, "ai.goncloud.vigila-tareas"))
         self.assertTrue(self.cargado(self.mac, "ai.goncloud.vigila-tareas"))
 
+    def test_un_error_de_sintaxis_no_se_enciende(self):
+        (self.repo / "scripts/vigila_tareas.py").write_text(ROTO)
+        git = ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "commit", "-qam", "roto"], check=True)
+        sha = subprocess.run(
+            [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        hecho = self.corre(MOTOR_SHA=sha)
+        self.assertNotEqual(hecho.returncode, 0, hecho.stdout)
+        self.assertFalse(
+            self.cargado(self.mini, "ai.goncloud.vigila-tareas"), hecho.stdout
+        )
+
+    def test_sintaxis_en_la_pc_no_crea_la_tarea(self):
+        hecho = self.corre(SECO_SYNTAX_PC="1")
+        self.assertNotEqual(hecho.returncode, 0, hecho.stdout)
+        self.assertNotIn("schtasks /create", self.lee("schtasks.log"))
+
+    def test_un_error_citado_en_el_reporte_no_bloquea(self):
+        hecho = self.corre(SECO_REPORTE_PC="1")
+        self.assertEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+
     def test_si_el_seco_de_la_pc_truena_no_crea_la_tarea(self):
         hecho = self.corre(SECO_RC_PC="2")
         self.assertNotEqual(hecho.returncode, 0)
@@ -352,6 +378,15 @@ class Comprobacion(InstalaVigias):
             self.assertIn(f"FALLA {maquina}", hecho.stdout)
         hecho = self.comprueba(SECO_TRACEBACK_PC="1")
         self.assertEqual(hecho.returncode, 1, hecho.stdout)
+        self.assertIn("FALLA pc", hecho.stdout)
+
+    def test_sintaxis_no_pasa(self):
+        (self.mini / "goncloud-vigia/scripts/vigila_tareas.py").write_text(ROTO)
+        hecho = self.comprueba()
+        self.assertNotEqual(hecho.returncode, 0, hecho.stdout)
+        self.assertNotIn("OK mini", hecho.stdout)
+        hecho = self.comprueba(SECO_SYNTAX_PC="1")
+        self.assertNotEqual(hecho.returncode, 0, hecho.stdout)
         self.assertIn("FALLA pc", hecho.stdout)
 
     def test_falla_si_falta_la_copia_fija(self):
