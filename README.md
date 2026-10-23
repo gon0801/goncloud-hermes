@@ -174,7 +174,31 @@ python3 scripts/claw_models.py check --live ../goncloud-openclaw/docs/patches/mo
 
 `check` sale con 1 y lista cada diferencia (agente, posicion o thinking). La foto se toma en el host del gateway con un parse de solo lectura de `openclaw.json`; su formato esta en el encabezado del archivo.
 
-Cada dia a las 08:00, `scripts/vigila_modelos.py` corre en la Mac (`scripts/ai.goncloud.vigila-modelos.plist` en `~/Library/LaunchAgents`). Lee la tabla de `origin`, la config real de claw (Mini) y de los 21 perfiles de Hermes (PC) por ssh, y compara por agente la cadena ordenada de modelo y esfuerzo. No usa ningun modelo de IA. Si algo difiere o una maquina no contesta, deja un aviso en la cola del motor de la Mac, que lo manda a Telegram por Server Alerts; el detalle queda en `~/Library/Logs/goncloud/vigila-modelos.log`. Se agrego porque el 2026-10-18 claw volvio al orden de antes de la v6 y nadie se entero en cuatro dias.
+Dos vigias sin IA revisan las maquinas y dejan su aviso en la cola del motor de la Mac, que lo manda a Telegram por Server Alerts. Se agregaron porque el 2026-10-18 claw volvio al orden de antes de la v6 y nadie se entero en cuatro dias.
+
+**Que revisa cada uno.**
+
+- `scripts/vigila_modelos.py` corre en la Mac cada dia a las 08:00 (`ai.goncloud.vigila-modelos`). Lee la tabla, la config real de claw (Mini) y de los 21 perfiles de Hermes (PC) por ssh, y compara por agente la cadena ordenada de modelo y esfuerzo, el modelo por omision de claw, el modelo propio de cada cron (`tareas-programadas.json`) y la vision del director. Si algo difiere o una maquina no contesta, avisa; el detalle queda en `~/Library/Logs/goncloud/vigila-modelos.log`.
+- `scripts/vigila_tareas.py --maquina mac|mini|pc` corre en cada maquina cada 30 minutos y lee solo lo suyo: los LaunchAgents (Mac y Mini), los crons de claw y su memoria (Mini) y los crons de Hermes (PC). Avisa cuando una tarea no corre, su ultima corrida fallo o avisa un fallo y queda como buena, y senala las que usan otro modelo, caen en la ventana de reinicio de claw o pesan de mas. La politica vive en `tareas-programadas.json`. Lo que encuentra tambien queda en `~/Library/Logs/goncloud-vigia.log` (Mac y Mini) o `%LOCALAPPDATA%\goncloud-vigia\vigia.log` (PC).
+
+**Donde viven.** Cada maquina corre su propia copia fija y no el checkout: `~/goncloud-vigia` en la Mac y la Mini, `%LOCALAPPDATA%\goncloud-vigia` en la PC. Trae `scripts/`, `tareas-programadas.json`, `model-routing.source.json`, `claw-routing.json` y `team.json`; el que corre en la Mac lee las tablas de ahi (`--raiz`) y encola en `~/goncloud-vigia/avisos`, un enlace a la cola del motor. En la PC corre `GoncloudVigia` (tarea programada) con el Python del runtime de Hermes. En la Mac y la Mini, `ai.goncloud.vigila-tareas` (`StartInterval` 1800).
+
+**A mano.** `--seco` imprime los hallazgos y no encola nada. Sale 0 sin hallazgos urgentes, 1 con alguno y 2 si no pudo leer su politica o las tablas.
+
+```bash
+python3 ~/goncloud-vigia/scripts/vigila_tareas.py --maquina mac --raiz ~/goncloud-vigia --seco
+python3 ~/goncloud-vigia/scripts/vigila_modelos.py --raiz ~/goncloud-vigia --seco
+```
+
+**Instalar y quitar.** Desde la Mac, con el repo al dia:
+
+```bash
+MOTOR_SHA=<sha> scripts/instala_vigias.sh   # sin MOTOR_SHA usa origin/HEAD
+scripts/instala_vigias_checklist.sh         # --comprueba: 0 solo si las tres maquinas estan bien
+scripts/instala_vigias_rollback.sh          # quita los vigias nuevos y pone lo .anterior
+```
+
+`instala_vigias.sh` baja los archivos con `git archive` del commit, arma la copia en `goncloud-vigia.nuevo`, corre cada vigia una vez con `--seco` (la salida queda en `~/Library/Logs/goncloud/instala-vigias.log`) y solo entonces la cambia por `mv`, dejando la anterior como `goncloud-vigia.anterior`. Si el `--seco` truena en una maquina, esa no se toca y las demas siguen. El plist viejo de `vigila-modelos` queda como `.plist.anterior`. `--comprueba` revisa en las tres maquinas que exista la copia, que el vigia este cargado, que ningun plist o tarea apunte a `~/dev` ni a `~/.motor` y que un `--seco` salga 0 o 1.
 
 ## Cambiar un modelo
 
