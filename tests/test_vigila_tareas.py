@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zoneinfo
 from zoneinfo import ZoneInfo
 
 
@@ -141,6 +142,7 @@ class TestPolitica(unittest.TestCase):
     def test_zona_desconocida_o_ventana_al_reves_fallan(self):
         for clave, valor, esperada in (
             ("zona", "America/Nowhere", "ventana_reinicio.zona"),
+            ("zona", "America/", "ventana_reinicio.zona"),
             ("desde", "05:10", "ventana_reinicio.desde"),
         ):
             datos = json.loads(json.dumps(self.base))
@@ -411,7 +413,9 @@ class TestJueces(unittest.TestCase):
         )
 
     def test_la_respuesta_final_es_lo_que_sigue_al_ultimo_response(self):
-        salida = "## Response\n\ncita\n\n## Response\n\nFALLO: de verdad\n"
+        salida = (
+            "## Prompt\n\nx\n\n## Response\n\ncita\n\n## Response\n\nFALLO: de verdad\n"
+        )
         self.assertEqual(module.respuesta_final(salida), "FALLO: de verdad")
 
     def test_claw_con_payload_o_schedule_nulos_no_truena(self):
@@ -610,6 +614,20 @@ class TestMain(unittest.TestCase):
             self.log = (
                 self.registro.read_text("utf-8") if self.registro.exists() else ""
             )
+
+    def test_la_pc_sin_base_de_zonas_no_truena(self):
+        pc = module.Lector("las tareas programadas de Hermes", lambda p, a: [])
+        ZoneInfo.clear_cache()
+        zoneinfo.reset_tzpath([])
+        self.addCleanup(zoneinfo.reset_tzpath)
+        self.addCleanup(ZoneInfo.clear_cache)
+        with mock.patch.dict(sys.modules, {"tzdata": None}):
+            codigo = module.main(
+                ["--maquina", "pc", "--seco", "--raiz", str(ROOT)],
+                lectores=[pc],
+                ahora=1792724232.0,
+            )
+        self.assertNotEqual(codigo, 2)
 
     def test_sin_hallazgos_sale_0_y_no_encola(self):
         self.corre([lector("x")])

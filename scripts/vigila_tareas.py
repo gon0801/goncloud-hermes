@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time as reloj
 from xml.parsers.expat import ExpatError
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from vigia_comun import encola
 
@@ -151,7 +151,12 @@ class Politica:
         ventana = datos["ventana_reinicio"]
         try:
             ZoneInfo(ventana["zona"])
-        except (ZoneInfoNotFoundError, ValueError) as e:
+        except ZoneInfoNotFoundError as e:
+            if available_timezones():
+                raise PoliticaError(
+                    f"ventana_reinicio.zona: no conozco la zona {ventana['zona']}"
+                ) from e
+        except ValueError as e:
             raise PoliticaError(
                 f"ventana_reinicio.zona: no conozco la zona {ventana['zona']}"
             ) from e
