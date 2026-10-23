@@ -13,6 +13,9 @@
     "hasta": "05:10",
     "motivo": "claw se reinicia solo a esa hora y una tarea programada ahí puede quedar a medias"
   },
+  "excepciones_ventana": {
+    "skill-collection-review-main": "OpenClaw no deja editarla (system-owned monitor job): corre el martes a las 03:54 de la Mini, dentro de la ventana de reinicio"
+  },
   "launchd": {
     "prefijos": [
       "ai.goncloud.",

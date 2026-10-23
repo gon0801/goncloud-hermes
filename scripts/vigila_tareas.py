@@ -84,6 +84,7 @@ _ESQUEMA = {
         "hasta": (_hora, "una hora HH:MM"),
         "motivo": (_texto, "texto"),
     },
+    "excepciones_ventana": (_mapa(_texto), "un objeto de texto a texto"),
     "launchd": {
         "prefijos": (_lista_de(_texto), "una lista de texto"),
         "salidas_ok": (
@@ -132,6 +133,7 @@ class Ventana:
 class Politica:
     modelo_propio: dict
     ventana: Ventana
+    excepciones_ventana: dict
     prefijos: tuple
     salidas_ok: dict
     claw_rss_mb: float
@@ -165,6 +167,7 @@ class Politica:
         return cls(
             modelo_propio=datos["modelo_propio"],
             ventana=Ventana(**datos["ventana_reinicio"]),
+            excepciones_ventana=datos["excepciones_ventana"],
             prefijos=tuple(datos["launchd"]["prefijos"]),
             salidas_ok={k: tuple(v) for k, v in datos["launchd"]["salidas_ok"].items()},
             claw_rss_mb=datos["limites"]["claw_rss_mb"],
@@ -251,6 +254,7 @@ def juzga_claw(job, pol, ahora_ms):
     if (
         proxima is not None
         and (job.get("schedule") or {}).get("kind") != "every"
+        and job["name"] not in pol.excepciones_ventana
         and _en_ventana(proxima, pol.ventana)
     ):
         fallas.append(Falla.EN_VENTANA)
