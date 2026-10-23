@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import claw_parche  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 import test_claw_autoupdate as base  # noqa: E402
 
 CONFIG = {
@@ -46,7 +47,7 @@ def claw_gateway(fake, run):
 class ParcheTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
+        self.addCleanup(cleanup_temp_directory, self.dir)
         self.respaldos = Path(self.dir.name) / "respaldos"
 
     def go(self, fake, *args):
@@ -180,11 +181,24 @@ class ParcheTests(unittest.TestCase):
 
     def test_defaults_v6_follows_the_table(self):
         fake = base.FakeGateway(CONFIG)
+        source = json.loads(
+            (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
+        )
+        row = source["profile_inheritance"]["default"]
+        primary = source["chains"][row][0].split(" (")[0]
 
         self.go(fake, "defaults-v6")
 
-        want = claw_parche.OBJETIVOS["defaults-v6"]()["agents"]["defaults"]["model"]
-        self.assertEqual(fake.config["agents"]["defaults"]["model"], want)
+        self.assertEqual(fake.config["agents"]["defaults"]["model"]["primary"], primary)
+
+    def test_an_applied_objective_does_not_wait_for_a_busy_gateway(self):
+        applied = claw_parche.overlay(CONFIG, claw_parche.OBJETIVOS["sesiones"]())
+        fake = base.FakeGateway(applied, busy_polls=10**6)
+
+        code, out = self.go(fake, "sesiones")
+
+        self.assertEqual(code, 0)
+        self.assertIn("ya esta asi", out)
 
     def test_dreaming_sets_the_model_and_the_override(self):
         fake = base.FakeGateway(CONFIG)

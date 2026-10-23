@@ -122,16 +122,20 @@ def aplica(
 ):
     """``(exit code, message)`` for patching ``fragmento`` into the live config.
 
-    The live config is read inside the window, so the patch is computed against
-    what is there when it lands. Nothing is written without the window, on
+    An already-applied objective answers without the window; the patch itself is
+    computed against the config read inside the window. Nothing is written without the window, on
     ``dry_run``, or when the config already holds ``fragmento``.
     """
+    ya = f"{nombre}: la config ya esta asi; no escribi nada"
+    live = gateway.config()
+    if not merge_patch(live, overlay(live, fragmento))[0]:
+        return 0, ya
     try:
         with gateway.exclusive(wait):
             live = gateway.config()
             patch, replace = merge_patch(live, overlay(live, fragmento))
             if not patch:
-                return 0, f"{nombre}: la config ya esta asi; no escribi nada"
+                return 0, ya
             problem = _dry_run(gateway, patch, replace)
             if problem:
                 return 1, f"{nombre}: {problem}"
