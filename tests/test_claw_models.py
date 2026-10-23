@@ -64,6 +64,17 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(agent["model"]["fallbacks"][1], "anthropic/opus")
         self.assertNotIn("models", agent)
 
+    def test_a_repeated_row_on_the_second_account_does_not_get_a_second_suffix(self):
+        mapping = {
+            "second_account_suffix": "-2",
+            "id_overrides": {"go/muse-a": "go-2/muse-a"},
+        }
+
+        agent = module.desired_agent(ROW, mapping, thinking=True)
+
+        self.assertEqual(agent["model"]["primary"], "go-2/muse-a")
+        self.assertEqual(agent["model"]["fallbacks"][0], "go-2/muse-a")
+
     def test_an_override_renames_the_id_for_claw_only(self):
         # The same model can have one ID on the route hermes uses and another
         # on the route claw uses (Muse CLI vs Meta API). The table keeps the
