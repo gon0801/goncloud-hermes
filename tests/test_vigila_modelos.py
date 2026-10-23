@@ -284,11 +284,20 @@ class ConfigRealTests(unittest.TestCase):
         self.assertEqual(ids[0], "opencode-go-2/deepseek-v4.1-flash")
 
     def test_hermes_no_cambia_con_el_override_de_claw(self):
-        sin = {**self.ruteo, "id_overrides": {}}
-        self.assertEqual(
-            module.esperado(self.tabla, self.ruteo)[1],
-            module.esperado(self.tabla, sin)[1],
-        )
+        deepseek = {"provider": "opencode-go", "model": "deepseek-v4.1-flash"}
+        perfiles = [
+            perfil
+            for perfil, fila in self.tabla["profile_inheritance"].items()
+            if any(
+                "deepseek-v4.1-flash" in celda for celda in self.tabla["chains"][fila]
+            )
+        ]
+        self.assertTrue(perfiles)
+        for perfil in perfiles:
+            self.assertIn(
+                deepseek,
+                configure_team.native_config(self.tabla, perfil)["fallback_providers"],
+            )
 
     def test_todo_coincide_y_no_avisa(self):
         self.assertEqual(self.corre(), (0, []))
