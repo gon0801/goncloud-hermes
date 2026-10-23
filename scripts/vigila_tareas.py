@@ -9,13 +9,22 @@ La política (modelos acordados, ventana de reinicio, límites, nombres llanos) 
 ``tareas-programadas.json``, en la raíz de la copia instalada.
 """
 
+import argparse
 from dataclasses import dataclass
 from datetime import datetime, time
 from enum import Enum
 import json
+import os
 from pathlib import Path
+import plistlib
 import re
+import shutil
+import subprocess
+import sys
+import time as reloj
 from zoneinfo import ZoneInfo
+
+from vigia_comun import encola
 
 RAIZ = Path(__file__).resolve().parents[1]
 HORA = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
@@ -289,6 +298,7 @@ def juzga_limites(rss_mb, perfil_mb, pol):
 class SinLeer:
     maquina: str
     que: str
+    motivo: str = ""
 
 
 MAQUINAS = {"mac": "la Mac", "mini": "la Mini", "pc": "la PC"}
@@ -339,3 +349,284 @@ def texto_aviso(hallazgos, sin_leer, politica, manana):
         cuerpo = [*cuerpo[: MAX_LINEAS - 3], f"• Y {sobran} avisos más."]
     maquina = MAQUINAS[(entran or sin_leer)[0].maquina]
     return "\n".join([f"En {maquina} · Tareas programadas:", *cuerpo, CIERRE])
+
+
+@dataclass(frozen=True)
+class Lector:
+    """Una lectura de la máquina: ``leer(politica, ahora_ms)`` devuelve sus ``Hallazgo``."""
+
+    que: str
+    leer: object
+
+
+def _corre(argv):
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    return r
+
+
+def _campo(texto, nombre):
+    m = re.search(rf"^\s*{nombre} = (.*)$", texto, re.MULTILINE)
+    return m.group(1).strip() if m else None
+
+
+def _codigo_de_salida(crudo):
+    m = re.match(r"-?\d+", crudo or "")
+    return int(m.group()) if m else None
+
+
+def lee_launchd(prefijos, carpeta=None):
+    carpeta = carpeta or Path.home() / "Library" / "LaunchAgents"
+    filas = []
+    for ruta in sorted(carpeta.glob("*.plist")):
+        try:
+            plist = plistlib.loads(ruta.read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        label = plist.get("Label", ruta.stem)
+        if not label.startswith(tuple(prefijos)):
+            continue
+        r = _corre(["launchctl", "print", f"gui/{os.getuid()}/{label}"])
+        args = plist.get("ProgramArguments") or [plist.get("Program", "")]
+        runs = _campo(r.stdout, "runs")
+        filas.append(
+            {
+                "label": label,
+                "periodico": "StartCalendarInterval" in plist
+                or "StartInterval" in plist,
+                "keepalive": bool(plist.get("KeepAlive")),
+                "cargado": r.returncode == 0,
+                "state": _campo(r.stdout, "state"),
+                "runs": int(runs) if runs and runs.isdigit() else None,
+                "last_exit_code": _codigo_de_salida(_campo(r.stdout, "last exit code")),
+                "rutas_que_faltan": [
+                    a
+                    for a in args
+                    if a.startswith("/") and ":" not in a and not os.path.exists(a)
+                ],
+            }
+        )
+    return filas
+
+
+def hallazgos_launchd(filas, maquina, pol):
+    out = []
+    for fila in filas:
+        for falla in juzga_launchd(fila, pol):
+            detalle = (
+                f"cargado={fila['cargado']} state={fila['state']} "
+                f"last_exit_code={fila['last_exit_code']} "
+                f"rutas_que_faltan={fila['rutas_que_faltan']}"
+            )
+            out.append(Hallazgo(maquina, fila["label"], falla, detalle))
+    return out
+
+
+def _openclaw():
+    return shutil.which("openclaw") or str(
+        Path.home() / ".openclaw" / "bin" / "openclaw"
+    )
+
+
+def lee_cron_claw():
+    """Todos los crons de claw, página por página (``hasMore`` y ``nextOffset``)."""
+    jobs, offset = [], 0
+    while True:
+        params = json.dumps({"includeDisabled": True, "limit": 100, "offset": offset})
+        r = _corre(
+            [_openclaw(), "gateway", "call", "cron.list", "--params", params, "--json"]
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                r.stderr.strip()[-200:] or f"openclaw salió con {r.returncode}"
+            )
+        pagina = json.loads(r.stdout)
+        jobs += pagina["jobs"]
+        if not pagina.get("hasMore"):
+            return jobs
+        offset = pagina["nextOffset"]
+
+
+def hallazgos_claw(jobs, maquina, pol, ahora_ms):
+    out = []
+    for job in jobs:
+        for falla in juzga_claw(job, pol, ahora_ms):
+            detalle = f"id={job.get('id')} lastRunError={job.get('lastRunError')}"
+            out.append(Hallazgo(maquina, job["name"], falla, detalle))
+    return out
+
+
+def _carpeta_hermes():
+    base = os.environ.get("LOCALAPPDATA") or r"C:\Users\ehven\AppData\Local"
+    return Path(base) / "hermes" / "profiles"
+
+
+def _ultima_salida(carpeta):
+    salidas = (
+        sorted(p for p in carpeta.glob("*") if p.is_file()) if carpeta.is_dir() else []
+    )
+    return (
+        salidas[-1].read_text(encoding="utf-8", errors="replace") if salidas else None
+    )
+
+
+def lee_hermes(carpeta=None):
+    """``[(perfil, trabajo, última salida o None)]`` de cada perfil con ``cron/jobs.json``."""
+    carpeta = carpeta or _carpeta_hermes()
+    out = []
+    for perfil in sorted(p for p in carpeta.iterdir() if p.is_dir()):
+        ruta = perfil / "cron" / "jobs.json"
+        if not ruta.is_file():
+            continue
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        for job in datos["jobs"] if isinstance(datos, dict) else datos:
+            salida = _ultima_salida(perfil / "cron" / "output" / str(job.get("id")))
+            out.append((perfil.name, job, salida))
+    return out
+
+
+def hallazgos_hermes(trabajos, maquina, pol, ahora_ms):
+    out = []
+    for perfil, job, salida in trabajos:
+        for falla in juzga_hermes(perfil, job, pol, ahora_ms, salida):
+            detalle = (
+                f"perfil={perfil} id={job.get('id')} last_status={job.get('last_status')} "
+                f"failure_streak={job.get('failure_streak')} "
+                f"last_error={job.get('last_error')} "
+                f"last_delivery_error={job.get('last_delivery_error')}"
+            )
+            out.append(Hallazgo(maquina, job["name"], falla, detalle))
+    return out
+
+
+def _mb_de_carpeta(carpeta):
+    r = _corre(["du", "-sk", str(carpeta)])
+    if r.returncode != 0 or not r.stdout.split():
+        raise RuntimeError(f"no pude medir {carpeta}")
+    return int(r.stdout.split()[0]) / 1024
+
+
+def hallazgos_limites(maquina, pol, ahora_ms, log=None, perfil=None):
+    home = Path.home()
+    log = log or home / "Library" / "Logs" / "openclaw" / "gateway.log"
+    perfil = perfil or home / ".openclaw" / "browser" / "claw" / "user-data"
+    rss = memoria_alta_mb(log.read_text(encoding="utf-8", errors="replace"), ahora_ms)
+    mb = _mb_de_carpeta(perfil)
+    return [
+        Hallazgo(
+            maquina,
+            "claw",
+            falla,
+            f"rss_max_24h_mb={rss:.0f} perfil_chrome_mb={mb:.0f}",
+        )
+        for falla in juzga_limites(rss, mb, pol)
+    ]
+
+
+def lectores_de(maquina):
+    if maquina == "mac":
+        return [
+            Lector(
+                "las tareas de launchd",
+                lambda pol, ahora: hallazgos_launchd(
+                    lee_launchd(pol.prefijos), "mac", pol
+                ),
+            )
+        ]
+    if maquina == "mini":
+        return [
+            Lector(
+                "las tareas de launchd",
+                lambda pol, ahora: hallazgos_launchd(
+                    lee_launchd(pol.prefijos), "mini", pol
+                ),
+            ),
+            Lector(
+                "las tareas programadas de claw",
+                lambda pol, ahora: hallazgos_claw(lee_cron_claw(), "mini", pol, ahora),
+            ),
+            Lector(
+                "la memoria de claw",
+                lambda pol, ahora: hallazgos_limites("mini", pol, ahora),
+            ),
+        ]
+    return [
+        Lector(
+            "las tareas programadas de Hermes",
+            lambda pol, ahora: hallazgos_hermes(lee_hermes(), "pc", pol, ahora),
+        )
+    ]
+
+
+def _ruta_del_registro():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or r"C:\Users\ehven\AppData\Local"
+        return Path(base) / "goncloud-vigia" / "vigia.log"
+    return Path.home() / "Library" / "Logs" / "goncloud-vigia.log"
+
+
+def _linea_de_detalle(h):
+    return f"{h.maquina} {h.tarea} {h.falla.name}: {h.detalle}"
+
+
+def _deja_en_el_registro(ruta, hallazgos, sin_leer, ahora):
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    marca = reloj.strftime("%F %T", reloj.localtime(ahora))
+    lineas = [f"{marca} {_linea_de_detalle(h)}" for h in hallazgos]
+    lineas += [
+        f"{marca} {s.maquina} no pude revisar {s.que}: {s.motivo}" for s in sin_leer
+    ]
+    with ruta.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lineas) + "\n")
+
+
+def main(argv=None, lectores=None, ahora=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--maquina", required=True, choices=sorted(MAQUINAS))
+    ap.add_argument(
+        "--raiz", type=Path, default=RAIZ, help="carpeta de la copia instalada"
+    )
+    ap.add_argument(
+        "--seco", action="store_true", help="imprime los hallazgos y no encola"
+    )
+    ap.add_argument("--aviso", type=Path, default=Path("~/.motor/avisos/pendientes"))
+    ap.add_argument("--registro", type=Path, default=None)
+    args = ap.parse_args(argv)
+    ahora = reloj.time() if ahora is None else ahora
+    try:
+        pol = Politica.carga(args.raiz / "tareas-programadas.json")
+    except PoliticaError as e:
+        print(f"vigila_tareas: {e}", file=sys.stderr)
+        return 2
+
+    hallazgos, sin_leer = [], []
+    for lector in lectores or lectores_de(args.maquina):
+        try:
+            hallazgos += lector.leer(pol, int(ahora * 1000))
+        except Exception as e:  # noqa: BLE001
+            sin_leer.append(SinLeer(args.maquina, lector.que, str(e)[-300:]))
+    urgente = any(h.falla.urgente for h in hallazgos)
+
+    if args.seco:
+        for h in hallazgos:
+            print(_linea_de_detalle(h))
+        for s in sin_leer:
+            print(f"{s.maquina} no pude revisar {s.que}: {s.motivo}")
+        return 1 if urgente else 0
+
+    manana = reloj.localtime(ahora).tm_hour < 12
+    aviso = texto_aviso(hallazgos, sin_leer, pol, manana)
+    try:
+        if hallazgos or sin_leer:
+            _deja_en_el_registro(
+                args.registro or _ruta_del_registro(), hallazgos, sin_leer, ahora
+            )
+        if aviso:
+            encola(args.aviso.expanduser(), aviso, "vigila-tareas")
+    except OSError as e:
+        print(f"vigila_tareas: no pude dejar el aviso: {e}", file=sys.stderr)
+        return 2
+    return 1 if urgente else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

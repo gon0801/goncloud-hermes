@@ -1,7 +1,11 @@
+import contextlib
 from datetime import datetime
+import io
 import json
 from pathlib import Path
+import plistlib
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -528,6 +532,165 @@ class TestAviso(unittest.TestCase):
         texto = self.aviso(hallazgos)
         for resto in ("/Users", "renueva.sh", "35798aa2", "127", "exited", "error:"):
             self.assertNotIn(resto, texto)
+
+
+def lector(que, hallazgos=(), error=None):
+    def leer(pol, ahora_ms):
+        if error:
+            raise error
+        return list(hallazgos)
+
+    return module.Lector(que, leer)
+
+
+class TestMain(unittest.TestCase):
+    def corre(self, lectores, *extra, raiz=ROOT, ahora=1792724232.0):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.cola = Path(tmp) / "cola"
+            self.registro = Path(tmp) / "vigia.log"
+            argv = [
+                "--maquina", "mini", "--raiz", str(raiz),
+                "--aviso", str(self.cola), "--registro", str(self.registro),
+                *extra,
+            ]  # fmt: skip
+            self.codigo = module.main(argv, lectores=lectores, ahora=ahora)
+            self.avisos = (
+                [p.read_text("utf-8") for p in sorted(self.cola.glob("*"))]
+                if self.cola.exists()
+                else []
+            )
+            self.log = (
+                self.registro.read_text("utf-8") if self.registro.exists() else ""
+            )
+
+    def test_sin_hallazgos_sale_0_y_no_encola(self):
+        self.corre([lector("x")])
+        self.assertEqual((self.codigo, self.avisos, self.log), (0, [], ""))
+
+    def test_con_hallazgo_urgente_sale_1_encola_el_aviso_y_deja_el_detalle_en_el_registro(
+        self,
+    ):
+        h = hallazgo(
+            "ai.goncloud.shopify-token", module.Falla.NO_CORRE, detalle="falta /x/y.sh"
+        )
+        self.corre([lector("x", [h])])
+        self.assertEqual(self.codigo, 1)
+        self.assertEqual(len(self.avisos), 1)
+        self.assertIn(
+            "La renovación del token de Shopify: no está corriendo.", self.avisos[0]
+        )
+        self.assertNotIn("/x/y.sh", self.avisos[0])
+        self.assertIn("falta /x/y.sh", self.log)
+
+    def test_seco_imprime_el_detalle_no_encola_y_sale_igual(self):
+        h = hallazgo("a", module.Falla.TERMINO_MAL, detalle="detalle-visible")
+        with contextlib.redirect_stdout(io.StringIO()) as salida:
+            self.corre([lector("x", [h])], "--seco")
+        self.assertIn("detalle-visible", salida.getvalue())
+        self.assertEqual((self.codigo, self.avisos, self.log), (1, [], ""))
+
+    def test_solo_no_urgentes_salen_0_y_avisan_por_la_manana(self):
+        h = hallazgo("a", module.Falla.EN_VENTANA)
+        manana = datetime(2026, 10, 22, 9, 0).timestamp()
+        tarde = datetime(2026, 10, 22, 15, 0).timestamp()
+        self.corre([lector("x", [h])], ahora=manana)
+        self.assertEqual((self.codigo, len(self.avisos)), (0, 1))
+        self.corre([lector("x", [h])], ahora=tarde)
+        self.assertEqual((self.codigo, self.avisos), (0, []))
+
+    def test_una_lectura_que_truena_entra_al_aviso_y_no_tumba_al_vigia(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.corre([
+            lector("las tareas de claw", error=RuntimeError("sin red")),
+            lector("launchd", [h]),
+        ])  # fmt: skip
+        self.assertEqual(self.codigo, 1)
+        self.assertIn("• No pude revisar las tareas de claw.", self.avisos[0])
+        self.assertNotIn("sin red", self.avisos[0])
+        self.assertIn("sin red", self.log)
+
+    def test_si_solo_falla_la_lectura_sale_0_pero_avisa(self):
+        self.corre([lector("la PC", error=OSError("no contesta"))])
+        self.assertEqual((self.codigo, len(self.avisos)), (0, 1))
+
+    def test_politica_rota_sale_2(self):
+        with tempfile.TemporaryDirectory() as raiz:
+            (Path(raiz) / "tareas-programadas.json").write_text('{"intrusa": 1}')
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.corre([lector("x")], raiz=raiz)
+        self.assertEqual(self.codigo, 2)
+        self.assertIn("intrusa", err.getvalue())
+
+    def test_raiz_sin_politica_sale_2(self):
+        with (
+            tempfile.TemporaryDirectory() as raiz,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.corre([lector("x")], raiz=raiz)
+        self.assertEqual(self.codigo, 2)
+
+
+class TestLectores(unittest.TestCase):
+    def test_el_cron_de_claw_se_lee_pagina_por_pagina(self):
+        paginas = [
+            {"jobs": [{"name": "a"}, {"name": "b"}], "hasMore": True, "nextOffset": 2},
+            {"jobs": [{"name": "c"}], "hasMore": False, "nextOffset": None},
+        ]
+        pedidos = []
+
+        def falso(argv):
+            pedidos.append(json.loads(argv[argv.index("--params") + 1])["offset"])
+            salida = json.dumps(paginas[len(pedidos) - 1])
+            return subprocess.CompletedProcess(argv, 0, salida, "")
+
+        original = module._corre
+        module._corre = falso
+        try:
+            jobs = module.lee_cron_claw()
+        finally:
+            module._corre = original
+        self.assertEqual([j["name"] for j in jobs], ["a", "b", "c"])
+        self.assertEqual(pedidos, [0, 2])
+
+    def test_hermes_lee_jobs_y_la_ultima_salida_de_cada_perfil(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            perfil = Path(tmp) / "claw" / "cron"
+            (perfil / "output" / "abc").mkdir(parents=True)
+            (perfil / "jobs.json").write_text(
+                json.dumps(
+                    {"jobs": [{"id": "abc", "name": "t"}, {"id": "zzz", "name": "u"}]}
+                )
+            )
+            (perfil / "output" / "abc" / "2026-10-21_10-00-00.md").write_text("viejo")
+            (perfil / "output" / "abc" / "2026-10-22_10-00-00.md").write_text("nuevo")
+            (Path(tmp) / "sin-cron").mkdir()
+            salida = module.lee_hermes(Path(tmp))
+        self.assertEqual(
+            [(p, j["name"], s) for p, j, s in salida],
+            [("claw", "t", "nuevo"), ("claw", "u", None)],
+        )
+
+    def test_launchd_real_de_esta_maquina_trae_los_campos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "ai.goncloud.x.plist"
+            plist.write_bytes(
+                plistlib.dumps(
+                    {
+                        "Label": "ai.goncloud.x",
+                        "ProgramArguments": ["/no/existe/nada.sh"],
+                        "StartInterval": 60,
+                    }
+                )
+            )
+            (Path(tmp) / "otro.plist").write_bytes(
+                plistlib.dumps({"Label": "com.apple.x"})
+            )
+            filas = module.lee_launchd(("ai.goncloud.",), Path(tmp))
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(set(filas[0]), CAMPOS_LAUNCHD)
+        self.assertEqual(filas[0]["rutas_que_faltan"], ["/no/existe/nada.sh"])
+        self.assertTrue(filas[0]["periodico"])
+        self.assertFalse(filas[0]["cargado"])
 
 
 if __name__ == "__main__":
