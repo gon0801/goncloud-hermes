@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.goncloud.vigila-tareas</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>@HOME@/goncloud-vigia/scripts/vigila_tareas.py</string>
+    <string>--maquina</string>
+    <string>@MAQUINA@</string>
+    <string>--raiz</string>
+    <string>@HOME@/goncloud-vigia</string>
+  </array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/goncloud/vigila-tareas.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/goncloud/vigila-tareas.log</string>
+</dict>
+</plist>

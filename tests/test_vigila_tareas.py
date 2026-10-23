@@ -352,6 +352,17 @@ class TestJueces(unittest.TestCase):
             job = job_claw(nextRunAtMs=ms_la(fuera))
             self.assertEqual(module.juzga_claw(job, self.pol, AHORA_MS), [], fuera)
 
+    def test_una_excepcion_de_ventana_no_levanta_en_ventana(self):
+        en_ventana = ms_la("2026-10-23T04:00")
+        exceptuada = job_claw(
+            name="skill-collection-review-main", nextRunAtMs=en_ventana
+        )
+        self.assertEqual(module.juzga_claw(exceptuada, self.pol, AHORA_MS), [])
+        otra = job_claw(name="otra", nextRunAtMs=en_ventana)
+        self.assertEqual(
+            module.juzga_claw(otra, self.pol, AHORA_MS), [module.Falla.EN_VENTANA]
+        )
+
     def test_el_cron_real_de_la_mini_solo_levanta_lo_que_se_espera(self):
         halladas = {
             j["name"]: module.juzga_claw(j, self.pol, AHORA_MS)
