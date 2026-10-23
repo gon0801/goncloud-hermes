@@ -255,6 +255,41 @@ class ConfigRealTests(unittest.TestCase):
         nueva = claw_models.desired_claw(cambiada, self.ruteo)["agents"]["defaults"]
         self.assertEqual(nueva["model"]["primary"], "anthropic/claude-opus-5-5")
 
+    def test_claw_llama_a_deepseek_por_la_segunda_cuenta(self):
+        deepseek = "opencode-go-2/deepseek-v4.1-flash"
+        defaults = self.config["agents"]["defaults"]["model"]
+        self.assertEqual(defaults["primary"], "anthropic/claude-haiku-5-5")
+        self.assertEqual(
+            defaults["fallbacks"],
+            [deepseek, "zai/glm-5.3-flash", "xai/grok-4.7"],
+        )
+        operativos = [
+            a for a, d in self.ruteo["agents"].items() if d["row"] == "operativo"
+        ]
+        self.assertTrue(operativos)
+        for agente in operativos:
+            self.assertIn(
+                deepseek, self.config["agents"]["entries"][agente]["model"]["fallbacks"]
+            )
+
+    def test_una_fila_con_deepseek_repetido_no_lleva_doble_sufijo(self):
+        fila = [
+            "opencode-go/deepseek-v4.1-flash (off)",
+            "opencode-go/deepseek-v4.1-flash (off)",
+            "xai/grok-4.7 (low)",
+        ]
+        agente = claw_models.desired_agent(fila, self.ruteo, thinking=False)
+        ids = [agente["model"]["primary"], *agente["model"]["fallbacks"]]
+        self.assertNotIn("opencode-go-2-2", "".join(ids))
+        self.assertEqual(ids[0], "opencode-go-2/deepseek-v4.1-flash")
+
+    def test_hermes_no_cambia_con_el_override_de_claw(self):
+        sin = {**self.ruteo, "id_overrides": {}}
+        self.assertEqual(
+            module.esperado(self.tabla, self.ruteo)[1],
+            module.esperado(self.tabla, sin)[1],
+        )
+
     def test_todo_coincide_y_no_avisa(self):
         self.assertEqual(self.corre(), (0, []))
 
