@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 from datetime import datetime
 import io
 import json
@@ -16,8 +17,10 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import vigila_tareas as module  # noqa: E402
+from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 DATOS = ROOT / "tests" / "datos" / "vigia"
 
@@ -159,6 +162,24 @@ class TestPolitica(unittest.TestCase):
         }
         self.assertEqual(module.juzga_claw(job, pol, 0), [])
 
+    def test_apagadas_a_proposito_lleva_la_entrada_decidida_y_se_valida_como_las_demas(
+        self,
+    ):
+        self.assertEqual(
+            list(self.base["apagadas_a_proposito"]),
+            ["ai.goncloud.tmux-activity-watch"],
+        )
+        for valor in ([], {"a": 1}, {"a": ""}):
+            datos = json.loads(json.dumps(self.base))
+            datos["apagadas_a_proposito"] = valor
+            with self.assertRaisesRegex(module.PoliticaError, "apagadas_a_proposito"):
+                self.carga(datos)
+
+    def test_una_clave_desconocida_sigue_siendo_error(self):
+        self.base["otra"] = {}
+        with self.assertRaisesRegex(module.PoliticaError, "clave desconocida: otra"):
+            self.carga(self.base)
+
     def test_una_clave_que_falta_falla(self):
         del self.base["marca_fallo"]
         with self.assertRaisesRegex(module.PoliticaError, "marca_fallo"):
@@ -284,14 +305,23 @@ class TestJueces(unittest.TestCase):
             module.juzga_launchd(otro, self.pol), [module.Falla.TERMINO_MAL]
         )
 
-    def test_launchd_real_de_la_mac_solo_levanta_la_tarea_sin_cargar(self):
+    def test_launchd_real_de_la_mac_no_levanta_nada_con_la_apagada_en_la_lista(self):
         halladas = {
             f["label"]: module.juzga_launchd(f, self.pol)
             for f in carga("mac-launchd.json")
         }
         self.assertEqual(
             {n: f for n, f in halladas.items() if f},
-            {"ai.goncloud.tmux-activity-watch": [module.Falla.NO_CORRE]},
+            {},
+        )
+        sin_lista = dataclasses.replace(self.pol, apagadas_a_proposito={})
+        self.assertEqual(
+            [
+                f["label"]
+                for f in carga("mac-launchd.json")
+                if module.juzga_launchd(f, sin_lista)
+            ],
+            ["ai.goncloud.tmux-activity-watch"],
         )
 
     def test_claw_con_ultima_corrida_en_error_termino_mal(self):
@@ -614,6 +644,7 @@ class TestMain(unittest.TestCase):
             argv = [
                 "--maquina", "mini", "--raiz", str(raiz),
                 "--aviso", str(self.cola), "--registro", str(self.registro),
+                "--estado", str(Path(tmp) / "estado.json"),
                 *extra,
             ]  # fmt: skip
             self.codigo = module.main(argv, lectores=lectores, ahora=ahora)
@@ -698,7 +729,8 @@ class TestMain(unittest.TestCase):
             registro.write_text("x")
             codigo = module.main(
                 ["--maquina", "mini", "--aviso", str(cola),
-                 "--registro", str(registro / "vigia.log")],
+                 "--registro", str(registro / "vigia.log"),
+                 "--estado", str(Path(tmp) / "estado.json")],
                 lectores=[lector("x", [h])],
                 ahora=1792724232.0,
             )  # fmt: skip
@@ -720,6 +752,286 @@ class TestMain(unittest.TestCase):
         ):
             self.corre([lector("x")], raiz=raiz)
         self.assertEqual(self.codigo, 2)
+
+
+class TestEstado(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(cleanup_temp_directory, tmp)
+        self.dir = Path(tmp.name)
+        self.estado = self.dir / "estado.json"
+
+    def corre(self, hallazgos, cuando, *extra):
+        cola = self.dir / "cola"
+        argv = [
+            "--maquina", "mini", "--raiz", str(ROOT), "--aviso", str(cola),
+            "--registro", str(self.dir / "vigia.log"),
+            "--estado", str(self.estado), *extra,
+        ]  # fmt: skip
+        module.main(argv, lectores=[lector("x", hallazgos)], ahora=cuando.timestamp())
+        avisos = [p.read_text("utf-8") for p in sorted(cola.glob("*.txt"))]
+        for p in cola.glob("*.txt"):
+            p.unlink()
+        return avisos
+
+    def test_el_mismo_hallazgo_en_tres_corridas_avisa_una_sola_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        cuando = [datetime(2026, 10, 22, hora, 0) for hora in (14, 15, 16)]
+        avisos = [self.corre([h], c) for c in cuando]
+        self.assertEqual([len(a) for a in avisos], [1, 0, 0])
+        self.assertIn("no está corriendo", avisos[0][0])
+
+    def test_un_hallazgo_que_desaparece_avisa_que_se_arreglo_una_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        arreglo = self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(
+            arreglo,
+            [
+                "En la Mini · Tareas programadas:\n"
+                "• La renovación del token de Shopify: ya se arregló.\n" + module.CIERRE
+            ],
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 16, 0)), [])
+
+    def test_si_vuelve_despues_de_arreglarse_se_avisa_de_nuevo(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 16, 0))), 1)
+
+    def test_al_dia_siguiente_la_primera_corrida_de_la_manana_lo_recuerda_una_vez(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 20, 0)), [])
+        recordatorio = self.corre([h], datetime(2026, 10, 23, 8, 0))
+        self.assertEqual(
+            recordatorio,
+            [
+                "En la Mini · Tareas programadas:\n"
+                "Sigue pendiente desde 22 de octubre:\n"
+                "• La renovación del token de Shopify: no está corriendo.\n"
+                + module.CIERRE
+            ],
+        )
+        self.assertEqual(self.corre([h], datetime(2026, 10, 23, 9, 0)), [])
+        self.assertEqual(self.corre([h], datetime(2026, 10, 23, 15, 0)), [])
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 24, 8, 0))), 1)
+
+    def test_lo_avisado_hoy_no_se_recuerda_hoy(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 8, 0))), 1)
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 9, 0)), [])
+
+    def test_un_no_urgente_de_la_tarde_se_avisa_la_manana_siguiente(self):
+        h = hallazgo("a", module.Falla.EN_VENTANA)
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 15, 0)), [])
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 16, 0)), [])
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 17, 0)), [])
+        self.assertEqual(len(self.corre([h], datetime(2026, 10, 23, 8, 0))), 1)
+
+    def test_un_estado_danado_se_trata_como_vacio_y_se_reescribe(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        for roto in (
+            "{no es json",
+            "[]",
+            '{"hallazgos": 3}',
+            '{"hallazgos": {"x": 1}}',
+            '{"hallazgos": {"x": "2026-10-22"}}',
+            '{"hallazgos": {"otra|NO_CORRE|a": "2026-10-22"}}',
+            '{"hallazgos": {"|NO_CORRE|a": "2026-10-22"}}',
+            '{"hallazgos": {"mini|NOPE|a": "2026-10-22"}}',
+        ):
+            self.estado.write_text(roto, encoding="utf-8")
+            self.assertEqual(self.corre([], datetime(2026, 10, 22, 13, 0)), [])
+            self.assertEqual(
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"], {}
+            )
+            self.estado.write_text(roto, encoding="utf-8")
+            self.assertEqual(len(self.corre([h], datetime(2026, 10, 22, 14, 0))), 1)
+            self.assertEqual(self.corre([h], datetime(2026, 10, 22, 15, 0)), [])
+            self.assertIn(
+                "mini|NO_CORRE|a",
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+            )
+
+    def test_una_fecha_imposible_en_el_estado_no_truena_la_manana(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        for fecha in ("2026-13-01", "2026-02-30"):
+            self.estado.write_text(
+                json.dumps(
+                    {"hallazgos": {"mini|NO_CORRE|a": fecha}, "recordatorio": ""}
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(len(self.corre([h], datetime(2026, 10, 23, 8, 0))), 1)
+            self.assertEqual(
+                json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+                {"mini|NO_CORRE|a": "2026-10-23"},
+            )
+
+    def test_una_lectura_que_truena_no_declara_arreglado_ni_repite_el_aviso(self):
+        h = hallazgo("ai.goncloud.shopify-token", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        cola = self.dir / "cola"
+        argv = [
+            "--maquina", "mini", "--raiz", str(ROOT), "--aviso", str(cola),
+            "--registro", str(self.dir / "vigia.log"), "--estado", str(self.estado),
+        ]  # fmt: skip
+        caida = lector("las tareas de launchd", error=RuntimeError("timeout"))
+        module.main(
+            argv, lectores=[caida], ahora=datetime(2026, 10, 22, 15, 0).timestamp()
+        )
+        textos = [p.read_text("utf-8") for p in cola.glob("*.txt")]
+        for p in cola.glob("*.txt"):
+            p.unlink()
+        self.assertEqual(len(textos), 1)
+        self.assertIn("No pude revisar las tareas de launchd", textos[0])
+        self.assertNotIn("ya se arregl", textos[0])
+        self.assertIn(
+            "mini|NO_CORRE|ai.goncloud.shopify-token", self.estado.read_text("utf-8")
+        )
+        self.assertEqual(self.corre([h], datetime(2026, 10, 22, 16, 0)), [])
+
+    def test_una_lectura_que_truena_no_recuerda_lo_que_no_vio(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        estado, hoy = module.lee_estado(self.estado, "mini"), "2026-10-23"
+        _, arreglados, pendientes, nuevo = module.concilia(estado, [], True, hoy, False)
+        self.assertEqual((arreglados, pendientes), ([], {}))
+        self.assertEqual(nuevo["hallazgos"], estado["hallazgos"])
+
+    def test_lo_que_se_apaga_a_proposito_no_se_anuncia_como_arreglado(self):
+        tarea = "ai.goncloud.tmux-activity-watch"
+        self.corre(
+            [hallazgo(tarea, module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 15, 0)), [])
+        self.assertEqual(module.lee_estado(self.estado, "mini")["hallazgos"], {})
+
+    def test_la_clave_de_otra_maquina_no_se_declara_arreglada(self):
+        self.estado.write_text(
+            json.dumps(
+                {
+                    "hallazgos": {
+                        "mac|NO_CORRE|ai.goncloud.shopify-token": "2026-10-22"
+                    },
+                    "recordatorio": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.corre([], datetime(2026, 10, 22, 15, 0)), [])
+
+    def test_una_tarea_apagada_que_falla_distinto_si_se_avisa_y_se_arregla(self):
+        tarea = "ai.goncloud.tmux-activity-watch"
+        mal = hallazgo(tarea, module.Falla.TERMINO_MAL)
+        self.assertEqual(len(self.corre([mal], datetime(2026, 10, 22, 14, 0))), 1)
+        arreglo = self.corre([], datetime(2026, 10, 22, 15, 0))
+        self.assertEqual(len(arreglo), 1)
+        self.assertIn("ya se arregl", arreglo[0])
+
+    def test_sin_archivo_de_estado_se_crea_en_su_carpeta(self):
+        self.estado = self.dir / "nueva" / "estado.json"
+        self.corre(
+            [hallazgo("a", module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+        )
+        self.assertEqual(
+            json.loads(self.estado.read_text("utf-8"))["hallazgos"],
+            {"mini|NO_CORRE|a": "2026-10-22"},
+        )
+        self.assertEqual(list(self.estado.parent.glob(".*")), [])
+
+    def test_seco_no_lee_ni_escribe_el_estado(self):
+        h = hallazgo("a", module.Falla.NO_CORRE)
+        with (
+            mock.patch.object(module, "lee_estado") as lee,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.corre([h], datetime(2026, 10, 22, 14, 0), "--seco")
+        lee.assert_not_called()
+        self.assertFalse(self.estado.exists())
+        self.corre([h], datetime(2026, 10, 22, 14, 0))
+        antes = self.estado.read_text("utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.corre([], datetime(2026, 10, 23, 8, 0), "--seco")
+        self.assertEqual(self.estado.read_text("utf-8"), antes)
+
+    def test_el_estado_se_escribe_con_os_replace(self):
+        with mock.patch.object(module.os, "replace", wraps=module.os.replace) as r:
+            self.corre(
+                [hallazgo("a", module.Falla.NO_CORRE)], datetime(2026, 10, 22, 14, 0)
+            )
+        self.assertIn(self.estado, [Path(c.args[1]) for c in r.call_args_list])
+
+    def test_la_ruta_por_omision_vive_fuera_de_la_copia_instalada(self):
+        ruta = module._ruta_del_estado()
+        self.assertEqual(ruta.name, "estado.json")
+        self.assertNotIn(ROOT, ruta.parents)
+
+    def test_las_rutas_por_omision_son_las_del_encargo(self):
+        with mock.patch.object(module.sys, "platform", "darwin"):
+            self.assertEqual(
+                module._ruta_del_estado(),
+                Path.home() / ".local/state/goncloud-vigia/estado.json",
+            )
+        with (
+            mock.patch.object(module.sys, "platform", "win32"),
+            mock.patch.dict(module.os.environ, {"LOCALAPPDATA": ""}),
+        ):
+            self.assertEqual(
+                str(module._ruta_del_estado()).replace("\\", "/").split("/")[-2:],
+                ["goncloud-vigia-estado", "estado.json"],
+            )
+
+
+class TestApagadasAProposito(unittest.TestCase):
+    def setUp(self):
+        base = json.loads((ROOT / "tareas-programadas.json").read_text("utf-8"))
+        self.assertIn("ai.goncloud.tmux-activity-watch", base["apagadas_a_proposito"])
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = Path(tmp) / "tareas-programadas.json"
+            ruta.write_text(json.dumps(base), encoding="utf-8")
+            self.pol = module.Politica.carga(ruta)
+
+    def aviso(self, filas):
+        hallazgos = module.hallazgos_launchd(filas, "mac", self.pol)
+        return module.texto_aviso(hallazgos, [], self.pol, True)
+
+    def test_una_apagada_a_proposito_no_avisa_no_corre_y_otra_si(self):
+        texto = self.aviso(
+            [
+                fila_launchd(label="ai.goncloud.tmux-activity-watch", cargado=False),
+                fila_launchd(label="ai.goncloud.shopify-token", cargado=False),
+            ]
+        )
+        self.assertIn("La renovación del token de Shopify: no está corriendo", texto)
+        self.assertNotIn("tmux", texto)
+
+    def test_solo_la_apagada_en_la_lista_queda_sin_aviso(self):
+        fila = fila_launchd(label="ai.goncloud.tmux-activity-watch", cargado=False)
+        self.assertIsNone(self.aviso([fila]))
+
+    def test_sigue_avisando_lo_demas_de_una_tarea_apagada(self):
+        fila = fila_launchd(
+            label="ai.goncloud.tmux-activity-watch", cargado=False, last_exit_code=3
+        )
+        self.assertEqual(
+            module.juzga_launchd(fila, self.pol), [module.Falla.TERMINO_MAL]
+        )
+
+    def test_claw_y_hermes_tambien_respetan_la_lista(self):
+        atrasada = {"nextRunAtMs": AHORA_MS - 3 * 60 * MIN_MS}
+        self.assertEqual(
+            module.juzga_claw(job_claw(**atrasada), self.pol, AHORA_MS),
+            [module.Falla.NO_CORRE],
+        )
+        self.pol.apagadas_a_proposito["prueba"] = "motivo"
+        self.assertEqual(
+            module.juzga_claw(job_claw(**atrasada), self.pol, AHORA_MS), []
+        )
+        atrasado = job_hermes(next_run_at="2026-10-20T10:00:00-07:00")
+        self.assertEqual(module.juzga_hermes("claw", atrasado, self.pol, AHORA_MS), [])
 
 
 class TestLectores(unittest.TestCase):
