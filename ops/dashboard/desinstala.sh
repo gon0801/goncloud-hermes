@@ -29,3 +29,4 @@ if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
   echo "ERROR: el dashboard relanzado no respondió en $DASH_URL" >&2
   exit 4
 fi
+exit 0

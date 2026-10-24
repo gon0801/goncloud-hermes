@@ -23,7 +23,7 @@ pids_escuchando() {
   netstat -ano | tr -d '\r' | awk -v l="$1" '$1 == "TCP" && $2 == l && $3 ~ /:0$/ { print $NF }' | sort -u
 }
 
-codigo_http() { curl -s -o /dev/null -m 5 -w '%{http_code}' "$DASH_URL" 2>/dev/null || true; }
+codigo_http() { curl -s --noproxy '*' -o /dev/null -m 5 -w '%{http_code}' "$DASH_URL" 2>/dev/null || true; }
 
 http_vivo() {
   case "$(codigo_http)" in 200|302|401) return 0 ;; *) return 1 ;; esac
@@ -35,6 +35,6 @@ detener_puerto() {
   local pid
   for pid in $(pids_escuchando "${DASH_IP}:${DASH_PUERTO}"); do
     echo "deteniendo el proceso $pid que ocupa ${DASH_IP}:${DASH_PUERTO}"
-    taskkill /PID "$pid" /F >/dev/null 2>&1 || true
+    taskkill /PID "$pid" /T /F >/dev/null 2>&1 || true
   done
 }
