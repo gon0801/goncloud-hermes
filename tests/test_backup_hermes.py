@@ -675,6 +675,63 @@ class BackupTest(unittest.TestCase):
             [True, False],
         )
 
+    def test_himalaya_secrets_and_config_are_kept_but_other_dot_config_is_not(self):
+        write(self.user / ".config/himalaya/secrets/cuenta.txt", "clave")
+        write(self.user / "AppData/Roaming/himalaya/config.toml", "cuenta")
+        write(self.user / ".config/otra-app/datos.txt", "ajeno")
+
+        code, line = self.backup()
+
+        self.assertEqual(code, 0, line)
+        archive = self.out / ARCHIVE
+        names = set(members(archive))
+        self.assertIn("user/.config/himalaya/secrets/cuenta.txt", names)
+        self.assertIn("user/AppData/Roaming/himalaya/config.toml", names)
+        self.assertNotIn("user/.config/otra-app/datos.txt", names)
+        listed = {entry["path"] for entry in manifest(archive)["files"]}
+        self.assertIn("user/.config/himalaya/secrets/cuenta.txt", listed)
+        self.assertIn("user/AppData/Roaming/himalaya/config.toml", listed)
+        self.assertNotIn("user/.config/otra-app/datos.txt", listed)
+
+    def test_checklist_rejects_a_non_keeping_rule_with_optimized_python(self):
+        import shutil
+        import subprocess
+
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash no esta disponible")
+        from backup_support import ROOT
+
+        repo = write(
+            self.base / "backup_hermes.py", "def decide(*args):\n    return None\n"
+        )
+        destino = self.base / "instalado"
+        destino.mkdir()
+        (destino / "backup_hermes.py").write_bytes(repo.read_bytes())
+        checklist = (ROOT / "ops/respaldo-himalaya/checklist.sh").read_text(
+            encoding="utf-8"
+        )
+        checklist = checklist.replace(
+            'repo_script="$raiz/scripts/backup_hermes.py"',
+            f'repo_script="{repo.as_posix()}"',
+            1,
+        ).replace(
+            'destino="C:/Users/ehven/AppData/Local/hermes/profiles/claw/scripts"',
+            f'destino="{destino.as_posix()}"',
+            1,
+        )
+        sonda = write(self.base / "checklist.sh", checklist)
+
+        hecho = subprocess.run(
+            [bash, str(sonda)],
+            env={**os.environ, "PYTHONOPTIMIZE": "1"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertNotEqual(hecho.returncode, 0, hecho.stdout + hecho.stderr)
+
     def test_the_installed_script_backs_up_the_whole_home_not_its_profile(self):
         script = self.home / "profiles/claw/scripts/backup_hermes.py"
         script.write_text("", encoding="utf-8")
