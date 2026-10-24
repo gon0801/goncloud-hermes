@@ -58,6 +58,9 @@ fi
 echo "tarea $TAREA creada o reemplazada"
 
 if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
+  if [ -e "$RESPALDO_DIR/$CMD_VIEJO" ] && ! cmp -s "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO"; then
+    mv -f "$RESPALDO_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO.$(date +%Y%m%d%H%M%S)"
+  fi
   if mkdir -p "$RESPALDO_DIR" && mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO" && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
     echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
   else
