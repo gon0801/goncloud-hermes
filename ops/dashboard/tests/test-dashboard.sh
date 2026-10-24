@@ -60,7 +60,7 @@ FAKE
 cat > "$tmp/bin/cmd-falso" <<'FAKE'
 #!/usr/bin/env bash
 echo "cmd $*" >> "$FAKE/bitacora"
-echo "$IP:$PUERTO 333" > "$FAKE/escucha"
+echo "$IP:$PUERTO 333" >> "$FAKE/escucha"
 exit 0
 FAKE
 chmod +x "$tmp/bin/"*
@@ -103,7 +103,7 @@ d "la tarea corre el comando tal cual" bash -c 'tr -d "\377\376\000\r" < "$0" | 
 d "la tarea usa hermes.exe del venv" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -qF "hermes-agent\\venv\\Scripts\\hermes.exe"' "$FAKE/tarea.xml"
 d "el .cmd viejo salió de Inicio" test ! -e "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 d "el .cmd viejo quedó en el respaldo intacto" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
-d "detuvo el proceso viejo del puerto" test "$(cuenta 'taskkill /PID 111 /F')" -eq 1
+d "detuvo el proceso viejo del puerto" test "$(cuenta 'taskkill /PID 111 /T /F')" -eq 1
 d "lanzó la tarea" test "$(cuenta 'schtasks /Run')" -eq 1
 d "queda un solo proceso escuchando" test "$(n_escuchan)" -eq 1
 d "el checklist pasa tras instalar" bash -c 'bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
@@ -128,12 +128,14 @@ rm -f "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 d "el checklist falla si el dashboard no responde" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
 echo "$IP:$PUERTO 222" > "$FAKE/escucha"
 
+: > "$FAKE/bitacora"
 bash "$dash/desinstala.sh" < /dev/null > "$FAKE/salida3" 2>&1; rc3=$?
 d "desinstala sale 0" test "$rc3" -eq 0
 d "desinstala borra la tarea" test ! -e "$FAKE/tarea.xml"
 d "desinstala devuelve el .cmd a Inicio igual que estaba" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
 d "desinstala vacía el respaldo" test ! -e "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
 d "desinstala relanza el dashboard con el .cmd" test "$(cuenta '^cmd /c')" -eq 1
+d "desinstala detiene el proceso que ocupa el puerto" test "$(cuenta 'taskkill /PID 222 /T /F')" -eq 1
 d "desinstala deja un solo proceso" test "$(n_escuchan)" -eq 1
 d "desinstalar otra vez sale 0" bash -c 'bash "$0" </dev/null >/dev/null 2>&1' "$dash/desinstala.sh"
 
@@ -144,8 +146,39 @@ bash "$dash/instala.sh" < /dev/null > "$FAKE/salida4" 2>&1; rc4=$?
 d "acceso denegado sale distinto de 0" test "$rc4" -ne 0
 d "acceso denegado dice que hace falta administrador" grep -qi 'administrador' "$FAKE/salida4"
 d "acceso denegado no pide contraseña" bash -c '! grep -qiE "^(contrase|password)" "$0"' "$FAKE/salida4"
+d "instala no pasa contraseña ni usuario a schtasks /Create" bash -c '! grep -E "^schtasks /Create" "$0" | grep -qE "/(RP|RU)( |$)"' "$FAKE/bitacora"
 d "acceso denegado no mueve el .cmd viejo" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
 d "acceso denegado no detiene el dashboard que corre" test "$(cuenta 'taskkill')" -eq 0
+
+d "los scripts no leen stdin" bash -c '! grep -nE "(^|[;&| ])(read|select)( |$)|/dev/stdin|<&0" "$0"/instala.sh "$0"/desinstala.sh "$0"/checklist.sh "$0"/comun.sh | grep -v "while \[ \$#" ' "$dash"
+nuevo_mundo sin-stdin
+bash "$dash/instala.sh" <&- > "$FAKE/salida5" 2>&1; rc5=$?
+d "instala con stdin cerrado sale 0" test "$rc5" -eq 0
+
+nuevo_mundo no-responde
+: > "$FAKE/sin-curl"
+cat > "$tmp/bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+if [ -e "$FAKE/sin-curl" ]; then printf 000; elif [ -s "$FAKE/escucha" ]; then printf "${CODIGO:-200}"; else printf 000; fi
+exit 0
+FAKE
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida6" 2>&1; rc6=$?
+d "instala sale 4 si el dashboard no responde" test "$rc6" -eq 4
+rm -f "$FAKE/sin-curl"
+d "checklist acepta 302" env CODIGO=302 bash "$dash/checklist.sh"
+d "checklist acepta 401" env CODIGO=401 bash "$dash/checklist.sh"
+d "checklist rechaza 404" bash -c '! CODIGO=404 bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+d "checklist rechaza 500" bash -c '! CODIGO=500 bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+d "instala detiene la tarea antes de relanzar" test "$(cuenta 'schtasks /End')" -ge 1
+for quita in BootTrigger S4U; do
+  nuevo_mundo "sin-$quita"
+  bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+  tr -d '\377\376\000' < "$FAKE/tarea.xml" | sed "s/$quita/Otro/g" > "$FAKE/tarea.n"; mv "$FAKE/tarea.n" "$FAKE/tarea.xml"
+  d "checklist falla si la tarea no tiene $quita" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+done
+nuevo_mundo sin-tarea
+rm -f "$STARTUP_DIR/hermes-dashboard-claw.cmd"
+d "checklist falla si la tarea no existe" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
 
 echo
 if [ "$fallos" -eq 0 ]; then echo "todo bien"; else echo "$fallos pruebas fallaron"; exit 1; fi
