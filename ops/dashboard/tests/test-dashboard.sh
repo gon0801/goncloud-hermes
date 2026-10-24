@@ -268,5 +268,24 @@ rm -f "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 bash "$dash/desinstala.sh" < /dev/null >/dev/null 2>&1
 d "desinstala sin .cmd no mata el dashboard que corre" test "$(cuenta taskkill)" -eq 0
 
+nuevo_mundo desinstala-inicio-no-escribible
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+: > "$FAKE/archivo"
+STARTUP_DIR="$FAKE/archivo/Inicio" bash "$dash/desinstala.sh" < /dev/null >/dev/null 2>&1; rc=$?
+d "Inicio no escribible: desinstala sale distinto de 0" test "$rc" -ne 0
+d "Inicio no escribible: el .cmd sigue en el respaldo" test -e "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
+d "Inicio no escribible: la tarea no se borra" test -e "$FAKE/tarea.xml"
+
+nuevo_mundo respaldo-distinto
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+printf 'otro cmd
+' > "$STARTUP_DIR/hermes-dashboard-claw.cmd"
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-nuevo"
+printf 'respaldo previo
+' > "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+d "un respaldo distinto no se pierde" bash -c 'grep -l "respaldo previo" "$0"/hermes-dashboard-claw.cmd.* >/dev/null' "$RESPALDO_DIR"
+d "el .cmd nuevo queda en el respaldo" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-nuevo"
+
 echo
 if [ "$fallos" -eq 0 ]; then echo "todo bien"; else echo "$fallos pruebas fallaron"; exit 1; fi
