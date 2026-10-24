@@ -21,7 +21,7 @@ xml="$tmp/tarea.xml"
     <BootTrigger><Enabled>true</Enabled><Delay>PT30S</Delay></BootTrigger>
   </Triggers>
   <Principals>
-    <Principal id="Author"><UserId>${usuario}</UserId><LogonType>S4U</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
+    <Principal id="Author"><UserId>$(xml_escapa "$usuario")</UserId><LogonType>S4U</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
   </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -33,7 +33,7 @@ xml="$tmp/tarea.xml"
     <RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>
   </Settings>
   <Actions Context="Author">
-    <Exec><Command>${HERMES_EXE}</Command><Arguments>${DASH_ARGS}</Arguments></Exec>
+    <Exec><Command>$(xml_escapa "$HERMES_EXE")</Command><Arguments>$(xml_escapa "$DASH_ARGS")</Arguments></Exec>
   </Actions>
 </Task>
 XML
@@ -53,9 +53,12 @@ fi
 echo "tarea $TAREA creada o reemplazada"
 
 if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
-  mkdir -p "$RESPALDO_DIR"
-  mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO"
-  echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
+  if mkdir -p "$RESPALDO_DIR" && mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO" && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
+    echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
+  else
+    echo "ERROR: no se pudo mover el .cmd viejo de Inicio; no se lanza la tarea para no correr dos dashboards" >&2
+    exit 5
+  fi
 fi
 
 schtasks /End /TN "$TAREA" >/dev/null 2>&1 || true
@@ -67,12 +70,14 @@ if ! salida="$(schtasks /Run /TN "$TAREA" 2>&1)"; then
   exit 3
 fi
 
-for ((i = 1; i <= ESPERA_INTENTOS; i++)); do
+limite=$((SECONDS + ESPERA_TOTAL))
+while :; do
   if http_vivo; then
     echo "el dashboard responde en $DASH_URL"
     exit 0
   fi
+  [ "$SECONDS" -ge "$limite" ] && break
   sleep "$ESPERA_SEGUNDOS"
 done
-echo "ERROR: el dashboard no respondió en $DASH_URL tras $((ESPERA_INTENTOS * ESPERA_SEGUNDOS)) s" >&2
+echo "ERROR: el dashboard no respondió en $DASH_URL tras $ESPERA_TOTAL s" >&2
 exit 4

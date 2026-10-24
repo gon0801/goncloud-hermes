@@ -19,6 +19,7 @@ xml_de() { while [ $# -gt 0 ]; do [ "$1" = /XML ] && { echo "$2"; return; }; shi
 case "$op" in
   /Create)
     [ -e "$FAKE/denegado" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
+    if [ -e "$FAKE/tarea.xml" ]; then case " $* " in *" /F "*) ;; *) echo "ERROR: Cannot create a file when that file already exists." >&2; exit 1 ;; esac; fi
     cp "$(xml_de "$@")" "$FAKE/tarea.xml" ;;
   /Query)
     [ -e "$FAKE/tarea.xml" ] || { echo "ERROR: The system cannot find the file specified." >&2; exit 1; }
@@ -120,6 +121,10 @@ echo "$IP:$PUERTO 222" > "$FAKE/escucha"; echo "$IP:$PUERTO 223" >> "$FAKE/escuc
 d "el checklist falla con dos procesos" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
 echo "$IP:$PUERTO 222" > "$FAKE/escucha"; echo "0.0.0.0:$PUERTO 224" >> "$FAKE/escucha"
 d "el checklist falla si algo escucha en 0.0.0.0" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+echo "$IP:$PUERTO 222" > "$FAKE/escucha"; echo "[::]:$PUERTO 225" >> "$FAKE/escucha"
+d "el checklist falla si algo escucha en [::]" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+echo "$IP:$PUERTO 222" > "$FAKE/escucha"; echo "127.0.0.1:$PUERTO 226" >> "$FAKE/escucha"
+d "el checklist falla si algo escucha en otra IP del puerto" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
 echo "$IP:$PUERTO 222" > "$FAKE/escucha"
 cp "$FAKE/cmd-original" "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 d "el checklist falla si el .cmd viejo vuelve a Inicio" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
@@ -149,6 +154,21 @@ d "acceso denegado no pide contraseña" bash -c '! grep -qiE "^(contrase|passwor
 d "instala no pasa contraseña ni usuario a schtasks /Create" bash -c '! grep -E "^schtasks /Create" "$0" | grep -qE "/(RP|RU)( |$)"' "$FAKE/bitacora"
 d "acceso denegado no mueve el .cmd viejo" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
 d "acceso denegado no detiene el dashboard que corre" test "$(cuenta 'taskkill')" -eq 0
+
+nuevo_mundo respaldo-imposible
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+: > "$FAKE/archivo"
+RESPALDO_DIR="$FAKE/archivo/r" bash "$dash/instala.sh" < /dev/null > "$FAKE/salida7" 2>&1; rc7=$?
+d "respaldo imposible sale distinto de 0" test "$rc7" -ne 0
+d "respaldo imposible deja el .cmd en Inicio" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+d "respaldo imposible no lanza la tarea" test "$(cuenta 'schtasks /Run')" -eq 0
+d "respaldo imposible lo dice claro" grep -q 'no se pudo mover' "$FAKE/salida7"
+
+d "la espera por defecto es de al menos 60 s" bash -c 'unset ESPERA_INTENTOS ESPERA_SEGUNDOS; . "$0"; [ "$ESPERA_TOTAL" -ge 60 ]' "$dash/comun.sh"
+
+nuevo_mundo xml-escapado
+HERMES_EXE='C:\a&b\hermes.exe' bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+d "el XML escapa & en la ruta" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -qF "a&amp;b"' "$FAKE/tarea.xml"
 
 d "los scripts no leen stdin" bash -c '! grep -nE "(^|[;&| ])(read|select)( |$)|/dev/stdin|<&0" "$0"/instala.sh "$0"/desinstala.sh "$0"/checklist.sh "$0"/comun.sh | grep -v "while \[ \$#" ' "$dash"
 nuevo_mundo sin-stdin

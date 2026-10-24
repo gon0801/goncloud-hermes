@@ -21,8 +21,8 @@ fi
 n="$(pids_escuchando "${DASH_IP}:${DASH_PUERTO}" | grep -c .)"
 [ "$n" -eq 1 ] && ok "un proceso escucha en ${DASH_IP}:${DASH_PUERTO}" || mal "escuchan $n procesos en ${DASH_IP}:${DASH_PUERTO} (debe ser 1)"
 
-t="$(pids_escuchando "0.0.0.0:${DASH_PUERTO}" | grep -c .)"
-[ "$t" -eq 0 ] && ok "nada escucha en 0.0.0.0:${DASH_PUERTO}" || mal "hay $t procesos en 0.0.0.0:${DASH_PUERTO}"
+t="$(pids_ajenos | grep -c .)"
+[ "$t" -eq 0 ] && ok "nada escucha en :${DASH_PUERTO} fuera de ${DASH_IP}" || mal "hay $t procesos en :${DASH_PUERTO} en otra dirección (0.0.0.0, [::] u otra)"
 
 http_vivo && ok "$DASH_URL responde" || mal "$DASH_URL no responde 200, 302 o 401 (dio $(codigo_http))"
 

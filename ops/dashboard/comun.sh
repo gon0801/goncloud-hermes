@@ -16,6 +16,7 @@ RESPALDO_DIR="${RESPALDO_DIR:-$HOME/.motor/respaldo-dashboard}"
 CMD_BIN="${CMD_BIN:-cmd.exe}"
 ESPERA_INTENTOS="${ESPERA_INTENTOS:-60}"
 ESPERA_SEGUNDOS="${ESPERA_SEGUNDOS:-1}"
+ESPERA_TOTAL=$((ESPERA_INTENTOS * ESPERA_SEGUNDOS))
 
 # PIDs que escuchan en $1 (ip:puerto), sin depender del idioma de Windows: un socket que escucha
 # tiene destino 0.0.0.0:0, así que no se lee la columna del estado.
@@ -23,13 +24,21 @@ pids_escuchando() {
   netstat -ano | tr -d '\r' | awk -v l="$1" '$1 == "TCP" && $2 == l && $3 ~ /:0$/ { print $NF }' | sort -u
 }
 
-codigo_http() { curl -s --noproxy '*' -o /dev/null -m 5 -w '%{http_code}' "$DASH_URL" 2>/dev/null || true; }
+codigo_http() { curl -s --noproxy '*' -o /dev/null --connect-timeout 1 -m 2 -w '%{http_code}' "$DASH_URL" 2>/dev/null || true; }
 
 http_vivo() {
   case "$(codigo_http)" in 200|302|401) return 0 ;; *) return 1 ;; esac
 }
 
 ruta_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+
+# PIDs que escuchan en el puerto del dashboard en cualquier dirección que no sea la propia (0.0.0.0, [::], otra IP).
+pids_ajenos() {
+  netstat -ano | tr -d '\r' | awk -v p=":${DASH_PUERTO}" -v ok="${DASH_IP}:${DASH_PUERTO}" \
+    '$1 == "TCP" && $3 ~ /:0$/ && $2 != ok && substr($2, length($2) - length(p) + 1) == p { print $NF }' | sort -u
+}
+
+xml_escapa() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
 
 detener_puerto() {
   local pid
