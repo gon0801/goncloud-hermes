@@ -4,19 +4,26 @@ set -uo pipefail
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$aqui/comun.sh"
 
+devuelto=0
+if [ -e "$RESPALDO_DIR/$CMD_VIEJO" ] && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
+  if ! { mkdir -p "$STARTUP_DIR" && mv -f "$RESPALDO_DIR/$CMD_VIEJO" "$STARTUP_DIR/$CMD_VIEJO" && [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; }; then
+    echo "ERROR: no se pudo devolver $CMD_VIEJO a Inicio; queda en $RESPALDO_DIR y la tarea $TAREA no se toca" >&2
+    exit 5
+  fi
+  devuelto=1
+  echo "devuelto $CMD_VIEJO a Inicio"
+fi
+
 schtasks /End /TN "$TAREA" >/dev/null 2>&1 || true
 if schtasks /Query /TN "$TAREA" >/dev/null 2>&1; then
   if ! salida="$(schtasks /Delete /TN "$TAREA" /F 2>&1)"; then
     echo "ERROR: no se pudo borrar la tarea $TAREA (¿hace falta administrador?)" >&2
-    printf '%s\n' "$salida" >&2
+    printf '%s
+' "$salida" >&2
+    if [ "$devuelto" -eq 1 ]; then mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO" && echo "$CMD_VIEJO vuelve al respaldo para no correr dos dashboards" >&2; fi
     exit 2
   fi
   echo "tarea $TAREA borrada"
-fi
-
-if [ -e "$RESPALDO_DIR/$CMD_VIEJO" ] && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
-  mv -f "$RESPALDO_DIR/$CMD_VIEJO" "$STARTUP_DIR/$CMD_VIEJO"
-  echo "devuelto $CMD_VIEJO a Inicio"
 fi
 
 if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
