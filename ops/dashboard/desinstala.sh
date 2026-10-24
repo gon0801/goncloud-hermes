@@ -19,8 +19,8 @@ if [ -e "$RESPALDO_DIR/$CMD_VIEJO" ] && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
   echo "devuelto $CMD_VIEJO a Inicio"
 fi
 
-detener_puerto
 if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
+  detener_puerto || exit 6
   "$CMD_BIN" /c "$(ruta_win "$STARTUP_DIR/$CMD_VIEJO")" >/dev/null 2>&1 || true
   for ((i = 1; i <= ESPERA_INTENTOS; i++)); do
     http_vivo && { echo "el dashboard responde en $DASH_URL"; exit 0; }

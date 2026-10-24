@@ -39,7 +39,12 @@ xml="$tmp/tarea.xml"
 XML
 } > "$xml"
 
-salida="$(schtasks /Create /TN "$TAREA" /XML "$(ruta_win "$xml")" /F 2>&1)"
+if [ -e "$STARTUP_DIR/$CMD_VIEJO" ] && ! { mkdir -p "$RESPALDO_DIR" && [ -w "$RESPALDO_DIR" ]; }; then
+  echo "ERROR: no se pudo mover el .cmd viejo: el respaldo $RESPALDO_DIR no se puede escribir; no se crea la tarea para no correr dos dashboards" >&2
+  exit 5
+fi
+
+salida="$(schtasks /Create /TN "$TAREA" /XML "$(ruta_win "$xml")" /F </dev/null 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   if printf '%s' "$salida" | grep -qiE 'denied|denegad|0x80070005|administrad|password|contrase'; then
@@ -56,13 +61,14 @@ if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
   if mkdir -p "$RESPALDO_DIR" && mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO" && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
     echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
   else
-    echo "ERROR: no se pudo mover el .cmd viejo de Inicio; no se lanza la tarea para no correr dos dashboards" >&2
+    echo "ERROR: no se pudo mover el .cmd viejo de Inicio; se borra la tarea y no se lanza para no correr dos dashboards" >&2
+    schtasks /Delete /TN "$TAREA" /F </dev/null >/dev/null 2>&1 || true
     exit 5
   fi
 fi
 
 schtasks /End /TN "$TAREA" >/dev/null 2>&1 || true
-detener_puerto
+detener_puerto || exit 6
 
 if ! salida="$(schtasks /Run /TN "$TAREA" 2>&1)"; then
   echo "ERROR: no se pudo lanzar la tarea $TAREA" >&2

@@ -11,7 +11,7 @@ DASH_USUARIO="${DASH_USUARIO:-ehven}"
 HERMES_EXE="${HERMES_EXE:-C:\\Users\\ehven\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe}"
 DASH_ARGS="--profile claw dashboard --host ${DASH_IP} --port ${DASH_PUERTO} --no-open --skip-build"
 CMD_VIEJO="${CMD_VIEJO:-hermes-dashboard-claw.cmd}"
-STARTUP_DIR="${STARTUP_DIR:-$APPDATA/Microsoft/Windows/Start Menu/Programs/Startup}"
+STARTUP_DIR="${STARTUP_DIR:-${APPDATA:-$HOME/AppData/Roaming}/Microsoft/Windows/Start Menu/Programs/Startup}"
 RESPALDO_DIR="${RESPALDO_DIR:-$HOME/.motor/respaldo-dashboard}"
 CMD_BIN="${CMD_BIN:-cmd.exe}"
 ESPERA_INTENTOS="${ESPERA_INTENTOS:-60}"
@@ -40,10 +40,18 @@ pids_ajenos() {
 
 xml_escapa() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
 
+# Mata lo que escucha en IP:puerto y confirma que quedó libre; si taskkill falla (acceso denegado) devuelve 1.
 detener_puerto() {
-  local pid
+  local pid i
   for pid in $(pids_escuchando "${DASH_IP}:${DASH_PUERTO}"); do
     echo "deteniendo el proceso $pid que ocupa ${DASH_IP}:${DASH_PUERTO}"
     taskkill /PID "$pid" /T /F >/dev/null 2>&1 || true
   done
+  for ((i = 0; i < 5; i++)); do
+    [ -z "$(pids_escuchando "${DASH_IP}:${DASH_PUERTO}")" ] && return 0
+    sleep "$ESPERA_SEGUNDOS"
+  done
+  echo "ERROR: no se pudo liberar ${DASH_IP}:${DASH_PUERTO} (PID $(pids_escuchando "${DASH_IP}:${DASH_PUERTO}" | tr '
+' ' '))" >&2
+  return 1
 }
