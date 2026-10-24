@@ -20,17 +20,17 @@ case "$op" in
   /Create)
     [ -e "$FAKE/denegado" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
     [ -e "$FAKE/falla-create" ] && { echo "ERROR: algo raro." >&2; exit 1; }
-    [ "$(head -c 4 "$(xml_de "$@")" | od -An -tx1 | tr -d ' 
-')" = fffe3c00 ] || { echo "ERROR: The task XML is malformed." >&2; exit 1; }
+    [ "$(head -c 4 "$(xml_de "$@")" | od -An -tx1 | tr -d ' \n')" = fffe3c00 ] || { echo "ERROR: The task XML is malformed." >&2; exit 1; }
     if [ -e "$FAKE/tarea.xml" ]; then case " $* " in *" /F "*) ;; *) echo "ERROR: Cannot create a file when that file already exists." >&2; exit 1 ;; esac; fi
     cp "$(xml_de "$@")" "$FAKE/tarea.xml" ;;
   /Query)
+    [ -e "$FAKE/falla-query" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
     [ -e "$FAKE/tarea.xml" ] || { echo "ERROR: The system cannot find the file specified." >&2; exit 1; }
     case " $* " in *" /XML "*) tr -d '\377\376\000' < "$FAKE/tarea.xml" ;; esac ;;
   /Delete)
     echo "borrada" >> "$FAKE/bitacora-delete"
     [ -e "$FAKE/falla-delete" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
-    rm -f "$FAKE/tarea.xml" ;;
+    [ -e "$FAKE/delete-sin-borrar" ] || rm -f "$FAKE/tarea.xml" ;;
   /End) ;;
   /Run)
     [ -e "$FAKE/tarea.xml" ] || exit 1
@@ -42,6 +42,11 @@ FAKE
 
 cat > "$tmp/bin/netstat" <<'FAKE'
 #!/usr/bin/env bash
+if [ -e "$FAKE/netstat-falla-segunda" ]; then
+  llamadas=$(($(cat "$FAKE/netstat-llamadas" 2>/dev/null || printf 0) + 1))
+  printf '%s\n' "$llamadas" > "$FAKE/netstat-llamadas"
+  [ "$llamadas" -eq 2 ] && exit 1
+fi
 printf 'Conexiones activas\r\n\r\n  Proto  Dirección local         Dirección remota       Estado           PID\r\n'
 [ -e "$FAKE/escucha" ] && while read -r dir pid; do
   printf '  TCP    %-22s 0.0.0.0:0              ESCUCHANDO      %s\r\n' "$dir" "$pid"
@@ -72,8 +77,32 @@ FAKE
 cat > "$tmp/bin/cmd-falso" <<'FAKE'
 #!/usr/bin/env bash
 echo "cmd $*" >> "$FAKE/bitacora"
-[ -e "$FAKE/cmd-no-arranca" ] || echo "$IP:$PUERTO 333" >> "$FAKE/escucha"
+if [ -e "$FAKE/cmd-no-arranca" ]; then
+  :
+elif [ -e "$FAKE/cmd-comodin" ]; then
+  echo "0.0.0.0:$PUERTO 333" >> "$FAKE/escucha"
+else
+  echo "$IP:$PUERTO 333" >> "$FAKE/escucha"
+fi
 exit 0
+FAKE
+
+cat > "$tmp/bin/mv" <<'FAKE'
+#!/usr/bin/env bash
+if [ -e "$FAKE/falla-movimiento-cmd" ] && [ "${2:-}" = "$STARTUP_DIR/hermes-dashboard-claw.cmd" ]; then
+  echo "mv simulado: no se pudo mover el .cmd" >&2
+  exit 1
+fi
+exec /usr/bin/mv "$@"
+FAKE
+
+cat > "$tmp/bin/date" <<'FAKE'
+#!/usr/bin/env bash
+if [ "${1:-}" = +%Y%m%d%H%M%S ] && [ -n "${FECHA_RESPALDO:-}" ]; then
+  printf '%s\n' "$FECHA_RESPALDO"
+else
+  exec /usr/bin/date "$@"
+fi
 FAKE
 chmod +x "$tmp/bin/"*
 
@@ -112,7 +141,7 @@ d "instala sale 0" test "$rc1" -eq 0
 d "la tarea tiene BootTrigger" bash -c 'xml_txt() { tr -d "\377\376\000\r" < "$1"; }; xml_txt "$0" | grep -q "<BootTrigger>"' "$FAKE/tarea.xml"
 d "la tarea usa S4U" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -q "<LogonType>S4U</LogonType>"' "$FAKE/tarea.xml"
 d "la tarea reintenta si falla" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -q "<RestartOnFailure>"' "$FAKE/tarea.xml"
-d "la tarea corre el comando tal cual" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -qF -- "--profile claw dashboard --host 100.92.227.24 --port 9119 --no-open --skip-build"' "$FAKE/tarea.xml"
+d "la tarea corre el comando tal cual" bash -c 'argumentos=$(tr -d "\377\376\000\r" < "$1" | sed -n "s|.*<Arguments>\(.*\)</Arguments>.*|\1|p"); [ "$argumentos" = "$2" ]' _ "$FAKE/tarea.xml" "--profile claw dashboard --host 100.92.227.24 --port 9119 --no-open --skip-build"
 d "la tarea usa hermes.exe del venv" bash -c 'tr -d "\377\376\000\r" < "$0" | grep -qF "hermes-agent\\venv\\Scripts\\hermes.exe"' "$FAKE/tarea.xml"
 d "el .cmd viejo salió de Inicio" test ! -e "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 d "el .cmd viejo quedó en el respaldo intacto" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
@@ -286,6 +315,104 @@ printf 'respaldo previo
 bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
 d "un respaldo distinto no se pierde" bash -c 'grep -l "respaldo previo" "$0"/hermes-dashboard-claw.cmd.* >/dev/null' "$RESPALDO_DIR"
 d "el .cmd nuevo queda en el respaldo" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-nuevo"
+
+nuevo_mundo instala-comodin-ipv4
+echo "0.0.0.0:$PUERTO 4242" > "$FAKE/escucha"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "instala sale 0 tras liberar un listener solo en 0.0.0.0" test "$rc" -eq 0
+d "instala mata el PID que escucha solo en 0.0.0.0" test "$(cuenta 'taskkill /PID 4242 /T /F')" -eq 1
+d "instala deja un solo listener tras liberar 0.0.0.0" test "$(n_escuchan)" -eq 1
+
+nuevo_mundo instala-comodin-ipv4-persistente
+echo "0.0.0.0:$PUERTO 4242" > "$FAKE/escucha"
+touch "$FAKE/taskkill-denegado"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "un listener 0.0.0.0 persistente impide aceptar el HTTP como éxito" test "$rc" -ne 0
+d "instala intenta matar el PID que escucha solo en 0.0.0.0" test "$(cuenta 'taskkill /PID 4242 /T /F')" -eq 1
+
+nuevo_mundo instala-comodin-ipv6
+echo "[::]:$PUERTO 4343" > "$FAKE/escucha"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "instala sale 0 tras liberar un listener solo en [::]" test "$rc" -eq 0
+d "instala mata el PID que escucha solo en [::]" test "$(cuenta 'taskkill /PID 4343 /T /F')" -eq 1
+d "instala deja un solo listener tras liberar [::]" test "$(n_escuchan)" -eq 1
+
+nuevo_mundo instala-ip-especifica-ajena
+echo "10.0.0.2:$PUERTO 4444" > "$FAKE/escucha"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "una IP específica ajena impide informar éxito" test "$rc" -ne 0
+d "instala no mata un listener de otra IP específica" test "$(cuenta 'taskkill /PID 4444 /T /F')" -eq 0
+d "instala no lanza la tarea si queda un listener ajeno" test "$(cuenta 'schtasks /Run')" -eq 0
+
+nuevo_mundo checklist-netstat-falla
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+: > "$FAKE/netstat-llamadas"
+touch "$FAKE/netstat-falla-segunda"
+bash "$dash/checklist.sh" > "$FAKE/salida" 2>&1; rc=$?
+d "checklist falla si no puede consultar listeners ajenos" test "$rc" -ne 0
+d "checklist informa el fallo al consultar listeners ajenos" grep -q 'no se pudo consultar si algo escucha' "$FAKE/salida"
+
+nuevo_mundo respaldo-fechado-ocupado
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+mkdir -p "$RESPALDO_DIR"
+printf 'anterior\n' > "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
+printf 'historico\n' > "$RESPALDO_DIR/hermes-dashboard-claw.cmd.20261024123456"
+cp "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/respaldo-anterior"
+cp "$RESPALDO_DIR/hermes-dashboard-claw.cmd.20261024123456" "$FAKE/historico-original"
+FECHA_RESPALDO=20261024123456 bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "un respaldo fechado ocupado no impide instalar" test "$rc" -eq 0
+d "la rotación conserva el respaldo histórico ocupado" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd.20261024123456" "$FAKE/historico-original"
+d "la rotación elige un nombre libre para el respaldo anterior" bash -c 'for archivo in "$1"/hermes-dashboard-claw.cmd.*; do if [ "$archivo" != "$1/hermes-dashboard-claw.cmd.$2" ] && cmp -s "$archivo" "$3"; then exit 0; fi; done; exit 1' _ "$RESPALDO_DIR" 20261024123456 "$FAKE/respaldo-anterior"
+d "el .cmd nuevo queda en el respaldo principal tras la colisión" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+
+nuevo_mundo instala-movimiento-y-delete-fallan
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+touch "$FAKE/falla-movimiento-cmd" "$FAKE/falla-delete"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "movimiento y /Delete fallidos hacen fallar instala" test "$rc" -ne 0
+d "movimiento y /Delete fallidos no dejan tarea residual" test ! -e "$FAKE/tarea.xml"
+d "movimiento y /Delete fallidos conservan el .cmd" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+d "movimiento y /Delete fallidos no anuncian un borrado inexistente" bash -c '! grep -q "se borra la tarea" "$1"' _ "$FAKE/salida"
+d "movimiento y /Delete fallidos no lanzan la tarea" test "$(cuenta 'schtasks /Run')" -eq 0
+
+nuevo_mundo desinstala-query-indeterminado
+bash "$dash/instala.sh" < /dev/null > /dev/null 2>&1
+cp "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+touch "$FAKE/falla-query"
+: > "$FAKE/bitacora"
+bash "$dash/desinstala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "un /Query indeterminado hace fallar desinstala" test "$rc" -ne 0
+d "un /Query indeterminado no borra la tarea" test -e "$FAKE/tarea.xml"
+d "un /Query indeterminado devuelve el .cmd al respaldo" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+d "un /Query indeterminado no deja el .cmd en Inicio" test ! -e "$STARTUP_DIR/hermes-dashboard-claw.cmd"
+d "un /Query indeterminado no relanza el dashboard" test "$(cuenta '^cmd /c')" -eq 0
+
+nuevo_mundo desinstala-query-ausente
+mkdir -p "$RESPALDO_DIR"
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+mv "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
+: > "$FAKE/bitacora"
+bash "$dash/desinstala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "la ausencia real en /Query permite terminar desinstala" test "$rc" -eq 0
+d "la ausencia real en /Query devuelve el .cmd a Inicio" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+d "la ausencia real en /Query vacía el respaldo" test ! -e "$RESPALDO_DIR/hermes-dashboard-claw.cmd"
+d "la ausencia real en /Query relanza el dashboard" test "$(cuenta '^cmd /c')" -eq 1
+
+nuevo_mundo desinstala-delete-sin-borrar
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+cp "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+touch "$FAKE/delete-sin-borrar"
+: > "$FAKE/bitacora"
+bash "$dash/desinstala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "un /Delete sin borrar hace fallar desinstala" test "$rc" -ne 0
+d "un /Delete sin borrar devuelve el .cmd al respaldo" cmp -s "$RESPALDO_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+d "un /Delete sin borrar no relanza el dashboard" test "$(cuenta '^cmd /c')" -eq 0
+
+nuevo_mundo desinstala-http-comodin
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+touch "$FAKE/cmd-comodin"
+bash "$dash/desinstala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "desinstala no acepta HTTP de un listener comodín" test "$rc" -ne 0
 
 echo
 if [ "$fallos" -eq 0 ]; then echo "todo bien"; else echo "$fallos pruebas fallaron"; exit 1; fi
