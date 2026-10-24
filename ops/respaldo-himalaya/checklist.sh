@@ -13,7 +13,7 @@ else
   exit 1
 fi
 
-if python -B -c "import sys;sys.path.insert(0,sys.argv[1]);import backup_hermes as b;r=b.decide('user',('.config','himalaya','secrets','x.txt'),40);assert r is not None and r.keep" "$destino"; then
+if python -B -c "import sys;sys.path.insert(0,sys.argv[1]);import backup_hermes as b;r=b.decide('user',('.config','himalaya','secrets','x.txt'),40);sys.exit(0 if r is not None and r.keep else 1)" "$destino"; then
   echo "OK    el instalado respalda .config/himalaya/secrets"
 else
   echo "FALLA el instalado no respalda .config/himalaya/secrets" >&2
