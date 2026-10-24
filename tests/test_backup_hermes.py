@@ -675,6 +675,24 @@ class BackupTest(unittest.TestCase):
             [True, False],
         )
 
+    def test_himalaya_secrets_and_config_are_kept_but_other_dot_config_is_not(self):
+        write(self.user / ".config/himalaya/secrets/cuenta.txt", "clave")
+        write(self.user / "AppData/Roaming/himalaya/config.toml", "cuenta")
+        write(self.user / ".config/otra-app/datos.txt", "ajeno")
+
+        code, line = self.backup()
+
+        self.assertEqual(code, 0, line)
+        archive = self.out / ARCHIVE
+        names = set(members(archive))
+        self.assertIn("user/.config/himalaya/secrets/cuenta.txt", names)
+        self.assertIn("user/AppData/Roaming/himalaya/config.toml", names)
+        self.assertNotIn("user/.config/otra-app/datos.txt", names)
+        listed = {entry["path"] for entry in manifest(archive)["files"]}
+        self.assertIn("user/.config/himalaya/secrets/cuenta.txt", listed)
+        self.assertIn("user/AppData/Roaming/himalaya/config.toml", listed)
+        self.assertNotIn("user/.config/otra-app/datos.txt", listed)
+
     def test_the_installed_script_backs_up_the_whole_home_not_its_profile(self):
         script = self.home / "profiles/claw/scripts/backup_hermes.py"
         script.write_text("", encoding="utf-8")
