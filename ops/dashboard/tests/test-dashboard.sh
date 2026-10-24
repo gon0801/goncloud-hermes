@@ -19,15 +19,22 @@ xml_de() { while [ $# -gt 0 ]; do [ "$1" = /XML ] && { echo "$2"; return; }; shi
 case "$op" in
   /Create)
     [ -e "$FAKE/denegado" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
+    [ -e "$FAKE/falla-create" ] && { echo "ERROR: algo raro." >&2; exit 1; }
+    [ "$(head -c 4 "$(xml_de "$@")" | od -An -tx1 | tr -d ' 
+')" = fffe3c00 ] || { echo "ERROR: The task XML is malformed." >&2; exit 1; }
     if [ -e "$FAKE/tarea.xml" ]; then case " $* " in *" /F "*) ;; *) echo "ERROR: Cannot create a file when that file already exists." >&2; exit 1 ;; esac; fi
     cp "$(xml_de "$@")" "$FAKE/tarea.xml" ;;
   /Query)
     [ -e "$FAKE/tarea.xml" ] || { echo "ERROR: The system cannot find the file specified." >&2; exit 1; }
     case " $* " in *" /XML "*) tr -d '\377\376\000' < "$FAKE/tarea.xml" ;; esac ;;
-  /Delete) rm -f "$FAKE/tarea.xml" ;;
+  /Delete)
+    echo "borrada" >> "$FAKE/bitacora-delete"
+    [ -e "$FAKE/falla-delete" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
+    rm -f "$FAKE/tarea.xml" ;;
   /End) ;;
   /Run)
     [ -e "$FAKE/tarea.xml" ] || exit 1
+    [ -e "$FAKE/falla-run" ] && { echo "ERROR: no se pudo ejecutar." >&2; exit 1; }
     echo "$IP:$PUERTO 222" > "$FAKE/escucha" ;;
 esac
 exit 0
@@ -39,6 +46,8 @@ printf 'Conexiones activas\r\n\r\n  Proto  Dirección local         Dirección r
 [ -e "$FAKE/escucha" ] && while read -r dir pid; do
   printf '  TCP    %-22s 0.0.0.0:0              ESCUCHANDO      %s\r\n' "$dir" "$pid"
 done < "$FAKE/escucha"
+printf '  TCP    %s:%s   10.0.0.9:50000   ESTABLECIDO     777
+' "$IP" "$PUERTO"
 printf '  TCP    127.0.0.1:5000         0.0.0.0:0              ESCUCHANDO      999\r\n'
 exit 0
 FAKE
@@ -46,6 +55,7 @@ FAKE
 cat > "$tmp/bin/taskkill" <<'FAKE'
 #!/usr/bin/env bash
 echo "taskkill $*" >> "$FAKE/bitacora"
+[ -e "$FAKE/taskkill-denegado" ] && { echo "ERROR: Access is denied." >&2; exit 1; }
 pid="$2"
 [ -e "$FAKE/escucha" ] && grep -v " $pid\$" "$FAKE/escucha" > "$FAKE/escucha.n"
 mv -f "$FAKE/escucha.n" "$FAKE/escucha" 2>/dev/null
@@ -54,6 +64,7 @@ FAKE
 
 cat > "$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
+echo "curl $*" >> "$FAKE/bitacora"
 if [ -s "$FAKE/escucha" ]; then printf 200; else printf 000; fi
 exit 0
 FAKE
@@ -61,12 +72,13 @@ FAKE
 cat > "$tmp/bin/cmd-falso" <<'FAKE'
 #!/usr/bin/env bash
 echo "cmd $*" >> "$FAKE/bitacora"
-echo "$IP:$PUERTO 333" >> "$FAKE/escucha"
+[ -e "$FAKE/cmd-no-arranca" ] || echo "$IP:$PUERTO 333" >> "$FAKE/escucha"
 exit 0
 FAKE
 chmod +x "$tmp/bin/"*
 
 export PATH="$tmp/bin:$PATH"
+[ "$(command -v schtasks)" = "$tmp/bin/schtasks" ] || { echo "ABORTA: schtasks no es el falso"; exit 2; }
 export IP PUERTO
 export ESPERA_INTENTOS=2 ESPERA_SEGUNDOS=0
 export CMD_BIN="$tmp/bin/cmd-falso"
@@ -179,6 +191,7 @@ nuevo_mundo no-responde
 : > "$FAKE/sin-curl"
 cat > "$tmp/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
+echo "curl $*" >> "$FAKE/bitacora"
 if [ -e "$FAKE/sin-curl" ]; then printf 000; elif [ -s "$FAKE/escucha" ]; then printf "${CODIGO:-200}"; else printf 000; fi
 exit 0
 FAKE
@@ -199,6 +212,61 @@ done
 nuevo_mundo sin-tarea
 rm -f "$STARTUP_DIR/hermes-dashboard-claw.cmd"
 d "checklist falla si la tarea no existe" bash -c '! bash "$0" >/dev/null 2>&1' "$dash/checklist.sh"
+
+nuevo_mundo extras
+d "la tarea declara UserId" bash -c 'bash "$0" </dev/null >/dev/null 2>&1; tr -d "\377\376\000\r" < "$FAKE/tarea.xml" | grep -q "<UserId>.*ehven</UserId>"' "$dash/instala.sh"
+d "curl va con --noproxy" grep -q 'curl .*--noproxy' "$FAKE/bitacora"
+d "el XML llega en UTF-16LE con BOM (el schtasks falso lo exige)" test -e "$FAKE/tarea.xml"
+
+nuevo_mundo respaldo-sin-tarea
+cp "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+: > "$FAKE/archivo"
+RESPALDO_DIR="$FAKE/archivo/r" bash "$dash/instala.sh" < /dev/null > /dev/null 2>&1
+d "respaldo imposible no deja la tarea registrada" test ! -e "$FAKE/tarea.xml"
+d "respaldo imposible deja el .cmd en Inicio (sin tarea)" cmp -s "$STARTUP_DIR/hermes-dashboard-claw.cmd" "$FAKE/cmd-original"
+
+nuevo_mundo taskkill-denegado
+touch "$FAKE/taskkill-denegado"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "taskkill denegado: instala sale distinto de 0" test "$rc" -ne 0
+d "taskkill denegado: dice que no pudo liberar el puerto" grep -q 'no se pudo liberar' "$FAKE/salida"
+d "taskkill denegado: no lanza la tarea" test "$(cuenta 'schtasks /Run')" -eq 0
+
+nuevo_mundo falla-run
+touch "$FAKE/falla-run"
+bash "$dash/instala.sh" < /dev/null > /dev/null 2>&1; rc=$?
+d "/Run fallido: instala sale 3" test "$rc" -eq 3
+
+nuevo_mundo falla-create
+touch "$FAKE/falla-create"
+bash "$dash/instala.sh" < /dev/null > "$FAKE/salida" 2>&1; rc=$?
+d "/Create fallido por otra causa: instala sale 2" test "$rc" -eq 2
+d "/Create fallido: no lanza la tarea" test "$(cuenta 'schtasks /Run')" -eq 0
+
+nuevo_mundo espera-real
+: > "$FAKE/sin-curl"
+inicio=$SECONDS
+ESPERA_INTENTOS=2 ESPERA_SEGUNDOS=1 bash "$dash/instala.sh" < /dev/null > /dev/null 2>&1; rc=$?
+d "la espera respeta el plazo (sale 4 tras >= 2 s)" test "$rc" -eq 4 -a $((SECONDS - inicio)) -ge 2
+rm -f "$FAKE/sin-curl"
+
+nuevo_mundo desinstala-falla-delete
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+touch "$FAKE/falla-delete"
+bash "$dash/desinstala.sh" < /dev/null >/dev/null 2>&1; rc=$?
+d "desinstala sale distinto de 0 si /Delete falla" test "$rc" -ne 0
+
+nuevo_mundo desinstala-no-arranca
+bash "$dash/instala.sh" < /dev/null >/dev/null 2>&1
+touch "$FAKE/cmd-no-arranca"
+bash "$dash/desinstala.sh" < /dev/null >/dev/null 2>&1; rc=$?
+d "desinstala sale 4 si el relanzamiento no responde" test "$rc" -eq 4
+
+nuevo_mundo desinstala-sin-cmd
+rm -f "$STARTUP_DIR/hermes-dashboard-claw.cmd"
+: > "$FAKE/bitacora"
+bash "$dash/desinstala.sh" < /dev/null >/dev/null 2>&1
+d "desinstala sin .cmd no mata el dashboard que corre" test "$(cuenta taskkill)" -eq 0
 
 echo
 if [ "$fallos" -eq 0 ]; then echo "todo bien"; else echo "$fallos pruebas fallaron"; exit 1; fi
