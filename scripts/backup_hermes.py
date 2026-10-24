@@ -216,6 +216,12 @@ def _user_rules():
     yield Rule(
         "user", "AppData/Roaming/himalaya", True, "cuentas de correo de himalaya"
     )
+    yield Rule(
+        "user",
+        ".config/himalaya/secrets",
+        True,
+        "contraseñas de aplicación de las cuentas de himalaya",
+    )
     yield Rule("user", ".gitconfig", True, "identidad de git del autoactualizador")
     yield Rule("user", ".ssh", True, "llave con que el autoactualizador hace push")
     yield Rule("user", "**/node_modules", False, "dependencias que la CLI reinstala")
