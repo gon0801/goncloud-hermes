@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
-# A.4: instala el backup_hermes.py del repo; deja la copia previa para rollback.sh.
 set -euo pipefail
 aqui="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$aqui/comun.sh"
+raiz="$(cd "$aqui/../.." && pwd)"
+repo_script="$raiz/scripts/backup_hermes.py"
+destino="C:/Users/ehven/AppData/Local/hermes/profiles/claw/scripts"
+instalado="$destino/backup_hermes.py"
+copia="$destino/backup_hermes.py.antes-himalaya"
 
-[ -f "$instalado" ] || { echo "no existe $instalado" >&2; exit 1; }
+trap 'rm -f -- "$copia.nueva" "$instalado.nuevo"' EXIT
+
 [ -f "$repo_script" ] || { echo "no existe $repo_script" >&2; exit 1; }
+[ -f "$instalado" ] || { echo "no existe $instalado" >&2; exit 1; }
 
 if [ ! -e "$copia" ]; then
-  cp -p "$instalado" "$copia"
+  cp -- "$instalado" "$copia.nueva"
+  mv -f -- "$copia.nueva" "$copia"
   echo "copia previa guardada en $copia"
 else
+  [ -f "$copia" ] || { echo "no es un archivo regular: $copia" >&2; exit 1; }
   echo "ya existe $copia; se conserva la primera copia"
 fi
 
-sin_cr "$repo_script" > "$instalado.nuevo"
-mv -f "$instalado.nuevo" "$instalado"
+cp -- "$repo_script" "$instalado.nuevo"
+mv -f -- "$instalado.nuevo" "$instalado"
 echo "instalado $instalado"
 
-"$aqui/checklist.sh"
+bash "$aqui/checklist.sh"
