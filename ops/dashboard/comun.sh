@@ -18,10 +18,31 @@ ESPERA_INTENTOS="${ESPERA_INTENTOS:-60}"
 ESPERA_SEGUNDOS="${ESPERA_SEGUNDOS:-1}"
 ESPERA_TOTAL=$((ESPERA_INTENTOS * ESPERA_SEGUNDOS))
 
-# PIDs que escuchan en $1 (ip:puerto), sin depender del idioma de Windows: un socket que escucha
-# tiene destino 0.0.0.0:0, así que no se lee la columna del estado.
+listeners_capturar() {
+  local salida
+  salida="$(netstat -ano)" || return 1
+  printf '%s\n' "$salida" | tr -d '\r' | awk -v exacta="$DASH_IP" -v puerto="$DASH_PUERTO" '
+    function ip_normal(s) {
+      if (s ~ /^\[.*\]$/) s = substr(s, 2, length(s) - 2)
+      return tolower(s)
+    }
+    BEGIN { exacta = ip_normal(exacta) }
+    $1 == "TCP" && $3 ~ /:0$/ {
+      direccion = $2
+      puerto_local = direccion
+      sub(/^.*:/, "", puerto_local)
+      if (puerto_local != puerto) next
+      ip = direccion
+      sub(/:[^:]*$/, "", ip)
+      ip = ip_normal(ip)
+      clase = ip == exacta ? "exacto" : (ip == "0.0.0.0" || ip == "::" ? "colision" : "ajeno")
+      print clase "|" ip "|" puerto_local "|" $NF
+    }
+  '
+}
+
 pids_escuchando() {
-  netstat -ano | tr -d '\r' | awk -v l="$1" '$1 == "TCP" && $2 == l && $3 ~ /:0$/ { print $NF }' | sort -u
+  listeners_capturar | awk -F'|' -v destino="$1" '$2 ":" $3 == destino { print $4 }' | sort -u
 }
 
 codigo_http() { curl -s --noproxy '*' -o /dev/null --connect-timeout 1 -m 2 -w '%{http_code}' "$DASH_URL" 2>/dev/null || true; }
@@ -32,26 +53,34 @@ http_vivo() {
 
 ruta_win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
-# PIDs que escuchan en el puerto del dashboard en cualquier dirección que no sea la propia (0.0.0.0, [::], otra IP).
 pids_ajenos() {
-  netstat -ano | tr -d '\r' | awk -v p=":${DASH_PUERTO}" -v ok="${DASH_IP}:${DASH_PUERTO}" \
-    '$1 == "TCP" && $3 ~ /:0$/ && $2 != ok && substr($2, length($2) - length(p) + 1) == p { print $NF }' | sort -u
+  listeners_capturar | awk -F'|' '$1 != "exacto" { print $4 }' | sort -u
 }
 
 xml_escapa() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
 
-# Mata lo que escucha en IP:puerto y confirma que quedó libre; si taskkill falla (acceso denegado) devuelve 1.
 detener_puerto() {
-  local pid i
-  for pid in $(pids_escuchando "${DASH_IP}:${DASH_PUERTO}"); do
-    echo "deteniendo el proceso $pid que ocupa ${DASH_IP}:${DASH_PUERTO}"
+  local captura pid i
+  captura="$(listeners_capturar)" || return 1
+  for pid in $(printf '%s\n' "$captura" | awk -F'|' 'NF == 4 && $1 != "ajeno" { print $4 }' | sort -u); do
+    echo "deteniendo el proceso $pid que ocupa el puerto $DASH_PUERTO"
     taskkill /PID "$pid" /T /F >/dev/null 2>&1 || true
   done
   for ((i = 0; i < 5; i++)); do
-    [ -z "$(pids_escuchando "${DASH_IP}:${DASH_PUERTO}")" ] && return 0
+    captura="$(listeners_capturar)" || return 1
+    [ -z "$captura" ] && return 0
     sleep "$ESPERA_SEGUNDOS"
   done
-  echo "ERROR: no se pudo liberar ${DASH_IP}:${DASH_PUERTO} (PID $(pids_escuchando "${DASH_IP}:${DASH_PUERTO}" | tr '
-' ' '))" >&2
+  echo "ERROR: no se pudo liberar el puerto $DASH_PUERTO; listeners restantes:" >&2
+  printf '%s\n' "$captura" | awk -F'|' '{ print "  " $2 ":" $3 " (PID " $4 ")" }' >&2
   return 1
+}
+
+dashboard_activo_exacto() {
+  local captura conteos exactos ajenos
+  captura="$(listeners_capturar)" || return 1
+  conteos="$(printf '%s\n' "$captura" | awk -F'|' '$1 == "exacto" { e++ } $1 != "exacto" { a++ } END { printf "%d %d", e, a }')"
+  exactos="${conteos%% *}"
+  ajenos="${conteos##* }"
+  [ "$exactos" -eq 1 ] && [ "$ajenos" -eq 0 ] && http_vivo
 }

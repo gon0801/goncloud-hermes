@@ -39,9 +39,69 @@ xml="$tmp/tarea.xml"
 XML
 } > "$xml"
 
-if [ -e "$STARTUP_DIR/$CMD_VIEJO" ] && ! { mkdir -p "$RESPALDO_DIR" && [ -w "$RESPALDO_DIR" ]; }; then
-  echo "ERROR: no se pudo mover el .cmd viejo: el respaldo $RESPALDO_DIR no se puede escribir; no se crea la tarea para no correr dos dashboards" >&2
-  exit 5
+origen="$STARTUP_DIR/$CMD_VIEJO"
+respaldo="$RESPALDO_DIR/$CMD_VIEJO"
+cmd_movido=0
+historico=""
+
+deshacer_respaldo() {
+  local fallo=0
+  if [ "$cmd_movido" -eq 1 ]; then
+    if [ -e "$origen" ]; then
+      echo "ERROR: no se pudo restaurar $respaldo porque $origen ya existe; ambos archivos quedan pendientes de revisión" >&2
+      fallo=1
+    elif [ -e "$respaldo" ] && mv -f "$respaldo" "$origen" && [ -e "$origen" ] && [ ! -e "$respaldo" ]; then
+      cmd_movido=0
+    else
+      echo "ERROR: no se pudo devolver $CMD_VIEJO a Inicio; revisa $origen y $respaldo" >&2
+      fallo=1
+    fi
+  fi
+  if [ -n "$historico" ]; then
+    if [ "$cmd_movido" -eq 0 ] && [ ! -e "$respaldo" ] && [ -e "$historico" ]; then
+      if mv -f "$historico" "$respaldo" && [ -e "$respaldo" ] && [ ! -e "$historico" ]; then
+        historico=""
+      else
+        echo "ERROR: no se pudo restaurar el respaldo anterior desde $historico a $respaldo" >&2
+        fallo=1
+      fi
+    else
+      echo "ERROR: quedan archivos sin restaurar; conserva $historico y revisa $respaldo" >&2
+      fallo=1
+    fi
+  fi
+  return "$fallo"
+}
+
+if [ -e "$origen" ]; then
+  if ! { mkdir -p "$RESPALDO_DIR" && [ -w "$RESPALDO_DIR" ]; }; then
+    echo "ERROR: no se pudo mover el .cmd viejo: el respaldo $RESPALDO_DIR no se puede escribir; no se crea la tarea para no correr dos dashboards" >&2
+    exit 5
+  fi
+  if [ -e "$respaldo" ]; then
+    historico="$(mktemp "$respaldo.$(date +%Y%m%d%H%M%S).XXXXXX")" || {
+      echo "ERROR: no se pudo reservar un respaldo histórico en $RESPALDO_DIR; no se crea la tarea" >&2
+      exit 5
+    }
+    if ! mv -f "$respaldo" "$historico" || [ -e "$respaldo" ] || [ ! -e "$historico" ]; then
+      if [ -e "$respaldo" ]; then
+        [ ! -s "$historico" ] && rm -f "$historico"
+        historico=""
+      fi
+      deshacer_respaldo || true
+      echo "ERROR: no se pudo rotar el respaldo anterior; no se movió el .cmd ni se creó la tarea" >&2
+      exit 5
+    fi
+  fi
+  if mv -f "$origen" "$respaldo" && [ ! -e "$origen" ] && [ -e "$respaldo" ]; then
+    cmd_movido=1
+    echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
+  else
+    [ ! -e "$origen" ] && [ -e "$respaldo" ] && cmd_movido=1
+    deshacer_respaldo || true
+    echo "ERROR: no se pudo mover el .cmd viejo de Inicio; no se ejecuta schtasks /Create, /Delete ni /Run" >&2
+    exit 5
+  fi
 fi
 
 salida="$(schtasks /Create /TN "$TAREA" /XML "$(ruta_win "$xml")" /F </dev/null 2>&1)"
@@ -53,22 +113,10 @@ if [ "$rc" -ne 0 ]; then
     echo "ERROR: schtasks no pudo crear la tarea $TAREA (código $rc)." >&2
   fi
   printf '%s\n' "$salida" >&2
+  deshacer_respaldo || echo "ERROR: la creación falló y el respaldo no quedó completamente restaurado" >&2
   exit 2
 fi
 echo "tarea $TAREA creada o reemplazada"
-
-if [ -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
-  if [ -e "$RESPALDO_DIR/$CMD_VIEJO" ] && ! cmp -s "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO"; then
-    mv -f "$RESPALDO_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO.$(date +%Y%m%d%H%M%S)"
-  fi
-  if mkdir -p "$RESPALDO_DIR" && mv -f "$STARTUP_DIR/$CMD_VIEJO" "$RESPALDO_DIR/$CMD_VIEJO" && [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ]; then
-    echo "movido $CMD_VIEJO de Inicio a $RESPALDO_DIR"
-  else
-    echo "ERROR: no se pudo mover el .cmd viejo de Inicio; se borra la tarea y no se lanza para no correr dos dashboards" >&2
-    schtasks /Delete /TN "$TAREA" /F </dev/null >/dev/null 2>&1 || true
-    exit 5
-  fi
-fi
 
 schtasks /End /TN "$TAREA" >/dev/null 2>&1 || true
 detener_puerto || exit 6
@@ -81,12 +129,12 @@ fi
 
 limite=$((SECONDS + ESPERA_TOTAL))
 while :; do
-  if http_vivo; then
-    echo "el dashboard responde en $DASH_URL"
+  if dashboard_activo_exacto; then
+    echo "el dashboard responde en $DASH_URL con un único listener en ${DASH_IP}:${DASH_PUERTO}"
     exit 0
   fi
   [ "$SECONDS" -ge "$limite" ] && break
   sleep "$ESPERA_SEGUNDOS"
 done
-echo "ERROR: el dashboard no respondió en $DASH_URL tras $ESPERA_TOTAL s" >&2
+echo "ERROR: el dashboard no quedó con un único listener exacto, sin listeners ajenos y HTTP válido en $DASH_URL tras $ESPERA_TOTAL s" >&2
 exit 4
