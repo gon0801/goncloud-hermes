@@ -18,11 +18,17 @@ fi
 
 [ ! -e "$STARTUP_DIR/$CMD_VIEJO" ] && ok "el .cmd viejo ya no está en Inicio" || mal "el .cmd viejo sigue en Inicio"
 
-n="$(pids_escuchando "${DASH_IP}:${DASH_PUERTO}" | grep -c .)"
-[ "$n" -eq 1 ] && ok "un proceso escucha en ${DASH_IP}:${DASH_PUERTO}" || mal "escuchan $n procesos en ${DASH_IP}:${DASH_PUERTO} (debe ser 1)"
+if n="$(pids_escuchando "${DASH_IP}:${DASH_PUERTO}" | awk 'END { print NR }')"; then
+  [ "$n" -eq 1 ] && ok "un proceso escucha en ${DASH_IP}:${DASH_PUERTO}" || mal "escuchan $n procesos en ${DASH_IP}:${DASH_PUERTO} (debe ser 1)"
+else
+  mal "no se pudo consultar el proceso que escucha en ${DASH_IP}:${DASH_PUERTO}"
+fi
 
-t="$(pids_ajenos | grep -c .)"
-[ "$t" -eq 0 ] && ok "nada escucha en :${DASH_PUERTO} fuera de ${DASH_IP}" || mal "hay $t procesos en :${DASH_PUERTO} en otra dirección (0.0.0.0, [::] u otra)"
+if t="$(pids_ajenos | awk 'END { print NR }')"; then
+  [ "$t" -eq 0 ] && ok "nada escucha en :${DASH_PUERTO} fuera de ${DASH_IP}" || mal "hay $t procesos en :${DASH_PUERTO} en otra dirección (0.0.0.0, [::] u otra)"
+else
+  mal "no se pudo consultar si algo escucha en :${DASH_PUERTO} fuera de ${DASH_IP}"
+fi
 
 http_vivo && ok "$DASH_URL responde" || mal "$DASH_URL no responde 200, 302 o 401 (dio $(codigo_http))"
 
