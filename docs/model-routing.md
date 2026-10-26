@@ -17,8 +17,10 @@ Por decision del propietario, `dirigir` y `dirigir-claw` llevan Opus 5.5
 (high) → Sonnet 5.5 (high) → GPT-6.1 Sol (medium) → Kimi K3 (high).
 Sol reemplaza a GLM en la tercera posicion de estas dos filas. Hermes usa
 `openai-codex`; Claw usa el runtime `codex` del plugin Codex habilitado
-para `openai/gpt-6.1-sol`. Ambos autentican con la suscripcion de ChatGPT,
-sin API key. Los demas carriles conservan sus modelos.
+para `openai/gpt-6.1-sol`, permitido en `agents.defaults.modelPolicy.allow`.
+El app-server de Claw usa `homeScope: user` y el ejecutable Codex local
+verificado (0.163.0), no el 0.158.0 incluido en el plugin, que rechaza Sol 6.1.
+Ambos autentican con la suscripcion de ChatGPT, sin API key. Los demas carriles conservan sus modelos.
 
 ## Tabla v6: Anthropic por suscripcion (2026-10-17)
 
