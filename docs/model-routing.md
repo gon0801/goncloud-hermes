@@ -3,13 +3,22 @@
 Fuente autoritativa: `model-routing.source.json` (tabla v6 del propietario,
 2026-10-17). Ocho carriles de cuatro posiciones: primario + 3 respaldos; el
 mapa `profile_inheritance` reparte los 21 perfiles de Hermes (`default`
-incluido) asi: `claw` -> `dirigir-claw` (el carril DIRIGIR con effort medium
+incluido) asi: `claw` -> `dirigir-claw` (el carril DIRIGIR con effort high
 en el primario), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->
 `planear`, `implementer` -> `codigo`, `verifier` -> `verificar`, `scout` ->
 `investigar`, `operaciones`, `amazon`, `meli`, `odoo`, `pers` y `arras` ->
 `operativo`, `mail`, `limpia`, `gonserver`, `skillverif`, `tinkabot`,
 `eggbot` y `default` -> `simples`, y `adversary` -> `adversary`. Copilot y
 Copilot ACP siguen excluidos.
+
+## Directores: Sol por suscripcion (2026-10-26)
+
+Por decision del propietario, `dirigir` y `dirigir-claw` llevan Opus 5.5
+(high) → Sonnet 5.5 (high) → GPT-6.1 Sol (medium) → Kimi K3 (high).
+Sol reemplaza a GLM en la tercera posicion de estas dos filas. Hermes usa
+`openai-codex`; Claw usa el runtime `codex` del plugin Codex habilitado
+para `openai/gpt-6.1-sol`. Ambos autentican con la suscripcion de ChatGPT,
+sin API key. Los demas carriles conservan sus modelos.
 
 ## Tabla v6: Anthropic por suscripcion (2026-10-17)
 
