@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Literal
 
 from .private_files import open_private_file
 from .redaction import redact_text, sensitive_values
@@ -535,6 +536,46 @@ def probe_workspace():
         ) from exc
 
 
+def _generation_command(command: list[str], env: Mapping[str, str]) -> list[str]:
+    referencia = env.get("MOTOR_GENERACION_RUTA")
+    if referencia:
+        generacion = Path(referencia).resolve()
+    else:
+        generacion = next(
+            (
+                p
+                for p in Path(__file__).resolve().parents
+                if (p / "flota-runtime.json").is_file()
+                and (p / "runtime.json").is_file()
+            ),
+            None,
+        )
+    if generacion is None:
+        return command
+    nombre = Path(command[0]).stem.lower()
+    if nombre == "wsl" and "--exec" in command:
+        indice = command.index("--exec") + 1
+        if indice < len(command) and Path(command[indice]).stem.lower() == "muse":
+            raise SubscriptionProcessError(
+                "Muse en WSL no esta preparado en esta generacion",
+                FailureKind.MODEL_UNAVAILABLE,
+            )
+    if nombre not in {"claude", "codex", "grok", "qwen", "kimi", "opencode", "muse"}:
+        return command
+    try:
+        import runpy
+
+        resolver = runpy.run_path(str(generacion / "motor/flota/runtime.py"))[
+            "resolver_ejecutable"
+        ]
+        return resolver(generacion, command, requerido=True)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise SubscriptionProcessError(
+            "el CLI no esta preparado en la generacion seleccionada",
+            FailureKind.MODEL_UNAVAILABLE,
+        ) from exc
+
+
 def run_cli(
     command: Sequence[str],
     prompt: str,
@@ -561,6 +602,7 @@ def run_cli(
     command = [str(value) for value in command]
     overlay = dict(env_overlay or {})
     child_env = {**os.environ, **overlay}
+    command = _generation_command(command, child_env)
     secrets = sensitive_values(child_env) + tuple(overlay.values())
     # The assignment is a secret of the error channel: a CLI that echoes it
     # into stderr must have it redacted HERE, before _cap drops the middle
