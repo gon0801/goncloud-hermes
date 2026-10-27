@@ -120,6 +120,25 @@ def compiled(profile):
     return routes
 
 
+#: The live table moved to v7: only the dirigir lanes changed their third
+#: position. The frozen fixture below keeps the v6 shape for slot semantics.
+LIVE_LANES = {
+    **LANES,
+    "dirigir": [
+        ("claude", "claude-opus-5-5", "high"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.1-sol", "medium"),
+        ("kimi", "k3", "high"),
+    ],
+    "dirigir-claw": [
+        ("claude", "claude-opus-5-5", "medium"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.1-sol", "medium"),
+        ("kimi", "k3", "high"),
+    ],
+}
+
+
 class LiveTableTests(unittest.TestCase):
     def test_the_live_table_keeps_every_lane_in_the_v6_shape(self):
         # A release switch stays inside a model's line, so the adapters (bound
@@ -134,7 +153,7 @@ class LiveTableTests(unittest.TestCase):
                         (route.adapter, route.model)
                         for route in compile_profile_routes(chain_name, source)
                     ],
-                    [(adapter, model) for adapter, model, _ in LANES[chain_name]],
+                    [(adapter, model) for adapter, model, _ in LIVE_LANES[chain_name]],
                 )
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):

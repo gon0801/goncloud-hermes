@@ -1,4 +1,4 @@
-"""The v6 table (owner, 2026-10-17): every Hermes profile on his Claude subscription.
+"""The v7 table (owner, 2026-10-24; v6 base 2026-10-17): every Hermes profile on his Claude subscription.
 
 Oracle built from ~/.local/state/encargos-loop/artifacts/H-tabla/lista-v6.md,
 never from the implementation: 8 lanes of 4 positions (primary + 3 fallbacks),
@@ -52,6 +52,7 @@ NATIVE = {
     "k3": ("kimi-coding", {"base_url": KIMI_URL, "api_mode": "chat_completions"}),
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
+    "gpt-6.1-sol": ("openai-codex", {}),
 }
 PREFIX = {
     "claude-opus-5-5": "anthropic",
@@ -62,12 +63,13 @@ PREFIX = {
     "k3": "kimi",
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
+    "gpt-6.1-sol": "openai",
 }
 
 DIRIGIR = [
     ("claude-opus-5-5", "high"),
     ("claude-sonnet-5-5", "high"),
-    ("glm-5.3", "high"),
+    ("gpt-6.1-sol", "medium"),
     ("k3", "high"),
 ]
 CARRILES = {
@@ -83,7 +85,7 @@ CARRILES = {
         ("claude-sonnet-5-5", "high"),
         ("k3", "high"),
         ("glm-5.3", "high"),
-        ("grok-4.7", "medium"),
+        ("grok-4.7", "high"),
     ],
     "verificar": [
         ("glm-5.3", "high"),
@@ -93,19 +95,19 @@ CARRILES = {
     ],
     "investigar": [
         ("grok-4.7", "medium"),
-        ("k3", "high"),
-        ("glm-5.3", "high"),
+        ("k3", "medium"),
+        ("glm-5.3", "medium"),
         ("claude-sonnet-5-5", "medium"),
     ],
     "operativo": [
-        ("claude-sonnet-5-5", "medium"),
+        ("claude-sonnet-5-5", "low"),
         ("glm-5.3", "low"),
         ("grok-4.7", "low"),
-        ("deepseek-v4.1-flash", None),
+        ("deepseek-v4.1-flash", "low"),
     ],
     "simples": [
         ("claude-haiku-5-5", "low"),
-        ("deepseek-v4.1-flash", None),
+        ("deepseek-v4.1-flash", "low"),
         ("glm-5.3-flash", "low"),
         ("grok-4.7", "low"),
     ],
@@ -202,6 +204,7 @@ class PerfilV6Tests(unittest.TestCase):
                             "kimi": "kimi",
                             "xai": "grok",
                             "opencode-go": "opencode_go",
+                            "openai": "codex",
                         }[PREFIX[route.model]],
                         f"{profile} {route.label}",
                     )
@@ -211,7 +214,11 @@ class PerfilV6Tests(unittest.TestCase):
         text = json.dumps(LIVE)
         self.assertNotIn("fable", text)
         self.assertNotIn("muse-", text)
-        self.assertNotIn("gpt-", text)
+        for row, labels in LIVE["chains"].items():
+            for label in labels:
+                if label.startswith("openai/"):
+                    self.assertEqual(label, "openai/gpt-6.1-sol (medium)", row)
+                    self.assertIn(row, ("dirigir", "dirigir-claw"))
         self.assertNotIn("kimi-for-coding", text)
         for row, labels in LIVE["chains"].items():
             for position, label in enumerate(labels):
@@ -820,6 +827,7 @@ class RaizDefaultTests(unittest.TestCase):
             config["agent"]["reasoning_overrides"],
             {
                 "claude-haiku-5-5": "low",
+                "deepseek-v4.1-flash": "low",
                 "glm-5.3-flash": "low",
                 "grok-4.7": "low",
             },
