@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "Lista de modelos v6 del propietario (2026-10-17): 8 carriles de 4 posiciones (primario + 3 respaldos), transcrita en ~/.local/state/encargos-loop/artifacts/H-tabla/lista-v6.md. Los perfiles de Hermes van con Anthropic por SU SUSCRIPCION de Claude (no API por token). 2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription",
+  "source": "Lista de modelos v7 del propietario (2026-10-24), en Desktop/Lista_modelos_v7.pdf. Conciliada el 2026-10-26 contra los 19 roles compartidos de OpenClaw y Hermes y los 21 perfiles de Hermes. DIRIGIR incorpora GPT-6.1 Sol medium por suscripcion de ChatGPT. Los perfiles Anthropic usan la suscripcion de Claude, no API por token.",
   "status": "applied_with_native_provider_aliases",
   "columns": [
     "Primary",
@@ -57,7 +57,7 @@
       "anthropic/claude-sonnet-5-5 (high)",
       "kimi/k3 (high)",
       "zai/glm-5.3 (high)",
-      "xai/grok-4.7 (medium)"
+      "xai/grok-4.7 (high)"
     ],
     "verificar": [
       "zai/glm-5.3 (high)",
@@ -67,19 +67,19 @@
     ],
     "investigar": [
       "xai/grok-4.7 (medium)",
-      "kimi/k3 (high)",
-      "zai/glm-5.3 (high)",
+      "kimi/k3 (medium)",
+      "zai/glm-5.3 (medium)",
       "anthropic/claude-sonnet-5-5 (medium)"
     ],
     "operativo": [
-      "anthropic/claude-sonnet-5-5 (medium)",
+      "anthropic/claude-sonnet-5-5 (low)",
       "zai/glm-5.3 (low)",
       "xai/grok-4.7 (low)",
-      "opencode-go/deepseek-v4.1-flash (off)"
+      "opencode-go/deepseek-v4.1-flash (low)"
     ],
     "simples": [
       "anthropic/claude-haiku-5-5 (low)",
-      "opencode-go/deepseek-v4.1-flash (off)",
+      "opencode-go/deepseek-v4.1-flash (low)",
       "zai/glm-5.3-flash (low)",
       "xai/grok-4.7 (low)"
     ],
@@ -92,9 +92,9 @@
   },
   "bindings": {
     "trailing_annotation": "Parenthetical markers (high), (medium), (low) and (off) are preserved on the label and stripped from the runtime model ID; (off) means no reasoning parameter at all",
-    "carriles": "DIRIGIR = dirigir (entrega) y dirigir-claw (claw); desde 2026-10-22 las dos llevan Opus high, igual que main en OpenClaw (David: el director de Hermes y el de claw van en high); PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Kimi sin carriles automaticos de lotes (operativo/simples). Fable fuera hasta confirmar plan de Claude; opencode-go solo para DeepSeek Flash (Muse Spark ya no esta en la v6)",
+    "carriles": "Tabla v7: DIRIGIR = dirigir (entrega) y dirigir-claw (claw), igual que main de OpenClaw. PLANEAR/REVISAR = planear; CODIGO = codigo, todo high; VERIFICAR = verificar; INVESTIGAR = investigar, todo medium; OPERATIVO = operativo y TOOLS/SIMPLES = simples, todo low, incluido DeepSeek Flash; ADVERSARY = adversary. Kimi fuera de operativo y simples. Fable fuera hasta confirmar el plan de Claude. Muse Spark no ocupa posiciones en esta tabla.",
     "claude_subscription": "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription; every anthropic position rides that subscription, never a pay-per-token API key",
     "posiciones": "Cuatro posiciones por carril (primario + 3 respaldos); el binding es por familia del modelo en todas las posiciones",
-    "rutas_vivas": "El vivo de la PC del 2026-10-17 (tests/fixtures/rutas-vivas-20261017.json) ya no coincide con lo gestionado (source_revision 4e4112e): el dueno cambio los modelos a mano; adoptelo con configure_team.py --adoptar-ruteo-manual"
+    "rutas_vivas": "2026-10-26: la tabla v7 se concilia con la configuracion nativa instalada y el PDF del propietario. Modelos, orden de respaldos y esfuerzos activos coinciden en los 19 roles compartidos de OpenClaw y Hermes. Se conserva la adopcion historica del ruteo manual; esta conciliacion no cambia las configuraciones nativas."
   }
 }
