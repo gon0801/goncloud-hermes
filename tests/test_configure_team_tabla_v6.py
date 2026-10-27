@@ -52,6 +52,7 @@ NATIVE = {
     "k3": ("kimi-coding", {"base_url": KIMI_URL, "api_mode": "chat_completions"}),
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
+    "gpt-6.1-sol": ("openai-codex", {}),
 }
 PREFIX = {
     "claude-opus-5-5": "anthropic",
@@ -62,12 +63,13 @@ PREFIX = {
     "k3": "kimi",
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
+    "gpt-6.1-sol": "openai",
 }
 
 DIRIGIR = [
     ("claude-opus-5-5", "high"),
     ("claude-sonnet-5-5", "high"),
-    ("glm-5.3", "high"),
+    ("gpt-6.1-sol", "medium"),
     ("k3", "high"),
 ]
 CARRILES = {
@@ -202,6 +204,7 @@ class PerfilV6Tests(unittest.TestCase):
                             "kimi": "kimi",
                             "xai": "grok",
                             "opencode-go": "opencode_go",
+                            "openai": "codex",
                         }[PREFIX[route.model]],
                         f"{profile} {route.label}",
                     )
@@ -211,7 +214,11 @@ class PerfilV6Tests(unittest.TestCase):
         text = json.dumps(LIVE)
         self.assertNotIn("fable", text)
         self.assertNotIn("muse-", text)
-        self.assertNotIn("gpt-", text)
+        for row, labels in LIVE["chains"].items():
+            for label in labels:
+                if label.startswith("openai/"):
+                    self.assertEqual(label, "openai/gpt-6.1-sol (medium)", row)
+                    self.assertIn(row, ("dirigir", "dirigir-claw"))
         self.assertNotIn("kimi-for-coding", text)
         for row, labels in LIVE["chains"].items():
             for position, label in enumerate(labels):
