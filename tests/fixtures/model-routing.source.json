@@ -38,13 +38,13 @@
     "dirigir": [
       "anthropic/claude-opus-5-5 (high)",
       "anthropic/claude-sonnet-5-5 (high)",
-      "openai/gpt-6.1-sol (medium)",
+      "zai/glm-5.3 (high)",
       "kimi/k3 (high)"
     ],
     "dirigir-claw": [
       "anthropic/claude-opus-5-5 (medium)",
       "anthropic/claude-sonnet-5-5 (high)",
-      "openai/gpt-6.1-sol (medium)",
+      "zai/glm-5.3 (high)",
       "kimi/k3 (high)"
     ],
     "planear": [
@@ -57,7 +57,7 @@
       "anthropic/claude-sonnet-5-5 (high)",
       "kimi/k3 (high)",
       "zai/glm-5.3 (high)",
-      "xai/grok-4.7 (high)"
+      "xai/grok-4.7 (medium)"
     ],
     "verificar": [
       "zai/glm-5.3 (high)",
@@ -67,19 +67,19 @@
     ],
     "investigar": [
       "xai/grok-4.7 (medium)",
-      "kimi/k3 (medium)",
-      "zai/glm-5.3 (medium)",
+      "kimi/k3 (high)",
+      "zai/glm-5.3 (high)",
       "anthropic/claude-sonnet-5-5 (medium)"
     ],
     "operativo": [
-      "anthropic/claude-sonnet-5-5 (low)",
+      "anthropic/claude-sonnet-5-5 (medium)",
       "zai/glm-5.3 (low)",
       "xai/grok-4.7 (low)",
-      "opencode-go/deepseek-v4.1-flash (low)"
+      "opencode-go/deepseek-v4.1-flash (off)"
     ],
     "simples": [
       "anthropic/claude-haiku-5-5 (low)",
-      "opencode-go/deepseek-v4.1-flash (low)",
+      "opencode-go/deepseek-v4.1-flash (off)",
       "zai/glm-5.3-flash (low)",
       "xai/grok-4.7 (low)"
     ],

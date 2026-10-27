@@ -56,13 +56,13 @@ LANES = {
     "dirigir": [
         ("claude", "claude-opus-5-5", "high"),
         ("claude", "claude-sonnet-5-5", "high"),
-        ("codex", "gpt-6.1-sol", "medium"),
+        ("opencode_zai", "glm-5.3", "high"),
         ("kimi", "k3", "high"),
     ],
     "dirigir-claw": [
         ("claude", "claude-opus-5-5", "medium"),
         ("claude", "claude-sonnet-5-5", "high"),
-        ("codex", "gpt-6.1-sol", "medium"),
+        ("opencode_zai", "glm-5.3", "high"),
         ("kimi", "k3", "high"),
     ],
     "planear": [
@@ -75,7 +75,7 @@ LANES = {
         ("claude", "claude-sonnet-5-5", "high"),
         ("kimi", "k3", "high"),
         ("opencode_zai", "glm-5.3", "high"),
-        ("grok", "grok-4.7", "high"),
+        ("grok", "grok-4.7", "medium"),
     ],
     "verificar": [
         ("opencode_zai", "glm-5.3", "high"),
@@ -85,19 +85,19 @@ LANES = {
     ],
     "investigar": [
         ("grok", "grok-4.7", "medium"),
-        ("kimi", "k3", "medium"),
-        ("opencode_zai", "glm-5.3", "medium"),
+        ("kimi", "k3", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
         ("claude", "claude-sonnet-5-5", "medium"),
     ],
     "operativo": [
-        ("claude", "claude-sonnet-5-5", "low"),
+        ("claude", "claude-sonnet-5-5", "medium"),
         ("opencode_zai", "glm-5.3", "low"),
         ("grok", "grok-4.7", "low"),
-        ("opencode_go", "deepseek-v4.1-flash", "low"),
+        ("opencode_go", "deepseek-v4.1-flash", None),
     ],
     "simples": [
         ("claude", "claude-haiku-5-5", "low"),
-        ("opencode_go", "deepseek-v4.1-flash", "low"),
+        ("opencode_go", "deepseek-v4.1-flash", None),
         ("opencode_zai", "glm-5.3-flash", "low"),
         ("grok", "grok-4.7", "low"),
     ],
@@ -120,6 +120,25 @@ def compiled(profile):
     return routes
 
 
+#: The live table moved to v7: only the dirigir lanes changed their third
+#: position. The frozen fixture below keeps the v6 shape for slot semantics.
+LIVE_LANES = {
+    **LANES,
+    "dirigir": [
+        ("claude", "claude-opus-5-5", "high"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.1-sol", "medium"),
+        ("kimi", "k3", "high"),
+    ],
+    "dirigir-claw": [
+        ("claude", "claude-opus-5-5", "medium"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.1-sol", "medium"),
+        ("kimi", "k3", "high"),
+    ],
+}
+
+
 class LiveTableTests(unittest.TestCase):
     def test_the_live_table_keeps_every_lane_in_the_v6_shape(self):
         # A release switch stays inside a model's line, so the adapters (bound
@@ -134,7 +153,7 @@ class LiveTableTests(unittest.TestCase):
                         (route.adapter, route.model)
                         for route in compile_profile_routes(chain_name, source)
                     ],
-                    [(adapter, model) for adapter, model, _ in LANES[chain_name]],
+                    [(adapter, model) for adapter, model, _ in LIVE_LANES[chain_name]],
                 )
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
@@ -281,14 +300,14 @@ class SlotSemanticsTests(unittest.TestCase):
                     profile,
                 )
 
-    def test_deepseek_positions_carry_low_in_the_v7_table(self):
+    def test_off_marks_a_position_that_sends_no_reasoning_parameter(self):
         source = load_source()
 
         for profile in ("operaciones", "mail"):
             routes = compile_profile_routes(profile, source)
             deepseek = next(r for r in routes if r.model.startswith("deepseek"))
-            self.assertEqual(deepseek.reasoning_effort, "low", profile)
-            self.assertEqual(deepseek.label.endswith("(low)"), True, profile)
+            self.assertIsNone(deepseek.reasoning_effort, profile)
+            self.assertEqual(deepseek.label.endswith("(off)"), True, profile)
 
         with self.assertRaisesRegex(ValueError, "unknown reasoning effort"):
             compile_profile_routes(
