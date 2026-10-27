@@ -17,6 +17,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MISSING = object()
 
+
+def routing_source_path(root: Path = ROOT) -> Path:
+    override = os.environ.get("GONCLOUD_ROUTING_SOURCE", "").strip()
+    if override:
+        return Path(override)
+    return root / "model-routing.source.json"
+
 #: Workers route their models through the subscription router and never touch a
 #: browser or the machine; three toolsets cover their work. `connections` is
 #: the one Hermes 0.21.5 added to every profile on update (2026-10-02); the
@@ -813,9 +820,7 @@ def conciliar_plugins_director(perfil, plugins, *, aplicar):
 
 def desired_profile_config(role, team, runtime_home):
     """The managed keys one profile owns; everything else stays the user's."""
-    routing_source = json.loads(
-        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-    )
+    routing_source = json.loads(routing_source_path().read_text(encoding="utf-8"))
     desired = {
         "plugins": {"enabled": ["goncloud-team"]},
         # Copilot and Copilot ACP are out of scope for this team. deepseek is
@@ -1038,9 +1043,7 @@ def configure(
         if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
     ]
     revision = current_revision()
-    routing_source = json.loads(
-        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-    )
+    routing_source = json.loads(routing_source_path().read_text(encoding="utf-8"))
     prepared = []
     adoptions = {}
     notas_plugins, perfil_director = [], None
@@ -1096,9 +1099,7 @@ def configure(
         )
         files = {
             # The router needs its slot table next to the plugin copy.
-            "plugins/goncloud-team/model-routing.source.json": (
-                ROOT / "model-routing.source.json"
-            ).read_bytes(),
+            "plugins/goncloud-team/model-routing.source.json": routing_source_path().read_bytes(),
         }
         if is_team:
             # La copia de poteto se verifica antes de preparar el paquete:

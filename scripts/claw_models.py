@@ -132,15 +132,19 @@ def load_live(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--source",
+        type=Path,
+        help="proyección de la flota; sin esto se lee model-routing.source.json",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("desired", help="Print the chains claw should have")
     check = commands.add_parser("check", help="Compare the table with a live snapshot")
     check.add_argument("--live", required=True, help="Snapshot of claw's live chains")
     args = parser.parse_args()
 
-    source = json.loads(
-        (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
-    )
+    source_path = args.source or (ROOT / "model-routing.source.json")
+    source = json.loads(source_path.read_text(encoding="utf-8"))
     mapping = json.loads((ROOT / "claw-routing.json").read_text(encoding="utf-8"))
     desired = desired_claw(source, mapping)
     if args.command == "desired":
