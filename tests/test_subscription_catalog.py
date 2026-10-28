@@ -453,12 +453,12 @@ class SlotSemanticsTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "No model chain"):
             compile_profile_routes("pirate", source)
-        with self.assertRaisesRegex(ValueError, "exactly 4 slots"):
+        with self.assertRaisesRegex(ValueError, "empty model chain"):
             compile_profile_routes(
                 "scout",
                 {
                     **source,
-                    "chains": {**source["chains"], "investigar": ["zai/glm-5.3"]},
+                    "chains": {**source["chains"], "investigar": []},
                 },
             )
 

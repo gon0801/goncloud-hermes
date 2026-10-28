@@ -100,15 +100,12 @@ def _source_role(profile: str, source: Mapping[str, Any]) -> str:
 def compile_profile_routes(
     profile: str, source: Mapping[str, Any]
 ) -> tuple[RouteSpec, ...]:
-    """Compile one agent's exact four-position chain from the source table."""
+    """Compile the agent's ordered chain from the source table."""
     chain = source.get("chains", {}).get(_source_role(profile, source))
     if chain is None:
         raise ValueError(f"No model chain configured for profile: {profile}")
-    if len(chain) != SLOT_COUNT:
-        raise ValueError(
-            f"profile {profile} must define exactly {SLOT_COUNT} slots "
-            f"({SLOT_RANGE_LABEL}); found {len(chain)}"
-        )
+    if not chain:
+        raise ValueError(f"profile {profile} has an empty model chain")
     return tuple(_compile_route(slot, label) for slot, label in enumerate(chain))
 
 
