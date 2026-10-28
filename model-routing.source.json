@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
-  "source": "Lista de modelos v7 del propietario (2026-10-24), en Desktop/Lista_modelos_v7.pdf. Conciliada el 2026-10-26 contra los 19 roles compartidos de OpenClaw y Hermes y los 21 perfiles de Hermes. DIRIGIR incorpora GPT-6.1 Sol medium por suscripcion de ChatGPT. Los perfiles Anthropic usan la suscripcion de Claude, no API por token.",
+  "source": "Politica compartida v8 del propietario, proyectada desde flota/manifiesto.toml. Conserva la tabla v7 y agrega GPT-6.1 Sol xhigh como ultimo respaldo de codigo y GPT-6 Astra xhigh como ultimo respaldo de planear. Anthropic y OpenAI usan suscripciones, no API por token.",
   "status": "applied_with_native_provider_aliases",
   "columns": [
     "Primary",
     "F1",
     "F2",
-    "F3"
+    "F3",
+    "F4"
   ],
   "profile_names": {
     "dirigir-claw": "claw"
@@ -51,13 +52,15 @@
       "anthropic/claude-opus-5-5 (high)",
       "kimi/k3 (high)",
       "zai/glm-5.3 (high)",
-      "xai/grok-4.7 (high)"
+      "xai/grok-4.7 (high)",
+      "openai/gpt-6-astra (xhigh)"
     ],
     "codigo": [
       "anthropic/claude-sonnet-5-5 (high)",
       "kimi/k3 (high)",
       "zai/glm-5.3 (high)",
-      "xai/grok-4.7 (high)"
+      "xai/grok-4.7 (high)",
+      "openai/gpt-6.1-sol (xhigh)"
     ],
     "verificar": [
       "zai/glm-5.3 (high)",
@@ -92,9 +95,9 @@
   },
   "bindings": {
     "trailing_annotation": "Parenthetical markers (high), (medium), (low) and (off) are preserved on the label and stripped from the runtime model ID; (off) means no reasoning parameter at all",
-    "carriles": "Tabla v7: DIRIGIR = dirigir (entrega) y dirigir-claw (claw), igual que main de OpenClaw. PLANEAR/REVISAR = planear; CODIGO = codigo, todo high; VERIFICAR = verificar; INVESTIGAR = investigar, todo medium; OPERATIVO = operativo y TOOLS/SIMPLES = simples, todo low, incluido DeepSeek Flash; ADVERSARY = adversary. Kimi fuera de operativo y simples. Fable fuera hasta confirmar el plan de Claude. Muse Spark no ocupa posiciones en esta tabla.",
+    "carriles": "Tabla v8: DIRIGIR = dirigir (entrega) y dirigir-claw (claw), igual que main de OpenClaw. PLANEAR/REVISAR = planear y CODIGO = codigo, con sus cuatro posiciones anteriores high y el respaldo adicional OpenAI xhigh; VERIFICAR = verificar; INVESTIGAR = investigar, todo medium; OPERATIVO = operativo y TOOLS/SIMPLES = simples, todo low, incluido DeepSeek Flash; ADVERSARY = adversary. Kimi fuera de operativo y simples. Fable fuera hasta confirmar el plan de Claude. Muse Spark no ocupa posiciones en esta tabla.",
     "claude_subscription": "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription; every anthropic position rides that subscription, never a pay-per-token API key",
-    "posiciones": "Cuatro posiciones por carril (primario + 3 respaldos); el binding es por familia del modelo en todas las posiciones",
-    "rutas_vivas": "2026-10-26: la tabla v7 se concilia con la configuracion nativa instalada y el PDF del propietario. Modelos, orden de respaldos y esfuerzos activos coinciden en los 19 roles compartidos de OpenClaw y Hermes. Se conserva la adopcion historica del ruteo manual; esta conciliacion no cambia las configuraciones nativas."
+    "posiciones": "Primario y respaldos por carril, en el orden de chains. Planear y codigo incluyen F4; los demas carriles conservan F1 a F3. El binding es por familia del modelo en todas las posiciones.",
+    "rutas_vivas": "2026-10-28: v8 concilia la fuente canonica de Hermes y Claw con la politica compartida de flota. La instalacion en cada bot se comprueba por separado con su configurador."
   }
 }

@@ -1,7 +1,7 @@
 # Enrutador de suscripciones: aceptacion local 2026-09-14
 
-Fuente autoritativa: `model-routing.source.json` (tabla v6 del propietario,
-2026-10-17). Ocho carriles de cuatro posiciones: primario + 3 respaldos; el
+Fuente autoritativa: `model-routing.source.json` (tabla v8 del propietario).
+Planear y codigo tienen F4 Astra/Sol xhigh; los demas carriles conservan F1 a F3. El
 mapa `profile_inheritance` reparte los 21 perfiles de Hermes (`default`
 incluido) asi: `claw` -> `dirigir-claw` (el carril DIRIGIR con effort high
 en el primario), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->

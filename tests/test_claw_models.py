@@ -192,7 +192,7 @@ class RealFilesTests(unittest.TestCase):
             with self.subTest(agent=agent):
                 row = source["chains"][mapping["agents"][agent]["row"]]
                 self.assertEqual(entry["model"]["primary"], row[0].split(" ")[0])
-                self.assertEqual(len(entry["model"]["fallbacks"]), 3)
+                self.assertEqual(len(entry["model"]["fallbacks"]), len(row) - 1)
         # Every specialist the gateway may dispatch has a chain in claw too.
         self.assertLessEqual(
             set(team["kanban"]["dispatch_profiles"]), set(mapping["agents"])
