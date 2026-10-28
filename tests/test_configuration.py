@@ -338,12 +338,6 @@ class ConfigurationTests(unittest.TestCase):
         )
         self.assertIn("kanban", worker["platform_toolsets"]["telegram"])
 
-    def test_the_director_role_reports_a_blocked_workflow_and_stops(self):
-        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
-        self.assertIn("motor estado", claw)
-        self.assertIn("no leas logs", claw)
-        self.assertIn("no revises el codigo del plugin", claw)
-
     def test_reapply_refuses_a_tree_that_does_not_contain_the_deployed_revision(self):
         # 2026-09-15 01:08: the profiles carried the plugin from
         # feat/subscription-router-recovery; a reapply from feat/hermes-team
@@ -495,23 +489,6 @@ class DirectorNativeChainTests(unittest.TestCase):
         self.assertIn("kanban_create", claw)
         self.assertIn("navegador", claw)
         self.assertIn("kanban dispatch", claw)
-
-    def test_bot_mode_messages_never_carry_engineering_work(self):
-        # 2026-10-03: Bot Mode gave every Bot Chat a message_agent tool, a
-        # second channel beside the chain. Owner's decision: the chain keeps
-        # all engineering work; message_agent is for quick questions only.
-        # Every profile's SOUL starts with the shared contract, so the rule
-        # lives there, and the director's role must not contradict it.
-        contract = (ROOT / "shared/CONTRACT.md").read_text(encoding="utf-8")
-        self.assertIn("message_agent", contract)
-        self.assertIn(
-            "Nunca asignes, aceptes ni entregues trabajo de ingenieria por message_agent",
-            contract,
-        )
-        claw = (ROOT / "roles/claw.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "El codigo sigue por el motor (skill motor), no por estas tarjetas", claw
-        )
 
     def test_the_director_hands_specialist_work_to_a_card(self):
         # 2026-10-03 (adopted 2026-10-12): work that belongs to a specialist

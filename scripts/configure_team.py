@@ -327,6 +327,16 @@ def check_file(target, desired, previous=None):
     raise ValueError(f"Local managed-file conflict: {target}")
 
 
+def project_soul(current, previous, desired):
+    """Replace the recorded managed suffix while leaving a local prefix unowned."""
+    previous = (previous or "").replace("\r\n", "\n").replace("\r", "\n")
+    desired = desired.replace("\r\n", "\n").replace("\r", "\n")
+    for body in sorted((previous, desired), key=len, reverse=True):
+        if body and current.endswith(body) and current.count(body) == 1:
+            return current[: -len(body)] + desired
+    return None
+
+
 def _prune_empty_dirs(directory, stop):
     """Remove directories a retired file left empty (``__pycache__`` aside).
 
@@ -1170,11 +1180,28 @@ def configure(
                 ROOT / "skills" / "motor" / "SKILL.md"
             ).read_text(encoding="utf-8")
         shipped = set(files)
-        if preserve_local_soul and (profile / "SOUL.md").exists():
-            files.pop("SOUL.md")
+        soul_body = files.get("SOUL.md")
+        soul_previous = None
+        if (
+            preserve_local_soul
+            and soul_body is not None
+            and (profile / "SOUL.md").exists()
+        ):
+            current = (profile / "SOUL.md").read_text(encoding="utf-8")
+            projected = project_soul(
+                current, state.get("files", {}).get("SOUL.md"), soul_body
+            )
+            if projected is None:
+                files.pop("SOUL.md")
+                print(f"Preserved locally edited SOUL.md: {profile}")
+            else:
+                files["SOUL.md"] = projected
+                soul_previous = current
         for relative, content in files.items():
             target = contained(profile / relative, runtime_home)
             old = state.get("files", {}).get(relative)
+            if relative == "SOUL.md" and soul_previous is not None:
+                old = soul_previous
             if fresh and relative == "SOUL.md" and target.exists():
                 old = target.read_text(encoding="utf-8")
             check_file(target, content, old)
@@ -1203,6 +1230,7 @@ def configure(
                 # CR2 (I08): si este perfil recibió el paquete de Poteto
                 # (SOUL + skills); solo él registra el digest.
                 is_team,
+                soul_body,
             )
         )
     root_config = contained(runtime_home / "config.yaml", runtime_home)
@@ -1310,6 +1338,7 @@ def configure(
         retired_targets,
         shipped,
         recibio_poteto,
+        soul_body,
     ) in prepared:
         recorded_files = {
             **{
@@ -1324,6 +1353,8 @@ def configure(
                 for relative, content in files.items()
             },
         }
+        if "SOUL.md" in files:
+            recorded_files["SOUL.md"] = soul_body
         write_changed(
             config_path, yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
         )
@@ -1416,8 +1447,8 @@ def main():
         "--preserve-local-soul",
         action="store_true",
         help=(
-            "Keep existing profile SOUL.md files while updating managed routing, "
-            "plugins, and configuration"
+            "Keep local SOUL.md edits and prefixes; refresh an unchanged managed "
+            "body along with routing, plugins, and configuration"
         ),
     )
     parser.add_argument(
