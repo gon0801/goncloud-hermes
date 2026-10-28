@@ -16,12 +16,7 @@ from typing import Callable, Iterable, Optional
 from uuid import uuid4
 
 from .adapters import build_adapter_registry
-from .catalog import (
-    SLOT_COUNT,
-    SLOT_RANGE_LABEL,
-    compile_profile_routes,
-    load_routing_source,
-)
+from .catalog import compile_profile_routes, load_routing_source
 from .process import run_cli
 from .redaction import redact_text, sanitize_result
 from .state import SubscriptionBusy, SubscriptionStateStore, parse_iso
@@ -465,6 +460,8 @@ class SubscriptionRouter:
         self, request: InvocationRequest, routes: Iterable[RouteSpec], owner: str
     ) -> InvocationResult:
         routes = tuple(routes)
+        slot_count = len(routes)
+        slot_range_label = "Primary" if slot_count == 1 else f"Primary..F{slot_count - 1}"
         if request.result_transform is None:
             recorded = self.store.latest_success(request.workflow_id, request.stage_id)
             if recorded is not None:
@@ -877,7 +874,7 @@ class SubscriptionRouter:
         return InvocationResult(
             success=False,
             text=(
-                f"{last_failure.text} — all {SLOT_COUNT} slots {SLOT_RANGE_LABEL} are "
+                f"{last_failure.text} — all {slot_count} slots {slot_range_label} are "
                 "exhausted for this stage; owner review is required"
             ),
             adapter=last_failure.adapter,

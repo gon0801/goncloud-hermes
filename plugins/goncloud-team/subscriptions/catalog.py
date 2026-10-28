@@ -10,8 +10,7 @@ from typing import Any, Mapping
 
 from .types import RouteSpec
 
-#: Every position binds by model family (v6 table, 2026-10-17: four positions
-#: of primary + 3 fallbacks, Anthropic on the owner's Claude subscription).
+#: Every position binds by model family, in the order of its configured chain.
 #: Each family is a pattern matched at the start of the id: Kimi's own releases
 #: are ``k<digits>`` (k3, k4, k3-256k), so a literal "k3" would drop k4.
 #: DeepSeek Flash rides the owner's OpenCode Go subscription; the pay-per-token
@@ -28,9 +27,6 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("grok-", "grok"),
     ("deepseek-", "opencode_go"),
 )
-
-SLOT_COUNT = 4
-SLOT_RANGE_LABEL = "Primary..F3"
 
 #: Effort markers on the source label, never part of the vendor model id.
 #: ``(off)`` means the position runs with no reasoning parameter at all.

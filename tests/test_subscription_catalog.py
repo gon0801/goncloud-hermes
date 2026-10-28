@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "goncloud-team"
 sys.path.insert(0, str(PLUGIN_DIR))
 
-from subscriptions.catalog import SLOT_COUNT, compile_profile_routes  # noqa: E402
+from subscriptions.catalog import compile_profile_routes  # noqa: E402
 
 
 def load_source() -> dict:
@@ -26,7 +26,7 @@ def load_live_source() -> dict:
     return json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8"))
 
 
-#: Agent -> v6 lane; every lane is four positions of primary + 3 fallbacks.
+#: Agent -> lane for the frozen fixture and the live table.
 PROFILE_LANE = {
     "claw": "dirigir-claw",
     "entrega": "dirigir",
@@ -120,8 +120,7 @@ def compiled(profile):
     return routes
 
 
-#: The live table moved to v7: only the dirigir lanes changed their third
-#: position. The frozen fixture below keeps the v6 shape for slot semantics.
+#: The frozen fixture keeps v6 slot semantics; the live table includes v8 backups.
 LIVE_LANES = {
     **LANES,
     "dirigir": [
@@ -136,18 +135,17 @@ LIVE_LANES = {
         ("codex", "gpt-6.1-sol", "medium"),
         ("kimi", "k3", "high"),
     ],
+    "planear": [*LANES["planear"], ("codex", "gpt-6-astra", "xhigh")],
+    "codigo": [*LANES["codigo"], ("codex", "gpt-6.1-sol", "xhigh")],
 }
 
 
 class LiveTableTests(unittest.TestCase):
-    def test_the_live_table_keeps_every_lane_in_the_v6_shape(self):
-        # A release switch stays inside a model's line, so the adapters (bound
-        # by family) and the shape of every chain never change with it.
+    def test_the_live_table_compiles_every_configured_position(self):
         source = load_live_source()
 
         for chain_name, chain in source["chains"].items():
             with self.subTest(chain=chain_name):
-                self.assertEqual(len(chain), SLOT_COUNT)
                 self.assertEqual(
                     [
                         (route.adapter, route.model)
@@ -158,7 +156,7 @@ class LiveTableTests(unittest.TestCase):
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)
-                self.assertEqual(len(routes), SLOT_COUNT)
+                self.assertEqual(len(routes), len(source["chains"][lane]))
                 self.assertTrue(
                     all(route.billing_mode == "subscription" for route in routes),
                     profile,
@@ -219,7 +217,7 @@ class SlotSemanticsTests(unittest.TestCase):
         }
         routes = compile_profile_routes("implementer", source)
 
-        self.assertEqual(len(routes), SLOT_COUNT)
+        self.assertEqual(len(routes), len(source["chains"]["codigo"]))
         self.assertEqual(
             [route.adapter for route in routes[:3]],
             ["opencode_zai", "opencode_zai", "opencode_zai"],
@@ -374,9 +372,10 @@ class SlotSemanticsTests(unittest.TestCase):
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)
-                self.assertEqual(len(routes), SLOT_COUNT, profile)
+                count = len(source["chains"][lane])
+                self.assertEqual(len(routes), count, profile)
                 self.assertEqual(
-                    [route.slot for route in routes], list(range(SLOT_COUNT))
+                    [route.slot for route in routes], list(range(count))
                 )
                 self.assertEqual(
                     [(r.adapter, r.model, r.reasoning_effort) for r in routes],
@@ -385,7 +384,7 @@ class SlotSemanticsTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [route.billing_mode for route in routes],
-                    ["subscription"] * SLOT_COUNT,
+                    ["subscription"] * count,
                     profile,
                 )
 

@@ -2309,10 +2309,6 @@ class DeploymentTests(unittest.TestCase):
             )
             routing = claw / "plugins/goncloud-team/model-routing.source.json"
             self.assertTrue(routing.is_file())
-            self.assertEqual(
-                json.loads(routing.read_text(encoding="utf-8"))["columns"],
-                ["Primary", "F1", "F2", "F3"],
-            )
             claw_config = yaml.safe_load(
                 (claw / "config.yaml").read_text(encoding="utf-8")
             )

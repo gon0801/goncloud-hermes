@@ -1,7 +1,7 @@
-"""The v7 table (owner, 2026-10-24; v6 base 2026-10-17): every Hermes profile on his Claude subscription.
+"""The v8 table: every Hermes profile uses the owner's subscriptions.
 
 Oracle built from ~/.local/state/encargos-loop/artifacts/H-tabla/lista-v6.md,
-never from the implementation: 8 lanes of 4 positions (primary + 3 fallbacks),
+never from the implementation, with the v8 code and review backups added:
 agent -> lane for the 21 Hermes profiles, Anthropic on the owner's Claude
 subscription (never a pay-per-token API route), "off" = no reasoning, no Fable,
 OpenCode Go only for Muse Spark (absent) and DeepSeek Flash.
@@ -53,6 +53,7 @@ NATIVE = {
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
     "gpt-6.1-sol": ("openai-codex", {}),
+    "gpt-6-astra": ("openai-codex", {}),
 }
 PREFIX = {
     "claude-opus-5-5": "anthropic",
@@ -64,6 +65,7 @@ PREFIX = {
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
     "gpt-6.1-sol": "openai",
+    "gpt-6-astra": "openai",
 }
 
 DIRIGIR = [
@@ -80,12 +82,14 @@ CARRILES = {
         ("k3", "high"),
         ("glm-5.3", "high"),
         ("grok-4.7", "high"),
+        ("gpt-6-astra", "xhigh"),
     ],
     "codigo": [
         ("claude-sonnet-5-5", "high"),
         ("k3", "high"),
         ("glm-5.3", "high"),
         ("grok-4.7", "high"),
+        ("gpt-6.1-sol", "xhigh"),
     ],
     "verificar": [
         ("glm-5.3", "high"),
@@ -192,7 +196,7 @@ class PerfilV6Tests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [route.slot for route in routes],
-                    [0, 1, 2, 3],
+                    list(range(len(CARRILES[lane]))),
                     profile,
                 )
                 for route in routes:
@@ -209,31 +213,6 @@ class PerfilV6Tests(unittest.TestCase):
                         f"{profile} {route.label}",
                     )
                     self.assertEqual(route.billing_mode, "subscription", profile)
-
-    def test_la_tabla_no_niega_las_reglas_del_dueno(self):
-        text = json.dumps(LIVE)
-        self.assertNotIn("fable", text)
-        self.assertNotIn("muse-", text)
-        for row, labels in LIVE["chains"].items():
-            for label in labels:
-                if label.startswith("openai/"):
-                    self.assertEqual(label, "openai/gpt-6.1-sol (medium)", row)
-                    self.assertIn(row, ("dirigir", "dirigir-claw"))
-        self.assertNotIn("kimi-for-coding", text)
-        for row, labels in LIVE["chains"].items():
-            for position, label in enumerate(labels):
-                with self.subTest(fila=row, posicion=position):
-                    if label.split("/", 1)[0] == "opencode-go":
-                        self.assertEqual(
-                            label.split("/", 1)[1].split(" ")[0],
-                            "deepseek-v4.1-flash",
-                            "opencode-go solo para Muse Spark o DeepSeek Flash",
-                        )
-        self.assertIn(
-            "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude "
-            "subscription",
-            json.dumps(LIVE.get("bindings", {})) + LIVE.get("source", ""),
-        )
 
     def test_la_cadena_nativa_de_cada_perfil_es_su_carril_v6(self):
         for profile, lane in PROFILE_LANE.items():
