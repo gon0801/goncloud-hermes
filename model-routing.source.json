@@ -73,7 +73,7 @@
     ],
     "investigar": [
       "xai/grok-4.7 (medium)",
-      "kimi/k3.1-pro (medium)",
+      "kimi/k3.1-pro (high)",
       "openai/gpt-6.1-terra (medium)",
       "anthropic/claude-sonnet-5-5 (medium)",
       "opencode-go/deepseek-v4.1-flash (high)"

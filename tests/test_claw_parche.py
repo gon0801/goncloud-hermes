@@ -184,8 +184,12 @@ class ParcheTests(unittest.TestCase):
         source = json.loads(
             (ROOT / "model-routing.source.json").read_text(encoding="utf-8")
         )
+        overrides = json.loads(
+            (ROOT / "claw-routing.json").read_text(encoding="utf-8")
+        ).get("id_overrides", {})
         row = source["profile_inheritance"]["default"]
-        primary = source["chains"][row][0].split(" (")[0]
+        label = source["chains"][row][0].split(" (")[0]
+        primary = overrides.get(label, label)
 
         self.go(fake, "defaults-v6")
 

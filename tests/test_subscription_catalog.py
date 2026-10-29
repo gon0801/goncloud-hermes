@@ -155,7 +155,7 @@ LIVE_LANES = {
     ],
     "investigar": [
         ("grok", "grok-4.7", "medium"),
-        ("kimi", "k3.1-pro", "medium"),
+        ("kimi", "k3.1-pro", "high"),
         ("codex", "gpt-6.1-terra", "medium"),
         ("claude", "claude-sonnet-5-5", "medium"),
         ("opencode_go", "deepseek-v4.1-flash", "high"),

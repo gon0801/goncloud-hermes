@@ -109,7 +109,7 @@ CARRILES = {
     ],
     "investigar": [
         ("grok-4.7", "medium"),
-        ("k3.1-pro", "medium"),
+        ("k3.1-pro", "high"),
         ("gpt-6.1-terra", "medium"),
         ("claude-sonnet-5-5", "medium"),
         ("deepseek-v4.1-flash", "high"),
