@@ -245,11 +245,11 @@ class ConfigRealTests(unittest.TestCase):
     def test_el_por_omision_sale_de_la_fila_default_de_la_tabla(self):
         self.assertEqual(
             self.config["agents"]["defaults"]["model"]["primary"],
-            "anthropic/claude-haiku-5-5",
+            "opencode-go-2/deepseek-v4.1-flash",
         )
         cadena = [m for m, _ in module.esperado(self.tabla, self.ruteo)[0]["defaults"]]
-        self.assertEqual(cadena[0], "claude-haiku-5-5")
-        self.assertEqual(len(cadena), 4)
+        self.assertEqual(cadena[0], "deepseek-v4.1-flash")
+        self.assertEqual(len(cadena), 5)
         cambiada = copy.deepcopy(self.tabla)
         cambiada["profile_inheritance"]["default"] = "dirigir"
         nueva = claw_models.desired_claw(cambiada, self.ruteo)["agents"]["defaults"]
@@ -258,10 +258,15 @@ class ConfigRealTests(unittest.TestCase):
     def test_claw_llama_a_deepseek_por_la_segunda_cuenta(self):
         deepseek = "opencode-go-2/deepseek-v4.1-flash"
         defaults = self.config["agents"]["defaults"]["model"]
-        self.assertEqual(defaults["primary"], "anthropic/claude-haiku-5-5")
+        self.assertEqual(defaults["primary"], deepseek)
         self.assertEqual(
             defaults["fallbacks"],
-            [deepseek, "zai/glm-5.3-flash", "xai/grok-4.7"],
+            [
+                "anthropic/claude-haiku-5-5",
+                "openai/gpt-6-luna",
+                "xai/grok-4.7",
+                "zai/glm-5.3-flash",
+            ],
         )
         operativos = [
             a for a, d in self.ruteo["agents"].items() if d["row"] == "operativo"
@@ -284,7 +289,6 @@ class ConfigRealTests(unittest.TestCase):
         self.assertEqual(ids[0], "opencode-go-2/deepseek-v4.1-flash")
 
     def test_hermes_no_cambia_con_el_override_de_claw(self):
-        deepseek = {"provider": "opencode-go", "model": "deepseek-v4.1-flash"}
         perfiles = [
             perfil
             for perfil, fila in self.tabla["profile_inheritance"].items()
@@ -294,10 +298,21 @@ class ConfigRealTests(unittest.TestCase):
         ]
         self.assertTrue(perfiles)
         for perfil in perfiles:
-            self.assertIn(
-                deepseek,
-                configure_team.native_config(self.tabla, perfil)["fallback_providers"],
-            )
+            nativo = configure_team.native_config(self.tabla, perfil)
+            modelos = [nativo["model"]["default"]] + [
+                f["model"] for f in nativo["fallback_providers"]
+            ]
+            self.assertEqual(modelos.count("deepseek-v4.1-flash"), 1, perfil)
+            self.assertNotIn("opencode-go-2", str(nativo), perfil)
+        implementer = configure_team.native_config(self.tabla, "implementer")
+        self.assertEqual(
+            implementer["model"],
+            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+        )
+        self.assertEqual(
+            implementer["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"],
+            "xhigh",
+        )
 
     def test_todo_coincide_y_no_avisa(self):
         self.assertEqual(self.corre(), (0, []))

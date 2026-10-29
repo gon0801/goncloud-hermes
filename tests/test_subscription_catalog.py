@@ -120,23 +120,67 @@ def compiled(profile):
     return routes
 
 
-#: The frozen fixture keeps v6 slot semantics; the live table includes v8 backups.
+#: The frozen fixture keeps v6 slot semantics; the live table is the v9 table:
+#: primary plus four backups per lane, one subscription per lane.
+_DIRIGIR_V9 = [
+    ("claude", "claude-opus-5-5", "high"),
+    ("codex", "gpt-6.1-sol", "medium"),
+    ("kimi", "k3.1-pro", "high"),
+    ("grok", "grok-4.7", "high"),
+    ("opencode_go", "deepseek-v4.1-flash", "high"),
+]
 LIVE_LANES = {
-    **LANES,
-    "dirigir": [
+    "dirigir": _DIRIGIR_V9,
+    "dirigir-claw": _DIRIGIR_V9,
+    "planear": [
         ("claude", "claude-opus-5-5", "high"),
-        ("claude", "claude-sonnet-5-5", "high"),
-        ("codex", "gpt-6.1-sol", "medium"),
-        ("kimi", "k3", "high"),
+        ("kimi", "k3.1-pro", "high"),
+        ("codex", "gpt-6-astra", "xhigh"),
+        ("grok", "grok-4.7", "high"),
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
     ],
-    "dirigir-claw": [
-        ("claude", "claude-opus-5-5", "medium"),
-        ("claude", "claude-sonnet-5-5", "high"),
-        ("codex", "gpt-6.1-sol", "medium"),
-        ("kimi", "k3", "high"),
+    "codigo": [
+        ("opencode_go", "deepseek-v4.1-flash", "xhigh"),
+        ("kimi", "k3.1-pro", "high"),
+        ("opencode_zai", "glm-5.3", "high"),
+        ("grok", "grok-4.7", "high"),
+        ("codex", "gpt-6.1-sol", "xhigh"),
     ],
-    "planear": [*LANES["planear"], ("codex", "gpt-6-astra", "xhigh")],
-    "codigo": [*LANES["codigo"], ("codex", "gpt-6.1-sol", "xhigh")],
+    "verificar": [
+        ("grok", "grok-4.7", "high"),
+        ("codex", "gpt-6.1-sol", "high"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("kimi", "k3.1-pro", "high"),
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ],
+    "investigar": [
+        ("grok", "grok-4.7", "medium"),
+        ("kimi", "k3.1-pro", "medium"),
+        ("codex", "gpt-6.1-terra", "medium"),
+        ("claude", "claude-sonnet-5-5", "medium"),
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ],
+    "operativo": [
+        ("claude", "claude-sonnet-5-5", "medium"),
+        ("codex", "gpt-6.1-terra", "medium"),
+        ("grok", "grok-4.7", "medium"),
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+        ("opencode_zai", "glm-5.3", "medium"),
+    ],
+    "simples": [
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+        ("claude", "claude-haiku-5-5", "high"),
+        ("codex", "gpt-6-luna", "high"),
+        ("grok", "grok-4.7", "low"),
+        ("opencode_zai", "glm-5.3-flash", "high"),
+    ],
+    "adversary": [
+        ("claude", "claude-opus-5-5", "high"),
+        ("codex", "gpt-6-astra", "xhigh"),
+        ("grok", "grok-4.7", "high"),
+        ("kimi", "k3.1-pro", "high"),
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ],
 }
 
 
@@ -152,6 +196,17 @@ class LiveTableTests(unittest.TestCase):
                         for route in compile_profile_routes(chain_name, source)
                     ],
                     [(adapter, model) for adapter, model, _ in LIVE_LANES[chain_name]],
+                )
+                self.assertEqual(
+                    [
+                        (route.model, route.reasoning_effort)
+                        for route in compile_profile_routes(chain_name, source)
+                    ],
+                    [(model, effort) for _, model, effort in LIVE_LANES[chain_name]],
+                )
+                self.assertEqual(
+                    len({route.adapter for route in compile_profile_routes(chain_name, source)}),
+                    5,
                 )
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):

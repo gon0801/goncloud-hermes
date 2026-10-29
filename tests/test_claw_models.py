@@ -191,8 +191,32 @@ class RealFilesTests(unittest.TestCase):
         for agent, entry in desired.items():
             with self.subTest(agent=agent):
                 row = source["chains"][mapping["agents"][agent]["row"]]
-                self.assertEqual(entry["model"]["primary"], row[0].split(" ")[0])
-                self.assertEqual(len(entry["model"]["fallbacks"]), len(row) - 1)
+                self.assertEqual(len(row), 5)
+                self.assertEqual(len(entry["model"]["fallbacks"]), 4)
+                first = row[0].split(" ")[0]
+                self.assertEqual(
+                    entry["model"]["primary"], mapping["id_overrides"].get(first, first)
+                )
+        # DeepSeek is claw's second OpenCode Go account, also as codigo's primary.
+        implementer = desired["implementer"]
+        self.assertEqual(
+            implementer["model"]["primary"], "opencode-go-2/deepseek-v4.1-flash"
+        )
+        self.assertEqual(
+            implementer["models"]["opencode-go-2/deepseek-v4.1-flash"],
+            {"params": {"thinking": "xhigh"}},
+        )
+        defaults = module.desired_claw(source, mapping)["agents"]["defaults"]["model"]
+        self.assertEqual(defaults["primary"], "opencode-go-2/deepseek-v4.1-flash")
+        self.assertEqual(
+            defaults["fallbacks"],
+            [
+                "anthropic/claude-haiku-5-5",
+                "openai/gpt-6-luna",
+                "xai/grok-4.7",
+                "zai/glm-5.3-flash",
+            ],
+        )
         # Every specialist the gateway may dispatch has a chain in claw too.
         self.assertLessEqual(
             set(team["kanban"]["dispatch_profiles"]), set(mapping["agents"])
