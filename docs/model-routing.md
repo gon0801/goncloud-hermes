@@ -1,41 +1,40 @@
 # Enrutador de suscripciones: aceptacion local 2026-09-14
 
-Fuente autoritativa: `model-routing.source.json` (tabla v8 del propietario).
-Planear y codigo tienen F4 Astra/Sol xhigh; los demas carriles conservan F1 a F3. El
+Fuente autoritativa: `model-routing.source.json` (tabla v9 del propietario,
+2026-10-29). Todas las filas llevan primario y 4 respaldos, y en una fila no se
+repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go). GLM solo
+aparece en codigo, operativo y simples. Kimi queda fuera de operativo y
+simples. El
 mapa `profile_inheritance` reparte los 21 perfiles de Hermes (`default`
-incluido) asi: `claw` -> `dirigir-claw` (el carril DIRIGIR con effort high
-en el primario), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->
+incluido) asi: `claw` -> `dirigir-claw` (el mismo carril DIRIGIR que
+`dirigir`), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->
 `planear`, `implementer` -> `codigo`, `verifier` -> `verificar`, `scout` ->
 `investigar`, `operaciones`, `amazon`, `meli`, `odoo`, `pers` y `arras` ->
 `operativo`, `mail`, `limpia`, `gonserver`, `skillverif`, `tinkabot`,
 `eggbot` y `default` -> `simples`, y `adversary` -> `adversary`. Copilot y
 Copilot ACP siguen excluidos.
 
-## Directores: Sol por suscripcion (2026-10-26)
+## Directores: Sol por suscripcion
 
-Por decision del propietario, `dirigir` y `dirigir-claw` llevan Opus 5.5
-(high) → Sonnet 5.5 (high) → GPT-6.1 Sol (medium) → Kimi K3 (high).
-Sol reemplaza a GLM en la tercera posicion de estas dos filas. Hermes usa
-`openai-codex`; Claw usa el runtime `codex` del plugin Codex habilitado
+`dirigir` y `dirigir-claw` llevan Opus 5.5 (high) → GPT-6.1 Sol (medium) →
+Kimi K3.1 Pro (high) → Grok 4.7 (high) → DeepSeek V4.1 Flash (high). Hermes
+usa `openai-codex`; Claw usa el runtime `codex` del plugin Codex habilitado
 para `openai/gpt-6.1-sol`, permitido en `agents.defaults.modelPolicy.allow`.
 El app-server de Claw usa `homeScope: user` y el ejecutable Codex local
 verificado (0.163.0), no el 0.158.0 incluido en el plugin, que rechaza Sol 6.1.
-Ambos autentican con la suscripcion de ChatGPT, sin API key. Los demas carriles conservan sus modelos.
+Ambos autentican con la suscripcion de ChatGPT, sin API key.
 
-## Tabla v6: Anthropic por suscripcion (2026-10-17)
+## Suscripciones y cadena nativa
 
-Decision del propietario: los perfiles de Hermes van con Anthropic por SU
-SUSCRIPCION de Claude, no por una API de pago por token; ninguna posicion
-resuelve a una ruta API. `opencode-go` solo sirve DeepSeek Flash (y Muse
-Spark, que salio de la tabla); Fable queda fuera hasta confirmar el plan de
-Claude. El binding es por familia del modelo en TODAS las posiciones (ya no
-hay slots atados a cuentas). Los marcadores `(high)`, `(medium)` y `(low)`
-compilan a `agent.reasoning_overrides: {model: effort}`; `(off)` es una
-posicion sin parametro de razonamiento; todo marcador desconocido bloquea la
-compilacion. Kimi queda sin carriles automaticos de lotes
-(operativo/simples).
+Los perfiles de Hermes van con Anthropic por SU SUSCRIPCION de Claude, no por
+una API de pago por token; ninguna posicion resuelve a una ruta API.
+`opencode-go` solo sirve DeepSeek Flash; Fable queda fuera hasta confirmar el
+plan de Claude. El binding es por familia del modelo en TODAS las posiciones.
+Los marcadores `(xhigh)`, `(high)`, `(medium)` y `(low)` compilan a
+`agent.reasoning_overrides: {model: effort}`; `(off)` es una posicion sin
+parametro de razonamiento; todo marcador desconocido bloquea la compilacion.
 
-Ese dia alguien reescribio a mano en la PC la ruta de los 20 perfiles vivos
+El 2026-10-17 alguien reescribio a mano en la PC la ruta de los 20 perfiles vivos
 (transcripcion congelada en
 `tests/fixtures/rutas-vivas-20261017.json`), asi que el vivo dejo de coincidir
 con lo gestionado (`source_revision` 4e4112e) y `configure_team --check`

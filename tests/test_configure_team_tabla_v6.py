@@ -1,10 +1,11 @@
-"""The v8 table: every Hermes profile uses the owner's subscriptions.
+"""The v9 table: every Hermes profile uses the owner's subscriptions.
 
-Oracle built from ~/.local/state/encargos-loop/artifacts/H-tabla/lista-v6.md,
-never from the implementation, with the v8 code and review backups added:
-agent -> lane for the 21 Hermes profiles, Anthropic on the owner's Claude
-subscription (never a pay-per-token API route), "off" = no reasoning, no Fable,
-OpenCode Go only for Muse Spark (absent) and DeepSeek Flash.
+Oracle written from the owner's v9 table (2026-10-29), never from the
+implementation: agent -> lane for the 21 Hermes profiles, primary plus four
+backups per lane, no subscription repeated within a lane (Claude, ChatGPT,
+Kimi, Grok, Z.AI, OpenCode Go), GLM only in codigo, operativo and simples,
+Kimi out of operativo and simples, Anthropic on the owner's Claude
+subscription (never a pay-per-token API route), no Fable.
 """
 
 import hashlib
@@ -49,11 +50,16 @@ NATIVE = {
     "claude-haiku-5-5": ("anthropic", {}),
     "glm-5.3": ("zai", {"base_url": ZAI_URL}),
     "glm-5.3-flash": ("zai", {"base_url": ZAI_URL}),
-    "k3": ("kimi-coding", {"base_url": KIMI_URL, "api_mode": "chat_completions"}),
+    "k3.1-pro": (
+        "kimi-coding",
+        {"base_url": KIMI_URL, "api_mode": "chat_completions"},
+    ),
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
     "gpt-6.1-sol": ("openai-codex", {}),
+    "gpt-6.1-terra": ("openai-codex", {}),
     "gpt-6-astra": ("openai-codex", {}),
+    "gpt-6-luna": ("openai-codex", {}),
 }
 PREFIX = {
     "claude-opus-5-5": "anthropic",
@@ -61,65 +67,73 @@ PREFIX = {
     "claude-haiku-5-5": "anthropic",
     "glm-5.3": "zai",
     "glm-5.3-flash": "zai",
-    "k3": "kimi",
+    "k3.1-pro": "kimi",
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
     "gpt-6.1-sol": "openai",
+    "gpt-6.1-terra": "openai",
     "gpt-6-astra": "openai",
+    "gpt-6-luna": "openai",
 }
 
 DIRIGIR = [
     ("claude-opus-5-5", "high"),
-    ("claude-sonnet-5-5", "high"),
     ("gpt-6.1-sol", "medium"),
-    ("k3", "high"),
+    ("k3.1-pro", "high"),
+    ("grok-4.7", "high"),
+    ("deepseek-v4.1-flash", "high"),
 ]
 CARRILES = {
     "dirigir": DIRIGIR,
     "dirigir-claw": DIRIGIR,
     "planear": [
         ("claude-opus-5-5", "high"),
-        ("k3", "high"),
-        ("glm-5.3", "high"),
-        ("grok-4.7", "high"),
+        ("k3.1-pro", "high"),
         ("gpt-6-astra", "xhigh"),
+        ("grok-4.7", "high"),
+        ("deepseek-v4.1-flash", "high"),
     ],
     "codigo": [
-        ("claude-sonnet-5-5", "high"),
-        ("k3", "high"),
+        ("deepseek-v4.1-flash", "xhigh"),
+        ("k3.1-pro", "high"),
         ("glm-5.3", "high"),
         ("grok-4.7", "high"),
         ("gpt-6.1-sol", "xhigh"),
     ],
     "verificar": [
-        ("glm-5.3", "high"),
         ("grok-4.7", "high"),
+        ("gpt-6.1-sol", "high"),
         ("claude-sonnet-5-5", "high"),
-        ("k3", "high"),
+        ("k3.1-pro", "high"),
+        ("deepseek-v4.1-flash", "high"),
     ],
     "investigar": [
         ("grok-4.7", "medium"),
-        ("k3", "medium"),
-        ("glm-5.3", "medium"),
+        ("k3.1-pro", "high"),
+        ("gpt-6.1-terra", "medium"),
         ("claude-sonnet-5-5", "medium"),
+        ("deepseek-v4.1-flash", "high"),
     ],
     "operativo": [
-        ("claude-sonnet-5-5", "low"),
-        ("glm-5.3", "low"),
-        ("grok-4.7", "low"),
-        ("deepseek-v4.1-flash", "low"),
+        ("claude-sonnet-5-5", "medium"),
+        ("gpt-6.1-terra", "medium"),
+        ("grok-4.7", "medium"),
+        ("deepseek-v4.1-flash", "high"),
+        ("glm-5.3", "medium"),
     ],
     "simples": [
-        ("claude-haiku-5-5", "low"),
-        ("deepseek-v4.1-flash", "low"),
-        ("glm-5.3-flash", "low"),
+        ("deepseek-v4.1-flash", "high"),
+        ("claude-haiku-5-5", "high"),
+        ("gpt-6-luna", "high"),
         ("grok-4.7", "low"),
+        ("glm-5.3-flash", "high"),
     ],
     "adversary": [
         ("claude-opus-5-5", "high"),
+        ("gpt-6-astra", "xhigh"),
         ("grok-4.7", "high"),
-        ("k3", "high"),
-        ("glm-5.3", "high"),
+        ("k3.1-pro", "high"),
+        ("deepseek-v4.1-flash", "high"),
     ],
 }
 PROFILE_LANE = {
@@ -222,6 +236,38 @@ class PerfilV6Tests(unittest.TestCase):
                     expected_native(lane),
                     profile,
                 )
+
+    def test_lo_que_recibe_hermes_en_implementer_mail_y_claw(self):
+        implementer = configure_team.native_config(LIVE, "implementer")
+        self.assertEqual(
+            implementer["model"],
+            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+        )
+        self.assertEqual(
+            implementer["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"],
+            "xhigh",
+        )
+
+        mail = configure_team.native_config(LIVE, "mail")
+        self.assertEqual(
+            mail["model"],
+            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+        )
+        self.assertEqual(
+            mail["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"], "high"
+        )
+        self.assertEqual(len(mail["fallback_providers"]), 4)
+        self.assertEqual(
+            mail["fallback_providers"][-1],
+            {"provider": "zai", "model": "glm-5.3-flash", "base_url": ZAI_URL},
+        )
+
+        claw = configure_team.native_config(LIVE, "claw")
+        self.assertEqual(claw["model"]["default"], "claude-opus-5-5")
+        self.assertEqual(
+            [(f["provider"], f["model"]) for f in claw["fallback_providers"][:2]],
+            [("openai-codex", "gpt-6.1-sol"), ("kimi-coding", "k3.1-pro")],
+        )
 
     def test_claw_y_entrega_llevan_opus_high(self):
         # David, 2026-10-22: el director de Hermes y main de OpenClaw van en high.
@@ -785,30 +831,29 @@ class RaizDefaultTests(unittest.TestCase):
         config = yaml.safe_load(despues)
         self.assertEqual(
             config["model"],
-            {"provider": "anthropic", "default": "claude-haiku-5-5"},
+            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
         )
         self.assertEqual(
             config["fallback_providers"],
             [
-                {
-                    "provider": "opencode-go",
-                    "model": "deepseek-v4.1-flash",
-                },
+                {"provider": "anthropic", "model": "claude-haiku-5-5"},
+                {"provider": "openai-codex", "model": "gpt-6-luna"},
+                {"provider": "xai-oauth", "model": "grok-4.7"},
                 {
                     "provider": "zai",
                     "model": "glm-5.3-flash",
                     "base_url": "https://api.z.ai/api/coding/paas/v4",
                 },
-                {"provider": "xai-oauth", "model": "grok-4.7"},
             ],
         )
         self.assertEqual(
             config["agent"]["reasoning_overrides"],
             {
-                "claude-haiku-5-5": "low",
-                "deepseek-v4.1-flash": "low",
-                "glm-5.3-flash": "low",
+                "deepseek-v4.1-flash": "high",
+                "claude-haiku-5-5": "high",
+                "gpt-6-luna": "high",
                 "grok-4.7": "low",
+                "glm-5.3-flash": "high",
             },
         )
         # Every other key survives byte for byte, comments included.
@@ -859,7 +904,7 @@ class RaizDefaultTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         config = yaml.safe_load(self.raiz())
-        self.assertEqual(config["model"]["default"], "claude-haiku-5-5")
+        self.assertEqual(config["model"]["default"], "deepseek-v4.1-flash")
         self.assertEqual(config["platforms"], {"cli": ["web"]})
 
     def test_la_raiz_respeta_allow_regression(self):
