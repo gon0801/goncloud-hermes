@@ -7,7 +7,7 @@
     "version": "0.9.84",
     "digest": "sha256:b612e4b83e73c488d708ee9e6dba1586a95e636d50971f93a5337cc66e9f9003"
   },
-  "adaptacion": "sha256:940e45fc52690e0c9d761e7245d02bd424368682a3c2a0960149b79a903209e7",
+  "adaptacion": "sha256:fdd1b67659f34d4f2b5c4f40c0b1e1adf66a592eeb2c3f07760d586bf673034a",
   "bloque": "sha256:2b6182e54f22d27dfc19189d4f9f2add6ce3b65662afca681145d348bc737903",
   "excluidos": {
     "skills/poteto-openclaw/SKILL.md": "adaptacion de OpenClaw: su fuente no esta en G ni en pstack; Hermes usa adaptacion-hermes.md"
