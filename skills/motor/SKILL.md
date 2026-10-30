@@ -47,11 +47,12 @@ cd C:/Users/ehven/motor-sucesor
   --director hermes \
   --canal hermes \
   --clave "<id-del-mensaje>" \
+  --sesion "<id-de-la-conversacion>" \
   --base C:/Users/ehven/.motor-encargos \
   --archivo "<archivo-del-pedido>"
 ```
 
-Usa el mismo directorio, Python y base para `ver`, `parar`, `continuar`, `cancelar` y `avisar`. El canal `hermes` devuelve el resultado al transporte registrado para el director.
+Usa el mismo directorio, Python y base para `ver`, `parar`, `continuar`, `cancelar`, `responder` y `avisar`. El canal `hermes` devuelve el resultado al transporte registrado para el director.
 
 `motor entrega`, `motor estado` y `motor doctor --como-servicio` pertenecen al circuito anterior que usa `~/.motor`. No los uses para entregar ni comprobar encargos de `~/.motor-encargos`. Su diagnóstico no es un requisito para recibir un pedido en el motor nuevo. Un plan externo entra como contenido del pedido, sin un formato de bloques que deba pasar antes de comenzar.
 
@@ -113,7 +114,7 @@ El implementador usa poteto-mode. Sharpen, Architect, Arena y Figure-it-out se u
 
 Reutiliza el paquete poteto completo de Hermes. Vive en `shared/sistema-agentes/poteto/` de este repo: la skill `poteto-mode` completa en `skills/poteto-mode/SKILL.md`, sus playbooks y references, las skills `principle-*` y de especialidad, `adaptacion-hermes.md` y el manifiesto `hermes.json`. No lo sustituyas por el paquete abreviado del repo del motor (`paquetes/poteto/SKILL.md`): ese resumen no acredita la carga ni el uso del paquete completo. No asumas Cursor. No abras otro revisor DeepSeek: la revisión real es `goncloud-pr-review`.
 
-Estas guías no están activas en el perfil instalado. La fase 5 las instala. El perfil vivo sigue en `/Users/dn/motor-config/hermes`.
+El director carga la copia instalada en `skills/motor/SKILL.md` de su perfil de Hermes.
 
 ## Modelos
 
