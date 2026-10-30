@@ -129,3 +129,5 @@ Cuando David pida Muse Wonder para implementar y Kimi 3.1 para revisar, añade a
 ```
 
 Estas opciones pertenecen a ese encargo. Si David no eligió modelos, omítelas para usar la cadena compartida.
+
+En las etapas nativas de Hermes, compara `model` del intento que implementó con el del intento que revisó. `goncloud_subscription_status` con `workflow_id` y `stage_id` devuelve esa evidencia sin llamar a un modelo. El router no excluye por sí solo al modelo del implementador y `goncloud_subscription_run` no permite escoger otra posición. Si coinciden, informa al director que falta una revisión por otro modelo. Para un encargo nuevo del motor existe `--revisor <modelo-de-la-tabla>`; esa selección pertenece al encargo y no modifica la tabla ni una etapa nativa ya lanzada.
