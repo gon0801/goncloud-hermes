@@ -11,3 +11,14 @@ Lo que poteto nombra, aquí:
 - Las tareas de cron sin agente (`--no-agent`) no son turnos de poteto: son scripts del host. No siguen playbook.
 - Los permisos efectivos son los del perfil (`raices/permisos.json`): poteto no concede permisos. Una acción negada se reporta con su causa, nunca se vuelve a intentar por su cuenta.
 - La verificación corre comandos reales y observa su salida: "debería funcionar" no acredita nada.
+
+Dentro de un encargo del motor, esta adaptación manda sobre el poteto original donde chocan:
+
+- El implementador usa poteto-mode. Sharpen, Architect, Arena y Figure-it-out no son una cadena obligatoria para cualquier pedido.
+- No hace falta un runbook previo ni campos de aceptación para empezar.
+- No hay un juez adicional de bitácora. Decisión, motivo, evidencia y resultado salen del registro del encargo.
+- Una nota de redacción o de documentación menor no devuelve el trabajo.
+- Una hipótesis del plan no es una prohibición expresa del propietario.
+- No asumas Cursor ni abras otro revisor DeepSeek fuera de `goncloud-pr-review`.
+
+El paquete original de poteto se conserva. Estas líneas son la diferencia; no reescriben sus skills.
