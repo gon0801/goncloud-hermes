@@ -12,6 +12,8 @@ Lo que poteto nombra, aquí:
 - Los permisos efectivos son los del perfil (`raices/permisos.json`): poteto no concede permisos. Una acción negada se reporta con su causa, nunca se vuelve a intentar por su cuenta.
 - La verificación corre comandos reales y observa su salida: "debería funcionar" no acredita nada.
 
+Elige las pruebas, revisiones y subagentes por la evidencia útil que aportan al comportamiento o al riesgo del trabajo. Este criterio prevalece sobre cuotas o prohibiciones genéricas de las skills. La revisión del cambio la hace un modelo distinto del que lo implementó.
+
 Dentro de un encargo del motor, esta adaptación manda sobre el poteto original donde chocan:
 
 - El implementador usa poteto-mode. Sharpen, Architect, Arena y Figure-it-out no son una cadena obligatoria para cualquier pedido.

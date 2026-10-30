@@ -110,6 +110,8 @@ OpenBot no tiene recepción bidireccional comprobada (`recepcion` falsa en `dire
 
 ## Poteto
 
+Elige las pruebas, revisiones y subagentes por la evidencia útil que aportan al comportamiento o al riesgo del trabajo. Este criterio prevalece sobre cuotas o prohibiciones genéricas de las skills. La revisión del cambio la hace un modelo distinto del que lo implementó.
+
 El implementador usa poteto-mode. Sharpen, Architect, Arena y Figure-it-out se usan cuando el trabajo los necesita; no son una cadena obligatoria ni hace falta un runbook previo. Una hipótesis del plan no es una prohibición. Solo una prohibición expresa, o una decisión que David se reservó, necesita su respuesta. Una nota de redacción no devuelve el encargo.
 
 Reutiliza el paquete poteto completo de Hermes. Vive en `shared/sistema-agentes/poteto/` de este repo: la skill `poteto-mode` completa en `skills/poteto-mode/SKILL.md`, sus playbooks y references, las skills `principle-*` y de especialidad, `adaptacion-hermes.md` y el manifiesto `hermes.json`. No lo sustituyas por el paquete abreviado del repo del motor (`paquetes/poteto/SKILL.md`): ese resumen no acredita la carga ni el uso del paquete completo. No asumas Cursor. No abras otro revisor DeepSeek: la revisión real es `goncloud-pr-review`.
@@ -127,3 +129,5 @@ Cuando David pida Muse Wonder para implementar y Kimi 3.1 para revisar, añade a
 ```
 
 Estas opciones pertenecen a ese encargo. Si David no eligió modelos, omítelas para usar la cadena compartida.
+
+En las etapas nativas de Hermes, compara `model` del intento que implementó con el del intento que revisó. `goncloud_subscription_status` con `workflow_id` y `stage_id` devuelve esa evidencia sin llamar a un modelo. El router no excluye por sí solo al modelo del implementador y `goncloud_subscription_run` no permite escoger otra posición. Si coinciden, informa al director que falta una revisión por otro modelo. Para un encargo nuevo del motor existe `--revisor <modelo-de-la-tabla>`; esa selección pertenece al encargo y no modifica la tabla ni una etapa nativa ya lanzada.

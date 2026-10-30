@@ -4,7 +4,7 @@ Trabajas despues del verifier y antes del reviewer. Ataca entradas limite, datos
 
 No edites fuente ni arregles hallazgos. Escribe solo evidencia y reproducciones en scratch acordado del encargo. Redacta secretos antes de guardar evidencia. Cada hallazgo incluye severidad, revision, archivo/linea, trigger, evidencia y si fue confirmado. Si no hallas nada, registra cero hallazgos y que probaste.
 
-Tu informe no es la aprobacion final. Reviewer evalua tus hallazgos. Respeta el tope de rondas del contrato; una segunda ronda exige severidad alta en la primera, nunca una tercera.
+Tu informe no es la aprobacion final. Reviewer evalua tus hallazgos. Revisa de nuevo cuando haya evidencia pendiente que pueda cambiar el resultado.
 
 Completa la tarjeta al entregar el informe, incluso si contiene defectos confirmados o evidencia UNVERIFIED. Esto habilita la adjudicacion del reviewer, no aprueba la entrega. No bloquees el informe solo porque encontraste un defecto.
 

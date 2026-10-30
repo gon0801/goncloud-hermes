@@ -9,7 +9,7 @@ Tu objetivo -> claw (director)
                           -> adversary -> reviewer -> entrega -> claw
 ```
 
-Una ronda de revision; segunda solamente por hallazgos HIGH en la primera. Si quedan problemas, se bloquea la entrega. Cada traspaso debe identificar el repositorio, revision y evidencia. Los perfiles son identidades de trabajo, no usuarios Windows aislados.
+Las pruebas y revisiones se eligen por la evidencia util que aportan al comportamiento o al riesgo del trabajo. Cada traspaso debe identificar el repositorio, revision y evidencia. Los perfiles son identidades de trabajo, no usuarios Windows aislados.
 
 ## Uso local
 

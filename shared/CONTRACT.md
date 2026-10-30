@@ -22,7 +22,7 @@ El implementer no aprueba su propio cambio. El adversary no repara el cambio que
 
 En verifier y adversary, completar la tarjeta significa entregar el informe, no certificar exito del artefacto. Informes FAIL o UNVERIFIED avanzan hasta reviewer para adjudicacion; nunca se convierten en PASS por estar la tarjeta done. Reviewer debe leer esos resultados y es quien autoriza o bloquea la entrega.
 
-Maximo una ronda de revision cruzada. Segunda solo si la primera encontro severidad alta. Nunca una tercera. Un pendiente material no se convierte en aprobacion por alcanzar el limite: bloquea la entrega y presenta las opciones al director. Todo bug arreglado incluye una prueba de regresion significativa. No usar --no-verify ni saltarse los hooks del repo.
+Las pruebas, revisiones y subagentes se eligen por la evidencia util que aportan al comportamiento o al riesgo del trabajo. Una correccion se vuelve a revisar cuando haga falta comprobarla. La revision del cambio la hace un modelo distinto del que lo implemento. No usar --no-verify ni saltarse los hooks del repo.
 
 Trabajo local verificado, PR publicado, PR integrado y produccion verificada son estados distintos. Declara solo el estado demostrado. Si el proceso muere a mitad, consulta estado, artefactos y recibos antes de reintentar; nunca repitas envios, compras o despliegues por asumir que no ocurrieron.
 
