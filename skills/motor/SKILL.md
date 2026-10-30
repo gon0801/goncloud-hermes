@@ -27,11 +27,14 @@ python3 -B -m motor director encargar \
   --director hermes \
   --canal <canal-de-origen> \
   --clave "<id-del-mensaje>" \
+  --sesion "<id-de-la-conversacion>" \
   --base <base-del-motor> \
   --archivo <plan-o-pedido.txt>
 ```
 
-Sin archivo, el mismo encargo lleva `--texto "<pedido>"`. `hermes`, `claw` y `openbot` son los directores válidos. La clave identifica el pedido: retransmitir con la misma clave no duplica el encargo.
+Sin archivo, el mismo encargo lleva `--texto "<pedido>"`. Pasa también lo que David sí dijo: `--restriccion` por cada prohibición expresa, `--repo` y `--base-rama` si hay repositorio, y `--responsable` / `--revisor` si eligió modelos. No inventes esos campos. `hermes`, `claw` y `openbot` son los directores válidos. La clave identifica el pedido: retransmitir con la misma clave no duplica el encargo.
+
+Si el pedido es código con GitHub y David no pidió dejarlo local, añade `--entrega pr` o omite `--entrega`. Con `--repo` y sin nivel explícito el motor no cierra en local. Un pedido expresamente local lleva `--entrega terminado`. Integrar o desplegar solo si lo autorizó (`integrado` o `desplegado`).
 
 ## Motor nativo de la PC
 
@@ -44,11 +47,12 @@ cd C:/Users/ehven/motor-sucesor
   --director hermes \
   --canal hermes \
   --clave "<id-del-mensaje>" \
+  --sesion "<id-de-la-conversacion>" \
   --base C:/Users/ehven/.motor-encargos \
   --archivo "<archivo-del-pedido>"
 ```
 
-Usa el mismo directorio, Python y base para `ver`, `parar`, `continuar`, `cancelar` y `avisar`. El canal `hermes` devuelve el resultado al transporte registrado para el director.
+Usa el mismo directorio, Python y base para `ver`, `parar`, `continuar`, `cancelar`, `responder` y `avisar`. El canal `hermes` devuelve el resultado al transporte registrado para el director.
 
 `motor entrega`, `motor estado` y `motor doctor --como-servicio` pertenecen al circuito anterior que usa `~/.motor`. No los uses para entregar ni comprobar encargos de `~/.motor-encargos`. Su diagnóstico no es un requisito para recibir un pedido en el motor nuevo. Un plan externo entra como contenido del pedido, sin un formato de bloques que deba pasar antes de comenzar.
 
@@ -82,11 +86,35 @@ El resultado vuelve al canal de origen aunque este turno cierre. Si el aviso fal
 python3 -B -m motor director avisar --base <base-del-motor>
 ```
 
-Cuando David pregunta "¿cómo va?", consulta con `ver` y contesta en una o dos frases de usuario.
+Cuando David pregunta "¿cómo va?", consulta con `ver` y contesta en una o dos frases de usuario. `ver` trae `seguimiento` (fase actual, resultado, necesidad pendiente, última decisión, revisión y PR) y `bitacora` (decisión, motivo, evidencia y resultado). Esa bitácora sale del registro. No hay otro juez.
+
+`avisar` manda solo un cambio real. Un aviso con `novedad` falsa no se vuelve a contar. `entregado` verdadero exige recibo del transporte. Un archivo local no es un mensaje entregado. Si no hay novedad, no llames a un modelo para decir que sigue igual. Una espera trae su causa en `seguimiento.espera`; el trabajo queda en el mismo encargo.
+
+## Responder en el mismo encargo
+
+Una pregunta del puente llega en un aviso `tipo` `pregunta`, con `solicitud`. La respuesta usa el mismo encargo y el canal de origen. No abras otro encargo.
+
+```sh
+python3 -B -m motor director responder <encargo> \
+  --base <base-del-motor> \
+  --solicitud <id-de-la-pregunta> \
+  --respuesta "<texto de David>" \
+  --clave "<id-del-mensaje>" \
+  --canal <canal-de-origen> \
+  --sesion "<id-de-la-conversacion>"
+```
+
+La misma clave no repite el efecto. Una respuesta tardía no autoriza otra pregunta. Si el canal no coincide, el motor la rechaza.
+
+OpenBot no tiene recepción bidireccional comprobada (`recepcion` falsa en `director capacidades-openbot`). En ese director la vía para responder al mismo registro es este comando CLI. No presentes un archivo de `canal/` como si David ya lo hubiera recibido.
 
 ## Poteto
 
-Reutiliza el paquete poteto completo de Hermes. Vive en `shared/sistema-agentes/poteto/` de este repo: la skill `poteto-mode` completa en `skills/poteto-mode/SKILL.md`, sus playbooks y references, las skills `principle-*` y de especialidad, `adaptacion-hermes.md` y el manifiesto `hermes.json`. No lo sustituyas por el paquete abreviado de 16 líneas del repo del motor (`paquetes/poteto/SKILL.md`): ese resumen no acredita la carga ni el uso del paquete completo.
+El implementador usa poteto-mode. Sharpen, Architect, Arena y Figure-it-out se usan cuando el trabajo los necesita; no son una cadena obligatoria ni hace falta un runbook previo. Una hipótesis del plan no es una prohibición. Solo una prohibición expresa, o una decisión que David se reservó, necesita su respuesta. Una nota de redacción no devuelve el encargo.
+
+Reutiliza el paquete poteto completo de Hermes. Vive en `shared/sistema-agentes/poteto/` de este repo: la skill `poteto-mode` completa en `skills/poteto-mode/SKILL.md`, sus playbooks y references, las skills `principle-*` y de especialidad, `adaptacion-hermes.md` y el manifiesto `hermes.json`. No lo sustituyas por el paquete abreviado del repo del motor (`paquetes/poteto/SKILL.md`): ese resumen no acredita la carga ni el uso del paquete completo. No asumas Cursor. No abras otro revisor DeepSeek: la revisión real es `goncloud-pr-review`.
+
+El director carga la copia instalada en `skills/motor/SKILL.md` de su perfil de Hermes.
 
 ## Modelos
 
