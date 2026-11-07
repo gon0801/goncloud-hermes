@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: gon0801/goncloud-pr-review
-          ref: 4ba622fdaeabfb05ae5e5aa92007408149b9bca9
+          ref: 23d92bd4b579eec66bd4c4865ece2edc06c4677f
           path: ai-review-code
           persist-credentials: false
       - name: validar entradas
@@ -129,6 +129,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
           MAX_TURNS: ${{ vars.AI_REVIEW_MAX_TURNS || 'auto' }}
+          REVIEW_BUDGET_SECONDS: ${{ vars.AI_REVIEW_BUDGET_SECONDS || '1320' }}
         run: python "$GITHUB_WORKSPACE/ai-review-code/review.py" run --work "${RUNNER_TEMP}/ai-review"
       - name: cerrar el resultado para el coordinador
         id: cerrar
