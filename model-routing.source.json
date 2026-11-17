@@ -38,14 +38,14 @@
   "chains": {
     "dirigir": [
       "anthropic/claude-opus-5-5 (high)",
-      "openai/gpt-6.2-sol (medium)",
+      "openai/gpt-6.1-sol (medium)",
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "opencode-go/deepseek-v4.1-flash (high)"
     ],
     "dirigir-claw": [
       "anthropic/claude-opus-5-5 (high)",
-      "openai/gpt-6.2-sol (medium)",
+      "openai/gpt-6.1-sol (medium)",
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "opencode-go/deepseek-v4.1-flash (high)"
@@ -62,11 +62,11 @@
       "kimi/k3.1-pro (high)",
       "zai/glm-5.3 (high)",
       "xai/grok-4.7 (high)",
-      "openai/gpt-6.2-sol (xhigh)"
+      "openai/gpt-6.1-sol (xhigh)"
     ],
     "verificar": [
       "xai/grok-4.7 (high)",
-      "openai/gpt-6.2-sol (high)",
+      "openai/gpt-6.1-sol (high)",
       "anthropic/claude-sonnet-5-5 (high)",
       "kimi/k3.1-pro (high)",
       "opencode-go/deepseek-v4.1-flash (high)"
