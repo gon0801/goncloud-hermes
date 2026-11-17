@@ -53,7 +53,7 @@
     "planear": [
       "anthropic/claude-opus-5-5 (high)",
       "kimi/k3.1-pro (high)",
-      "openai/gpt-6-astra (xhigh)",
+      "openai/gpt-6.2-astra (xhigh)",
       "xai/grok-4.7 (high)",
       "opencode-go/deepseek-v4.1-flash (high)"
     ],
@@ -94,7 +94,7 @@
     ],
     "adversary": [
       "anthropic/claude-opus-5-5 (high)",
-      "openai/gpt-6-astra (xhigh)",
+      "openai/gpt-6.2-astra (xhigh)",
       "xai/grok-4.7 (high)",
       "kimi/k3.1-pro (high)",
       "opencode-go/deepseek-v4.1-flash (high)"
