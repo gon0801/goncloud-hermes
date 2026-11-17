@@ -193,8 +193,8 @@ class FakeRun:
             "git status": Ran(0, "", ""),
             "probe 3": Ran(0, PROBE_OK, ""),
             "git commit": Ran(0, "", ""),
-            "configure": Ran(0, "Configured claw\n", ""),
-            "configure --check": Ran(0, "Check passed\n", ""),
+            "configure --preserve-local-soul": Ran(0, "Configured claw\n", ""),
+            "configure --preserve-local-soul --check": Ran(0, "Check passed\n", ""),
             "turn": Ran(0, PONG_TURN, ""),
             "git revert": Ran(0, "", ""),
             "git pull": Ran(0, "", ""),
@@ -264,8 +264,8 @@ class RunnerTests(unittest.TestCase):
                 "probe 3",
                 "turn",
                 "git commit",
-                "configure",
-                "configure --check",
+                "configure --preserve-local-soul",
+                "configure --preserve-local-soul --check",
                 "turn",
                 "git pull",
                 "git push",
@@ -325,11 +325,11 @@ class RunnerTests(unittest.TestCase):
                 "probe 3",
                 "turn",
                 "git commit",
-                "configure",
-                "configure --check",
+                "configure --preserve-local-soul",
+                "configure --preserve-local-soul --check",
                 "turn",
                 "git revert",
-                "configure",
+                "configure --preserve-local-soul",
             ],
         )
         self.assertEqual(
@@ -346,7 +346,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual([(o.status, o.detail) for o in outcomes], [("cambiado", "")])
 
     def test_a_failed_check_reverts_too(self):
-        run = FakeRun({"configure --check": Ran(1, "", "conflict in claw/config.yaml")})
+        run = FakeRun({"configure --preserve-local-soul --check": Ran(1, "", "conflict in claw/config.yaml")})
 
         outcomes = self.go(run)
 
@@ -369,8 +369,8 @@ class RunnerTests(unittest.TestCase):
                 "probe 3",
                 "turn",
                 "git commit",
-                "configure",
-                "configure --check",
+                "configure --preserve-local-soul",
+                "configure --preserve-local-soul --check",
                 "turn",
                 "git pull",
                 "git push",

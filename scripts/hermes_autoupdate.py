@@ -148,7 +148,11 @@ def _pong_problem(setup, run):
 def promote(setup, promotion, run, budget):
     """Probe, switch, deploy and check one promotion; revert when the check fails."""
     git = [setup.git, "-C", str(setup.checkout)]
-    configure = [setup.python, str(setup.checkout / "scripts/configure_team.py")]
+    configure = [
+        setup.python,
+        str(setup.checkout / "scripts/configure_team.py"),
+        "--preserve-local-soul",
+    ]
     table = setup.checkout / TABLE
     old, new = promotion.old_ref, promotion.new_ref
 
