@@ -33,7 +33,8 @@ def prompt_de(perfil: str, tarea: str, generacion, digest: str) -> str:
     return (
         f"Tarea: {tarea}\n\n"
         "Antes de usar cualquier otra herramienta, carga la skill `poteto-mode` "
-        "con la herramienta `skill` y sigue su playbook. La adaptación de este "
+        "con la herramienta `skill`. Usa un playbook cuando el trabajo lo necesita. "
+        "La adaptación de este "
         "runtime es `skills/poteto-hermes/SKILL.md`: lo que poteto nombra, "
         "ella lo traduce. El despliegue fijado de este perfil es "
         f"generacion={generacion} digest={digest}; si lo desplegado no cuadra "

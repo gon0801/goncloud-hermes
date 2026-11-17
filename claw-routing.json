@@ -40,47 +40,47 @@
     },
     "amazon": {
       "row": "operativo",
-      "thinking": false
+      "thinking": true
     },
     "pers": {
       "row": "operativo",
-      "thinking": false
+      "thinking": true
     },
     "meli": {
       "row": "operativo",
-      "thinking": false
+      "thinking": true
     },
     "mail": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     },
     "limpia": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     },
     "odoo": {
       "row": "operativo",
-      "thinking": false
+      "thinking": true
     },
     "arras": {
       "row": "operativo",
-      "thinking": false
+      "thinking": true
     },
     "gonserver": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     },
     "skillverif": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     },
     "tinkabot": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     },
     "eggbot": {
       "row": "simples",
-      "thinking": false
+      "thinking": true
     }
   }
 }
