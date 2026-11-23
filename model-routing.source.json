@@ -60,7 +60,7 @@
     "codigo": [
       "opencode-go/deepseek-v4.1-flash (xhigh)",
       "kimi/k3.1-pro (high)",
-      "zai/glm-5.4 (high)",
+      "zai/glm-5.3 (high)",
       "xai/grok-4.7 (high)",
       "openai/gpt-6.2-sol (xhigh)"
     ],
@@ -83,7 +83,7 @@
       "openai/gpt-6.1-terra (medium)",
       "xai/grok-4.7 (medium)",
       "opencode-go/deepseek-v4.1-flash (high)",
-      "zai/glm-5.4 (medium)"
+      "zai/glm-5.3 (medium)"
     ],
     "simples": [
       "opencode-go/deepseek-v4.1-flash (high)",
