@@ -82,6 +82,18 @@
     "eggbot": {
       "row": "simples",
       "thinking": true
+    },
+    "plano": {
+      "row": "planear",
+      "thinking": true
+    },
+    "shopify": {
+      "row": "operativo",
+      "thinking": true
+    },
+    "taller": {
+      "row": "simples",
+      "thinking": true
     }
   }
 }

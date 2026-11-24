@@ -68,6 +68,9 @@ TEAM_ROLES = (
     "skillverif",
     "tinkabot",
     "eggbot",
+    "plano",
+    "shopify",
+    "taller",
 )
 INITIAL_STAGES = (
     "scout",

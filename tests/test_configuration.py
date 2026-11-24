@@ -183,7 +183,7 @@ class ConfigurationTests(unittest.TestCase):
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
 
         allowed = team["kanban"]["dispatch_profiles"]
-        self.assertEqual(len(allowed), 11)
+        self.assertEqual(len(allowed), 14)
         self.assertEqual(set(allowed) & set(team["profiles"]), set())
         self.assertEqual(
             module.root_kanban_policy(team),

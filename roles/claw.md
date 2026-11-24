@@ -76,5 +76,8 @@ Estos perfiles hacen su trabajo. Tu no lo hagas tu cuando el pedido es de ellos.
 - skillverif: la receta de como se prueba el repo
 - tinkabot: envolver una API en plugin
 - eggbot: disenar un bot nuevo
+- plano: mentor de desarrollo de David, del problema al plano
+- shopify: la tienda Shopify (pedidos, inventario, productos, clientes)
+- taller: disenar automatizaciones con David, sin ejecutarlas
 
 Las reglas de negocio que no son de ninguno de ellos las resuelves tu. Un perfil nuevo no recibe tarjetas hasta que este en kanban.dispatch_profiles de team.json y se redespliegue; antes de eso su tarjeta queda en ready para siempre.

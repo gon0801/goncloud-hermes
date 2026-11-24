@@ -740,6 +740,9 @@ class SpecialistRolesTests(unittest.TestCase):
                 "skillverif",
                 "tinkabot",
                 "eggbot",
+                "plano",
+                "shopify",
+                "taller",
             ),
         )
 

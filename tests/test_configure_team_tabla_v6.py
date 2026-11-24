@@ -152,6 +152,10 @@ PROFILE_LANE = {
     "eggbot": "simples",
     "default": "simples",
     "adversary": "adversary",
+    # David, 2026-11-23: los mismos agentes en los cuatro sistemas.
+    "plano": "planear",
+    "shopify": "operativo",
+    "taller": "simples",
 }
 
 
@@ -189,13 +193,14 @@ def load_plugins():
 
 
 class PerfilV6Tests(unittest.TestCase):
-    """Every one of the 20 profiles compiles to exactly its v6 lane."""
+    """Every one of the 23 profiles compiles to exactly its v6 lane."""
 
     def test_cada_perfil_compila_su_carril_v6(self):
         compile_profile_routes = load_plugins()
-        # David retiro el perfil entrega el 2026-11-23: la tabla viva lleva
-        # exactamente los 20 perfiles del oraculo, ni uno mas.
-        self.assertEqual(len(PROFILE_LANE), 20)
+        # David retiro el perfil entrega y sumo plano, shopify y taller el
+        # 2026-11-23: la tabla viva lleva exactamente los 23 perfiles del
+        # oraculo, ni uno mas.
+        self.assertEqual(len(PROFILE_LANE), 23)
         self.assertEqual(set(LIVE["profile_inheritance"]), set(PROFILE_LANE))
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(perfil=profile, carril=lane):
@@ -589,8 +594,8 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         cls.addClassCleanup(cleanup_temp_directory, cls.tmp)
         cls.runtime = Path(cls.tmp.name) / "runtime"
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
-        # The eleven specialists are the owner's: on the PC they already
-        # exist, so every deploy configures all 19 managed profiles.
+        # The fourteen specialists are the owner's: on the PC they already
+        # exist, so every deploy configures all 22 managed profiles.
         for role in team["kanban"]["dispatch_profiles"]:
             directory = cls.runtime / "profiles" / role
             directory.mkdir(parents=True)
@@ -642,11 +647,11 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         second = self.deploy()
         after = self.snapshot()
 
-        self.assertEqual(second.stdout.count("Configured "), 19)
+        self.assertEqual(second.stdout.count("Configured "), 22)
         self.assertEqual(after, before, "la segunda aplicacion reescribio archivos")
         third = self.deploy()
         self.assertEqual(self.snapshot(), before, "la tercera aplicacion reescribio")
-        self.assertEqual(third.stdout.count("Configured "), 19)
+        self.assertEqual(third.stdout.count("Configured "), 22)
 
     def test_02_el_model_editado_a_manode_un_perfil_conflicta_sin_bandera(self):
         config_path = self.runtime / "profiles/scout/config.yaml"
@@ -681,7 +686,7 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
 
     def test_03_con_bandera_el_edit_se_adopta_y_aplica_la_v6(self):
         result = self.deploy("--adoptar-ruteo-manual")
-        self.assertEqual(result.stdout.count("Configured "), 19)
+        self.assertEqual(result.stdout.count("Configured "), 22)
 
         config_path = self.runtime / "profiles/scout/config.yaml"
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))

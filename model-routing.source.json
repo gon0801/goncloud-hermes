@@ -34,7 +34,10 @@
     "skillverif": "simples",
     "tinkabot": "simples",
     "eggbot": "simples",
-    "default": "simples"
+    "default": "simples",
+    "plano": "planear",
+    "shopify": "operativo",
+    "taller": "simples"
   },
   "chains": {
     "dirigir": [
