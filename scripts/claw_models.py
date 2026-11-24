@@ -31,7 +31,7 @@ def desired_agent(labels, mapping, *, thinking):
     cells = [split_label(label) for label in labels]
     overrides = mapping.get("id_overrides", {})
     ids = [overrides.get(model, model) for model, _ in cells]
-    if cells[1][0] == cells[0][0]:
+    if len(cells) > 1 and cells[1][0] == cells[0][0]:
         # The table repeats position 0 to mean "same model, second OpenCode Go
         # account"; claw addresses that account as a provider of its own.
         provider, model = ids[0].split("/", 1)
