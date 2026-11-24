@@ -645,7 +645,7 @@ class DirectorNativeChainTests(unittest.TestCase):
                 timeout=120,
             )
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
-            self.assertIn("Check passed: 9 profiles", fresh.stdout)
+            self.assertIn("Check passed: 8 profiles", fresh.stdout)
             self.assertIn("Root dispatch allowlist: would be written", fresh.stdout)
             self.assertFalse((runtime / "profiles" / "claw").exists())
             self.assertFalse((runtime / "config.yaml").exists())
@@ -850,7 +850,7 @@ class DirectorNativeChainTests(unittest.TestCase):
             )
             self.assertEqual(first.returncode, 0, first.stderr)
             roles = json.loads((ROOT / "team.json").read_text())["profiles"]
-            self.assertEqual(len(roles), 9)
+            self.assertEqual(len(roles), 8)
             for role in roles:
                 profile = runtime / "profiles" / role
                 config = yaml.safe_load(

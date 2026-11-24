@@ -29,7 +29,6 @@ def load_live_source() -> dict:
 #: Agent -> lane for the frozen fixture and the live table.
 PROFILE_LANE = {
     "claw": "dirigir-claw",
-    "entrega": "dirigir",
     "ingenieria": "planear",
     "reviewer": "planear",
     "implementer": "codigo",

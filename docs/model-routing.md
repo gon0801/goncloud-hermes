@@ -5,9 +5,10 @@ Fuente autoritativa: `model-routing.source.json` (tabla v9 del propietario,
 repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go). GLM solo
 aparece en codigo, operativo y simples. Kimi queda fuera de operativo y
 simples. El
-mapa `profile_inheritance` reparte los 21 perfiles de Hermes (`default`
+mapa `profile_inheritance` reparte los 20 perfiles de Hermes (`default`
 incluido) asi: `claw` -> `dirigir-claw` (el mismo carril DIRIGIR que
-`dirigir`), `entrega` -> `dirigir`, `ingenieria` y `reviewer` ->
+`dirigir`, que ningun perfil de Hermes usa desde que David retiro `entrega`
+el 2026-11-23), `ingenieria` y `reviewer` ->
 `planear`, `implementer` -> `codigo`, `verifier` -> `verificar`, `scout` ->
 `investigar`, `operaciones`, `amazon`, `meli`, `odoo`, `pers` y `arras` ->
 `operativo`, `mail`, `limpia`, `gonserver`, `skillverif`, `tinkabot`,

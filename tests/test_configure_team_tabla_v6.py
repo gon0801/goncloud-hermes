@@ -1,7 +1,7 @@
 """The v10-B table: every Hermes profile uses the owner's subscriptions.
 
 Oracle written from the owner's v10-B table (David, 2026-11-23), never from
-the implementation: agent -> lane for the 21 Hermes profiles, primary plus
+the implementation: agent -> lane for the 20 Hermes profiles, primary plus
 five backups per lane in the order Claude, ChatGPT, Kimi, Grok, Z.AI,
 OpenCode Go (no subscription repeated within a lane), simples on DeepSeek
 Flash alone, Anthropic on the owner's Claude subscription (never a
@@ -32,6 +32,9 @@ LIVE = json.loads((ROOT / "model-routing.source.json").read_text(encoding="utf-8
 VIVO = json.loads(
     (ROOT / "tests/fixtures/rutas-vivas-20261017.json").read_text(encoding="utf-8")
 )
+#: David retiro el perfil entrega el 2026-11-23: el despliegue ya no lo
+#: gestiona, asi que la PC que modela esta foto congelada no lo lleva.
+VIVO.pop("entrega")
 #: These homes model the PC before the JEV plugins (2026-10-18): the
 #: reconciliation would demand both external repos at their pinned commits,
 #: which a throwaway home never has. The plugin behavior has its own suite,
@@ -130,7 +133,6 @@ CARRILES = {
 }
 PROFILE_LANE = {
     "claw": "dirigir-claw",
-    "entrega": "dirigir",
     "ingenieria": "planear",
     "reviewer": "planear",
     "implementer": "codigo",
@@ -187,11 +189,14 @@ def load_plugins():
 
 
 class PerfilV6Tests(unittest.TestCase):
-    """Every one of the 21 profiles compiles to exactly its v6 lane."""
+    """Every one of the 20 profiles compiles to exactly its v6 lane."""
 
     def test_cada_perfil_compila_su_carril_v6(self):
         compile_profile_routes = load_plugins()
-        self.assertEqual(len(PROFILE_LANE), 21)
+        # David retiro el perfil entrega el 2026-11-23: la tabla viva lleva
+        # exactamente los 20 perfiles del oraculo, ni uno mas.
+        self.assertEqual(len(PROFILE_LANE), 20)
+        self.assertEqual(set(LIVE["profile_inheritance"]), set(PROFILE_LANE))
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(perfil=profile, carril=lane):
                 routes = compile_profile_routes(profile, LIVE)
@@ -275,17 +280,18 @@ class PerfilV6Tests(unittest.TestCase):
             [("openai-codex", "gpt-6.2-sol"), ("kimi-coding", "k3.1-pro")],
         )
 
-    def test_claw_y_entrega_llevan_opus_high(self):
-        # David, 2026-10-22: el director de Hermes y main de OpenClaw van en high.
+    def test_claw_y_dirigir_llevan_opus_high(self):
+        # David, 2026-10-22: el director de Hermes y main de OpenClaw (carril
+        # dirigir) van en high.
         claw = configure_team.native_config(LIVE, "claw")
-        entrega = configure_team.native_config(LIVE, "entrega")
+        dirigir = configure_team.native_config(LIVE, "dirigir")
         self.assertEqual(
             claw["agent"]["reasoning_overrides"]["claude-opus-5-5"], "high"
         )
         self.assertEqual(
-            entrega["agent"]["reasoning_overrides"]["claude-opus-5-5"], "high"
+            dirigir["agent"]["reasoning_overrides"]["claude-opus-5-5"], "high"
         )
-        self.assertEqual(claw["fallback_providers"], entrega["fallback_providers"])
+        self.assertEqual(claw["fallback_providers"], dirigir["fallback_providers"])
 
 
 def effective_previous(previous, adopted):
@@ -474,7 +480,7 @@ class AdopcionEndToEndTests(unittest.TestCase):
                 raise AssertionError(
                     f"deploy con bandera fallo: {result.stderr}\n{result.stdout}"
                 )
-            assert result.stdout.count("Configured ") == 20, result.stdout
+            assert result.stdout.count("Configured ") == 19, result.stdout
         else:
             if result.returncode == 0:
                 raise AssertionError(
@@ -584,7 +590,7 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         cls.runtime = Path(cls.tmp.name) / "runtime"
         team = json.loads((ROOT / "team.json").read_text(encoding="utf-8"))
         # The eleven specialists are the owner's: on the PC they already
-        # exist, so every deploy configures all 20 managed profiles.
+        # exist, so every deploy configures all 19 managed profiles.
         for role in team["kanban"]["dispatch_profiles"]:
             directory = cls.runtime / "profiles" / role
             directory.mkdir(parents=True)
@@ -636,11 +642,11 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
         second = self.deploy()
         after = self.snapshot()
 
-        self.assertEqual(second.stdout.count("Configured "), 20)
+        self.assertEqual(second.stdout.count("Configured "), 19)
         self.assertEqual(after, before, "la segunda aplicacion reescribio archivos")
         third = self.deploy()
         self.assertEqual(self.snapshot(), before, "la tercera aplicacion reescribio")
-        self.assertEqual(third.stdout.count("Configured "), 20)
+        self.assertEqual(third.stdout.count("Configured "), 19)
 
     def test_02_el_model_editado_a_manode_un_perfil_conflicta_sin_bandera(self):
         config_path = self.runtime / "profiles/scout/config.yaml"
@@ -675,7 +681,7 @@ class ReaplicacionIdempotenteTests(unittest.TestCase):
 
     def test_03_con_bandera_el_edit_se_adopta_y_aplica_la_v6(self):
         result = self.deploy("--adoptar-ruteo-manual")
-        self.assertEqual(result.stdout.count("Configured "), 20)
+        self.assertEqual(result.stdout.count("Configured "), 19)
 
         config_path = self.runtime / "profiles/scout/config.yaml"
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))

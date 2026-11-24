@@ -16,7 +16,6 @@
   },
   "profile_inheritance": {
     "claw": "dirigir-claw",
-    "entrega": "dirigir",
     "ingenieria": "planear",
     "reviewer": "planear",
     "implementer": "codigo",
@@ -117,7 +116,7 @@
   },
   "bindings": {
     "trailing_annotation": "Parenthetical markers (high), (medium), (low) and (off) are preserved on the label and stripped from the runtime model ID; (off) means no reasoning parameter at all",
-    "carriles": "Tabla v10-B (David, 2026-11-23): DIRIGIR = dirigir (entrega) y dirigir-claw (claw). PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Regla: en una fila no se repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go) y la fila cierra con DeepSeek por API (David, 2026-11-23). Fable, Muse Spark y Gemini no ocupan posiciones en esta tabla.",
+    "carriles": "Tabla v10-B (David, 2026-11-23): DIRIGIR = dirigir y dirigir-claw (claw); en Hermes ningun perfil usa dirigir desde que David retiro el perfil entrega (2026-11-23). PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Regla: en una fila no se repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go) y la fila cierra con DeepSeek por API (David, 2026-11-23). Fable, Muse Spark y Gemini no ocupan posiciones en esta tabla.",
     "claude_subscription": "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription; every anthropic position rides that subscription, never a pay-per-token API key",
     "posiciones": "Tabla v10-B (David, 2026-11-23): cada fila lleva primario y 6 respaldos (F1 a F6) en el orden Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go y DeepSeek por API; simples lleva DeepSeek por OpenCode Go y DeepSeek por API. El orden es el de chains. El binding es por familia del modelo en todas las posiciones, salvo el prefijo deepseek-api/: liga la familia deepseek- al adaptador de la API de DeepSeek (pago por uso, DEEPSEEK_API_KEY) en vez de OpenCode Go. La API expone deepseek-flash, no deepseek-v4.1-flash.",
     "rutas_vivas": "Tabla v10-B (David, 2026-11-23): la fuente canonica de Hermes sigue la regla de una suscripcion por fila, mas la cola DeepSeek por API. La instalacion en cada bot se comprueba por separado con su configurador."

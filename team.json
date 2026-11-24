@@ -11,8 +11,7 @@
     "implementer": "Forja: implementacion minima completa, pruebas de regresion y correcciones.",
     "verifier": "Verificacion independiente: tests, build, hooks, requisitos y revision exacta.",
     "adversary": "Prueba adversarial: casos limite, concurrencia, fallos parciales y limites de confianza.",
-    "reviewer": "Revision final: adjudica hallazgos, comprueba correccion y aprueba o devuelve.",
-    "entrega": "Cierre: entrega, despliegue autorizado, comprobacion posterior y reporte al director."
+    "reviewer": "Revision final: adjudica hallazgos, comprueba correccion y aprueba o devuelve."
   },
   "kanban": {
     "orchestrator_profile": "claw",
