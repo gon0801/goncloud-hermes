@@ -120,67 +120,57 @@ def compiled(profile):
     return routes
 
 
-#: The frozen fixture keeps v6 slot semantics; the live table is the v9 table:
-#: primary plus four backups per lane, one subscription per lane.
-_DIRIGIR_V9 = [
+#: The frozen fixture keeps v6 slot semantics; the live table is the v10-B
+#: table (David, 2026-11-23): primary plus five backups per lane, one
+#: subscription per lane, simples on DeepSeek Flash alone.
+_DIRIGIR = [
     ("claude", "claude-opus-5-5", "high"),
-    ("codex", "gpt-6.1-sol", "medium"),
+    ("codex", "gpt-6.2-sol", "medium"),
     ("kimi", "k3.1-pro", "high"),
     ("grok", "grok-4.7", "high"),
+    ("opencode_zai", "glm-5.4", "high"),
+    ("opencode_go", "deepseek-v4.1-flash", "high"),
+]
+_PLANEAR = [
+    ("claude", "claude-opus-5-5", "high"),
+    ("codex", "gpt-6.2-astra", "xhigh"),
+    ("kimi", "k3.1-pro", "max"),
+    ("grok", "grok-4.7", "high"),
+    ("opencode_zai", "glm-5.4", "max"),
+    ("opencode_go", "deepseek-v4.1-flash", "high"),
+]
+_OPERATIVO = [
+    ("claude", "claude-sonnet-5-5", "medium"),
+    ("codex", "gpt-6.1-terra", "medium"),
+    ("kimi", "k3.1-pro", "high"),
+    ("grok", "grok-4.7", "medium"),
+    ("opencode_zai", "glm-5.4", "high"),
     ("opencode_go", "deepseek-v4.1-flash", "high"),
 ]
 LIVE_LANES = {
-    "dirigir": _DIRIGIR_V9,
-    "dirigir-claw": _DIRIGIR_V9,
-    "planear": [
-        ("claude", "claude-opus-5-5", "high"),
-        ("kimi", "k3.1-pro", "high"),
-        ("codex", "gpt-6-astra", "xhigh"),
-        ("grok", "grok-4.7", "high"),
-        ("opencode_go", "deepseek-v4.1-flash", "high"),
-    ],
+    "dirigir": _DIRIGIR,
+    "dirigir-claw": _DIRIGIR,
+    "planear": _PLANEAR,
     "codigo": [
-        ("opencode_go", "deepseek-v4.1-flash", "xhigh"),
+        ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.2-sol", "xhigh"),
         ("kimi", "k3.1-pro", "high"),
-        ("opencode_zai", "glm-5.3", "high"),
         ("grok", "grok-4.7", "high"),
-        ("codex", "gpt-6.1-sol", "xhigh"),
+        ("opencode_zai", "glm-5.4", "max"),
+        ("opencode_go", "deepseek-v4.1-flash", "xhigh"),
     ],
     "verificar": [
-        ("grok", "grok-4.7", "high"),
-        ("codex", "gpt-6.1-sol", "high"),
         ("claude", "claude-sonnet-5-5", "high"),
+        ("codex", "gpt-6.2-sol", "high"),
         ("kimi", "k3.1-pro", "high"),
-        ("opencode_go", "deepseek-v4.1-flash", "high"),
-    ],
-    "investigar": [
-        ("grok", "grok-4.7", "medium"),
-        ("kimi", "k3.1-pro", "high"),
-        ("codex", "gpt-6.1-terra", "medium"),
-        ("claude", "claude-sonnet-5-5", "medium"),
-        ("opencode_go", "deepseek-v4.1-flash", "high"),
-    ],
-    "operativo": [
-        ("claude", "claude-sonnet-5-5", "medium"),
-        ("codex", "gpt-6.1-terra", "medium"),
-        ("grok", "grok-4.7", "medium"),
-        ("opencode_go", "deepseek-v4.1-flash", "high"),
-        ("opencode_zai", "glm-5.3", "medium"),
-    ],
-    "simples": [
-        ("opencode_go", "deepseek-v4.1-flash", "high"),
-        ("claude", "claude-haiku-5-5", "high"),
-        ("codex", "gpt-6-luna", "high"),
-        ("grok", "grok-4.7", "low"),
-        ("opencode_zai", "glm-5.3-flash", "high"),
-    ],
-    "adversary": [
-        ("claude", "claude-opus-5-5", "high"),
-        ("codex", "gpt-6-astra", "xhigh"),
         ("grok", "grok-4.7", "high"),
-        ("kimi", "k3.1-pro", "high"),
+        ("opencode_zai", "glm-5.4", "high"),
         ("opencode_go", "deepseek-v4.1-flash", "high"),
     ],
+    "investigar": _OPERATIVO,
+    "operativo": _OPERATIVO,
+    "simples": [("opencode_go", "deepseek-v4.1-flash", "high")],
+    "adversary": _PLANEAR,
 }
 
 
@@ -204,10 +194,8 @@ class LiveTableTests(unittest.TestCase):
                     ],
                     [(model, effort) for _, model, effort in LIVE_LANES[chain_name]],
                 )
-                self.assertEqual(
-                    len({route.adapter for route in compile_profile_routes(chain_name, source)}),
-                    5,
-                )
+                routes = compile_profile_routes(chain_name, source)
+                self.assertEqual(len({route.adapter for route in routes}), len(routes))
         for profile, lane in PROFILE_LANE.items():
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)

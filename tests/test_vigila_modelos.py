@@ -248,8 +248,7 @@ class ConfigRealTests(unittest.TestCase):
             "opencode-go-2/deepseek-v4.1-flash",
         )
         cadena = [m for m, _ in module.esperado(self.tabla, self.ruteo)[0]["defaults"]]
-        self.assertEqual(cadena[0], "deepseek-v4.1-flash")
-        self.assertEqual(len(cadena), 5)
+        self.assertEqual(cadena, ["deepseek-v4.1-flash"])
         cambiada = copy.deepcopy(self.tabla)
         cambiada["profile_inheritance"]["default"] = "dirigir"
         nueva = claw_models.desired_claw(cambiada, self.ruteo)["agents"]["defaults"]
@@ -259,15 +258,7 @@ class ConfigRealTests(unittest.TestCase):
         deepseek = "opencode-go-2/deepseek-v4.1-flash"
         defaults = self.config["agents"]["defaults"]["model"]
         self.assertEqual(defaults["primary"], deepseek)
-        self.assertEqual(
-            defaults["fallbacks"],
-            [
-                "anthropic/claude-haiku-5-5",
-                "openai/gpt-6-luna",
-                "xai/grok-4.7",
-                "zai/glm-5.3-flash",
-            ],
-        )
+        self.assertEqual(defaults["fallbacks"], [])
         operativos = [
             a for a, d in self.ruteo["agents"].items() if d["row"] == "operativo"
         ]
@@ -307,7 +298,7 @@ class ConfigRealTests(unittest.TestCase):
         implementer = configure_team.native_config(self.tabla, "implementer")
         self.assertEqual(
             implementer["model"],
-            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+            {"provider": "anthropic", "default": "claude-sonnet-5-5"},
         )
         self.assertEqual(
             implementer["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"],

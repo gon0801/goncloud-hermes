@@ -58,7 +58,7 @@ class BudgetTests(unittest.TestCase):
         grok = cells_by_ref["xai/grok-4.7"]
         routes, unprobed = promote_model.probe_plan(source, grok)
         self.assertEqual(len(routes), 1)
-        self.assertEqual(unprobed, {"xai/grok-4.7": ["medium", "low"]})
+        self.assertEqual(unprobed, {"xai/grok-4.7": ["medium"]})
 
 
 class PlanTableTests(unittest.TestCase):

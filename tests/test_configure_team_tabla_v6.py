@@ -1,11 +1,11 @@
-"""The v9 table: every Hermes profile uses the owner's subscriptions.
+"""The v10-B table: every Hermes profile uses the owner's subscriptions.
 
-Oracle written from the owner's v9 table (2026-10-29), never from the
-implementation: agent -> lane for the 21 Hermes profiles, primary plus four
-backups per lane, no subscription repeated within a lane (Claude, ChatGPT,
-Kimi, Grok, Z.AI, OpenCode Go), GLM only in codigo, operativo and simples,
-Kimi out of operativo and simples, Anthropic on the owner's Claude
-subscription (never a pay-per-token API route), no Fable.
+Oracle written from the owner's v10-B table (David, 2026-11-23), never from
+the implementation: agent -> lane for the 21 Hermes profiles, primary plus
+five backups per lane in the order Claude, ChatGPT, Kimi, Grok, Z.AI,
+OpenCode Go (no subscription repeated within a lane), simples on DeepSeek
+Flash alone, Anthropic on the owner's Claude subscription (never a
+pay-per-token API route), no Fable and no Gemini.
 """
 
 import hashlib
@@ -43,98 +43,81 @@ SPEC.loader.exec_module(configure_team)
 
 ZAI_URL = "https://api.z.ai/api/coding/paas/v4"
 KIMI_URL = "https://api.kimi.com/coding/v1"
-#: provider, extra native fields, in v6 lane order.
+#: provider, extra native fields, for every model in the v10-B lanes.
 NATIVE = {
     "claude-opus-5-5": ("anthropic", {}),
     "claude-sonnet-5-5": ("anthropic", {}),
-    "claude-haiku-5-5": ("anthropic", {}),
-    "glm-5.3": ("zai", {"base_url": ZAI_URL}),
-    "glm-5.3-flash": ("zai", {"base_url": ZAI_URL}),
+    "glm-5.4": ("zai", {"base_url": ZAI_URL}),
     "k3.1-pro": (
         "kimi-coding",
         {"base_url": KIMI_URL, "api_mode": "chat_completions"},
     ),
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
-    "gpt-6.1-sol": ("openai-codex", {}),
+    "gpt-6.2-sol": ("openai-codex", {}),
+    "gpt-6.2-astra": ("openai-codex", {}),
     "gpt-6.1-terra": ("openai-codex", {}),
-    "gpt-6-astra": ("openai-codex", {}),
-    "gpt-6-luna": ("openai-codex", {}),
 }
 PREFIX = {
     "claude-opus-5-5": "anthropic",
     "claude-sonnet-5-5": "anthropic",
-    "claude-haiku-5-5": "anthropic",
-    "glm-5.3": "zai",
-    "glm-5.3-flash": "zai",
+    "glm-5.4": "zai",
     "k3.1-pro": "kimi",
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
-    "gpt-6.1-sol": "openai",
+    "gpt-6.2-sol": "openai",
+    "gpt-6.2-astra": "openai",
     "gpt-6.1-terra": "openai",
-    "gpt-6-astra": "openai",
-    "gpt-6-luna": "openai",
 }
 
 DIRIGIR = [
     ("claude-opus-5-5", "high"),
-    ("gpt-6.1-sol", "medium"),
+    ("gpt-6.2-sol", "medium"),
     ("k3.1-pro", "high"),
     ("grok-4.7", "high"),
+    ("glm-5.4", "high"),
+    ("deepseek-v4.1-flash", "high"),
+]
+PLANEAR = [
+    ("claude-opus-5-5", "high"),
+    ("gpt-6.2-astra", "xhigh"),
+    ("k3.1-pro", "max"),
+    ("grok-4.7", "high"),
+    ("glm-5.4", "max"),
+    ("deepseek-v4.1-flash", "high"),
+]
+OPERATIVO = [
+    ("claude-sonnet-5-5", "medium"),
+    ("gpt-6.1-terra", "medium"),
+    ("k3.1-pro", "high"),
+    ("grok-4.7", "medium"),
+    ("glm-5.4", "high"),
     ("deepseek-v4.1-flash", "high"),
 ]
 CARRILES = {
     "dirigir": DIRIGIR,
     "dirigir-claw": DIRIGIR,
-    "planear": [
-        ("claude-opus-5-5", "high"),
-        ("k3.1-pro", "high"),
-        ("gpt-6-astra", "xhigh"),
-        ("grok-4.7", "high"),
-        ("deepseek-v4.1-flash", "high"),
-    ],
+    "planear": PLANEAR,
     "codigo": [
-        ("deepseek-v4.1-flash", "xhigh"),
+        ("claude-sonnet-5-5", "high"),
+        ("gpt-6.2-sol", "xhigh"),
         ("k3.1-pro", "high"),
-        ("glm-5.3", "high"),
         ("grok-4.7", "high"),
-        ("gpt-6.1-sol", "xhigh"),
+        ("glm-5.4", "max"),
+        ("deepseek-v4.1-flash", "xhigh"),
     ],
     "verificar": [
-        ("grok-4.7", "high"),
-        ("gpt-6.1-sol", "high"),
         ("claude-sonnet-5-5", "high"),
+        ("gpt-6.2-sol", "high"),
         ("k3.1-pro", "high"),
-        ("deepseek-v4.1-flash", "high"),
-    ],
-    "investigar": [
-        ("grok-4.7", "medium"),
-        ("k3.1-pro", "high"),
-        ("gpt-6.1-terra", "medium"),
-        ("claude-sonnet-5-5", "medium"),
-        ("deepseek-v4.1-flash", "high"),
-    ],
-    "operativo": [
-        ("claude-sonnet-5-5", "medium"),
-        ("gpt-6.1-terra", "medium"),
-        ("grok-4.7", "medium"),
-        ("deepseek-v4.1-flash", "high"),
-        ("glm-5.3", "medium"),
-    ],
-    "simples": [
-        ("deepseek-v4.1-flash", "high"),
-        ("claude-haiku-5-5", "high"),
-        ("gpt-6-luna", "high"),
-        ("grok-4.7", "low"),
-        ("glm-5.3-flash", "high"),
-    ],
-    "adversary": [
-        ("claude-opus-5-5", "high"),
-        ("gpt-6-astra", "xhigh"),
         ("grok-4.7", "high"),
-        ("k3.1-pro", "high"),
+        ("glm-5.4", "high"),
         ("deepseek-v4.1-flash", "high"),
     ],
+    "investigar": OPERATIVO,
+    "operativo": OPERATIVO,
+    "simples": [("deepseek-v4.1-flash", "high")],
+    "adversary": PLANEAR,
 }
 PROFILE_LANE = {
     "claw": "dirigir-claw",
@@ -241,7 +224,10 @@ class PerfilV6Tests(unittest.TestCase):
         implementer = configure_team.native_config(LIVE, "implementer")
         self.assertEqual(
             implementer["model"],
-            {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+            {"provider": "anthropic", "default": "claude-sonnet-5-5"},
+        )
+        self.assertEqual(
+            implementer["agent"]["reasoning_overrides"]["claude-sonnet-5-5"], "high"
         )
         self.assertEqual(
             implementer["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"],
@@ -256,17 +242,13 @@ class PerfilV6Tests(unittest.TestCase):
         self.assertEqual(
             mail["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"], "high"
         )
-        self.assertEqual(len(mail["fallback_providers"]), 4)
-        self.assertEqual(
-            mail["fallback_providers"][-1],
-            {"provider": "zai", "model": "glm-5.3-flash", "base_url": ZAI_URL},
-        )
+        self.assertEqual(mail["fallback_providers"], [])
 
         claw = configure_team.native_config(LIVE, "claw")
         self.assertEqual(claw["model"]["default"], "claude-opus-5-5")
         self.assertEqual(
             [(f["provider"], f["model"]) for f in claw["fallback_providers"][:2]],
-            [("openai-codex", "gpt-6.1-sol"), ("kimi-coding", "k3.1-pro")],
+            [("openai-codex", "gpt-6.2-sol"), ("kimi-coding", "k3.1-pro")],
         )
 
     def test_claw_y_entrega_llevan_opus_high(self):
@@ -833,28 +815,9 @@ class RaizDefaultTests(unittest.TestCase):
             config["model"],
             {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
         )
+        self.assertEqual(config["fallback_providers"], [])
         self.assertEqual(
-            config["fallback_providers"],
-            [
-                {"provider": "anthropic", "model": "claude-haiku-5-5"},
-                {"provider": "openai-codex", "model": "gpt-6-luna"},
-                {"provider": "xai-oauth", "model": "grok-4.7"},
-                {
-                    "provider": "zai",
-                    "model": "glm-5.3-flash",
-                    "base_url": "https://api.z.ai/api/coding/paas/v4",
-                },
-            ],
-        )
-        self.assertEqual(
-            config["agent"]["reasoning_overrides"],
-            {
-                "deepseek-v4.1-flash": "high",
-                "claude-haiku-5-5": "high",
-                "gpt-6-luna": "high",
-                "grok-4.7": "low",
-                "glm-5.3-flash": "high",
-            },
+            config["agent"]["reasoning_overrides"], {"deepseek-v4.1-flash": "high"}
         )
         # Every other key survives byte for byte, comments included.
         self.assertEqual(self.claves_ajenas(despues), self.claves_ajenas(self.RAIZ))
