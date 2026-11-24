@@ -330,6 +330,61 @@ class UndoneTests(unittest.TestCase):
         )
 
 
+class ManagedReloadTests(unittest.TestCase):
+    def test_uses_the_revision_that_supplied_the_model_chain(self):
+        calls = []
+
+        def run(argv, timeout):
+            method = argv[3]
+            calls.append(method)
+            if method == "config.get":
+                return Ran(
+                    0,
+                    json.dumps(
+                        {
+                            "valid": True,
+                            "path": "/config",
+                            "hash": "r1",
+                            "sourceConfig": CONFIG,
+                        }
+                    ),
+                    "",
+                )
+            params = json.loads(argv[argv.index("--params") + 1])
+            self.assertEqual(params["baseHash"], "r1")
+            self.assertIn("agents", json.loads(params["raw"]))
+            return Ran(1, "", "base hash changed")
+
+        gateway = claw_autoupdate.ManagedGateway("openclaw", run, config_path="/config")
+        failure = claw_autoupdate._write(
+            gateway,
+            lambda live: claw_autoupdate.staged(live, "xai/grok-4.7", "xai/grok-4.8"),
+            0,
+        )
+        self.assertIn("base hash changed", failure)
+        self.assertEqual(calls, ["config.get", "config.patch"])
+
+    def test_stages_the_codex_route_and_probes_the_agent_at_its_effort(self):
+        config = copy.deepcopy(CONFIG)
+        old, new = "openai/gpt-6-astra", "openai/gpt-6.2-astra"
+        agent = config["agents"]["entries"]["main"]
+        agent["model"]["fallbacks"].append(old)
+        agent["models"][old] = {
+            "agentRuntime": {"id": "codex"},
+            "params": {"thinking": "high"},
+        }
+        staged = claw_autoupdate.staged(config, old, new)
+        self.assertEqual(
+            staged["agents"]["entries"]["main"]["models"][new], agent["models"][old]
+        )
+        from unittest.mock import Mock
+
+        gateway = Mock()
+        gateway.turn.return_value = (True, "", "openai")
+        self.assertIsNone(claw_autoupdate._probe(gateway, config, old, new))
+        gateway.turn.assert_called_once_with("main", new, thinking="high")
+
+
 class FailureDetailTests(unittest.TestCase):
     def test_the_json_error_message_beats_the_closing_brace(self):
         self.assertEqual(

@@ -5,12 +5,14 @@ this repo, so this works on its live config. For each ref in a chain with a
 newer release in its own line it stages the new ref, probes it with a real
 call, renames every use, and checks a real agent turn. A failed probe or check
 takes those changes back out, keeping what any other writer changed meanwhile.
-Each config write runs inside an exclusive window the
+With --managed-hot-reload, the running gateway validates and applies each model
+patch against the source revision it returned. On older installations each
+config write runs inside an exclusive window the
 gateway grants (``gateway suspend``) only when no run is in flight.
 
     python3 claw_autoupdate.py [--openclaw PATH] [--config PATH] [--state PATH] [--to CHAT] [--dry-run]
 
-It reads the live config from its file (``--config``, default
+The legacy mode reads the live config from its file (``--config``, default
 ``~/.openclaw/openclaw.json``), never ``gateway call config.get``: that call
 fails while the runner holds the gateway's suspension.
 
@@ -158,9 +160,18 @@ def staged(config, old_ref, new_ref):
     allow = (defaults.get("modelPolicy") or {}).get("allow")
     if isinstance(allow, list) and old_ref in allow and new_ref not in allow:
         allow.append(new_ref)
-    models = defaults.get("models")
-    if isinstance(models, dict) and old_ref in models and new_ref not in models:
-        models[new_ref] = copy.deepcopy(models[old_ref])
+    for entry in [
+        defaults,
+        *((result.get("agents") or {}).get("entries") or {}).values(),
+    ]:
+        models = entry.get("models")
+        if not isinstance(models, dict) or old_ref not in models or new_ref in models:
+            continue
+        if (
+            entry is defaults
+            or (models[old_ref].get("agentRuntime") or {}).get("id") == "codex"
+        ):
+            models[new_ref] = copy.deepcopy(models[old_ref])
     return result
 
 
@@ -655,7 +666,16 @@ class Gateway:
         if not done.ok:
             return False, failure(done), None
         try:
-            text, winner = turn_reply(json.loads(done.out))
+            doc = json.loads(done.out)
+            text, winner = turn_reply(doc)
+            if ref.startswith("openai/"):
+                meta = (doc.get("result") or doc).get("meta") or {}
+                trace = meta.get("executionTrace") or {}
+                model = trace.get("winnerModel") or (meta.get("agentMeta") or {}).get(
+                    "model"
+                )
+                if model not in (ref, ref.partition("/")[2]):
+                    return False, f"respondio el modelo {model}", winner
         except (ValueError, AttributeError):
             return False, "respuesta no es JSON", None
         if _last_word(text) != "PONG":
@@ -692,11 +712,101 @@ class Gateway:
         return True, ""
 
 
+class ManagedGateway(Gateway):
+    """Use the running gateway's revision-checked model hot reload (2026.11)."""
+
+    def snapshot(self):
+        reply = self.run(
+            [self.openclaw, "gateway", "call", "config.get", "--json"], READ_TIMEOUT
+        )
+        doc = _first_json(reply.out) if reply.ok else None
+        if not isinstance(doc, dict) or not doc.get("valid") or not doc.get("hash"):
+            raise RuntimeError("no hay una revision valida en config.get")
+        if Path(doc["path"]).resolve() != self.config_path.resolve():
+            raise RuntimeError("config.get pertenece a otro archivo")
+        return doc["sourceConfig"], doc["hash"]
+
+    def config(self):
+        return self.snapshot()[0]
+
+    def write_change(self, target):
+        live, revision = self.snapshot()
+        patch, replace = merge_patch(live, target(live))
+        if not patch:
+            return None
+        if (live.get("gateway", {}).get("reload") or {}).get("mode", "hybrid") not in (
+            "hot",
+            "hybrid",
+        ):
+            return "el gateway no permite recarga en caliente"
+        # Only model settings have the hot-reload contract. Do not submit other
+        # settings or serialize credentials into a CLI argument.
+        agents = patch.get("agents", {})
+        if (
+            set(patch) - {"agents", "models"}
+            or set(agents) - {"defaults", "entries"}
+            or set(agents.get("defaults", {})) - {"model", "models", "modelPolicy"}
+            or any(
+                set(entry) - {"model", "models"}
+                for entry in agents.get("entries", {}).values()
+            )
+            or set(patch.get("models", {})) - {"providers"}
+            or any(
+                set(provider) - {"models"}
+                for provider in patch.get("models", {}).get("providers", {}).values()
+            )
+        ):
+            return "el cambio excede las rutas de modelos de recarga en caliente"
+        raw = json.dumps(patch)
+        if "__OPENCLAW_REDACTED__" in raw:
+            return "el parche contiene valores ocultos"
+        params = {
+            "baseHash": revision,
+            "raw": raw,
+            "replacePaths": replace,
+            "response": "summary",
+        }
+        result = self.run(
+            [
+                self.openclaw,
+                "gateway",
+                "call",
+                "config.patch",
+                "--params",
+                json.dumps(params),
+                "--timeout",
+                "55000",
+                "--json",
+            ],
+            PATCH_TIMEOUT,
+        )
+        return None if result.ok else f"config.patch: {failure(result)}"
+
+
 def _probe(gateway, config, old_ref, new_ref):
     """None when every probe of ``new_ref`` passes, else why not.
 
     It runs with each thinking level the chains give ``old_ref`` today.
     """
+    # Codex is selected per agent on current gateways. Exercise each configured
+    # effort through an agent that actually owns that route.
+    agents = config.get("agents") or {}
+    probed = set()
+    all_codex = True
+    for name in chain_refs(config).get(old_ref, []):
+        entry = (agents.get("entries") or {}).get(name, {})
+        settings = (entry.get("models") or {}).get(old_ref, {})
+        if (settings.get("agentRuntime") or {}).get("id") != "codex":
+            all_codex = False
+            continue
+        level = (settings.get("params") or {}).get("thinking")
+        if level not in probed:
+            ok, why, _ = gateway.turn(name, new_ref, thinking=level)
+            if not ok:
+                return f"sonda en {name} ({level}): {why}"
+            probed.add(level)
+    if probed and all_codex:
+        return None
     runtime = runtime_of(config, old_ref)
     for thinking in efforts(config, old_ref) or [None]:
         label = f" ({thinking})" if thinking else ""
@@ -728,6 +838,8 @@ def _write(gateway, target, wait, *, dry_run_first=True):
     The live config is read inside the window, so the patch is computed against
     what is there when it lands. None once applied, else why not.
     """
+    if isinstance(gateway, ManagedGateway):
+        return gateway.write_change(target)
     with gateway.exclusive(wait):
         live = gateway.config()
         return gateway.patch(
@@ -907,8 +1019,14 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan and change nothing"
     )
+    parser.add_argument(
+        "--managed-hot-reload",
+        action="store_true",
+        help="Use config.patch with baseHash on OpenClaw 2026.11",
+    )
     args = parser.parse_args()
-    gateway = Gateway(args.openclaw, real_run, config_path=args.config)
+    gateway_type = ManagedGateway if args.managed_hot_reload else Gateway
+    gateway = gateway_type(args.openclaw, real_run, config_path=args.config)
     view = catalog_view(*read_catalogs())
     if args.dry_run:
         for promotion in plan_claw(gateway.config(), view):
