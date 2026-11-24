@@ -105,6 +105,10 @@ _NATIVE_PROVIDERS = {
         "base_url": KIMI_CODING_URL,
         "api_mode": "chat_completions",
     },
+    # The one pay-per-use position (owner, 2026-11-23): Hermes' own deepseek
+    # provider, https://api.deepseek.com/v1 with DEEPSEEK_API_KEY read from
+    # each profile's .env.
+    "deepseek": {"provider": "deepseek"},
 }
 
 #: ``muse login`` in WSL mints an inference key bound to the owner's Muse
@@ -835,8 +839,10 @@ def desired_profile_config(role, team, runtime_home):
         "plugins": {"enabled": ["goncloud-team"]},
         # Copilot and Copilot ACP are out of scope for this team. deepseek is
         # the one adapter that bills as API: leaving it in a native catalog
-        # would let an agent spend outside that decision. opencode-free is
-        # not one of the owner's accounts.
+        # would let an agent pick it outside the table. The table's last
+        # fallback still reaches it: Hermes applies this list to its model
+        # pickers only, never to fallback_providers. opencode-free is not one
+        # of the owner's accounts.
         "model_catalog": {
             "excluded_providers": [
                 "copilot",

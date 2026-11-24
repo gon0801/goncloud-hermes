@@ -248,7 +248,7 @@ class ConfigRealTests(unittest.TestCase):
             "opencode-go-2/deepseek-v4.1-flash",
         )
         cadena = [m for m, _ in module.esperado(self.tabla, self.ruteo)[0]["defaults"]]
-        self.assertEqual(cadena, ["deepseek-v4.1-flash"])
+        self.assertEqual(cadena, ["deepseek-v4.1-flash", "deepseek-flash"])
         cambiada = copy.deepcopy(self.tabla)
         cambiada["profile_inheritance"]["default"] = "dirigir"
         nueva = claw_models.desired_claw(cambiada, self.ruteo)["agents"]["defaults"]
@@ -258,7 +258,8 @@ class ConfigRealTests(unittest.TestCase):
         deepseek = "opencode-go-2/deepseek-v4.1-flash"
         defaults = self.config["agents"]["defaults"]["model"]
         self.assertEqual(defaults["primary"], deepseek)
-        self.assertEqual(defaults["fallbacks"], [])
+        # David, 2026-11-23: DeepSeek on its own API backs up the Go account.
+        self.assertEqual(defaults["fallbacks"], ["deepseek/deepseek-flash"])
         operativos = [
             a for a, d in self.ruteo["agents"].items() if d["row"] == "operativo"
         ]

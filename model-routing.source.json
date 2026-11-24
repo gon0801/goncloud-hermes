@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "Tabla v10-B aprobada por David el 2026-11-23. Cada fila lleva primario y 5 respaldos en el orden Claude, ChatGPT, Kimi, Grok, Z.AI (GLM) y OpenCode Go (DeepSeek), sin repetir suscripcion; simples va solo con DeepSeek por OpenCode Go, sin respaldos. Gemini queda fuera: el compilador no acepta la familia y solo hay una API key de AI Studio. Todas las posiciones usan suscripciones (DeepSeek por OpenCode Go), no API por token. La cola DeepSeek por API que David autorizo el 2026-11-23 no esta: el compilador liga deepseek- solo a OpenCode Go y expresarla exige cambiar codigo.",
+  "source": "Tabla v10-B aprobada por David el 2026-11-23. Cada fila lleva primario y 6 respaldos en el orden Claude, ChatGPT, Kimi, Grok, Z.AI (GLM), OpenCode Go (DeepSeek) y DeepSeek por API, sin repetir suscripcion; simples va con DeepSeek por OpenCode Go y DeepSeek por API como unico respaldo. Gemini queda fuera: el compilador no acepta la familia y solo hay una API key de AI Studio. Todas las posiciones usan suscripciones salvo la ultima: DeepSeek por su API de pago por uso (deepseek-api/deepseek-flash, mismo esfuerzo que el eslabon de OpenCode Go) es la unica ruta fuera de suscripcion, autorizada por David el 2026-11-23 porque OpenCode Go se queda sin cuota por horas, y va solo como ultimo respaldo.",
   "status": "applied_with_native_provider_aliases",
   "columns": [
     "Primary",
@@ -8,7 +8,8 @@
     "F2",
     "F3",
     "F4",
-    "F5"
+    "F5",
+    "F6"
   ],
   "profile_names": {
     "dirigir-claw": "claw"
@@ -43,7 +44,8 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (high)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "dirigir-claw": [
       "anthropic/claude-opus-5-5 (high)",
@@ -51,7 +53,8 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (high)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "planear": [
       "anthropic/claude-opus-5-5 (high)",
@@ -59,7 +62,8 @@
       "kimi/k3.1-pro (max)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (max)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "codigo": [
       "anthropic/claude-sonnet-5-5 (high)",
@@ -67,7 +71,8 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (max)",
-      "opencode-go/deepseek-v4.1-flash (xhigh)"
+      "opencode-go/deepseek-v4.1-flash (xhigh)",
+      "deepseek-api/deepseek-flash (xhigh)"
     ],
     "verificar": [
       "anthropic/claude-sonnet-5-5 (high)",
@@ -75,7 +80,8 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (high)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "investigar": [
       "anthropic/claude-sonnet-5-5 (medium)",
@@ -83,7 +89,8 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (medium)",
       "zai/glm-5.4 (high)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "operativo": [
       "anthropic/claude-sonnet-5-5 (medium)",
@@ -91,10 +98,12 @@
       "kimi/k3.1-pro (high)",
       "xai/grok-4.7 (medium)",
       "zai/glm-5.4 (high)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "simples": [
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ],
     "adversary": [
       "anthropic/claude-opus-5-5 (high)",
@@ -102,14 +111,15 @@
       "kimi/k3.1-pro (max)",
       "xai/grok-4.7 (high)",
       "zai/glm-5.4 (max)",
-      "opencode-go/deepseek-v4.1-flash (high)"
+      "opencode-go/deepseek-v4.1-flash (high)",
+      "deepseek-api/deepseek-flash (high)"
     ]
   },
   "bindings": {
     "trailing_annotation": "Parenthetical markers (high), (medium), (low) and (off) are preserved on the label and stripped from the runtime model ID; (off) means no reasoning parameter at all",
-    "carriles": "Tabla v10-B (David, 2026-11-23): DIRIGIR = dirigir (entrega) y dirigir-claw (claw). PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Regla: en una fila no se repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go). Fable, Muse Spark y Gemini no ocupan posiciones en esta tabla.",
+    "carriles": "Tabla v10-B (David, 2026-11-23): DIRIGIR = dirigir (entrega) y dirigir-claw (claw). PLANEAR/REVISAR = planear; CODIGO = codigo; VERIFICAR = verificar; INVESTIGAR = investigar; OPERATIVO = operativo; TOOLS/SIMPLES = simples; ADVERSARY = adversary. Regla: en una fila no se repite suscripcion (Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go) y la fila cierra con DeepSeek por API (David, 2026-11-23). Fable, Muse Spark y Gemini no ocupan posiciones en esta tabla.",
     "claude_subscription": "2026-10-17: owner moved Hermes profiles to Anthropic on his Claude subscription; every anthropic position rides that subscription, never a pay-per-token API key",
-    "posiciones": "Tabla v10-B (David, 2026-11-23): cada fila lleva primario y 5 respaldos (F1 a F5) en el orden Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go; simples solo lleva el primario (DeepSeek por OpenCode Go). El orden es el de chains. El binding es por familia del modelo en todas las posiciones.",
-    "rutas_vivas": "Tabla v10-B (David, 2026-11-23): la fuente canonica de Hermes sigue la regla de una suscripcion por fila. La instalacion en cada bot se comprueba por separado con su configurador."
+    "posiciones": "Tabla v10-B (David, 2026-11-23): cada fila lleva primario y 6 respaldos (F1 a F6) en el orden Claude, ChatGPT, Kimi, Grok, Z.AI, OpenCode Go y DeepSeek por API; simples lleva DeepSeek por OpenCode Go y DeepSeek por API. El orden es el de chains. El binding es por familia del modelo en todas las posiciones, salvo el prefijo deepseek-api/: liga la familia deepseek- al adaptador de la API de DeepSeek (pago por uso, DEEPSEEK_API_KEY) en vez de OpenCode Go. La API expone deepseek-flash, no deepseek-v4.1-flash.",
+    "rutas_vivas": "Tabla v10-B (David, 2026-11-23): la fuente canonica de Hermes sigue la regla de una suscripcion por fila, mas la cola DeepSeek por API. La instalacion en cada bot se comprueba por separado con su configurador."
   }
 }

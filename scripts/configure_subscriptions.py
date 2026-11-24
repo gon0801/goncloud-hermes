@@ -768,8 +768,8 @@ def _probe_routes():
         if source is not None:
             # The twin keeps the billing of its own adapter, never the CLI
             # slot whose model id it borrows: the deepseek twin verifies an
-            # API key, and since the v6 table (2026-10-17) no cell binds it
-            # (DeepSeek Flash rides the Go subscription).
+            # API key. Since 2026-11-23 the table binds it itself (the
+            # ``deepseek-api/`` tail), so the twin only serves older tables.
             billing = "api" if http_adapter == "deepseek" else "subscription"
             routes[http_adapter] = replace(
                 source, adapter=http_adapter, billing_mode=billing

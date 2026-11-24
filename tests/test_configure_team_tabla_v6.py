@@ -5,7 +5,9 @@ the implementation: agent -> lane for the 21 Hermes profiles, primary plus
 five backups per lane in the order Claude, ChatGPT, Kimi, Grok, Z.AI,
 OpenCode Go (no subscription repeated within a lane), simples on DeepSeek
 Flash alone, Anthropic on the owner's Claude subscription (never a
-pay-per-token API route), no Fable and no Gemini.
+pay-per-token API route), no Fable and no Gemini. Every lane then ends with
+DeepSeek on its pay-per-use API at the Go link's effort, the only route that
+is not a subscription (David, 2026-11-23).
 """
 
 import hashlib
@@ -54,6 +56,7 @@ NATIVE = {
     ),
     "grok-4.7": ("xai-oauth", {}),
     "deepseek-v4.1-flash": ("opencode-go", {}),
+    "deepseek-flash": ("deepseek", {}),
     "gpt-6.2-sol": ("openai-codex", {}),
     "gpt-6.2-astra": ("openai-codex", {}),
     "gpt-6.1-terra": ("openai-codex", {}),
@@ -65,6 +68,7 @@ PREFIX = {
     "k3.1-pro": "kimi",
     "grok-4.7": "xai",
     "deepseek-v4.1-flash": "opencode-go",
+    "deepseek-flash": "deepseek-api",
     "gpt-6.2-sol": "openai",
     "gpt-6.2-astra": "openai",
     "gpt-6.1-terra": "openai",
@@ -77,6 +81,7 @@ DIRIGIR = [
     ("grok-4.7", "high"),
     ("glm-5.4", "high"),
     ("deepseek-v4.1-flash", "high"),
+    ("deepseek-flash", "high"),
 ]
 PLANEAR = [
     ("claude-opus-5-5", "high"),
@@ -85,6 +90,7 @@ PLANEAR = [
     ("grok-4.7", "high"),
     ("glm-5.4", "max"),
     ("deepseek-v4.1-flash", "high"),
+    ("deepseek-flash", "high"),
 ]
 OPERATIVO = [
     ("claude-sonnet-5-5", "medium"),
@@ -93,6 +99,7 @@ OPERATIVO = [
     ("grok-4.7", "medium"),
     ("glm-5.4", "high"),
     ("deepseek-v4.1-flash", "high"),
+    ("deepseek-flash", "high"),
 ]
 CARRILES = {
     "dirigir": DIRIGIR,
@@ -105,6 +112,7 @@ CARRILES = {
         ("grok-4.7", "high"),
         ("glm-5.4", "max"),
         ("deepseek-v4.1-flash", "xhigh"),
+        ("deepseek-flash", "xhigh"),
     ],
     "verificar": [
         ("claude-sonnet-5-5", "high"),
@@ -113,10 +121,11 @@ CARRILES = {
         ("grok-4.7", "high"),
         ("glm-5.4", "high"),
         ("deepseek-v4.1-flash", "high"),
+        ("deepseek-flash", "high"),
     ],
     "investigar": OPERATIVO,
     "operativo": OPERATIVO,
-    "simples": [("deepseek-v4.1-flash", "high")],
+    "simples": [("deepseek-v4.1-flash", "high"), ("deepseek-flash", "high")],
     "adversary": PLANEAR,
 }
 PROFILE_LANE = {
@@ -205,11 +214,15 @@ class PerfilV6Tests(unittest.TestCase):
                             "kimi": "kimi",
                             "xai": "grok",
                             "opencode-go": "opencode_go",
+                            "deepseek-api": "deepseek",
                             "openai": "codex",
                         }[PREFIX[route.model]],
                         f"{profile} {route.label}",
                     )
-                    self.assertEqual(route.billing_mode, "subscription", profile)
+                    api = PREFIX[route.model] == "deepseek-api"
+                    self.assertEqual(
+                        route.billing_mode, "api" if api else "subscription", profile
+                    )
 
     def test_la_cadena_nativa_de_cada_perfil_es_su_carril_v6(self):
         for profile, lane in PROFILE_LANE.items():
@@ -233,6 +246,13 @@ class PerfilV6Tests(unittest.TestCase):
             implementer["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"],
             "xhigh",
         )
+        self.assertEqual(
+            implementer["fallback_providers"][-1],
+            {"provider": "deepseek", "model": "deepseek-flash"},
+        )
+        self.assertEqual(
+            implementer["agent"]["reasoning_overrides"]["deepseek-flash"], "xhigh"
+        )
 
         mail = configure_team.native_config(LIVE, "mail")
         self.assertEqual(
@@ -240,9 +260,13 @@ class PerfilV6Tests(unittest.TestCase):
             {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
         )
         self.assertEqual(
-            mail["agent"]["reasoning_overrides"]["deepseek-v4.1-flash"], "high"
+            mail["agent"]["reasoning_overrides"],
+            {"deepseek-v4.1-flash": "high", "deepseek-flash": "high"},
         )
-        self.assertEqual(mail["fallback_providers"], [])
+        self.assertEqual(
+            mail["fallback_providers"],
+            [{"provider": "deepseek", "model": "deepseek-flash"}],
+        )
 
         claw = configure_team.native_config(LIVE, "claw")
         self.assertEqual(claw["model"]["default"], "claude-opus-5-5")
@@ -815,9 +839,13 @@ class RaizDefaultTests(unittest.TestCase):
             config["model"],
             {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
         )
-        self.assertEqual(config["fallback_providers"], [])
         self.assertEqual(
-            config["agent"]["reasoning_overrides"], {"deepseek-v4.1-flash": "high"}
+            config["fallback_providers"],
+            [{"provider": "deepseek", "model": "deepseek-flash"}],
+        )
+        self.assertEqual(
+            config["agent"]["reasoning_overrides"],
+            {"deepseek-v4.1-flash": "high", "deepseek-flash": "high"},
         )
         # Every other key survives byte for byte, comments included.
         self.assertEqual(self.claves_ajenas(despues), self.claves_ajenas(self.RAIZ))

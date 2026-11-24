@@ -193,26 +193,29 @@ class RealFilesTests(unittest.TestCase):
                 lane = mapping["agents"][agent]["row"]
                 row = source["chains"][lane]
                 # v10-B (David, 2026-11-23): primary plus five backups, and
-                # simples on DeepSeek Flash alone.
-                self.assertEqual(len(row), 1 if lane == "simples" else 6)
+                # simples on DeepSeek Flash alone; every lane then ends with
+                # DeepSeek on its pay-per-use API.
+                self.assertEqual(len(row), 2 if lane == "simples" else 7)
                 self.assertEqual(len(entry["model"]["fallbacks"]), len(row) - 1)
                 first = row[0].split(" ")[0]
                 self.assertEqual(
                     entry["model"]["primary"], mapping["id_overrides"].get(first, first)
                 )
-        # DeepSeek is claw's second OpenCode Go account, also as codigo's last backup.
+        # DeepSeek is claw's second OpenCode Go account, then claw's own
+        # deepseek provider for the API tail, also as codigo's last backups.
         implementer = desired["implementer"]
         self.assertEqual(implementer["model"]["primary"], "anthropic/claude-sonnet-5-5")
         self.assertEqual(
-            implementer["model"]["fallbacks"][-1], "opencode-go-2/deepseek-v4.1-flash"
+            implementer["model"]["fallbacks"][-2:],
+            ["opencode-go-2/deepseek-v4.1-flash", "deepseek/deepseek-flash"],
         )
-        self.assertEqual(
-            implementer["models"]["opencode-go-2/deepseek-v4.1-flash"],
-            {"params": {"thinking": "xhigh"}},
-        )
+        for model in ("opencode-go-2/deepseek-v4.1-flash", "deepseek/deepseek-flash"):
+            self.assertEqual(
+                implementer["models"][model], {"params": {"thinking": "xhigh"}}
+            )
         defaults = module.desired_claw(source, mapping)["agents"]["defaults"]["model"]
         self.assertEqual(defaults["primary"], "opencode-go-2/deepseek-v4.1-flash")
-        self.assertEqual(defaults["fallbacks"], [])
+        self.assertEqual(defaults["fallbacks"], ["deepseek/deepseek-flash"])
         # Every specialist the gateway may dispatch has a chain in claw too.
         self.assertLessEqual(
             set(team["kanban"]["dispatch_profiles"]), set(mapping["agents"])

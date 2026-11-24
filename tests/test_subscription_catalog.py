@@ -122,7 +122,8 @@ def compiled(profile):
 
 #: The frozen fixture keeps v6 slot semantics; the live table is the v10-B
 #: table (David, 2026-11-23): primary plus five backups per lane, one
-#: subscription per lane, simples on DeepSeek Flash alone.
+#: subscription per lane, simples on DeepSeek Flash alone, and every lane
+#: closed by DeepSeek on its pay-per-use API at the Go link's effort.
 _DIRIGIR = [
     ("claude", "claude-opus-5-5", "high"),
     ("codex", "gpt-6.2-sol", "medium"),
@@ -130,6 +131,7 @@ _DIRIGIR = [
     ("grok", "grok-4.7", "high"),
     ("opencode_zai", "glm-5.4", "high"),
     ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ("deepseek", "deepseek-flash", "high"),
 ]
 _PLANEAR = [
     ("claude", "claude-opus-5-5", "high"),
@@ -138,6 +140,7 @@ _PLANEAR = [
     ("grok", "grok-4.7", "high"),
     ("opencode_zai", "glm-5.4", "max"),
     ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ("deepseek", "deepseek-flash", "high"),
 ]
 _OPERATIVO = [
     ("claude", "claude-sonnet-5-5", "medium"),
@@ -146,6 +149,7 @@ _OPERATIVO = [
     ("grok", "grok-4.7", "medium"),
     ("opencode_zai", "glm-5.4", "high"),
     ("opencode_go", "deepseek-v4.1-flash", "high"),
+    ("deepseek", "deepseek-flash", "high"),
 ]
 LIVE_LANES = {
     "dirigir": _DIRIGIR,
@@ -158,6 +162,7 @@ LIVE_LANES = {
         ("grok", "grok-4.7", "high"),
         ("opencode_zai", "glm-5.4", "max"),
         ("opencode_go", "deepseek-v4.1-flash", "xhigh"),
+        ("deepseek", "deepseek-flash", "xhigh"),
     ],
     "verificar": [
         ("claude", "claude-sonnet-5-5", "high"),
@@ -166,10 +171,14 @@ LIVE_LANES = {
         ("grok", "grok-4.7", "high"),
         ("opencode_zai", "glm-5.4", "high"),
         ("opencode_go", "deepseek-v4.1-flash", "high"),
+        ("deepseek", "deepseek-flash", "high"),
     ],
     "investigar": _OPERATIVO,
     "operativo": _OPERATIVO,
-    "simples": [("opencode_go", "deepseek-v4.1-flash", "high")],
+    "simples": [
+        ("opencode_go", "deepseek-v4.1-flash", "high"),
+        ("deepseek", "deepseek-flash", "high"),
+    ],
     "adversary": _PLANEAR,
 }
 
@@ -200,8 +209,11 @@ class LiveTableTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, source)
                 self.assertEqual(len(routes), len(source["chains"][lane]))
-                self.assertTrue(
-                    all(route.billing_mode == "subscription" for route in routes),
+                # David, 2026-11-23: the last position is the only one that
+                # is not a subscription.
+                self.assertEqual(
+                    [route.billing_mode for route in routes],
+                    ["subscription"] * (len(routes) - 1) + ["api"],
                     profile,
                 )
 
@@ -452,9 +464,33 @@ class SlotSemanticsTests(unittest.TestCase):
                     self.assertEqual(route.billing_mode, "subscription", profile)
         self.assertGreater(seen, 0, "the owner table should route some glm slot")
 
-    def test_deepseek_flash_rides_the_go_subscription_never_the_api(self):
-        # Owner, 2026-10-17: the pay-per-token deepseek adapter is deliberately
-        # unbound; the only DeepSeek in the table is DeepSeek Flash on Go.
+    def test_deepseek_rides_go_unless_the_label_names_the_deepseek_api(self):
+        # Owner, 2026-10-17: DeepSeek Flash rides the OpenCode Go subscription.
+        # David, 2026-11-23: a ``deepseek-api/`` label is the one pay-per-use
+        # position, DeepSeek on its own API; any other deepseek label stays on Go.
+        source = {
+            "profile_inheritance": {"mail": "simples"},
+            "chains": {
+                "simples": [
+                    "opencode-go/deepseek-v4.1-flash (high)",
+                    "deepseek/deepseek-flash (high)",
+                    "deepseek-api/deepseek-flash (xhigh)",
+                ]
+            },
+        }
+
+        self.assertEqual(
+            [
+                (r.adapter, r.model, r.billing_mode, r.reasoning_effort)
+                for r in compile_profile_routes("mail", source)
+            ],
+            [
+                ("opencode_go", "deepseek-v4.1-flash", "subscription", "high"),
+                ("opencode_go", "deepseek-flash", "subscription", "high"),
+                ("deepseek", "deepseek-flash", "api", "xhigh"),
+            ],
+        )
+        # The frozen v6 table names no API label: its DeepSeek stays on Go.
         for profile in ("operaciones", "amazon", "mail", "default"):
             with self.subTest(profile=profile):
                 routes = compile_profile_routes(profile, load_source())
@@ -462,22 +498,6 @@ class SlotSemanticsTests(unittest.TestCase):
                 self.assertEqual(len(deepseek), 1, profile)
                 self.assertEqual(deepseek[0].adapter, "opencode_go", profile)
                 self.assertEqual(deepseek[0].billing_mode, "subscription", profile)
-        self.assertIsNone(
-            next(
-                (
-                    adapter
-                    for family, adapter in (
-                        ("muse-", "muse"),
-                        ("claude-", "claude"),
-                        ("gpt-", "codex"),
-                        ("glm-", "opencode_zai"),
-                        ("grok-", "grok"),
-                    )
-                    if adapter == "deepseek"
-                ),
-                None,
-            )
-        )
 
     def test_unknown_family_and_profile_are_rejected(self):
         source = load_source()

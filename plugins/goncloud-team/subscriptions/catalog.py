@@ -13,8 +13,8 @@ from .types import RouteSpec
 #: Every position binds by model family, in the order of its configured chain.
 #: Each family is a pattern matched at the start of the id: Kimi's own releases
 #: are ``k<digits>`` (k3, k4, k3-256k), so a literal "k3" would drop k4.
-#: DeepSeek Flash rides the owner's OpenCode Go subscription; the pay-per-token
-#: ``deepseek`` adapter is deliberately unbound (owner, 2026-10-17).
+#: DeepSeek rides the owner's OpenCode Go subscription unless its label says
+#: ``deepseek-api/`` (see _PREFIX_ADAPTERS).
 _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("muse-", "muse"),
     ("claude-", "claude"),
@@ -28,16 +28,24 @@ _FAMILY_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("deepseek-", "opencode_go"),
 )
 
+#: (label prefix, family) -> adapter, for the one prefix that is more than
+#: provenance. ``deepseek-api/`` is the single pay-per-use position: DeepSeek
+#: on its own API, last in every chain, after DeepSeek on OpenCode Go (owner,
+#: 2026-11-23: Go runs out of quota for hours at a time).
+_PREFIX_ADAPTERS: dict[tuple[str, str], str] = {
+    ("deepseek-api", "deepseek-"): "deepseek",
+}
+
 #: Effort markers on the source label, never part of the vendor model id.
 #: ``(off)`` means the position runs with no reasoning parameter at all.
 _TRAILING_ANNOTATION = re.compile(r"\s+\(([^)]+)\)\s*$")
 _REASONING_EFFORTS = frozenset({"high", "xhigh", "max", "medium", "low", "off"})
 
 
-def _family_adapter(model: str) -> str:
+def _adapter_for(prefix: str, model: str) -> str:
     for family, adapter in _FAMILY_ADAPTERS:
         if re.match(family, model):
-            return adapter
+            return _PREFIX_ADAPTERS.get((prefix, family), adapter)
     raise ValueError(f"unknown model family: {model}")
 
 
@@ -54,12 +62,12 @@ def _runtime_model_and_effort(raw_model: str) -> tuple[str, str | None]:
 
 def _compile_route(slot: int, label: str) -> RouteSpec:
     try:
-        _prefix, raw_model = label.split("/", 1)
+        prefix, raw_model = label.split("/", 1)
     except ValueError as error:
         raise ValueError(f"route label must be provider/model: {label}") from error
     # ``dup`` is provenance; effort is both provenance and runtime policy.
     model, reasoning_effort = _runtime_model_and_effort(raw_model)
-    adapter = _family_adapter(model)
+    adapter = _adapter_for(prefix, model)
     if adapter == "muse":
         # ``-free`` names OpenCode Zen's free tier, where it is a real model id.
         # The Muse subscription serves the same family without it and refuses
