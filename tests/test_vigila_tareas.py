@@ -1133,6 +1133,22 @@ class TestLectores(unittest.TestCase):
                     module.juzga_launchd(fila, pol), [module.Falla.NO_CORRE]
                 )
 
+    def test_corre_en_windows_usa_create_no_window(self):
+        fake = subprocess.CompletedProcess(["schtasks"], 0, "", "")
+        with (
+            mock.patch.object(module.sys, "platform", "win32"),
+            mock.patch.object(module.subprocess, "run", return_value=fake) as m_run,
+        ):
+            module._corre(["schtasks", "/query"])
+        self.assertEqual(m_run.call_args.kwargs.get("creationflags"), 0x08000000)
+
+        with (
+            mock.patch.object(module.sys, "platform", "darwin"),
+            mock.patch.object(module.subprocess, "run", return_value=fake) as m_run,
+        ):
+            module._corre(["launchctl", "print"])
+        self.assertNotIn("creationflags", m_run.call_args.kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()
