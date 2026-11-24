@@ -111,9 +111,16 @@ def compare(previous, current, in_use, pins=None):
                 if notice["id"] == model:
                     notice["uses"] = [*notice["uses"], *places]
             continue
-        for source in sorted(previous):
+        # A pin names a bare model ID; every hand-written pin today routes
+        # through its family's vendor (e.g. zai-coding-plan/glm-5.2), so a model
+        # that only leaves OpenCode Go is not gone for it. Unknown families keep
+        # watching every catalog.
+        family = family_of(model)
+        watched = [FAMILIES[family]] if family is not None else sorted(previous)
+        for source in watched:
             if (
-                source in current
+                source in previous
+                and source in current
                 and model in previous[source]
                 and model not in current[source]
             ):
