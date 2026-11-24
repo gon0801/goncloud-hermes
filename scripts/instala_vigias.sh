@@ -17,6 +17,7 @@ PC=${PC:-gwpc}
 PYTHON_MAC=${PYTHON_MAC:-/opt/homebrew/bin/python3}
 PYTHON_MINI=${PYTHON_MINI:-/usr/bin/python3}
 PYTHON_PC=${PYTHON_PC:-'%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe'}
+PYTHONW_PC=${PYTHONW_PC:-'%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\pythonw.exe'}
 LOG=${LOG:-$HOME/Library/Logs/goncloud/instala-vigias.log}
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20)
 ARCHIVOS=(scripts tareas-programadas.json model-routing.source.json claw-routing.json team.json)
@@ -128,7 +129,7 @@ instala_pc() {
   corre_seco "pc: vigila_tareas" ssh "${SSH_OPTS[@]}" "$PC" "\"$py\" \"$W.nuevo\\scripts\\vigila_tareas.py\" --maquina pc --raiz \"$W.nuevo\" --seco" || return 1
   ssh "${SSH_OPTS[@]}" "$PC" "(if exist \"$W.anterior\" rmdir /s /q \"$W.anterior\") & (if exist \"$W\" move \"$W\" \"$W.anterior\" >nul) && move \"$W.nuevo\" \"$W\" >nul" ||
     { echo "FALLA pc: no pude cambiar la copia"; return 1; }
-  ssh "${SSH_OPTS[@]}" "$PC" "schtasks /create /f /tn $TAREA_PC /sc minute /mo 30 /tr \"\\\"$py\\\" \\\"$W\\scripts\\vigila_tareas.py\\\" --maquina pc --raiz \\\"$W\\\"\"" ||
+  ssh "${SSH_OPTS[@]}" "$PC" "schtasks /create /f /tn $TAREA_PC /sc minute /mo 30 /tr \"\\\"$PYTHONW_PC\\\" \\\"$W\\scripts\\vigila_tareas.py\\\" --maquina pc --raiz \\\"$W\\\"\"" ||
     { echo "FALLA pc: no pude crear la tarea $TAREA_PC"; return 1; }
   echo "OK pc: instalada"
 }

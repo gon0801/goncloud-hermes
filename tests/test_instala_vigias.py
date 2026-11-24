@@ -15,6 +15,7 @@ from goncloud_test_support import cleanup_temp_directory  # noqa: E402
 
 SCRIPTS = ROOT / "scripts"
 PC_PYTHON = r"%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe"
+PC_PYTHONW = r"%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\pythonw.exe"
 
 VIGIA_FALSO = (
     "import os, sys\n"
@@ -245,7 +246,7 @@ class Instalacion(InstalaVigias):
         )
         self.assertIn("/tn GoncloudVigia /sc minute /mo 30", crea)
         tarea = self.lee("schtasks.GoncloudVigia")
-        self.assertTrue(tarea.startswith(f'"{PC_PYTHON}"'), tarea)
+        self.assertTrue(tarea.startswith(f'"{PC_PYTHONW}"'), tarea)
         self.assertIn(
             r'"%LOCALAPPDATA%\goncloud-vigia\scripts\vigila_tareas.py" --maquina pc',
             tarea,

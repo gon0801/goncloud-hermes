@@ -519,7 +519,12 @@ class Lector:
 
 
 def _corre(argv):
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    extra = (
+        {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+        if sys.platform == "win32"
+        else {}
+    )
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False, **extra)
     return r
 
 
